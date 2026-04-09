@@ -35,6 +35,17 @@ async def test_post_json_success():
 
 
 @pytest.mark.asyncio
+async def test_get_json_success():
+    client = HttpClient(rate_limit_per_second=0)
+    # Override the internal client with a mock transport
+    client._client = httpx.AsyncClient(transport=MockTransport())
+    result = await client.get_json("https://example.com/api", params={"key": "value"})
+    assert result == {"ok": True}
+    await client.close()
+
+
+
+@pytest.mark.asyncio
 async def test_retry_on_server_error():
     transport = MockTransport(responses=[
         httpx.Response(500, json={"error": "server error"}),
