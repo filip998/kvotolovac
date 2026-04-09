@@ -26,7 +26,7 @@ export function formatDateTime(isoString: string): string {
   });
 }
 
-export function formatRelativeTime(isoString: string | null): string {
+export function formatRelativeTime(isoString: string | null | undefined): string {
   if (!isoString) return 'Never';
   const now = new Date();
   const date = new Date(isoString);

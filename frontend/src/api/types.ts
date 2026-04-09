@@ -59,11 +59,17 @@ export interface BookmakerStatus {
 }
 
 export interface SystemStatus {
-  last_scrape: string | null;
+  status: string;
+  last_scrape_at: string | null;
   total_matches: number;
+  total_odds: number;
   total_discrepancies: number;
-  active_discrepancies: number;
-  bookmaker_status: BookmakerStatus[];
+  active_bookmakers: number;
+  scheduler_running: boolean;
+  // Mock-only fields (optional)
+  last_scrape?: string | null;
+  active_discrepancies?: number;
+  bookmaker_status?: BookmakerStatus[];
 }
 
 export interface DiscrepancyFilters {

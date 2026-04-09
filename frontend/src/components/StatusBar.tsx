@@ -22,12 +22,12 @@ export default function StatusBar() {
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
           <span className="flex items-center gap-1.5">
             <span className="inline-block h-2 w-2 rounded-full bg-green-400 animate-pulse" />
-            <span className="font-semibold text-white">{status.active_discrepancies}</span>
+            <span className="font-semibold text-white">{status.active_discrepancies ?? status.total_discrepancies}</span>
             <span className="text-gray-400">active discrepancies</span>
           </span>
           <span className="hidden text-gray-600 sm:inline">|</span>
           <span className="text-gray-400">
-            Last scan: <span className="text-gray-300">{formatRelativeTime(status.last_scrape)}</span>
+            Last scan: <span className="text-gray-300">{formatRelativeTime(status.last_scrape_at ?? status.last_scrape)}</span>
           </span>
           <span className="hidden text-gray-600 sm:inline">|</span>
           <span className="text-gray-400">
@@ -36,15 +36,17 @@ export default function StatusBar() {
         </div>
 
         <div className="flex items-center gap-3">
-          <div className="hidden items-center gap-1.5 sm:flex">
-            {status.bookmaker_status.map((bm) => (
-              <span
-                key={bm.id}
-                title={`${bm.name}: ${bm.is_active ? 'Active' : 'Inactive'} — ${formatRelativeTime(bm.last_scrape)}`}
-                className={`inline-block h-2 w-2 rounded-full ${bm.is_active ? 'bg-green-400' : 'bg-red-400'}`}
-              />
-            ))}
-          </div>
+          {status.bookmaker_status && status.bookmaker_status.length > 0 && (
+            <div className="hidden items-center gap-1.5 sm:flex">
+              {status.bookmaker_status.map((bm) => (
+                <span
+                  key={bm.id}
+                  title={`${bm.name}: ${bm.is_active ? 'Active' : 'Inactive'} — ${formatRelativeTime(bm.last_scrape)}`}
+                  className={`inline-block h-2 w-2 rounded-full ${bm.is_active ? 'bg-green-400' : 'bg-red-400'}`}
+                />
+              ))}
+            </div>
+          )}
           <button
             onClick={() => triggerScrape.mutate()}
             disabled={triggerScrape.isPending}
