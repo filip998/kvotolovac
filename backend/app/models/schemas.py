@@ -96,6 +96,7 @@ class DiscrepancyOut(BaseModel):
 class DiscrepancyDetail(DiscrepancyOut):
     home_team: Optional[str] = None
     away_team: Optional[str] = None
+    league_name: Optional[str] = None
     bookmaker_a_name: Optional[str] = None
     bookmaker_b_name: Optional[str] = None
 

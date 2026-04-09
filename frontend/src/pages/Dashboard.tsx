@@ -25,6 +25,19 @@ export default function Dashboard() {
     sort_by: 'profit_margin',
     sort_order: 'desc',
   });
+  const [collapsedLeagues, setCollapsedLeagues] = useState<Set<string>>(new Set());
+
+  const toggleLeague = (league: string) => {
+    setCollapsedLeagues((prev) => {
+      const next = new Set(prev);
+      if (next.has(league)) {
+        next.delete(league);
+      } else {
+        next.add(league);
+      }
+      return next;
+    });
+  };
 
   const { data: discrepancies, isLoading, isError, error } = useDiscrepancies(filters);
 
@@ -94,25 +107,31 @@ export default function Dashboard() {
         <div className="space-y-6">
           {grouped.map((lg) => (
             <section key={lg.league}>
-              <div className="mb-3 flex items-center gap-2">
+              <button
+                onClick={() => toggleLeague(lg.league)}
+                className="mb-3 flex w-full items-center gap-2 text-left hover:opacity-80 transition-opacity"
+              >
+                <span className={`text-xs text-gray-500 transition-transform ${collapsedLeagues.has(lg.league) ? '' : 'rotate-90'}`}>▶</span>
                 <span className="text-lg">🏀</span>
                 <h3 className="text-base font-bold text-white">{lg.league}</h3>
                 <span className="rounded-full bg-gray-800 px-2 py-0.5 text-xs text-gray-400">
                   {lg.matches.reduce((sum, m) => sum + m.discrepancies.length, 0)} discrepancies
                 </span>
-              </div>
-              <div className="space-y-3">
-                {lg.matches.map((mg) => (
-                  <MatchAccordion
-                    key={mg.matchId}
-                    matchId={mg.matchId}
-                    homeTeam={mg.homeTeam}
-                    awayTeam={mg.awayTeam}
-                    startTime={mg.startTime}
-                    discrepancies={mg.discrepancies}
-                  />
-                ))}
-              </div>
+              </button>
+              {!collapsedLeagues.has(lg.league) && (
+                <div className="space-y-3">
+                  {lg.matches.map((mg) => (
+                    <MatchAccordion
+                      key={mg.matchId}
+                      matchId={mg.matchId}
+                      homeTeam={mg.homeTeam}
+                      awayTeam={mg.awayTeam}
+                      startTime={mg.startTime}
+                      discrepancies={mg.discrepancies}
+                    />
+                  ))}
+                </div>
+              )}
             </section>
           ))}
         </div>

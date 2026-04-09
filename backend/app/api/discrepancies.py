@@ -10,7 +10,7 @@ from ..store import odds_store
 router = APIRouter(prefix="/discrepancies", tags=["discrepancies"])
 
 
-@router.get("", response_model=list[DiscrepancyOut])
+@router.get("", response_model=list[DiscrepancyDetail])
 async def list_discrepancies(
     sport: Optional[str] = Query(None),
     league: Optional[str] = Query(None),

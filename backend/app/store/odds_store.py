@@ -224,18 +224,17 @@ async def get_discrepancies(
     limit: int = 50,
     offset: int = 0,
     active_only: bool = True,
-) -> list[DiscrepancyOut]:
+) -> list[DiscrepancyDetail]:
     db = await get_db()
-    q = "SELECT d.* FROM discrepancies d"
-    joins = ""
+    q = """SELECT d.*, m.home_team, m.away_team, l.name as league_name,
+                  ba.name as bookmaker_a_name, bb.name as bookmaker_b_name
+           FROM discrepancies d
+           LEFT JOIN matches m ON d.match_id = m.id
+           LEFT JOIN leagues l ON m.league_id = l.id
+           LEFT JOIN bookmakers ba ON d.bookmaker_a_id = ba.id
+           LEFT JOIN bookmakers bb ON d.bookmaker_b_id = bb.id"""
     conditions = []
     params: list = []
-
-    if sport or league_id:
-        joins = " JOIN matches m ON d.match_id = m.id"
-        if league_id:
-            joins += " JOIN leagues l ON m.league_id = l.id"
-    q += joins
 
     if active_only:
         conditions.append("d.is_active = TRUE")
@@ -249,9 +248,6 @@ async def get_discrepancies(
         conditions.append("m.league_id = ?")
         params.append(league_id)
     if sport:
-        if not league_id:
-            joins_extra = " JOIN leagues l ON m.league_id = l.id"
-            q = q.replace(joins, joins + joins_extra) if joins else q.replace("FROM discrepancies d", "FROM discrepancies d JOIN matches m ON d.match_id = m.id JOIN leagues l ON m.league_id = l.id")
         conditions.append("l.sport = ?")
         params.append(sport)
 
@@ -265,7 +261,7 @@ async def get_discrepancies(
     params.extend([limit, offset])
 
     rows = await db.execute_fetchall(q, params)
-    return [DiscrepancyOut(**_row_to_dict(r)) for r in rows]
+    return [DiscrepancyDetail(**_row_to_dict(r)) for r in rows]
 
 
 async def get_discrepancy(disc_id: int) -> DiscrepancyDetail | None:
