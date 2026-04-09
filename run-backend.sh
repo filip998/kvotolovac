@@ -14,7 +14,7 @@ source venv/bin/activate
 
 # Install deps
 echo "📦 Installing dependencies..."
-pip install -q -r requirements.txt
+pip install -q --disable-pip-version-check -r requirements.txt
 
 # Run server
 echo "🚀 Starting backend on http://localhost:8000"
