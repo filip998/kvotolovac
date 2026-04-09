@@ -1,0 +1,1 @@
+"""KvotoLovac — Odds comparison backend."""
