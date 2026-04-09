@@ -10,10 +10,17 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
     bookmakers: str = "mozzart,meridian,maxbet"
     notification_gap_threshold: float = 1.5
+    scraper_mode: str = "mock"  # "mock" or "real"
+    proxy_list: str = ""
+    rate_limit_per_second: float = 1.0
 
     @property
     def bookmaker_list(self) -> list[str]:
         return [b.strip() for b in self.bookmakers.split(",") if b.strip()]
+
+    @property
+    def proxy_url_list(self) -> list[str]:
+        return [p.strip() for p in self.proxy_list.split(",") if p.strip()]
 
     @property
     def cors_origin_list(self) -> list[str]:
