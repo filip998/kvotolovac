@@ -1,0 +1,3011 @@
+{
+  "event": {
+    "errorCode": null,
+    "parameters": null,
+    "errorMessages": null,
+    "payload": {
+      "header": {
+        "eventId": 18689529,
+        "sport": {
+          "sportId": 55,
+          "name": "Košarka",
+          "slug": "basketball"
+        },
+        "region": {
+          "regionId": 62,
+          "name": "Evropa",
+          "slug": "european"
+        },
+        "league": {
+          "leagueId": 208,
+          "name": "Evroliga",
+          "slug": "euroleague",
+          "favoriteLeague": false
+        },
+        "state": "ACTIVE",
+        "code": "4523",
+        "startTime": 1775842200000,
+        "matchTime": "",
+        "offerType": "STANDARD_BET",
+        "offerSubType": "STANDARD_BET",
+        "rivals": [
+          "AS Monaco",
+          "FC Barcelona"
+        ],
+        "rivalsSlug": "as-monaco-fc-barcelona",
+        "result": {
+          "firstPoint": null,
+          "finalPeriod": null,
+          "currentPeriod": null,
+          "periods": [],
+          "extraData": {
+            "PercentageFirstQuarter": "25.0",
+            "HCOL2": "-1",
+            "HandHFOffset": "0.0",
+            "HCOL1": "-1",
+            "HomePoints": "0.0",
+            "MatchTime": "",
+            "sleeve_base_away": "b5eea9",
+            "ACOL2": "-1",
+            "ACOL1": "-1",
+            "QTime": "10:00",
+            "GamesToCreate": "",
+            "mpl": "5000.00",
+            "resulted_by_feed": "true",
+            "TimeStopped": "false",
+            "sleeve_stripes_color_away": "d9e6cb",
+            "rf": "0.00",
+            "HandicapStandardDeviationFirstHalf": "10.0",
+            "TimeTracker": "0",
+            "Basket3x3": "false",
+            "sleeve_stripes_color_home": "",
+            "PricesChanged": "false",
+            "boostedOdds": "false",
+            "QTimeLeft": "10:00",
+            "IndexRating": "0",
+            "Basketball2x20": "false",
+            "sf": "-0.30",
+            "PAG2": "0",
+            "PAG1": "0",
+            "earlyPayoutOffer": "true",
+            "sleeve_number_home": "211924",
+            "sleeve_stripes_away": "true",
+            "sleeve_sleeve_home": "ffffff",
+            "sleeve_base_home": "ba142c",
+            "BetradarUnifiedName": "AS Monaco vs. FC Barcelona",
+            "updateExecutionTime": "1775827796618",
+            "sleeve_stripes_home": "false",
+            "PeriodDescription": "Not started",
+            "isBetradarUnifiedOutright": "false",
+            "SetEventOrder": "0",
+            "LastTime": "Thu Jan 01 01:00:00 CET 1970",
+            "BPLAYER2": "-1",
+            "BPLAYER1": "-1",
+            "ScreenTime": "0",
+            "AwayPoints2Q": "0.0",
+            "HomePoints1Q": "0.0",
+            "HandicapStandardDeviationFirstQuarter": "6.0",
+            "Handic": "0.0",
+            "QStarted": "false",
+            "sleeve_split_away": "false",
+            "P2SB": "0",
+            "AllPoints": "0.0",
+            "sleeve_sleeve_away": "b5eea9",
+            "sleeve_number_away": "261b84",
+            "BPLAYER4": "-1",
+            "BPLAYER3": "-1",
+            "BPLAYER6": "-1",
+            "BPLAYER5": "-1",
+            "HandicapStandardDeviation": "16.0",
+            "HTFactor": "0.0",
+            "BetradarUnifiedID": "sr:match:62096328",
+            "sleeve_split_color_home": "",
+            "sleeve_split_home": "false",
+            "AwayPoints1Q": "0.0",
+            "HomePoints2Q": "0.0",
+            "Hand": "0",
+            "feed": "BetradarUnified",
+            "ouStandardDeviationFirstHalf": "12.0",
+            "ScriptParamChanged": "",
+            "PriceOU": "0.0",
+            "sleeve_shirt_type_home": "no_sleeves",
+            "Event.CurrentPeriod.Start": "false",
+            "FeedConstructID": "29338505",
+            "HomePoints3Q": "0.0",
+            "sleeve_split_color_away": "",
+            "sleeve_sleeve_detail_away": "",
+            "sleeve_shirt_type_away": "no_sleeves",
+            "RBTimeChange": "false",
+            "P1SB": "0",
+            "HomePoints4Q": "0.0",
+            "AwayPoints4Q": "0.0",
+            "PercentageFirstHalf": "50.0",
+            "sleeve_sleeve_detail_home": "",
+            "XFactor": "0.025",
+            "TIME": "0",
+            "SetQuotas": "false",
+            "Event.CurrentPeriod.End": "false",
+            "RBStatus": "false",
+            "updateRequestTime": "1775827796608",
+            "sleeve_type_away": "away",
+            "Hand1QOffset": "0.0",
+            "ouStandardDeviation": "12.0",
+            "Event.Match.Finished": "false",
+            "AwayPoints3Q": "0.0",
+            "AwayPoints": "0.0",
+            "sleeve_type_home": "home",
+            "PO": "0.92",
+            "ouStandardDeviationFirstQuarter": "12.0"
+          }
+        },
+        "formattedResult": {
+          "score": null,
+          "periodScores": [],
+          "redCards": null,
+          "yellowCards": null,
+          "corners": null,
+          "servingIndex": null
+        },
+        "betradar": {
+          "id": "62096328",
+          "locale": "sr",
+          "type": "match"
+        },
+        "hasEarlyPayout": true,
+        "boostedOdds": false
+      },
+      "games": [
+        {
+          "markets": [
+            {
+              "name": "Pobednik (uklj.OT ) - Early Payout",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911063_0",
+                  "price": 1.59,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911063_1",
+                  "price": 2.21,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911063,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": null,
+              "isEarlyPayout": true,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 10120,
+          "marketName": "Pobednik (uklj.OT ) - Early Payout",
+          "priority": -100,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": true,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "Pobednik (uklj.OT )",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911046_0",
+                  "price": 1.63,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911046_1",
+                  "price": 2.29,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911046,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 3741,
+          "marketName": "Pobednik (uklj.OT )",
+          "priority": 2,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_671398961_0",
+                  "price": 2.8,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_671398961_1",
+                  "price": 1.45,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 671398961,
+              "state": "ACTIVE",
+              "overUnder": 162.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_671165059_0",
+                  "price": 2.6,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_671165059_1",
+                  "price": 1.5,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 671165059,
+              "state": "ACTIVE",
+              "overUnder": 163.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984434_0",
+                  "price": 2.46,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984434_1",
+                  "price": 1.55,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984434,
+              "state": "ACTIVE",
+              "overUnder": 164.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984435_0",
+                  "price": 2.33,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984435_1",
+                  "price": 1.61,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984435,
+              "state": "ACTIVE",
+              "overUnder": 165.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984436_0",
+                  "price": 2.2,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984436_1",
+                  "price": 1.68,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984436,
+              "state": "ACTIVE",
+              "overUnder": 166.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984437_0",
+                  "price": 2.09,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984437_1",
+                  "price": 1.75,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984437,
+              "state": "ACTIVE",
+              "overUnder": 167.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984438_0",
+                  "price": 1.99,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984438_1",
+                  "price": 1.83,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984438,
+              "state": "ACTIVE",
+              "overUnder": 168.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984439_0",
+                  "price": 1.9,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984439_1",
+                  "price": 1.91,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984439,
+              "state": "ACTIVE",
+              "overUnder": 169.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984440_0",
+                  "price": 1.82,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984440_1",
+                  "price": 2.0,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984440,
+              "state": "ACTIVE",
+              "overUnder": 170.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984441_0",
+                  "price": 1.74,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984441_1",
+                  "price": 2.1,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984441,
+              "state": "ACTIVE",
+              "overUnder": 171.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984442_0",
+                  "price": 1.67,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984442_1",
+                  "price": 2.21,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984442,
+              "state": "ACTIVE",
+              "overUnder": 172.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984443_0",
+                  "price": 1.61,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984443_1",
+                  "price": 2.33,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984443,
+              "state": "ACTIVE",
+              "overUnder": 173.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984444_0",
+                  "price": 1.55,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984444_1",
+                  "price": 2.46,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984444,
+              "state": "ACTIVE",
+              "overUnder": 174.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984445_0",
+                  "price": 1.5,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984445_1",
+                  "price": 2.6,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984445,
+              "state": "ACTIVE",
+              "overUnder": 175.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Ukupno (uklj.OT) ",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984446_0",
+                  "price": 1.46,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984446_1",
+                  "price": 2.75,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984446,
+              "state": "ACTIVE",
+              "overUnder": 176.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 3742,
+          "marketName": "Ukupno (uklj.OT) ",
+          "priority": 990,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911049_0",
+                  "price": 4.0,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911049_1",
+                  "price": 1.23,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911049,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": -11.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911048_0",
+                  "price": 3.55,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911048_1",
+                  "price": 1.27,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911048,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": -10.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911057_0",
+                  "price": 3.3,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911057_1",
+                  "price": 1.32,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911057,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": -9.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911056_0",
+                  "price": 3.0,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911056_1",
+                  "price": 1.38,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911056,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": -8.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911055_0",
+                  "price": 2.7,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911055_1",
+                  "price": 1.45,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911055,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": -7.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911054_0",
+                  "price": 2.46,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911054_1",
+                  "price": 1.53,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911054,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": -6.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911053_0",
+                  "price": 2.25,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911053_1",
+                  "price": 1.62,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911053,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": -5.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911052_0",
+                  "price": 2.07,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911052_1",
+                  "price": 1.74,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911052,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": -4.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911051_0",
+                  "price": 1.92,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911051_1",
+                  "price": 1.86,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911051,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": -3.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911050_0",
+                  "price": 1.8,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911050_1",
+                  "price": 1.98,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911050,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": -2.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911047_0",
+                  "price": 1.69,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911047_1",
+                  "price": 2.13,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911047,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": -1.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911058_0",
+                  "price": 1.55,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911058_1",
+                  "price": 2.41,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911058,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": 1.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911059_0",
+                  "price": 1.47,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911059_1",
+                  "price": 2.6,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911059,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": 2.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911060_0",
+                  "price": 1.41,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911060_1",
+                  "price": 2.85,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911060,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": 3.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "Hendikep (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911061_0",
+                  "price": 1.35,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911061_1",
+                  "price": 3.15,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911061,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": 4.5,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 3744,
+          "marketName": "Hendikep (uklj. OT)",
+          "priority": 991,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "Konačan Ishod",
+              "selections": [
+                {
+                  "selectionId": "18689529_670911062_0",
+                  "price": 1.69,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670911062_1",
+                  "price": 11.0,
+                  "state": "ACTIVE",
+                  "name": "X"
+                },
+                {
+                  "selectionId": "18689529_670911062_2",
+                  "price": 2.4,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670911062,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 3747,
+          "marketName": "Konačan Ishod",
+          "priority": 1000,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "Pobeda sa Razlikom (Uklj. OT )",
+              "selections": [
+                {
+                  "selectionId": "18689529_671118083_0",
+                  "price": 2.2,
+                  "state": "ACTIVE",
+                  "name": "1 by 6+"
+                },
+                {
+                  "selectionId": "18689529_671118083_1",
+                  "price": 3.45,
+                  "state": "ACTIVE",
+                  "name": "2 sa 6+"
+                },
+                {
+                  "selectionId": "18689529_671118083_2",
+                  "price": 2.75,
+                  "state": "ACTIVE",
+                  "name": "Ostalo"
+                }
+              ],
+              "marketId": 671118083,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 3748,
+          "marketName": "Pobeda sa Razlikom (Uklj. OT )",
+          "priority": 1000,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "Pobeda sa razlikom (Uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_671118084_0",
+                  "price": 2.5,
+                  "state": "ACTIVE",
+                  "name": "1-5"
+                },
+                {
+                  "selectionId": "18689529_671118084_1",
+                  "price": 2.8,
+                  "state": "ACTIVE",
+                  "name": "6-10"
+                },
+                {
+                  "selectionId": "18689529_671118084_2",
+                  "price": 4.5,
+                  "state": "ACTIVE",
+                  "name": "11-15"
+                },
+                {
+                  "selectionId": "18689529_671118084_3",
+                  "price": 6.8,
+                  "state": "ACTIVE",
+                  "name": "16-20"
+                },
+                {
+                  "selectionId": "18689529_671118084_4",
+                  "price": 13.0,
+                  "state": "ACTIVE",
+                  "name": "21-25"
+                },
+                {
+                  "selectionId": "18689529_671118084_5",
+                  "price": 20.0,
+                  "state": "ACTIVE",
+                  "name": "26-30"
+                },
+                {
+                  "selectionId": "18689529_671118084_6",
+                  "price": 20.0,
+                  "state": "ACTIVE",
+                  "name": "31+"
+                }
+              ],
+              "marketId": 671118084,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 3749,
+          "marketName": "Pobeda sa razlikom (Uklj. OT)",
+          "priority": 1000,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "AS Monaco Ukupno Poena (uklj.OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_671165194_0",
+                  "price": 2.12,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_671165194_1",
+                  "price": 1.67,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 671165194,
+              "state": "ACTIVE",
+              "overUnder": 84.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "AS Monaco Ukupno Poena (uklj.OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_671118085_0",
+                  "price": 1.95,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_671118085_1",
+                  "price": 1.8,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 671118085,
+              "state": "ACTIVE",
+              "overUnder": 85.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "AS Monaco Ukupno Poena (uklj.OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984449_0",
+                  "price": 1.8,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984449_1",
+                  "price": 1.94,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984449,
+              "state": "ACTIVE",
+              "overUnder": 86.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "AS Monaco Ukupno Poena (uklj.OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984450_0",
+                  "price": 1.68,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984450_1",
+                  "price": 2.1,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984450,
+              "state": "ACTIVE",
+              "overUnder": 87.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "AS Monaco Ukupno Poena (uklj.OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984451_0",
+                  "price": 1.58,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984451_1",
+                  "price": 2.3,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984451,
+              "state": "ACTIVE",
+              "overUnder": 88.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 3751,
+          "marketName": "AS Monaco Ukupno Poena (uklj.OT)",
+          "priority": 1000,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "FC Barcelona Ukupno Poena (uklj.OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_671405202_0",
+                  "price": 2.21,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_671405202_1",
+                  "price": 1.62,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 671405202,
+              "state": "ACTIVE",
+              "overUnder": 81.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "FC Barcelona Ukupno Poena (uklj.OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_671118087_0",
+                  "price": 2.03,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_671118087_1",
+                  "price": 1.74,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 671118087,
+              "state": "ACTIVE",
+              "overUnder": 82.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "FC Barcelona Ukupno Poena (uklj.OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984452_0",
+                  "price": 1.87,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984452_1",
+                  "price": 1.87,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984452,
+              "state": "ACTIVE",
+              "overUnder": 83.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "FC Barcelona Ukupno Poena (uklj.OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984453_0",
+                  "price": 1.73,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984453_1",
+                  "price": 2.03,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984453,
+              "state": "ACTIVE",
+              "overUnder": 84.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            },
+            {
+              "name": "FC Barcelona Ukupno Poena (uklj.OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984454_0",
+                  "price": 1.62,
+                  "state": "ACTIVE",
+                  "name": "Manje"
+                },
+                {
+                  "selectionId": "18689529_670984454_1",
+                  "price": 2.21,
+                  "state": "ACTIVE",
+                  "name": "Više"
+                }
+              ],
+              "marketId": 670984454,
+              "state": "ACTIVE",
+              "overUnder": 85.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 3753,
+          "marketName": "FC Barcelona Ukupno Poena (uklj.OT)",
+          "priority": 1000,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "Pob&Uk (uklj OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_671398964_0",
+                  "price": 3.16,
+                  "state": "ACTIVE",
+                  "name": "1 i Više"
+                },
+                {
+                  "selectionId": "18689529_671398964_1",
+                  "price": 4.5,
+                  "state": "ACTIVE",
+                  "name": "2 i Više"
+                },
+                {
+                  "selectionId": "18689529_671398964_2",
+                  "price": 3.15,
+                  "state": "ACTIVE",
+                  "name": "1 i Manje"
+                },
+                {
+                  "selectionId": "18689529_671398964_3",
+                  "price": 4.47,
+                  "state": "ACTIVE",
+                  "name": "2 i Manje"
+                }
+              ],
+              "marketId": 671398964,
+              "state": "ACTIVE",
+              "overUnder": 169.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 3770,
+          "marketName": "Pob&Uk (uklj OT)",
+          "priority": 1000,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "Produžeci",
+              "selections": [
+                {
+                  "selectionId": "18689529_671118098_0",
+                  "price": 11.0,
+                  "state": "ACTIVE",
+                  "name": "Da"
+                },
+                {
+                  "selectionId": "18689529_671118098_1",
+                  "price": 1.04,
+                  "state": "ACTIVE",
+                  "name": "Ne"
+                }
+              ],
+              "marketId": 671118098,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 3771,
+          "marketName": "Produžeci",
+          "priority": 1000,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "Draw No Bet",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984507_0",
+                  "price": 1.58,
+                  "state": "ACTIVE",
+                  "name": "1"
+                },
+                {
+                  "selectionId": "18689529_670984507_1",
+                  "price": 2.23,
+                  "state": "ACTIVE",
+                  "name": "2"
+                }
+              ],
+              "marketId": 670984507,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 3772,
+          "marketName": "Draw No Bet",
+          "priority": 1000,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "Par/nepar (uklj. OT)",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984508_0",
+                  "price": 1.86,
+                  "state": "ACTIVE",
+                  "name": "Nepar"
+                },
+                {
+                  "selectionId": "18689529_670984508_1",
+                  "price": 1.91,
+                  "state": "ACTIVE",
+                  "name": "Par"
+                }
+              ],
+              "marketId": 670984508,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 3774,
+          "marketName": "Par/nepar (uklj. OT)",
+          "priority": 1000,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "Poluvreme - Kraj",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984509_0",
+                  "price": 2.15,
+                  "state": "ACTIVE",
+                  "name": "1 - 1"
+                },
+                {
+                  "selectionId": "18689529_670984509_1",
+                  "price": 26.0,
+                  "state": "ACTIVE",
+                  "name": "1 - X"
+                },
+                {
+                  "selectionId": "18689529_670984509_2",
+                  "price": 7.6,
+                  "state": "ACTIVE",
+                  "name": "1 - 2"
+                },
+                {
+                  "selectionId": "18689529_670984509_3",
+                  "price": 35.0,
+                  "state": "ACTIVE",
+                  "name": "X - 1"
+                },
+                {
+                  "selectionId": "18689529_670984509_4",
+                  "price": 101.0,
+                  "state": "ACTIVE",
+                  "name": "X - X"
+                },
+                {
+                  "selectionId": "18689529_670984509_5",
+                  "price": 45.0,
+                  "state": "ACTIVE",
+                  "name": "X - 2"
+                },
+                {
+                  "selectionId": "18689529_670984509_6",
+                  "price": 6.2,
+                  "state": "ACTIVE",
+                  "name": "2 - 1"
+                },
+                {
+                  "selectionId": "18689529_670984509_7",
+                  "price": 27.0,
+                  "state": "ACTIVE",
+                  "name": "2 - X"
+                },
+                {
+                  "selectionId": "18689529_670984509_8",
+                  "price": 3.2,
+                  "state": "ACTIVE",
+                  "name": "2 - 2"
+                }
+              ],
+              "marketId": 670984509,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 3775,
+          "marketName": "Poluvreme - Kraj",
+          "priority": 1000,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "Četvrtina sa najviše poena",
+              "selections": [
+                {
+                  "selectionId": "18689529_670984511_0",
+                  "price": 3.45,
+                  "state": "ACTIVE",
+                  "name": "Prva"
+                },
+                {
+                  "selectionId": "18689529_670984511_1",
+                  "price": 3.65,
+                  "state": "ACTIVE",
+                  "name": "Druga"
+                },
+                {
+                  "selectionId": "18689529_670984511_2",
+                  "price": 4.2,
+                  "state": "ACTIVE",
+                  "name": "Treća"
+                },
+                {
+                  "selectionId": "18689529_670984511_3",
+                  "price": 3.7,
+                  "state": "ACTIVE",
+                  "name": "Četvrta"
+                },
+                {
+                  "selectionId": "18689529_670984511_4",
+                  "price": 13.0,
+                  "state": "ACTIVE",
+                  "name": "Equal"
+                }
+              ],
+              "marketId": 670984511,
+              "state": "ACTIVE",
+              "overUnder": null,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 3778,
+          "marketName": "Četvrtina sa najviše poena",
+          "priority": 1000,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        },
+        {
+          "markets": [
+            {
+              "name": "Konačan ishod i Ukupno Poena",
+              "selections": [
+                {
+                  "selectionId": "18689529_671398966_0",
+                  "price": 3.25,
+                  "state": "ACTIVE",
+                  "name": "1 i Manje"
+                },
+                {
+                  "selectionId": "18689529_671398966_1",
+                  "price": 3.3,
+                  "state": "ACTIVE",
+                  "name": "1 i Više"
+                },
+                {
+                  "selectionId": "18689529_671398966_2",
+                  "price": 28.0,
+                  "state": "ACTIVE",
+                  "name": "X i Manje"
+                },
+                {
+                  "selectionId": "18689529_671398966_3",
+                  "price": 28.0,
+                  "state": "ACTIVE",
+                  "name": "X i Više"
+                },
+                {
+                  "selectionId": "18689529_671398966_4",
+                  "price": 4.7,
+                  "state": "ACTIVE",
+                  "name": "2 i Manje"
+                },
+                {
+                  "selectionId": "18689529_671398966_5",
+                  "price": 4.8,
+                  "state": "ACTIVE",
+                  "name": "2 i Više"
+                }
+              ],
+              "marketId": 671398966,
+              "state": "ACTIVE",
+              "overUnder": 168.5,
+              "handicap": null,
+              "isEarlyPayout": false,
+              "boostedOdds": false
+            }
+          ],
+          "gameTemplateId": 5255,
+          "marketName": "Konačan ishod i Ukupno Poena",
+          "priority": 1000,
+          "marketType": "REGULAR",
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "favorite": false
+        }
+      ],
+      "activeGameGroups": [
+        {
+          "id": "026bc37b-34db-440d-a16a-f663941f4139",
+          "name": "Glavne"
+        },
+        {
+          "id": "395a1509-800c-4e0e-9d76-b30597629404",
+          "name": "Poeni"
+        },
+        {
+          "id": "2ab89892-5e4a-4bd8-8b94-50a04341250e",
+          "name": "Hendikepi"
+        },
+        {
+          "id": "8c95c524-809d-4468-9aab-06387f7df504",
+          "name": "Poluvreme"
+        },
+        {
+          "id": "6c1d6bb2-572a-4e7f-9ae8-0902d6df75b9",
+          "name": "Četvrtine"
+        },
+        {
+          "id": "1ace0bb3-759d-41a1-8964-7dc8aac38cfe",
+          "name": "Poeni Igrača"
+        },
+        {
+          "id": "ce657e80-2e15-47b9-bbcb-871f6e597a22",
+          "name": "Skokovi Igrača"
+        },
+        {
+          "id": "1d5c0101-d012-42dc-8d21-b3da1dfd1fd1",
+          "name": "Asistencije Igrača"
+        },
+        {
+          "id": "783e86a9-d75b-4dfc-a7fa-43bd335f997f",
+          "name": "Trojke Igrača"
+        },
+        {
+          "id": "f5e85345-70c3-4c61-b1e7-70fb47a36493",
+          "name": "Duple Opklade"
+        },
+        {
+          "id": "e401c0f9-3ca1-4de9-aaa7-63c57c6dde61",
+          "name": "Speciјal"
+        },
+        {
+          "id": "all",
+          "name": "Sve"
+        }
+      ],
+      "usedGameGroupId": "026bc37b-34db-440d-a16a-f663941f4139",
+      "betBooster": {
+        "events": [
+          {
+            "header": {
+              "eventId": 18689529,
+              "sport": {
+                "sportId": 55,
+                "sportName": "Basketball"
+              },
+              "league": {
+                "leagueId": 208,
+                "leagueName": "Euroleague"
+              },
+              "region": {
+                "regionId": 62,
+                "regionName": "European"
+              },
+              "startTime": 1775842200000,
+              "rivals": [
+                "AS Monaco",
+                "FC Barcelona"
+              ],
+              "rivalsSlug": "as-monaco-fc-barcelona",
+              "betBooster": true,
+              "offerType": "STANDARD_BET",
+              "offerSubType": "STANDARD_BET",
+              "state": "ACTIVE"
+            },
+            "market": {
+              "marketId": 671726120,
+              "marketState": "ACTIVE",
+              "selections": [
+                {
+                  "selectionId": "18689529_671726120_0",
+                  "selectionName": "Više",
+                  "marketName": "Diallo, Alpha Ukupno Poena (Uklj. OT) ",
+                  "overUnder": 12.5,
+                  "handicap": null
+                }
+              ],
+              "startPrice": 1.89,
+              "boostPrice": 2.0,
+              "boosterType": "SINGLE_BOOST",
+              "superBoostedMarket": false
+            }
+          },
+          {
+            "header": {
+              "eventId": 18689529,
+              "sport": {
+                "sportId": 55,
+                "sportName": "Basketball"
+              },
+              "league": {
+                "leagueId": 208,
+                "leagueName": "Euroleague"
+              },
+              "region": {
+                "regionId": 62,
+                "regionName": "European"
+              },
+              "startTime": 1775842200000,
+              "rivals": [
+                "AS Monaco",
+                "FC Barcelona"
+              ],
+              "rivalsSlug": "as-monaco-fc-barcelona",
+              "betBooster": true,
+              "offerType": "STANDARD_BET",
+              "offerSubType": "STANDARD_BET",
+              "state": "ACTIVE"
+            },
+            "market": {
+              "marketId": 671726211,
+              "marketState": "ACTIVE",
+              "selections": [
+                {
+                  "selectionId": "18689529_671726211_0",
+                  "selectionName": "Više",
+                  "marketName": "Ukupno (uklj.OT) ",
+                  "overUnder": 165.5,
+                  "handicap": null
+                },
+                {
+                  "selectionId": "18689529_671726211_1",
+                  "selectionName": "2",
+                  "marketName": "1 Četvrtina Ishod",
+                  "overUnder": null,
+                  "handicap": null
+                },
+                {
+                  "selectionId": "18689529_671726211_2",
+                  "selectionName": "2",
+                  "marketName": "Pobednik (uklj.OT )",
+                  "overUnder": null,
+                  "handicap": null
+                }
+              ],
+              "startPrice": 4.52,
+              "boostPrice": 4.75,
+              "boosterType": "BET_BOOST",
+              "superBoostedMarket": false
+            }
+          },
+          {
+            "header": {
+              "eventId": 18689529,
+              "sport": {
+                "sportId": 55,
+                "sportName": "Basketball"
+              },
+              "league": {
+                "leagueId": 208,
+                "leagueName": "Euroleague"
+              },
+              "region": {
+                "regionId": 62,
+                "regionName": "European"
+              },
+              "startTime": 1775842200000,
+              "rivals": [
+                "AS Monaco",
+                "FC Barcelona"
+              ],
+              "rivalsSlug": "as-monaco-fc-barcelona",
+              "betBooster": true,
+              "offerType": "STANDARD_BET",
+              "offerSubType": "STANDARD_BET",
+              "state": "ACTIVE"
+            },
+            "market": {
+              "marketId": 671387439,
+              "marketState": "ACTIVE",
+              "selections": [
+                {
+                  "selectionId": "18689529_671387439_0",
+                  "selectionName": "1 - 1",
+                  "marketName": "Poluvreme - Kraj",
+                  "overUnder": null,
+                  "handicap": null
+                }
+              ],
+              "startPrice": 2.15,
+              "boostPrice": 2.3,
+              "boosterType": "SINGLE_BOOST",
+              "superBoostedMarket": false
+            }
+          }
+        ]
+      }
+    }
+  },
+  "markets": {
+    "errorCode": null,
+    "parameters": null,
+    "errorMessages": null,
+    "payload": [
+      {
+        "markets": [
+          {
+            "name": "Parra, Joel",
+            "selections": [
+              {
+                "selectionId": "18689529_671510880_0",
+                "price": 1.73,
+                "state": "ACTIVE",
+                "name": "Manje"
+              },
+              {
+                "selectionId": "18689529_671510880_1",
+                "price": 1.99,
+                "state": "ACTIVE",
+                "name": "Više"
+              }
+            ],
+            "marketId": 671510880,
+            "state": "ACTIVE",
+            "overUnder": 7.5,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Brizuela, Dario",
+            "selections": [
+              {
+                "selectionId": "18689529_671795971_0",
+                "price": 1.85,
+                "state": "ACTIVE",
+                "name": "Manje"
+              },
+              {
+                "selectionId": "18689529_671795971_1",
+                "price": 1.85,
+                "state": "ACTIVE",
+                "name": "Više"
+              }
+            ],
+            "marketId": 671795971,
+            "state": "ACTIVE",
+            "overUnder": 7.5,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Vesely, Jan",
+            "selections": [
+              {
+                "selectionId": "18689529_671411232_0",
+                "price": 1.84,
+                "state": "ACTIVE",
+                "name": "Manje"
+              },
+              {
+                "selectionId": "18689529_671411232_1",
+                "price": 1.86,
+                "state": "ACTIVE",
+                "name": "Više"
+              }
+            ],
+            "marketId": 671411232,
+            "state": "ACTIVE",
+            "overUnder": 8.5,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Blossomgame, Jaron",
+            "selections": [
+              {
+                "selectionId": "18689529_671411229_0",
+                "price": 1.85,
+                "state": "ACTIVE",
+                "name": "Manje"
+              },
+              {
+                "selectionId": "18689529_671411229_1",
+                "price": 1.85,
+                "state": "ACTIVE",
+                "name": "Više"
+              }
+            ],
+            "marketId": 671411229,
+            "state": "ACTIVE",
+            "overUnder": 9.5,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Strazel, Matthew",
+            "selections": [
+              {
+                "selectionId": "18689529_671411281_0",
+                "price": 1.66,
+                "state": "ACTIVE",
+                "name": "Manje"
+              },
+              {
+                "selectionId": "18689529_671411281_1",
+                "price": 2.09,
+                "state": "ACTIVE",
+                "name": "Više"
+              }
+            ],
+            "marketId": 671411281,
+            "state": "ACTIVE",
+            "overUnder": 11.5,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Diallo, Alpha",
+            "selections": [
+              {
+                "selectionId": "18689529_671411230_0",
+                "price": 1.82,
+                "state": "ACTIVE",
+                "name": "Manje"
+              },
+              {
+                "selectionId": "18689529_671411230_1",
+                "price": 1.89,
+                "state": "ACTIVE",
+                "name": "Više"
+              }
+            ],
+            "marketId": 671411230,
+            "state": "ACTIVE",
+            "overUnder": 12.5,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Shengelia, Tornike",
+            "selections": [
+              {
+                "selectionId": "18689529_671411280_0",
+                "price": 1.86,
+                "state": "ACTIVE",
+                "name": "Manje"
+              },
+              {
+                "selectionId": "18689529_671411280_1",
+                "price": 1.84,
+                "state": "ACTIVE",
+                "name": "Više"
+              }
+            ],
+            "marketId": 671411280,
+            "state": "ACTIVE",
+            "overUnder": 12.5,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Mirotic, Nikola",
+            "selections": [
+              {
+                "selectionId": "18689529_671678345_0",
+                "price": 1.93,
+                "state": "ACTIVE",
+                "name": "Manje"
+              },
+              {
+                "selectionId": "18689529_671678345_1",
+                "price": 1.78,
+                "state": "ACTIVE",
+                "name": "Više"
+              }
+            ],
+            "marketId": 671678345,
+            "state": "ACTIVE",
+            "overUnder": 12.5,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "James, Mike",
+            "selections": [
+              {
+                "selectionId": "18689529_671411231_0",
+                "price": 1.82,
+                "state": "ACTIVE",
+                "name": "Manje"
+              },
+              {
+                "selectionId": "18689529_671411231_1",
+                "price": 1.89,
+                "state": "ACTIVE",
+                "name": "Više"
+              }
+            ],
+            "marketId": 671411231,
+            "state": "ACTIVE",
+            "overUnder": 13.5,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Okobo, Elie",
+            "selections": [
+              {
+                "selectionId": "18689529_671438308_0",
+                "price": 1.63,
+                "state": "ACTIVE",
+                "name": "Manje"
+              },
+              {
+                "selectionId": "18689529_671438308_1",
+                "price": 2.14,
+                "state": "ACTIVE",
+                "name": "Više"
+              }
+            ],
+            "marketId": 671438308,
+            "state": "ACTIVE",
+            "overUnder": 14.5,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Punter, Kevin",
+            "selections": [
+              {
+                "selectionId": "18689529_671438309_0",
+                "price": 1.86,
+                "state": "ACTIVE",
+                "name": "Manje"
+              },
+              {
+                "selectionId": "18689529_671438309_1",
+                "price": 1.84,
+                "state": "ACTIVE",
+                "name": "Više"
+              }
+            ],
+            "marketId": 671438309,
+            "state": "ACTIVE",
+            "overUnder": 14.5,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Clyburn, William",
+            "selections": [
+              {
+                "selectionId": "18689529_671677926_0",
+                "price": 1.8,
+                "state": "ACTIVE",
+                "name": "Manje"
+              },
+              {
+                "selectionId": "18689529_671677926_1",
+                "price": 1.91,
+                "state": "ACTIVE",
+                "name": "Više"
+              }
+            ],
+            "marketId": 671677926,
+            "state": "ACTIVE",
+            "overUnder": 14.5,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          }
+        ],
+        "gameTemplateId": 9301,
+        "marketName": "Ukupno Poena (Uklj. OT)",
+        "priority": 1000,
+        "marketType": "PLAYER_MARKET",
+        "hasEarlyPayout": false,
+        "boostedOdds": false,
+        "favorite": false
+      },
+      {
+        "markets": [
+          {
+            "name": "Jaron Blossomgame",
+            "selections": [
+              {
+                "selectionId": "18689529_671411233_1",
+                "price": 1.83,
+                "state": "ACTIVE",
+                "name": "10+"
+              },
+              {
+                "selectionId": "18689529_671411233_0",
+                "price": 1.34,
+                "state": "ACTIVE",
+                "name": "8+"
+              },
+              {
+                "selectionId": "18689529_671411233_2",
+                "price": 2.27,
+                "state": "ACTIVE",
+                "name": "12+"
+              },
+              {
+                "selectionId": "18689529_671411233_3",
+                "price": 3.0,
+                "state": "ACTIVE",
+                "name": "14+"
+              },
+              {
+                "selectionId": "18689529_671411233_4",
+                "price": 4.1,
+                "state": "ACTIVE",
+                "name": "16+"
+              },
+              {
+                "selectionId": "18689529_671411233_5",
+                "price": 5.8,
+                "state": "ACTIVE",
+                "name": "18+"
+              },
+              {
+                "selectionId": "18689529_671411233_6",
+                "price": 8.4,
+                "state": "ACTIVE",
+                "name": "20+"
+              },
+              {
+                "selectionId": "18689529_671411233_7",
+                "price": 13.0,
+                "state": "ACTIVE",
+                "name": "22+"
+              },
+              {
+                "selectionId": "18689529_671411233_8",
+                "price": 21.0,
+                "state": "ACTIVE",
+                "name": "24+"
+              },
+              {
+                "selectionId": "18689529_671411233_9",
+                "price": 35.0,
+                "state": "ACTIVE",
+                "name": "26+"
+              }
+            ],
+            "marketId": 671411233,
+            "state": "ACTIVE",
+            "overUnder": null,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Alpha Diallo",
+            "selections": [
+              {
+                "selectionId": "18689529_671411234_1",
+                "price": 1.86,
+                "state": "ACTIVE",
+                "name": "13+"
+              },
+              {
+                "selectionId": "18689529_671411234_0",
+                "price": 1.38,
+                "state": "ACTIVE",
+                "name": "11+"
+              },
+              {
+                "selectionId": "18689529_671411234_2",
+                "price": 2.35,
+                "state": "ACTIVE",
+                "name": "15+"
+              },
+              {
+                "selectionId": "18689529_671411234_3",
+                "price": 3.1,
+                "state": "ACTIVE",
+                "name": "17+"
+              },
+              {
+                "selectionId": "18689529_671411234_4",
+                "price": 4.4,
+                "state": "ACTIVE",
+                "name": "19+"
+              },
+              {
+                "selectionId": "18689529_671411234_5",
+                "price": 6.6,
+                "state": "ACTIVE",
+                "name": "21+"
+              },
+              {
+                "selectionId": "18689529_671411234_6",
+                "price": 10.0,
+                "state": "ACTIVE",
+                "name": "23+"
+              },
+              {
+                "selectionId": "18689529_671411234_7",
+                "price": 16.0,
+                "state": "ACTIVE",
+                "name": "25+"
+              },
+              {
+                "selectionId": "18689529_671411234_8",
+                "price": 27.0,
+                "state": "ACTIVE",
+                "name": "27+"
+              }
+            ],
+            "marketId": 671411234,
+            "state": "ACTIVE",
+            "overUnder": null,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Elie Okobo",
+            "selections": [
+              {
+                "selectionId": "18689529_671411235_15",
+                "price": 2.14,
+                "state": "ACTIVE",
+                "name": "15+"
+              },
+              {
+                "selectionId": "18689529_671411235_17",
+                "price": 1.58,
+                "state": "ACTIVE",
+                "name": "13+"
+              },
+              {
+                "selectionId": "18689529_671411235_13",
+                "price": 2.65,
+                "state": "ACTIVE",
+                "name": "17+"
+              },
+              {
+                "selectionId": "18689529_671411235_12",
+                "price": 3.6,
+                "state": "ACTIVE",
+                "name": "19+"
+              },
+              {
+                "selectionId": "18689529_671411235_11",
+                "price": 5.0,
+                "state": "ACTIVE",
+                "name": "21+"
+              },
+              {
+                "selectionId": "18689529_671411235_10",
+                "price": 7.8,
+                "state": "ACTIVE",
+                "name": "23+"
+              },
+              {
+                "selectionId": "18689529_671411235_18",
+                "price": 12.0,
+                "state": "ACTIVE",
+                "name": "25+"
+              },
+              {
+                "selectionId": "18689529_671411235_16",
+                "price": 19.0,
+                "state": "ACTIVE",
+                "name": "27+"
+              },
+              {
+                "selectionId": "18689529_671411235_14",
+                "price": 35.0,
+                "state": "ACTIVE",
+                "name": "29+"
+              }
+            ],
+            "marketId": 671411235,
+            "state": "ACTIVE",
+            "overUnder": null,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Mike James",
+            "selections": [
+              {
+                "selectionId": "18689529_671411236_1",
+                "price": 1.88,
+                "state": "ACTIVE",
+                "name": "14+"
+              },
+              {
+                "selectionId": "18689529_671411236_0",
+                "price": 1.41,
+                "state": "ACTIVE",
+                "name": "12+"
+              },
+              {
+                "selectionId": "18689529_671411236_2",
+                "price": 2.36,
+                "state": "ACTIVE",
+                "name": "16+"
+              },
+              {
+                "selectionId": "18689529_671411236_3",
+                "price": 3.1,
+                "state": "ACTIVE",
+                "name": "18+"
+              },
+              {
+                "selectionId": "18689529_671411236_4",
+                "price": 4.4,
+                "state": "ACTIVE",
+                "name": "20+"
+              },
+              {
+                "selectionId": "18689529_671411236_5",
+                "price": 6.4,
+                "state": "ACTIVE",
+                "name": "22+"
+              },
+              {
+                "selectionId": "18689529_671411236_6",
+                "price": 9.8,
+                "state": "ACTIVE",
+                "name": "24+"
+              },
+              {
+                "selectionId": "18689529_671411236_7",
+                "price": 16.0,
+                "state": "ACTIVE",
+                "name": "26+"
+              },
+              {
+                "selectionId": "18689529_671411236_8",
+                "price": 27.0,
+                "state": "ACTIVE",
+                "name": "28+"
+              },
+              {
+                "selectionId": "18689529_671411236_9",
+                "price": 50.0,
+                "state": "ACTIVE",
+                "name": "30+"
+              }
+            ],
+            "marketId": 671411236,
+            "state": "ACTIVE",
+            "overUnder": null,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Jan Vesely",
+            "selections": [
+              {
+                "selectionId": "18689529_671411237_1",
+                "price": 1.83,
+                "state": "ACTIVE",
+                "name": "9+"
+              },
+              {
+                "selectionId": "18689529_671411237_0",
+                "price": 1.36,
+                "state": "ACTIVE",
+                "name": "7+"
+              },
+              {
+                "selectionId": "18689529_671411237_2",
+                "price": 2.27,
+                "state": "ACTIVE",
+                "name": "11+"
+              },
+              {
+                "selectionId": "18689529_671411237_3",
+                "price": 3.05,
+                "state": "ACTIVE",
+                "name": "13+"
+              },
+              {
+                "selectionId": "18689529_671411237_4",
+                "price": 4.2,
+                "state": "ACTIVE",
+                "name": "15+"
+              },
+              {
+                "selectionId": "18689529_671411237_5",
+                "price": 6.2,
+                "state": "ACTIVE",
+                "name": "17+"
+              },
+              {
+                "selectionId": "18689529_671411237_6",
+                "price": 9.6,
+                "state": "ACTIVE",
+                "name": "19+"
+              },
+              {
+                "selectionId": "18689529_671411237_7",
+                "price": 15.0,
+                "state": "ACTIVE",
+                "name": "21+"
+              },
+              {
+                "selectionId": "18689529_671411237_8",
+                "price": 26.0,
+                "state": "ACTIVE",
+                "name": "23+"
+              },
+              {
+                "selectionId": "18689529_671411237_9",
+                "price": 45.0,
+                "state": "ACTIVE",
+                "name": "25+"
+              }
+            ],
+            "marketId": 671411237,
+            "state": "ACTIVE",
+            "overUnder": null,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Kevin Punter",
+            "selections": [
+              {
+                "selectionId": "18689529_671411282_18",
+                "price": 1.82,
+                "state": "ACTIVE",
+                "name": "15+"
+              },
+              {
+                "selectionId": "18689529_671411282_16",
+                "price": 1.41,
+                "state": "ACTIVE",
+                "name": "13+"
+              },
+              {
+                "selectionId": "18689529_671411282_10",
+                "price": 2.21,
+                "state": "ACTIVE",
+                "name": "17+"
+              },
+              {
+                "selectionId": "18689529_671411282_12",
+                "price": 2.8,
+                "state": "ACTIVE",
+                "name": "19+"
+              },
+              {
+                "selectionId": "18689529_671411282_14",
+                "price": 3.6,
+                "state": "ACTIVE",
+                "name": "21+"
+              },
+              {
+                "selectionId": "18689529_671411282_15",
+                "price": 4.9,
+                "state": "ACTIVE",
+                "name": "23+"
+              },
+              {
+                "selectionId": "18689529_671411282_17",
+                "price": 6.8,
+                "state": "ACTIVE",
+                "name": "25+"
+              },
+              {
+                "selectionId": "18689529_671411282_19",
+                "price": 9.8,
+                "state": "ACTIVE",
+                "name": "27+"
+              },
+              {
+                "selectionId": "18689529_671411282_11",
+                "price": 15.0,
+                "state": "ACTIVE",
+                "name": "29+"
+              },
+              {
+                "selectionId": "18689529_671411282_13",
+                "price": 22.0,
+                "state": "ACTIVE",
+                "name": "31+"
+              }
+            ],
+            "marketId": 671411282,
+            "state": "ACTIVE",
+            "overUnder": null,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Joel Parra",
+            "selections": [
+              {
+                "selectionId": "18689529_671411283_15",
+                "price": 1.95,
+                "state": "ACTIVE",
+                "name": "8+"
+              },
+              {
+                "selectionId": "18689529_671411283_10",
+                "price": 1.43,
+                "state": "ACTIVE",
+                "name": "6+"
+              },
+              {
+                "selectionId": "18689529_671411283_11",
+                "price": 2.43,
+                "state": "ACTIVE",
+                "name": "10+"
+              },
+              {
+                "selectionId": "18689529_671411283_16",
+                "price": 3.15,
+                "state": "ACTIVE",
+                "name": "12+"
+              },
+              {
+                "selectionId": "18689529_671411283_13",
+                "price": 4.4,
+                "state": "ACTIVE",
+                "name": "14+"
+              },
+              {
+                "selectionId": "18689529_671411283_19",
+                "price": 6.6,
+                "state": "ACTIVE",
+                "name": "16+"
+              },
+              {
+                "selectionId": "18689529_671411283_18",
+                "price": 9.6,
+                "state": "ACTIVE",
+                "name": "18+"
+              },
+              {
+                "selectionId": "18689529_671411283_12",
+                "price": 15.0,
+                "state": "ACTIVE",
+                "name": "20+"
+              },
+              {
+                "selectionId": "18689529_671411283_17",
+                "price": 26.0,
+                "state": "ACTIVE",
+                "name": "22+"
+              },
+              {
+                "selectionId": "18689529_671411283_14",
+                "price": 45.0,
+                "state": "ACTIVE",
+                "name": "24+"
+              }
+            ],
+            "marketId": 671411283,
+            "state": "ACTIVE",
+            "overUnder": null,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Matthew Strazel",
+            "selections": [
+              {
+                "selectionId": "18689529_671411284_1",
+                "price": 2.08,
+                "state": "ACTIVE",
+                "name": "12+"
+              },
+              {
+                "selectionId": "18689529_671411284_0",
+                "price": 1.55,
+                "state": "ACTIVE",
+                "name": "10+"
+              },
+              {
+                "selectionId": "18689529_671411284_2",
+                "price": 2.6,
+                "state": "ACTIVE",
+                "name": "14+"
+              },
+              {
+                "selectionId": "18689529_671411284_3",
+                "price": 3.5,
+                "state": "ACTIVE",
+                "name": "16+"
+              },
+              {
+                "selectionId": "18689529_671411284_4",
+                "price": 4.9,
+                "state": "ACTIVE",
+                "name": "18+"
+              },
+              {
+                "selectionId": "18689529_671411284_5",
+                "price": 7.2,
+                "state": "ACTIVE",
+                "name": "20+"
+              },
+              {
+                "selectionId": "18689529_671411284_6",
+                "price": 12.0,
+                "state": "ACTIVE",
+                "name": "22+"
+              },
+              {
+                "selectionId": "18689529_671411284_7",
+                "price": 19.0,
+                "state": "ACTIVE",
+                "name": "24+"
+              },
+              {
+                "selectionId": "18689529_671411284_8",
+                "price": 30.0,
+                "state": "ACTIVE",
+                "name": "26+"
+              }
+            ],
+            "marketId": 671411284,
+            "state": "ACTIVE",
+            "overUnder": null,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Dario Brizuela",
+            "selections": [
+              {
+                "selectionId": "18689529_671411285_0",
+                "price": 1.82,
+                "state": "ACTIVE",
+                "name": "8+"
+              },
+              {
+                "selectionId": "18689529_671411285_20",
+                "price": 1.34,
+                "state": "ACTIVE",
+                "name": "6+"
+              },
+              {
+                "selectionId": "18689529_671411285_1",
+                "price": 2.18,
+                "state": "ACTIVE",
+                "name": "10+"
+              },
+              {
+                "selectionId": "18689529_671411285_2",
+                "price": 2.7,
+                "state": "ACTIVE",
+                "name": "12+"
+              },
+              {
+                "selectionId": "18689529_671411285_3",
+                "price": 3.5,
+                "state": "ACTIVE",
+                "name": "14+"
+              },
+              {
+                "selectionId": "18689529_671411285_4",
+                "price": 4.6,
+                "state": "ACTIVE",
+                "name": "16+"
+              },
+              {
+                "selectionId": "18689529_671411285_5",
+                "price": 6.2,
+                "state": "ACTIVE",
+                "name": "18+"
+              },
+              {
+                "selectionId": "18689529_671411285_6",
+                "price": 9.0,
+                "state": "ACTIVE",
+                "name": "20+"
+              },
+              {
+                "selectionId": "18689529_671411285_7",
+                "price": 13.0,
+                "state": "ACTIVE",
+                "name": "22+"
+              },
+              {
+                "selectionId": "18689529_671411285_8",
+                "price": 19.0,
+                "state": "ACTIVE",
+                "name": "24+"
+              }
+            ],
+            "marketId": 671411285,
+            "state": "ACTIVE",
+            "overUnder": null,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Tornike Shengelia",
+            "selections": [
+              {
+                "selectionId": "18689529_671411286_1",
+                "price": 1.81,
+                "state": "ACTIVE",
+                "name": "13+"
+              },
+              {
+                "selectionId": "18689529_671411286_0",
+                "price": 1.36,
+                "state": "ACTIVE",
+                "name": "11+"
+              },
+              {
+                "selectionId": "18689529_671411286_2",
+                "price": 2.3,
+                "state": "ACTIVE",
+                "name": "15+"
+              },
+              {
+                "selectionId": "18689529_671411286_3",
+                "price": 3.0,
+                "state": "ACTIVE",
+                "name": "17+"
+              },
+              {
+                "selectionId": "18689529_671411286_4",
+                "price": 4.3,
+                "state": "ACTIVE",
+                "name": "19+"
+              },
+              {
+                "selectionId": "18689529_671411286_5",
+                "price": 6.4,
+                "state": "ACTIVE",
+                "name": "21+"
+              },
+              {
+                "selectionId": "18689529_671411286_6",
+                "price": 9.6,
+                "state": "ACTIVE",
+                "name": "23+"
+              },
+              {
+                "selectionId": "18689529_671411286_7",
+                "price": 16.0,
+                "state": "ACTIVE",
+                "name": "25+"
+              },
+              {
+                "selectionId": "18689529_671411286_8",
+                "price": 26.0,
+                "state": "ACTIVE",
+                "name": "27+"
+              },
+              {
+                "selectionId": "18689529_671411286_9",
+                "price": 50.0,
+                "state": "ACTIVE",
+                "name": "29+"
+              }
+            ],
+            "marketId": 671411286,
+            "state": "ACTIVE",
+            "overUnder": null,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "William Clyburn",
+            "selections": [
+              {
+                "selectionId": "18689529_671677743_11",
+                "price": 1.89,
+                "state": "ACTIVE",
+                "name": "15+"
+              },
+              {
+                "selectionId": "18689529_671677743_13",
+                "price": 1.44,
+                "state": "ACTIVE",
+                "name": "13+"
+              },
+              {
+                "selectionId": "18689529_671677743_16",
+                "price": 2.35,
+                "state": "ACTIVE",
+                "name": "17+"
+              },
+              {
+                "selectionId": "18689529_671677743_14",
+                "price": 3.0,
+                "state": "ACTIVE",
+                "name": "19+"
+              },
+              {
+                "selectionId": "18689529_671677743_18",
+                "price": 4.1,
+                "state": "ACTIVE",
+                "name": "21+"
+              },
+              {
+                "selectionId": "18689529_671677743_17",
+                "price": 5.8,
+                "state": "ACTIVE",
+                "name": "23+"
+              },
+              {
+                "selectionId": "18689529_671677743_12",
+                "price": 8.8,
+                "state": "ACTIVE",
+                "name": "25+"
+              },
+              {
+                "selectionId": "18689529_671677743_10",
+                "price": 13.0,
+                "state": "ACTIVE",
+                "name": "27+"
+              },
+              {
+                "selectionId": "18689529_671677743_15",
+                "price": 21.0,
+                "state": "ACTIVE",
+                "name": "29+"
+              },
+              {
+                "selectionId": "18689529_671677743_19",
+                "price": 35.0,
+                "state": "ACTIVE",
+                "name": "31+"
+              }
+            ],
+            "marketId": 671677743,
+            "state": "ACTIVE",
+            "overUnder": null,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          },
+          {
+            "name": "Nikola Mirotic",
+            "selections": [
+              {
+                "selectionId": "18689529_671678099_14",
+                "price": 2.22,
+                "state": "ACTIVE",
+                "name": "15+"
+              },
+              {
+                "selectionId": "18689529_671678099_17",
+                "price": 1.32,
+                "state": "ACTIVE",
+                "name": "11+"
+              },
+              {
+                "selectionId": "18689529_671678099_12",
+                "price": 1.74,
+                "state": "ACTIVE",
+                "name": "13+"
+              },
+              {
+                "selectionId": "18689529_671678099_9",
+                "price": 2.9,
+                "state": "ACTIVE",
+                "name": "17+"
+              },
+              {
+                "selectionId": "18689529_671678099_10",
+                "price": 4.1,
+                "state": "ACTIVE",
+                "name": "19+"
+              },
+              {
+                "selectionId": "18689529_671678099_15",
+                "price": 6.0,
+                "state": "ACTIVE",
+                "name": "21+"
+              },
+              {
+                "selectionId": "18689529_671678099_16",
+                "price": 9.2,
+                "state": "ACTIVE",
+                "name": "23+"
+              },
+              {
+                "selectionId": "18689529_671678099_11",
+                "price": 15.0,
+                "state": "ACTIVE",
+                "name": "25+"
+              },
+              {
+                "selectionId": "18689529_671678099_13",
+                "price": 25.0,
+                "state": "ACTIVE",
+                "name": "27+"
+              },
+              {
+                "selectionId": "18689529_671678099_18",
+                "price": 45.0,
+                "state": "ACTIVE",
+                "name": "29+"
+              }
+            ],
+            "marketId": 671678099,
+            "state": "ACTIVE",
+            "overUnder": null,
+            "handicap": null,
+            "isEarlyPayout": false,
+            "boostedOdds": false
+          }
+        ],
+        "gameTemplateId": 9804,
+        "marketName": "Igrač Poena (Uklj. Prod.)",
+        "priority": 1000,
+        "marketType": "PLAYER_MARKET",
+        "hasEarlyPayout": false,
+        "boostedOdds": false,
+        "favorite": false
+      }
+    ]
+  }
+}

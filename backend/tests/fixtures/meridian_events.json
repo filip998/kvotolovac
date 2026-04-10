@@ -1,0 +1,665 @@
+{
+  "errorCode": null,
+  "parameters": null,
+  "errorMessages": null,
+  "payload": {
+    "usedTimeFilter": "ONE_DAY",
+    "firstAvailableTimeFilter": "ONE_HOUR",
+    "events": [
+      {
+        "header": {
+          "eventId": 18685479,
+          "sport": {
+            "sportId": 55,
+            "name": "Košarka",
+            "slug": "basketball"
+          },
+          "region": {
+            "regionId": 553,
+            "name": "Alžir",
+            "slug": "algerian"
+          },
+          "league": {
+            "leagueId": 177018,
+            "name": "Nacionalna Divizija 1",
+            "slug": "algerian-national-division-1",
+            "favoriteLeague": false
+          },
+          "code": "0466",
+          "periodDuration": null,
+          "startTime": 1775829600000,
+          "rivals": [
+            "AS Constantine",
+            "OSBB Arreridj"
+          ],
+          "rivalsSlug": "as-constantine-osbb-arreridj",
+          "topMatch": false,
+          "setEventOrder": 0,
+          "state": "ACTIVE",
+          "offerType": "STANDARD_BET",
+          "offerSubType": "STANDARD_BET",
+          "betradar": null,
+          "flags": [],
+          "numberOfVisibleSelections": 70,
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "betBooster": false,
+          "superBooster": false,
+          "overrideOrderNumber": null,
+          "outrightEvent": null
+        },
+        "positions": [
+          {
+            "index": 0,
+            "groups": [
+              {
+                "overUnder": null,
+                "handicap": null,
+                "selections": [
+                  {
+                    "selectionId": "18685479_671763882_0",
+                    "gameTemplateId": 6822,
+                    "price": 1.52,
+                    "state": "ACTIVE",
+                    "name": "1",
+                    "placeholder": false
+                  },
+                  {
+                    "selectionId": "18685479_671763882_1",
+                    "gameTemplateId": 6822,
+                    "price": 2.37,
+                    "state": "ACTIVE",
+                    "name": "2",
+                    "placeholder": false
+                  }
+                ],
+                "name": "Pobednik",
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": false,
+                "boostedOdds": false
+              }
+            ]
+          },
+          {
+            "index": 1,
+            "groups": [
+              {
+                "overUnder": 129.5,
+                "handicap": null,
+                "selections": [
+                  {
+                    "selectionId": "18685479_671763870_0",
+                    "gameTemplateId": 6824,
+                    "price": 1.85,
+                    "state": "ACTIVE",
+                    "name": "Manje",
+                    "placeholder": false
+                  },
+                  {
+                    "selectionId": "18685479_671763870_1",
+                    "gameTemplateId": 6824,
+                    "price": 1.85,
+                    "state": "ACTIVE",
+                    "name": "Više",
+                    "placeholder": false
+                  }
+                ],
+                "name": "Ukupno Poena",
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": false,
+                "boostedOdds": false
+              }
+            ]
+          },
+          {
+            "index": 2,
+            "groups": [
+              {
+                "overUnder": null,
+                "handicap": -3.5,
+                "selections": [
+                  {
+                    "selectionId": "18685479_671763871_0",
+                    "gameTemplateId": 6823,
+                    "price": 1.85,
+                    "state": "ACTIVE",
+                    "name": "H1",
+                    "placeholder": false
+                  },
+                  {
+                    "selectionId": "18685479_671763871_1",
+                    "gameTemplateId": 6823,
+                    "price": 1.85,
+                    "state": "ACTIVE",
+                    "name": "H2",
+                    "placeholder": false
+                  }
+                ],
+                "name": "Hendikep Poena",
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": false,
+                "boostedOdds": false
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "header": {
+          "eventId": 18685480,
+          "sport": {
+            "sportId": 55,
+            "name": "Košarka",
+            "slug": "basketball"
+          },
+          "region": {
+            "regionId": 553,
+            "name": "Alžir",
+            "slug": "algerian"
+          },
+          "league": {
+            "leagueId": 96048,
+            "name": "Nacionalna A Liga - Žene",
+            "slug": "algerian-national-a-league-women",
+            "favoriteLeague": false
+          },
+          "code": "1918",
+          "periodDuration": null,
+          "startTime": 1775829600000,
+          "rivals": [
+            "MC Alger (Wom)",
+            "USA Batna (Wom)"
+          ],
+          "rivalsSlug": "mc-alger-(wom)-usa-batna-(wom)",
+          "topMatch": false,
+          "setEventOrder": 0,
+          "state": "ACTIVE",
+          "offerType": "STANDARD_BET",
+          "offerSubType": "STANDARD_BET",
+          "betradar": null,
+          "flags": [],
+          "numberOfVisibleSelections": 12,
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "betBooster": false,
+          "superBooster": false,
+          "overrideOrderNumber": null,
+          "outrightEvent": null
+        },
+        "positions": [
+          {
+            "index": 0,
+            "groups": [
+              {
+                "overUnder": null,
+                "handicap": null,
+                "selections": [],
+                "name": null,
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": null,
+                "boostedOdds": null
+              }
+            ]
+          },
+          {
+            "index": 1,
+            "groups": [
+              {
+                "overUnder": null,
+                "handicap": null,
+                "selections": [],
+                "name": null,
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": null,
+                "boostedOdds": null
+              }
+            ]
+          },
+          {
+            "index": 2,
+            "groups": [
+              {
+                "overUnder": null,
+                "handicap": null,
+                "selections": [],
+                "name": null,
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": null,
+                "boostedOdds": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "header": {
+          "eventId": 18702011,
+          "sport": {
+            "sportId": 55,
+            "name": "Košarka",
+            "slug": "basketball"
+          },
+          "region": {
+            "regionId": 65,
+            "name": "Francuska",
+            "slug": "french"
+          },
+          "league": {
+            "leagueId": 183790,
+            "name": "French U21 Espoirs Elite",
+            "slug": "french-u21-espoirs-elite",
+            "favoriteLeague": false
+          },
+          "code": "3387",
+          "periodDuration": null,
+          "startTime": 1775829600000,
+          "rivals": [
+            "JSF Nanterre YOUTH",
+            "SLUC Nancy Association U21"
+          ],
+          "rivalsSlug": "jsf-nanterre-youth-sluc-nancy-association-u21",
+          "topMatch": false,
+          "setEventOrder": 0,
+          "state": "ACTIVE",
+          "offerType": "STANDARD_BET",
+          "offerSubType": "STANDARD_BET",
+          "betradar": {
+            "id": "63264645",
+            "locale": "sr",
+            "type": "match"
+          },
+          "flags": [],
+          "numberOfVisibleSelections": 11,
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "betBooster": false,
+          "superBooster": false,
+          "overrideOrderNumber": null,
+          "outrightEvent": null
+        },
+        "positions": [
+          {
+            "index": 0,
+            "groups": [
+              {
+                "overUnder": null,
+                "handicap": null,
+                "selections": [
+                  {
+                    "selectionId": "18702011_671619708_0",
+                    "gameTemplateId": 3741,
+                    "price": 1.11,
+                    "state": "ACTIVE",
+                    "name": "1",
+                    "placeholder": false
+                  },
+                  {
+                    "selectionId": "18702011_671619708_1",
+                    "gameTemplateId": 3741,
+                    "price": 4.6,
+                    "state": "ACTIVE",
+                    "name": "2",
+                    "placeholder": false
+                  }
+                ],
+                "name": "Pobednik (uklj.OT )",
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": false,
+                "boostedOdds": false
+              }
+            ]
+          },
+          {
+            "index": 1,
+            "groups": [
+              {
+                "overUnder": 149.5,
+                "handicap": null,
+                "selections": [
+                  {
+                    "selectionId": "18702011_671703712_0",
+                    "gameTemplateId": 3742,
+                    "price": 1.75,
+                    "state": "ACTIVE",
+                    "name": "Manje",
+                    "placeholder": false
+                  },
+                  {
+                    "selectionId": "18702011_671703712_1",
+                    "gameTemplateId": 3742,
+                    "price": 1.82,
+                    "state": "ACTIVE",
+                    "name": "Više",
+                    "placeholder": false
+                  }
+                ],
+                "name": "Ukupno (uklj.OT) ",
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": false,
+                "boostedOdds": false
+              }
+            ]
+          },
+          {
+            "index": 2,
+            "groups": [
+              {
+                "overUnder": null,
+                "handicap": -10.5,
+                "selections": [
+                  {
+                    "selectionId": "18702011_671619764_0",
+                    "gameTemplateId": 3744,
+                    "price": 1.78,
+                    "state": "ACTIVE",
+                    "name": "1",
+                    "placeholder": false
+                  },
+                  {
+                    "selectionId": "18702011_671619764_1",
+                    "gameTemplateId": 3744,
+                    "price": 1.79,
+                    "state": "ACTIVE",
+                    "name": "2",
+                    "placeholder": false
+                  }
+                ],
+                "name": "Hendikep (uklj. OT)",
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": false,
+                "boostedOdds": false
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "header": {
+          "eventId": 18704727,
+          "sport": {
+            "sportId": 55,
+            "name": "Košarka",
+            "slug": "basketball"
+          },
+          "region": {
+            "regionId": 142,
+            "name": "Rusija",
+            "slug": "russian"
+          },
+          "league": {
+            "leagueId": 2021,
+            "name": "Superliga",
+            "slug": "russian--super-league",
+            "favoriteLeague": false
+          },
+          "code": "4869",
+          "periodDuration": null,
+          "startTime": 1775829600000,
+          "rivals": [
+            "Dynamo Ufa",
+            "BK Dynamo Grozny"
+          ],
+          "rivalsSlug": "dynamo-ufa-bk-dynamo-grozny",
+          "topMatch": false,
+          "setEventOrder": 0,
+          "state": "ACTIVE",
+          "offerType": "STANDARD_BET",
+          "offerSubType": "STANDARD_BET",
+          "betradar": {
+            "id": "70571120",
+            "locale": "sr",
+            "type": "match"
+          },
+          "flags": [],
+          "numberOfVisibleSelections": 274,
+          "hasEarlyPayout": true,
+          "boostedOdds": false,
+          "betBooster": false,
+          "superBooster": false,
+          "overrideOrderNumber": null,
+          "outrightEvent": null
+        },
+        "positions": [
+          {
+            "index": 0,
+            "groups": [
+              {
+                "overUnder": null,
+                "handicap": null,
+                "selections": [
+                  {
+                    "selectionId": "18704727_671779890_0",
+                    "gameTemplateId": 3741,
+                    "price": 1.85,
+                    "state": "ACTIVE",
+                    "name": "1",
+                    "placeholder": false
+                  },
+                  {
+                    "selectionId": "18704727_671779890_1",
+                    "gameTemplateId": 3741,
+                    "price": 1.82,
+                    "state": "ACTIVE",
+                    "name": "2",
+                    "placeholder": false
+                  }
+                ],
+                "name": "Pobednik (uklj.OT )",
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": false,
+                "boostedOdds": false
+              }
+            ]
+          },
+          {
+            "index": 1,
+            "groups": [
+              {
+                "overUnder": 146.5,
+                "handicap": null,
+                "selections": [
+                  {
+                    "selectionId": "18704727_671783261_0",
+                    "gameTemplateId": 3742,
+                    "price": 1.86,
+                    "state": "ACTIVE",
+                    "name": "Manje",
+                    "placeholder": false
+                  },
+                  {
+                    "selectionId": "18704727_671783261_1",
+                    "gameTemplateId": 3742,
+                    "price": 1.78,
+                    "state": "ACTIVE",
+                    "name": "Više",
+                    "placeholder": false
+                  }
+                ],
+                "name": "Ukupno (uklj.OT) ",
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": false,
+                "boostedOdds": false
+              }
+            ]
+          },
+          {
+            "index": 2,
+            "groups": [
+              {
+                "overUnder": null,
+                "handicap": 1.5,
+                "selections": [
+                  {
+                    "selectionId": "18704727_671779892_0",
+                    "gameTemplateId": 3744,
+                    "price": 1.77,
+                    "state": "ACTIVE",
+                    "name": "1",
+                    "placeholder": false
+                  },
+                  {
+                    "selectionId": "18704727_671779892_1",
+                    "gameTemplateId": 3744,
+                    "price": 1.94,
+                    "state": "ACTIVE",
+                    "name": "2",
+                    "placeholder": false
+                  }
+                ],
+                "name": "Hendikep (uklj. OT)",
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": false,
+                "boostedOdds": false
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "header": {
+          "eventId": 18703798,
+          "sport": {
+            "sportId": 55,
+            "name": "Košarka",
+            "slug": "basketball"
+          },
+          "region": {
+            "regionId": 550,
+            "name": "BiH",
+            "slug": "bosnian"
+          },
+          "league": {
+            "leagueId": 3078,
+            "name": "Prvenstvo",
+            "slug": "bosnian-championship",
+            "favoriteLeague": false
+          },
+          "code": "0549",
+          "periodDuration": null,
+          "startTime": 1775831400000,
+          "rivals": [
+            "HKK Zrinjski Mostar",
+            "KK Siroki"
+          ],
+          "rivalsSlug": "hkk-zrinjski-mostar-kk-siroki",
+          "topMatch": false,
+          "setEventOrder": 0,
+          "state": "ACTIVE",
+          "offerType": "STANDARD_BET",
+          "offerSubType": "STANDARD_BET",
+          "betradar": {
+            "id": "63794221",
+            "locale": "sr",
+            "type": "match"
+          },
+          "flags": [],
+          "numberOfVisibleSelections": 36,
+          "hasEarlyPayout": false,
+          "boostedOdds": false,
+          "betBooster": false,
+          "superBooster": false,
+          "overrideOrderNumber": null,
+          "outrightEvent": null
+        },
+        "positions": [
+          {
+            "index": 0,
+            "groups": [
+              {
+                "overUnder": null,
+                "handicap": null,
+                "selections": [
+                  {
+                    "selectionId": "18703798_671718393_0",
+                    "gameTemplateId": 3741,
+                    "price": 4.7,
+                    "state": "ACTIVE",
+                    "name": "1",
+                    "placeholder": false
+                  },
+                  {
+                    "selectionId": "18703798_671718393_1",
+                    "gameTemplateId": 3741,
+                    "price": 1.1,
+                    "state": "ACTIVE",
+                    "name": "2",
+                    "placeholder": false
+                  }
+                ],
+                "name": "Pobednik (uklj.OT )",
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": false,
+                "boostedOdds": false
+              }
+            ]
+          },
+          {
+            "index": 1,
+            "groups": [
+              {
+                "overUnder": 163.5,
+                "handicap": null,
+                "selections": [
+                  {
+                    "selectionId": "18703798_671724787_0",
+                    "gameTemplateId": 3742,
+                    "price": 1.77,
+                    "state": "ACTIVE",
+                    "name": "Manje",
+                    "placeholder": false
+                  },
+                  {
+                    "selectionId": "18703798_671724787_1",
+                    "gameTemplateId": 3742,
+                    "price": 1.81,
+                    "state": "ACTIVE",
+                    "name": "Više",
+                    "placeholder": false
+                  }
+                ],
+                "name": "Ukupno (uklj.OT) ",
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": false,
+                "boostedOdds": false
+              }
+            ]
+          },
+          {
+            "index": 2,
+            "groups": [
+              {
+                "overUnder": null,
+                "handicap": 11.5,
+                "selections": [
+                  {
+                    "selectionId": "18703798_671718395_0",
+                    "gameTemplateId": 3744,
+                    "price": 1.77,
+                    "state": "ACTIVE",
+                    "name": "1",
+                    "placeholder": false
+                  },
+                  {
+                    "selectionId": "18703798_671718395_1",
+                    "gameTemplateId": 3744,
+                    "price": 1.87,
+                    "state": "ACTIVE",
+                    "name": "2",
+                    "placeholder": false
+                  }
+                ],
+                "name": "Hendikep (uklj. OT)",
+                "containsTemplateWithVariableMarketName": false,
+                "isEarlyPayout": false,
+                "boostedOdds": false
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "page": 0,
+    "betBooster": false,
+    "superBooster": false
+  }
+}

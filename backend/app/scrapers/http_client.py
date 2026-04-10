@@ -69,8 +69,13 @@ class HttpClient:
         *,
         json_body: Any = None,
         headers: dict[str, str] | None = None,
+        form_data: str | None = None,
     ) -> dict:
-        """POST JSON with retry, rate limiting, and proxy rotation."""
+        """POST JSON with retry, rate limiting, and proxy rotation.
+
+        If ``form_data`` is provided it is sent as
+        ``application/x-www-form-urlencoded`` body (``json_body`` is ignored).
+        """
         last_error: Exception | None = None
 
         for attempt in range(self._max_retries + 1):
@@ -81,11 +86,18 @@ class HttpClient:
                 merged_headers = {**self._default_headers, **(headers or {})}
                 self._last_request_time = time.monotonic()
 
-                response = await client.post(
-                    url,
-                    json=json_body,
-                    headers=merged_headers,
-                )
+                if form_data is not None:
+                    response = await client.post(
+                        url,
+                        content=form_data.encode(),
+                        headers=merged_headers,
+                    )
+                else:
+                    response = await client.post(
+                        url,
+                        json=json_body,
+                        headers=merged_headers,
+                    )
 
                 if response.status_code in _RETRYABLE_STATUS_CODES:
                     logger.warning(

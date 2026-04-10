@@ -13,6 +13,7 @@ from .scrapers.mock_scraper import MockScraper
 from .scrapers.mozzart_scraper import MozzartScraper
 from .scrapers.maxbet_scraper import MaxBetScraper
 from .scrapers.oktagonbet_scraper import OktagonBetScraper
+from .scrapers.meridian_scraper import MeridianScraper
 from .scrapers.http_client import HttpClient
 from .scrapers.registry import registry
 from .services.scheduler import scheduler
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI):
             "mozzart": lambda: MozzartScraper(http_client),
             "maxbet": lambda: MaxBetScraper(http_client),
             "oktagonbet": lambda: OktagonBetScraper(http_client),
+            "meridian": lambda: MeridianScraper(http_client),
         }
         for bm_id in settings.bookmaker_list:
             if bm_id in real_scrapers:
