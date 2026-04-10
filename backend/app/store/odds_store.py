@@ -161,7 +161,11 @@ async def upsert_odds(odds: NormalizedOdds) -> int:
 async def get_odds_for_match(match_id: str) -> list[OddsOut]:
     db = await get_db()
     rows = await db.execute_fetchall(
-        "SELECT * FROM odds WHERE match_id = ? ORDER BY market_type, player_name, threshold",
+        """SELECT o.*, b.name as bookmaker_name
+           FROM odds o
+           LEFT JOIN bookmakers b ON o.bookmaker_id = b.id
+           WHERE o.match_id = ?
+           ORDER BY o.market_type, o.player_name, o.threshold""",
         (match_id,),
     )
     return [OddsOut(**_row_to_dict(r)) for r in rows]

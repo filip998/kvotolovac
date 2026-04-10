@@ -38,6 +38,7 @@ class OddsOut(BaseModel):
     id: int
     match_id: str
     bookmaker_id: str
+    bookmaker_name: Optional[str] = None
     market_type: str
     player_name: Optional[str] = None
     threshold: float
