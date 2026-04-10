@@ -1,5 +1,7 @@
 export const MARKET_TYPE_LABELS: Record<string, string> = {
   player_points: 'Player Points',
+  player_rebounds: 'Player Rebounds',
+  player_assists: 'Player Assists',
   game_total: 'Game Total',
 };
 
