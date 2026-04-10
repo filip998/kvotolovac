@@ -86,9 +86,10 @@ def test_parse_match_detail_bookmaker_id(player_matches):
 
 
 def test_parse_match_detail_market_type(player_matches):
+    valid_types = {"player_points", "player_rebounds", "player_assists"}
     for m in player_matches:
         for r in _parse_match_detail(m):
-            assert r.market_type == "player_points"
+            assert r.market_type in valid_types
 
 
 def test_parse_match_detail_empty():

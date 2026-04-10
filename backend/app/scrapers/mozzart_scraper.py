@@ -24,8 +24,21 @@ _DEFAULT_HEADERS = {
     "medium": "PREMATCH_MOBILE",
 }
 
-# "Broj poena B.Saraf" → "B.Saraf"
-_PLAYER_NAME_RE = re.compile(r"^Broj poena\s+(.+)$", re.IGNORECASE)
+# "Broj poena B.Saraf" → ("B.Saraf", "player_points")
+# "Broj skokova B.Saraf" → ("B.Saraf", "player_rebounds")
+# "Broj asistencija B.Saraf" → ("B.Saraf", "player_assists")
+_MARKET_PATTERNS = [
+    (re.compile(r"^Broj poena\s+(.+)$", re.IGNORECASE), "player_points"),
+    (re.compile(r"^Broj skokova\s+(.+)$", re.IGNORECASE), "player_rebounds"),
+    (re.compile(r"^Broj asistencija\s+(.+)$", re.IGNORECASE), "player_assists"),
+]
+
+# Group names that contain player markets
+_PLAYER_GROUP_KEYWORDS = [
+    "poena igrača", "poena igra",
+    "skokova igrača", "skokova igra",
+    "asistencija igrača", "asistencija igra",
+]
 
 _BASKETBALL_SPORT_ID = 2
 _SPECIALS_MATCH_TYPE = 2
@@ -61,9 +74,13 @@ def _build_request_body(
     }
 
 
-def _extract_player_name(game_name: str) -> str | None:
-    m = _PLAYER_NAME_RE.match(game_name.strip())
-    return m.group(1).strip() if m else None
+def _extract_player_and_market(game_name: str) -> tuple[str | None, str]:
+    """Extract player name and market type from game name."""
+    for pattern, market_type in _MARKET_PATTERNS:
+        m = pattern.match(game_name.strip())
+        if m:
+            return m.group(1).strip(), market_type
+    return None, "player_points"
 
 
 def _parse_start_time(epoch_ms: int | None) -> str | None:
@@ -82,12 +99,12 @@ def _parse_items(items: list[dict]) -> list[RawOddsData]:
         start_time = _parse_start_time(match.get("startTime"))
         league_id = competition.lower().replace(" ", "_") if competition else "basketball"
 
-        # Aggregate by (player_name, threshold) to handle any odds ordering
-        aggregated: dict[tuple[str, float], dict] = {}
+        # Aggregate by (player_name, threshold, market_type) to handle any odds ordering
+        aggregated: dict[tuple[str, float, str], dict] = {}
 
         for group in match.get("oddsGroup", []):
-            group_name = group.get("groupName", "")
-            if "poena igrača" not in group_name.lower() and "poena igra" not in group_name.lower():
+            group_name = group.get("groupName", "").lower()
+            if not any(kw in group_name for kw in _PLAYER_GROUP_KEYWORDS):
                 continue
 
             for odd in group.get("odds", []):
@@ -95,7 +112,7 @@ def _parse_items(items: list[dict]) -> list[RawOddsData]:
                     continue
 
                 game_name = odd.get("game", {}).get("name", "")
-                extracted_name = _extract_player_name(game_name)
+                extracted_name, market_type = _extract_player_and_market(game_name)
                 subgame_name = odd.get("subgame", {}).get("name", "").lower()
 
                 try:
@@ -107,7 +124,7 @@ def _parse_items(items: list[dict]) -> list[RawOddsData]:
                 if not extracted_name or sov <= 0 or value is None:
                     continue
 
-                key = (extracted_name, sov)
+                key = (extracted_name, sov, market_type)
                 if key not in aggregated:
                     aggregated[key] = {"over": None, "under": None}
 
@@ -116,14 +133,14 @@ def _parse_items(items: list[dict]) -> list[RawOddsData]:
                 elif "manje" in subgame_name:
                     aggregated[key]["under"] = value
 
-        for (player_name, threshold), odds in aggregated.items():
+        for (player_name, threshold, market_type), odds in aggregated.items():
             results.append(
                 RawOddsData(
                     bookmaker_id="mozzart",
                     league_id=league_id,
                     home_team=home,
                     away_team=visitor,
-                    market_type="player_points",
+                    market_type=market_type,
                     player_name=player_name,
                     threshold=threshold,
                     over_odds=odds["over"],

@@ -8,7 +8,7 @@ import pytest
 
 from app.scrapers.mozzart_scraper import (
     MozzartScraper,
-    _extract_player_name,
+    _extract_player_and_market,
     _parse_items,
     _parse_start_time,
 )
@@ -27,19 +27,37 @@ def fixture_data() -> dict:
 
 
 def test_extract_player_name_normal():
-    assert _extract_player_name("Broj poena B.Saraf") == "B.Saraf"
+    name, market = _extract_player_and_market("Broj poena B.Saraf")
+    assert name == "B.Saraf"
+    assert market == "player_points"
 
 
 def test_extract_player_name_full_name():
-    assert _extract_player_name("Broj poena LeBron James") == "LeBron James"
+    name, market = _extract_player_and_market("Broj poena LeBron James")
+    assert name == "LeBron James"
+    assert market == "player_points"
 
 
 def test_extract_player_name_no_match():
-    assert _extract_player_name("Ukupno poena na meču") is None
+    name, _ = _extract_player_and_market("Ukupno poena na meču")
+    assert name is None
 
 
 def test_extract_player_name_empty():
-    assert _extract_player_name("") is None
+    name, _ = _extract_player_and_market("")
+    assert name is None
+
+
+def test_extract_rebounds():
+    name, market = _extract_player_and_market("Broj skokova B.Saraf")
+    assert name == "B.Saraf"
+    assert market == "player_rebounds"
+
+
+def test_extract_assists():
+    name, market = _extract_player_and_market("Broj asistencija B.Saraf")
+    assert name == "B.Saraf"
+    assert market == "player_assists"
 
 
 def test_parse_start_time():
@@ -91,8 +109,9 @@ def test_parse_items_bookmaker_id(fixture_data):
 
 def test_parse_items_market_type(fixture_data):
     results = _parse_items(fixture_data["items"])
+    valid_types = {"player_points", "player_rebounds", "player_assists"}
     for r in results:
-        assert r.market_type == "player_points"
+        assert r.market_type in valid_types
 
 
 def test_parse_items_has_teams(fixture_data):

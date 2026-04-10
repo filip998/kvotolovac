@@ -35,12 +35,18 @@ _ALT1_OVER = "55253"    # "alt1 +" — alt threshold 1 over
 _ALT1_UNDER = "55255"   # "alt1 -" — alt threshold 1 under
 _ALT2_OVER = "55256"    # "alt2 +" — alt threshold 2 over
 _ALT2_UNDER = "55258"   # "alt2 -" — alt threshold 2 under
+_REB_OVER = "51685"     # "SK+" — rebounds over
+_REB_UNDER = "51687"    # "SK-" — rebounds under
+_AST_OVER = "51682"     # "AS+" — assists over
+_AST_UNDER = "51684"    # "AS-" — assists under
 
-# Mapping: (over_code, under_code) → param key for threshold
+# Mapping: (over_code, under_code, param_key, market_type)
 _THRESHOLD_LINES = [
-    (_OVER_CODE, _UNDER_CODE, "ouPlPoints"),
-    (_ALT1_OVER, _ALT1_UNDER, "ouPlP2"),
-    (_ALT2_OVER, _ALT2_UNDER, "ouPlP3"),
+    (_OVER_CODE, _UNDER_CODE, "ouPlPoints", "player_points"),
+    (_ALT1_OVER, _ALT1_UNDER, "ouPlP2", "player_points"),
+    (_ALT2_OVER, _ALT2_UNDER, "ouPlP3", "player_points"),
+    (_REB_OVER, _REB_UNDER, "ouPlRebounds", "player_rebounds"),
+    (_AST_OVER, _AST_UNDER, "ouPlAssists", "player_assists"),
 ]
 
 
@@ -68,7 +74,7 @@ def _parse_match_detail(match: dict) -> list[RawOddsData]:
     if not league_id:
         league_id = "basketball"
 
-    for over_code, under_code, param_key in _THRESHOLD_LINES:
+    for over_code, under_code, param_key, market_type in _THRESHOLD_LINES:
         threshold_str = params.get(param_key)
         if not threshold_str:
             continue
@@ -88,7 +94,7 @@ def _parse_match_detail(match: dict) -> list[RawOddsData]:
                 league_id=league_id,
                 home_team=team,
                 away_team=player_name,
-                market_type="player_points",
+                market_type=market_type,
                 player_name=player_name,
                 threshold=threshold,
                 over_odds=over_odds,
