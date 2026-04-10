@@ -16,12 +16,26 @@ export interface Match {
   status: 'upcoming' | 'live' | 'finished';
 }
 
+export type MarketType =
+  | 'player_points'
+  | 'player_points_milestones'
+  | 'player_rebounds'
+  | 'player_assists'
+  | 'player_3points'
+  | 'player_steals'
+  | 'player_blocks'
+  | 'player_points_rebounds'
+  | 'player_points_assists'
+  | 'player_rebounds_assists'
+  | 'player_points_rebounds_assists'
+  | 'game_total';
+
 export interface OddsOffer {
   id: number;
   match_id: string;
   bookmaker_id: string;
   bookmaker_name: string;
-  market_type: 'player_points' | 'game_total';
+  market_type: MarketType;
   player_name: string | null;
   threshold: number;
   over_odds: number | null;
@@ -35,7 +49,7 @@ export interface Discrepancy {
   home_team: string;
   away_team: string;
   league_name: string;
-  market_type: string;
+  market_type: MarketType;
   player_name: string | null;
   bookmaker_a_id: string;
   bookmaker_a_name: string;
@@ -76,7 +90,7 @@ export interface DiscrepancyFilters {
   sport?: string;
   league?: string;
   min_gap?: number;
-  market_type?: string;
+  market_type?: MarketType;
   sort_by?: string;
   sort_order?: 'asc' | 'desc';
   limit?: number;

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
 from datetime import datetime, timezone
 
 from .base import BaseScraper
@@ -39,6 +41,20 @@ _REB_OVER = "51685"     # "SK+" — rebounds over
 _REB_UNDER = "51687"    # "SK-" — rebounds under
 _AST_OVER = "51682"     # "AS+" — assists over
 _AST_UNDER = "51684"    # "AS-" — assists under
+_THREES_OVER = "51688"  # "3+" — three-pointers over
+_THREES_UNDER = "51690"  # "3-" — three-pointers under
+_STEALS_OVER = "55672"  # "UK+" — steals over
+_STEALS_UNDER = "55674"  # "UK-" — steals under
+_BLOCKS_OVER = "55681"  # "BL+" — blocks over
+_BLOCKS_UNDER = "55683"  # "BL-" — blocks under
+_PR_OVER = "55244"      # "P+R+" — points + rebounds over
+_PR_UNDER = "55246"     # "P+R-" — points + rebounds under
+_PA_OVER = "55247"      # "P+A+" — points + assists over
+_PA_UNDER = "55249"     # "P+A-" — points + assists under
+_RA_OVER = "55250"      # "R+A+" — rebounds + assists over
+_RA_UNDER = "55252"     # "R+A-" — rebounds + assists under
+_PRA_OVER = "55215"     # "P+R+A+" — points + rebounds + assists over
+_PRA_UNDER = "55217"    # "P+R+A-" — points + rebounds + assists under
 
 # Mapping: (over_code, under_code, param_key, market_type)
 _THRESHOLD_LINES = [
@@ -47,7 +63,44 @@ _THRESHOLD_LINES = [
     (_ALT2_OVER, _ALT2_UNDER, "ouPlP3", "player_points"),
     (_REB_OVER, _REB_UNDER, "ouPlRebounds", "player_rebounds"),
     (_AST_OVER, _AST_UNDER, "ouPlAssists", "player_assists"),
+    (_THREES_OVER, _THREES_UNDER, "ouPl3Points", "player_3points"),
+    (_STEALS_OVER, _STEALS_UNDER, "ouPlSt", "player_steals"),
+    (_BLOCKS_OVER, _BLOCKS_UNDER, "ouPlB", "player_blocks"),
+    (_PR_OVER, _PR_UNDER, "ouPlTPR", "player_points_rebounds"),
+    (_PA_OVER, _PA_UNDER, "ouPlTPA", "player_points_assists"),
+    (_RA_OVER, _RA_UNDER, "ouPlTRA", "player_rebounds_assists"),
+    (_PRA_OVER, _PRA_UNDER, "ouPlTPRA", "player_points_rebounds_assists"),
 ]
+
+_LIST_MATCH_PARAM_KEYS = {
+    "ouPlPoints",
+    "ouPlRebounds",
+    "ouPlAssists",
+    "ouPl3Points",
+    "ouPlSt",
+    "ouPlB",
+    "ouPlTPR",
+    "ouPlTPA",
+    "ouPlTRA",
+    "ouPlTPRA",
+}
+
+_FIXED_POINTS_LADDERS = [
+    ("54096", 4.5),
+    ("54101", 9.5),
+    ("54106", 14.5),
+    ("54111", 19.5),
+    ("54116", 24.5),
+    ("54121", 29.5),
+    ("54126", 34.5),
+    ("54131", 39.5),
+    ("54136", 44.5),
+    ("54141", 49.5),
+    ("57454", 59.5),
+]
+
+_UNLIMITED_DETAIL_CONCURRENCY = 10
+_MIN_DETAIL_CONCURRENCY = 2
 
 
 def _parse_start_time(epoch_ms: int | None) -> str | None:
@@ -74,6 +127,26 @@ def _parse_match_detail(match: dict) -> list[RawOddsData]:
     if not league_id:
         league_id = "basketball"
 
+    def build_raw_odds(
+        *,
+        market_type: str,
+        threshold: float,
+        over_odds: float | None,
+        under_odds: float | None,
+    ) -> RawOddsData:
+        return RawOddsData(
+            bookmaker_id="maxbet",
+            league_id=league_id,
+            home_team=team,
+            away_team=player_name,
+            market_type=market_type,
+            player_name=player_name,
+            threshold=threshold,
+            over_odds=over_odds,
+            under_odds=under_odds,
+            start_time=start_time,
+        )
+
     for over_code, under_code, param_key, market_type in _THRESHOLD_LINES:
         threshold_str = params.get(param_key)
         if not threshold_str:
@@ -89,17 +162,24 @@ def _parse_match_detail(match: dict) -> list[RawOddsData]:
             continue
 
         results.append(
-            RawOddsData(
-                bookmaker_id="maxbet",
-                league_id=league_id,
-                home_team=team,
-                away_team=player_name,
+            build_raw_odds(
                 market_type=market_type,
-                player_name=player_name,
                 threshold=threshold,
                 over_odds=over_odds,
                 under_odds=under_odds,
-                start_time=start_time,
+            )
+        )
+
+    for over_code, threshold in _FIXED_POINTS_LADDERS:
+        over_odds = odds.get(over_code)
+        if over_odds is None:
+            continue
+        results.append(
+            build_raw_odds(
+                market_type="player_points_milestones",
+                threshold=threshold,
+                over_odds=over_odds,
+                under_odds=None,
             )
         )
 
@@ -107,12 +187,13 @@ def _parse_match_detail(match: dict) -> list[RawOddsData]:
 
 
 def _get_player_match_ids(matches: list[dict]) -> list[int]:
-    """Extract match IDs for player points markets from the bulk listing."""
+    """Extract supported player-props match IDs from the bulk listing."""
     ids: list[int] = []
     for m in matches:
         if "poeni igrača" not in m.get("leagueName", "").lower():
             continue
-        if not m.get("params", {}).get("ouPlPoints"):
+        params = m.get("params", {})
+        if not any(params.get(param_key) for param_key in _LIST_MATCH_PARAM_KEYS):
             continue
         match_id = m.get("id")
         if match_id:
@@ -120,8 +201,21 @@ def _get_player_match_ids(matches: list[dict]) -> list[int]:
     return ids
 
 
+def _get_detail_fetch_concurrency(http_client: HttpClient, match_count: int) -> int:
+    if match_count <= 0:
+        return 0
+
+    if http_client.rate_limit_per_second <= 0:
+        return min(match_count, _UNLIMITED_DETAIL_CONCURRENCY)
+
+    return min(
+        match_count,
+        max(_MIN_DETAIL_CONCURRENCY, math.ceil(http_client.rate_limit_per_second)),
+    )
+
+
 class MaxBetScraper(BaseScraper):
-    """Real scraper for MaxBet bookmaker player points over/under odds."""
+    """Real scraper for MaxBet basketball player props."""
 
     def __init__(self, http_client: HttpClient | None = None) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
@@ -134,6 +228,24 @@ class MaxBetScraper(BaseScraper):
 
     def get_supported_leagues(self) -> list[str]:
         return ["basketball"]
+
+    async def _fetch_match_detail(
+        self,
+        match_id: int,
+        semaphore: asyncio.Semaphore,
+    ) -> list[RawOddsData]:
+        async with semaphore:
+            try:
+                detail = await self._http.get_json(
+                    _MATCH_URL.format(match_id=match_id),
+                    params=_DEFAULT_PARAMS,
+                    headers=_DEFAULT_HEADERS,
+                )
+            except Exception:
+                logger.warning("MaxBet: failed to fetch detail for match %s", match_id)
+                return []
+
+        return _parse_match_detail(detail)
 
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         if league_id != "basketball":
@@ -161,20 +273,15 @@ class MaxBetScraper(BaseScraper):
             return []
 
         # Step 2: Fetch detail for each player to get alt thresholds
-        results: list[RawOddsData] = []
-        for mid in match_ids:
-            try:
-                detail = await self._http.get_json(
-                    _MATCH_URL.format(match_id=mid),
-                    params=_DEFAULT_PARAMS,
-                    headers=_DEFAULT_HEADERS,
-                )
-                results.extend(_parse_match_detail(detail))
-            except Exception:
-                logger.warning("MaxBet: failed to fetch detail for match %s", mid)
+        concurrency = _get_detail_fetch_concurrency(self._http, len(match_ids))
+        semaphore = asyncio.Semaphore(concurrency)
+        detail_results = await asyncio.gather(
+            *(self._fetch_match_detail(mid, semaphore) for mid in match_ids)
+        )
+        results = [item for batch in detail_results for item in batch]
 
         logger.info(
-            "MaxBet scraped %d player odds from %d players",
-            len(results), len(match_ids),
+            "MaxBet scraped %d player odds from %d players (detail concurrency=%d)",
+            len(results), len(match_ids), concurrency,
         )
         return results

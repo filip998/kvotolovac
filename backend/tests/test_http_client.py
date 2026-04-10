@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 import httpx
 
@@ -116,3 +119,37 @@ async def test_close():
     assert not client._client.is_closed
     await client.close()
     assert client._client is None
+
+
+@pytest.mark.asyncio
+async def test_get_json_rate_limit_is_concurrency_safe():
+    class RecordingTransport(httpx.AsyncBaseTransport):
+        def __init__(self) -> None:
+            self.started_at: list[float] = []
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            self.started_at.append(time.monotonic())
+            await asyncio.sleep(0.1)
+            return httpx.Response(200, json={"ok": True})
+
+    transport = RecordingTransport()
+    client = HttpClient(rate_limit_per_second=20)
+    client._client = httpx.AsyncClient(transport=transport)
+
+    started = time.monotonic()
+    await asyncio.gather(
+        client.get_json("https://example.com/api/1"),
+        client.get_json("https://example.com/api/2"),
+        client.get_json("https://example.com/api/3"),
+    )
+    elapsed = time.monotonic() - started
+
+    assert len(transport.started_at) == 3
+    gaps = [
+        transport.started_at[index] - transport.started_at[index - 1]
+        for index in range(1, len(transport.started_at))
+    ]
+    assert all(gap >= 0.045 for gap in gaps)
+    assert elapsed < 0.3
+
+    await client.close()

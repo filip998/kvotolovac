@@ -76,6 +76,48 @@ async def test_upsert_odds_and_history():
 
 
 @pytest.mark.asyncio
+async def test_upsert_odds_keeps_line_and_milestone_rows_separate():
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("m1", "euroleague", "Partizan", "Crvena Zvezda")
+    await odds_store.upsert_bookmaker("oktagonbet", "OktagonBet")
+
+    line = NormalizedOdds(
+        match_id="m1",
+        bookmaker_id="oktagonbet",
+        league_id="euroleague",
+        home_team="Partizan",
+        away_team="Crvena Zvezda",
+        market_type="player_points",
+        player_name="Iffe Lundberg",
+        threshold=9.5,
+        over_odds=1.85,
+        under_odds=1.95,
+    )
+    milestone = NormalizedOdds(
+        match_id="m1",
+        bookmaker_id="oktagonbet",
+        league_id="euroleague",
+        home_team="Partizan",
+        away_team="Crvena Zvezda",
+        market_type="player_points_milestones",
+        player_name="Iffe Lundberg",
+        threshold=9.5,
+        over_odds=1.85,
+        under_odds=None,
+    )
+
+    await odds_store.upsert_odds(line)
+    await odds_store.upsert_odds(milestone)
+
+    current = await odds_store.get_odds_for_match("m1")
+    assert len(current) == 2
+    assert {offer.market_type for offer in current} == {
+        "player_points",
+        "player_points_milestones",
+    }
+
+
+@pytest.mark.asyncio
 async def test_insert_and_get_discrepancy():
     await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
     await odds_store.upsert_match("m1", "euroleague", "Partizan", "Crvena Zvezda")

@@ -36,7 +36,14 @@ class HttpClient:
         self._proxy_index = 0
         self._default_headers = default_headers or {}
         self._last_request_time: float = 0.0
+        self._rate_limit_lock = asyncio.Lock()
         self._client: httpx.AsyncClient | None = None
+
+    @property
+    def rate_limit_per_second(self) -> float:
+        if self._min_interval <= 0:
+            return 0.0
+        return 1.0 / self._min_interval
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -56,12 +63,14 @@ class HttpClient:
                 asyncio.get_event_loop().create_task(self._client.aclose())
             self._client = None
 
-    async def _rate_limit(self) -> None:
+    async def _acquire_request_slot(self) -> None:
         if self._min_interval <= 0:
             return
-        elapsed = time.monotonic() - self._last_request_time
-        if elapsed < self._min_interval:
-            await asyncio.sleep(self._min_interval - elapsed)
+        async with self._rate_limit_lock:
+            elapsed = time.monotonic() - self._last_request_time
+            if elapsed < self._min_interval:
+                await asyncio.sleep(self._min_interval - elapsed)
+            self._last_request_time = time.monotonic()
 
     async def post_json(
         self,
@@ -80,11 +89,9 @@ class HttpClient:
 
         for attempt in range(self._max_retries + 1):
             try:
-                await self._rate_limit()
                 client = await self._get_client()
-
                 merged_headers = {**self._default_headers, **(headers or {})}
-                self._last_request_time = time.monotonic()
+                await self._acquire_request_slot()
 
                 if form_data is not None:
                     response = await client.post(
@@ -138,11 +145,9 @@ class HttpClient:
 
         for attempt in range(self._max_retries + 1):
             try:
-                await self._rate_limit()
                 client = await self._get_client()
-
                 merged_headers = {**self._default_headers, **(headers or {})}
-                self._last_request_time = time.monotonic()
+                await self._acquire_request_slot()
 
                 response = await client.get(
                     url,

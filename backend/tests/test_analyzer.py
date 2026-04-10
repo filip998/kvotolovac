@@ -10,6 +10,7 @@ def _make_odds(
     bookmaker: str, player: str, threshold: float,
     over: float = 1.85, under: float = 1.95,
     match_id: str = "m1",
+    market_type: str = "player_points",
 ) -> NormalizedOdds:
     return NormalizedOdds(
         match_id=match_id,
@@ -17,7 +18,7 @@ def _make_odds(
         league_id="euroleague",
         home_team="Partizan",
         away_team="Crvena Zvezda",
-        market_type="player_points",
+        market_type=market_type,
         player_name=player,
         threshold=threshold,
         over_odds=over,
@@ -39,6 +40,45 @@ def test_threshold_gap_detection():
     assert discs[0].threshold_b == 18.5
     assert discs[0].odds_a == 1.85  # over from lower threshold
     assert discs[0].odds_b == 2.00  # under from higher threshold
+
+
+def test_threshold_gap_detection_with_one_sided_lower_line():
+    odds = [
+        _make_odds(
+            "oktagonbet",
+            "Lundberg",
+            9.5,
+            over=1.90,
+            under=None,
+            market_type="player_points_milestones",
+        ),
+        _make_odds("mozzart", "Lundberg", 12.5, over=1.80, under=1.90),
+    ]
+    discs = find_threshold_gaps(odds)
+    assert len(discs) == 1
+    assert discs[0].gap == 3.0
+    assert discs[0].bookmaker_a_id == "oktagonbet"
+    assert discs[0].bookmaker_b_id == "mozzart"
+    assert discs[0].threshold_a == 9.5
+    assert discs[0].threshold_b == 12.5
+    assert discs[0].odds_a == 1.90
+    assert discs[0].odds_b == 1.90
+
+
+def test_higher_one_sided_line_does_not_create_false_gap():
+    odds = [
+        _make_odds("mozzart", "Lundberg", 16.5, over=1.85, under=1.95),
+        _make_odds(
+            "oktagonbet",
+            "Lundberg",
+            19.5,
+            over=1.90,
+            under=None,
+            market_type="player_points_milestones",
+        ),
+    ]
+    discs = find_threshold_gaps(odds)
+    assert discs == []
 
 
 def test_same_threshold_value_difference():

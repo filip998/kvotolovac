@@ -1,5 +1,6 @@
+import { MARKET_TYPES, MARKET_TYPE_LABELS } from '../utils/constants';
 import { useLeagues } from '../api/hooks';
-import type { DiscrepancyFilters } from '../api/types';
+import type { DiscrepancyFilters, MarketType } from '../api/types';
 
 interface FilterBarProps {
   filters: DiscrepancyFilters;
@@ -37,12 +38,19 @@ export default function FilterBar({ filters, onChange }: FilterBarProps) {
         <label className="mb-1 block text-xs font-medium text-gray-500">Market Type</label>
         <select
           value={filters.market_type || ''}
-          onChange={(e) => update({ market_type: e.target.value || undefined })}
+          onChange={(e) =>
+            update({
+              market_type: e.target.value ? (e.target.value as MarketType) : undefined,
+            })
+          }
           className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 outline-none transition focus:border-brand-500"
         >
           <option value="">All Markets</option>
-          <option value="player_points">Player Points</option>
-          <option value="game_total">Game Total</option>
+          {MARKET_TYPES.map((marketType) => (
+            <option key={marketType} value={marketType}>
+              {MARKET_TYPE_LABELS[marketType]}
+            </option>
+          ))}
         </select>
       </div>
 

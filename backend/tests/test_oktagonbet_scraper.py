@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.scrapers.http_client import HttpClient
 from app.scrapers.oktagonbet_scraper import (
     OktagonBetScraper,
+    _get_detail_fetch_concurrency,
+    _get_player_match_ids,
     _parse_match,
+    _parse_match_detail,
     _parse_start_time,
     _is_player_market,
     _extract_league_id,
@@ -86,6 +91,11 @@ def test_extract_league_id_empty():
 # ── Parsing real fixture data ─────────────────────────────
 
 
+def test_get_player_match_ids(fixture_data, player_matches):
+    ids = _get_player_match_ids(fixture_data["esMatches"])
+    assert ids == [match["id"] for match in player_matches]
+
+
 def test_parse_match_returns_data(player_matches):
     results = _parse_match(player_matches[0])
     assert len(results) > 0
@@ -119,14 +129,34 @@ def test_parse_match_bookmaker_id(player_matches):
 
 
 def test_parse_match_market_types(player_matches):
-    valid_types = {"player_points", "player_rebounds", "player_assists"}
+    valid_types = {
+        "player_points",
+        "player_points_milestones",
+        "player_rebounds",
+        "player_assists",
+        "player_3points",
+        "player_steals",
+        "player_blocks",
+        "player_points_rebounds",
+        "player_points_assists",
+        "player_rebounds_assists",
+        "player_points_rebounds_assists",
+    }
     all_types = set()
     for m in player_matches:
         for r in _parse_match(m):
             assert r.market_type in valid_types
             all_types.add(r.market_type)
-    # NBA fixture matches have points + rebounds + assists
-    assert "player_points" in all_types
+    assert {
+        "player_points",
+        "player_3points",
+        "player_steals",
+        "player_blocks",
+        "player_points_rebounds",
+        "player_points_assists",
+        "player_rebounds_assists",
+        "player_points_rebounds_assists",
+    }.issubset(all_types)
 
 
 def test_parse_match_empty():
@@ -160,7 +190,7 @@ def test_parse_match_rejects_specials():
 
 
 def test_parse_match_multiple_markets():
-    """Match with points, rebounds, and assists produces multiple entries."""
+    """Match with all supported bulk params produces all market entries."""
     match = {
         "home": "CJ McCollum",
         "away": "Atlanta Hawks",
@@ -171,17 +201,42 @@ def test_parse_match_multiple_markets():
             "ouPlPoints": "17.5",
             "ouPlRebounds": "2.5",
             "ouPlAssists": "4.5",
+            "ouPl3Points": "2.5",
+            "ouPlSt": "0.5",
+            "ouPlB": "0.5",
+            "ouPlTPR": "20.5",
+            "ouPlTPA": "22.5",
+            "ouPlTRA": "7.5",
+            "ouPlTPRA": "25.5",
         },
         "odds": {
             "51679": 1.85, "51681": 1.85,
             "51685": 1.55, "51687": 2.25,
             "51682": 1.87, "51684": 1.83,
+            "51688": 1.9, "51690": 1.78,
+            "55672": 1.45, "55674": 2.45,
+            "55681": 2.05, "55683": 1.65,
+            "55244": 1.85, "55246": 1.85,
+            "55247": 1.9, "55249": 1.8,
+            "55250": 1.85, "55252": 1.85,
+            "55215": 1.9, "55217": 1.8,
         },
     }
     results = _parse_match(match)
-    assert len(results) == 3
+    assert len(results) == 10
     types = {r.market_type for r in results}
-    assert types == {"player_points", "player_rebounds", "player_assists"}
+    assert types == {
+        "player_points",
+        "player_rebounds",
+        "player_assists",
+        "player_3points",
+        "player_steals",
+        "player_blocks",
+        "player_points_rebounds",
+        "player_points_assists",
+        "player_rebounds_assists",
+        "player_points_rebounds_assists",
+    }
 
 
 def test_parse_match_missing_threshold():
@@ -243,6 +298,31 @@ def test_parse_match_partial_odds():
     assert results[0].under_odds is None
 
 
+def test_parse_match_detail_fixed_thresholds():
+    match = {
+        "home": "Player1",
+        "away": "Team A",
+        "leagueName": "Igrači ~ USA NBA",
+        "leagueCategory": "PL",
+        "kickOffTime": 1775829600000,
+        "odds": {"54096": 1.18, "54101": 1.65, "57454": 25.0},
+    }
+    results = _parse_match_detail(match)
+    assert [r.threshold for r in results] == [4.5, 9.5, 59.5]
+    assert all(r.market_type == "player_points_milestones" for r in results)
+    assert all(r.under_odds is None for r in results)
+
+
+def test_get_detail_fetch_concurrency_uses_http_rate_limit():
+    http_client = HttpClient(rate_limit_per_second=4.0)
+    assert _get_detail_fetch_concurrency(http_client, 10) == 4
+
+
+def test_get_detail_fetch_concurrency_unlimited_rate_limit():
+    http_client = HttpClient(rate_limit_per_second=0)
+    assert _get_detail_fetch_concurrency(http_client, 12) == 10
+
+
 # ── Integration: OktagonBetScraper with mocked HTTP ──────────
 
 
@@ -256,6 +336,95 @@ async def test_scraper_returns_data(fixture_data):
     assert len(results) > 0
     assert all(isinstance(r, RawOddsData) for r in results)
     assert all(r.bookmaker_id == "oktagonbet" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_scraper_fetches_detail_ladders(player_matches):
+    scraper = OktagonBetScraper()
+    detail_matches = {
+        match["id"]: {
+            **match,
+            "odds": {**match["odds"], "54096": 1.18, "54101": 1.65},
+        }
+        for match in player_matches
+    }
+
+    async def mock_get(url, **kwargs):
+        if "/sport/SK/mob" in url:
+            return {"esMatches": player_matches}
+        for match_id, detail in detail_matches.items():
+            if f"/match/{match_id}" in url:
+                return detail
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get) as mock_get:
+        results = await scraper.scrape_odds("basketball")
+
+    ladder_results = [
+        result for result in results
+        if result.market_type == "player_points_milestones"
+        and result.under_odds is None
+        and result.threshold in {4.5, 9.5}
+    ]
+    assert len(ladder_results) == len(player_matches) * 2
+    detail_calls = [
+        call.args[0]
+        for call in mock_get.await_args_list
+        if "/match/" in call.args[0]
+    ]
+    assert detail_calls == [
+        f"https://www.oktagonbet.com/restapi/offer/sr/match/{match['id']}"
+        for match in player_matches
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scraper_limits_detail_fetch_concurrency():
+    matches = [
+        {
+            "id": 1000 + idx,
+            "home": f"Player {idx}",
+            "away": "Team A",
+            "leagueName": "Igrači ~ USA NBA",
+            "leagueCategory": "PL",
+            "kickOffTime": 1775829600000,
+            "params": {"ouPlPoints": "15.5"},
+            "odds": {"51679": 1.88, "51681": 1.92},
+        }
+        for idx in range(4)
+    ]
+    scraper = OktagonBetScraper(HttpClient(rate_limit_per_second=3.0))
+    peak_active = 0
+    active = 0
+
+    async def mock_get(url, **kwargs):
+        nonlocal peak_active, active
+        if "/sport/SK/mob" in url:
+            return {"esMatches": matches}
+
+        active += 1
+        peak_active = max(peak_active, active)
+        try:
+            await asyncio.sleep(0.01)
+        finally:
+            active -= 1
+
+        match_id = int(url.rsplit("/", 1)[-1])
+        match = next(match for match in matches if match["id"] == match_id)
+        return {**match, "odds": {**match["odds"], "54096": 1.5}}
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert peak_active > 1
+    assert peak_active <= 3
+    ladder_results = [
+        result for result in results
+        if result.market_type == "player_points_milestones"
+        and result.under_odds is None
+        and result.threshold == 4.5
+    ]
+    assert len(ladder_results) == len(matches)
 
 
 @pytest.mark.asyncio

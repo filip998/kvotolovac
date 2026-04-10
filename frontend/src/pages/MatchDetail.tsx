@@ -43,8 +43,8 @@ export default function MatchDetail() {
   }
 
   for (const [key, offers] of marketMap) {
-    const [type, playerName] = key.split('|');
-    const typeLabel = MARKET_TYPE_LABELS[type] || type;
+    const { market_type: marketType, player_name: playerName } = offers[0];
+    const typeLabel = MARKET_TYPE_LABELS[marketType] || marketType;
     const title = playerName ? `${playerName} — ${typeLabel}` : typeLabel;
     marketGroups.push({ key, title, offers });
   }

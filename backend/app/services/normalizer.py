@@ -47,6 +47,61 @@ _CANONICAL_PLAYERS: dict[str, str] = {
 
 FUZZY_THRESHOLD = 75
 
+_MARKET_TYPE_MAPPING: dict[str, str] = {
+    "player_points": "player_points",
+    "player points": "player_points",
+    "points": "player_points",
+    "player_rebounds": "player_rebounds",
+    "player rebounds": "player_rebounds",
+    "rebounds": "player_rebounds",
+    "player_assists": "player_assists",
+    "player assists": "player_assists",
+    "assists": "player_assists",
+    "player_3points": "player_3points",
+    "player 3points": "player_3points",
+    "player 3-points": "player_3points",
+    "player 3 points": "player_3points",
+    "3points": "player_3points",
+    "3-points": "player_3points",
+    "3 points": "player_3points",
+    "player_steals": "player_steals",
+    "player steals": "player_steals",
+    "steals": "player_steals",
+    "player_blocks": "player_blocks",
+    "player blocks": "player_blocks",
+    "blocks": "player_blocks",
+    "player_points_rebounds": "player_points_rebounds",
+    "player points rebounds": "player_points_rebounds",
+    "player points + rebounds": "player_points_rebounds",
+    "points rebounds": "player_points_rebounds",
+    "points + rebounds": "player_points_rebounds",
+    "player_points_assists": "player_points_assists",
+    "player points assists": "player_points_assists",
+    "player points + assists": "player_points_assists",
+    "points assists": "player_points_assists",
+    "points + assists": "player_points_assists",
+    "player_rebounds_assists": "player_rebounds_assists",
+    "player rebounds assists": "player_rebounds_assists",
+    "player rebounds + assists": "player_rebounds_assists",
+    "rebounds assists": "player_rebounds_assists",
+    "rebounds + assists": "player_rebounds_assists",
+    "player_points_rebounds_assists": "player_points_rebounds_assists",
+    "player points rebounds assists": "player_points_rebounds_assists",
+    "player points + rebounds + assists": "player_points_rebounds_assists",
+    "points rebounds assists": "player_points_rebounds_assists",
+    "points + rebounds + assists": "player_points_rebounds_assists",
+    "pra": "player_points_rebounds_assists",
+    "player pra": "player_points_rebounds_assists",
+    "player_points_milestones": "player_points_milestones",
+    "player points milestones": "player_points_milestones",
+    "player points milestone": "player_points_milestones",
+    "player points ladder": "player_points_milestones",
+    "player_points_ladder": "player_points_milestones",
+    "game_total": "game_total",
+    "game total": "game_total",
+    "total": "game_total",
+}
+
 
 def normalize_team_name(raw_name: str) -> str:
     key = raw_name.strip().lower()
@@ -91,14 +146,9 @@ def generate_match_id(home_team: str, away_team: str, league_id: str) -> str:
 
 
 def normalize_market_type(raw_type: str) -> str:
-    mapping = {
-        "player_points": "player_points",
-        "player points": "player_points",
-        "points": "player_points",
-        "game_total": "game_total",
-        "total": "game_total",
-    }
-    return mapping.get(raw_type.strip().lower(), raw_type.strip().lower())
+    key = raw_type.strip().lower().replace("&", "+").replace("+", " + ")
+    key = " ".join(key.split())
+    return _MARKET_TYPE_MAPPING.get(key, key)
 
 
 def normalize_odds(raw_list: list[RawOddsData]) -> list[NormalizedOdds]:

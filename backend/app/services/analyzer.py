@@ -21,6 +21,13 @@ class Discrepancy:
     profit_margin: float | None
 
 
+def _comparison_market_type(market_type: str) -> str:
+    mapping = {
+        "player_points_milestones": "player_points",
+    }
+    return mapping.get(market_type, market_type)
+
+
 def _implied_probability(odds: float) -> float:
     """Convert decimal odds to implied probability."""
     if odds <= 0:
@@ -51,7 +58,7 @@ def find_threshold_gaps(
     # Group by (match_id, market_type, player_name)
     groups: dict[tuple, list[NormalizedOdds]] = {}
     for o in odds_list:
-        key = (o.match_id, o.market_type, o.player_name)
+        key = (o.match_id, _comparison_market_type(o.market_type), o.player_name)
         groups.setdefault(key, []).append(o)
 
     discrepancies: list[Discrepancy] = []
@@ -97,6 +104,8 @@ def find_threshold_gaps(
                 continue
 
             # Bookmaker A over (lower threshold) + Bookmaker B under (higher threshold)
+            if a.over_odds is None or b.under_odds is None:
+                continue
             margin = _profit_margin(a.over_odds, b.under_odds)
 
             discrepancies.append(
