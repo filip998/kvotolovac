@@ -1,5 +1,6 @@
-import { useState, useMemo } from 'react';
-import { useDiscrepancies, useMatches } from '../api/hooks';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { useDiscrepancies, useMatches, useSystemStatus } from '../api/hooks';
 import type { DiscrepancyFilters, Discrepancy } from '../api/types';
 import FilterBar from '../components/FilterBar';
 import SortControls from '../components/SortControls';
@@ -24,12 +25,14 @@ interface LeagueGroup {
 type DashboardTab = 'discrepancies' | 'tracked';
 
 export default function Dashboard() {
+  const queryClient = useQueryClient();
   const [filters, setFilters] = useState<DiscrepancyFilters>({
     sort_by: 'profit_margin',
     sort_order: 'desc',
   });
   const [activeTab, setActiveTab] = useState<DashboardTab>('discrepancies');
   const [collapsedLeagues, setCollapsedLeagues] = useState<Set<string>>(new Set());
+  const previousScanInProgressRef = useRef(false);
 
   const toggleLeague = (league: string) => {
     setCollapsedLeagues((prev) => {
@@ -48,6 +51,7 @@ export default function Dashboard() {
     isLoading,
     isError,
     error,
+    refetch: refetchDiscrepancies,
   } = useDiscrepancies(filters, { enabled: activeTab === 'discrepancies' });
   const {
     data: matches,
@@ -55,6 +59,27 @@ export default function Dashboard() {
     isError: matchesError,
     error: matchesLoadError,
   } = useMatches({ limit: 200, loadAll: true }, { enabled: activeTab === 'tracked' });
+  const { data: status } = useSystemStatus();
+
+  const isInitialScanInProgress =
+    activeTab === 'discrepancies' &&
+    !!status?.scan.in_progress &&
+    !status.last_scrape_at;
+  const isTimeoutError =
+    typeof (error as Error | undefined)?.message === 'string' &&
+    (error as Error).message.toLowerCase().includes('timeout');
+
+  useEffect(() => {
+    const scanInProgress = !!status?.scan.in_progress;
+    const scanJustFinished = previousScanInProgressRef.current && !scanInProgress;
+
+    if (scanJustFinished && activeTab === 'discrepancies') {
+      void queryClient.invalidateQueries({ queryKey: ['discrepancies'] });
+      void refetchDiscrepancies();
+    }
+
+    previousScanInProgressRef.current = scanInProgress;
+  }, [activeTab, queryClient, refetchDiscrepancies, status?.scan.in_progress]);
 
   // Group discrepancies by league, then by match
   const grouped = useMemo<LeagueGroup[]>(() => {
@@ -140,6 +165,33 @@ export default function Dashboard() {
       {activeTab === 'discrepancies' ? (
         isLoading ? (
           <LoadingSpinner />
+        ) : isInitialScanInProgress && (isTimeoutError || !discrepancies || discrepancies.length === 0) ? (
+          <div className="rounded-xl border border-brand-500/20 bg-brand-500/10 p-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="text-base font-semibold text-white">Initial scan in progress</h3>
+                <p className="text-sm text-gray-300">
+                  The backend is warming up and scraping bookmakers for the first snapshot. This
+                  page will populate automatically when the scan completes.
+                </p>
+              </div>
+              <div className="text-sm text-brand-300">
+                {status.scan.completed_tasks}/{status.scan.total_tasks} finished
+                {status.scan.failed_tasks > 0 ? ` · ${status.scan.failed_tasks} failed` : ''}
+              </div>
+            </div>
+            <div className="mt-4 h-2 overflow-hidden rounded-full bg-gray-800">
+              <div
+                className="h-full rounded-full bg-brand-400 transition-all"
+                style={{
+                  width: `${status.scan.total_tasks > 0 ? Math.max(5, Math.round((status.scan.completed_tasks / status.scan.total_tasks) * 100)) : 10}%`,
+                }}
+              />
+            </div>
+            <p className="mt-2 text-xs uppercase tracking-wide text-gray-400">
+              Phase: {status.scan.phase}
+            </p>
+          </div>
         ) : isError ? (
           <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-6 text-center">
             <p className="text-sm text-red-400">

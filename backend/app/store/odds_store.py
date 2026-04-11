@@ -18,6 +18,7 @@ from ..models.schemas import (
     NormalizedOdds,
     NotificationOut,
     OddsOut,
+    ScanProgressOut,
     SystemStatus,
 )
 
@@ -386,7 +387,10 @@ async def get_notifications(unread_only: bool = False, limit: int = 50) -> list[
 
 # ── System Status ──────────────────────────────────────────
 
-async def get_system_status(scheduler_running: bool = False) -> SystemStatus:
+async def get_system_status(
+    scheduler_running: bool = False,
+    scan_progress: ScanProgressOut | None = None,
+) -> SystemStatus:
     db = await get_db()
     current_snapshot_at = await _get_current_snapshot_at(db)
     if current_snapshot_at is not None:
@@ -430,4 +434,5 @@ async def get_system_status(scheduler_running: bool = False) -> SystemStatus:
         total_discrepancies=disc_row[0][0],
         active_bookmakers=bm_row[0][0],
         scheduler_running=scheduler_running,
+        scan=scan_progress or ScanProgressOut(),
     )

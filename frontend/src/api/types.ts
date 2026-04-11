@@ -72,6 +72,16 @@ export interface BookmakerStatus {
   is_active: boolean;
 }
 
+export interface ScanProgress {
+  in_progress: boolean;
+  phase: string;
+  started_at: string | null;
+  total_tasks: number;
+  completed_tasks: number;
+  failed_tasks: number;
+  active_tasks: number;
+}
+
 export interface SystemStatus {
   status: string;
   last_scrape_at: string | null;
@@ -80,6 +90,7 @@ export interface SystemStatus {
   total_discrepancies: number;
   active_bookmakers: number;
   scheduler_running: boolean;
+  scan: ScanProgress;
   // Mock-only fields (optional)
   last_scrape?: string | null;
   active_discrepancies?: number;

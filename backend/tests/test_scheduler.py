@@ -142,6 +142,58 @@ async def test_scheduler_run_cycle_overlaps_scraper_tasks():
 
 
 @pytest.mark.asyncio
+async def test_scheduler_progress_snapshot_updates_while_cycle_runs():
+    _register_test_scrapers(
+        StubScraper("alpha", delay=0.05, payload_by_league={"euroleague": [_raw_odds("alpha", 18.5)]}),
+        StubScraper("beta", delay=0.05, payload_by_league={"euroleague": [_raw_odds("beta", 20.5)]}),
+    )
+
+    scheduler_under_test = Scheduler(interval_minutes=1)
+    cycle_task = asyncio.create_task(scheduler_under_test.run_cycle())
+    await asyncio.sleep(0.01)
+
+    snapshot = scheduler_under_test.progress_snapshot()
+
+    assert snapshot.in_progress is True
+    assert snapshot.phase == "scraping"
+    assert snapshot.total_tasks == 2
+    assert snapshot.active_tasks > 0
+    assert snapshot.started_at is not None
+
+    await cycle_task
+    assert scheduler_under_test.progress_snapshot().in_progress is False
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_joins_inflight_cycle():
+    recorder = {"active": 0, "max_active": 0, "starts": [], "finishes": []}
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            delay=0.05,
+            recorder=recorder,
+            payload_by_league={"euroleague": [_raw_odds("alpha", 18.5)]},
+        ),
+        StubScraper(
+            "beta",
+            delay=0.05,
+            recorder=recorder,
+            payload_by_league={"euroleague": [_raw_odds("beta", 20.5)]},
+        ),
+    )
+
+    scheduler_under_test = Scheduler(interval_minutes=1)
+    first = asyncio.create_task(scheduler_under_test.run_cycle())
+    await asyncio.sleep(0.01)
+    second_result = await scheduler_under_test.run_cycle()
+    first_result = await first
+
+    assert first_result == second_result
+    assert len(recorder["starts"]) == 2
+    assert len(recorder["finishes"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_scheduler_run_cycle_isolates_scraper_failures():
     _register_test_scrapers(
         StubScraper(
@@ -445,3 +497,36 @@ async def test_scheduler_double_start():
     await s.start()  # should not raise
     assert s.is_running
     await s.stop()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_stop_waits_for_active_cycle_to_finish():
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            delay=0.05,
+            payload_by_league={"euroleague": [_raw_odds("alpha", 18.5)]},
+        ),
+        StubScraper(
+            "beta",
+            delay=0.05,
+            payload_by_league={"euroleague": [_raw_odds("beta", 20.5)]},
+        ),
+    )
+
+    scheduler_under_test = Scheduler(interval_minutes=60)
+    await scheduler_under_test.start()
+
+    for _ in range(10):
+        if scheduler_under_test.progress_snapshot().in_progress:
+            break
+        await asyncio.sleep(0.01)
+
+    assert scheduler_under_test.progress_snapshot().in_progress is True
+
+    await scheduler_under_test.stop()
+
+    status = await odds_store.get_system_status()
+    assert scheduler_under_test.is_running is False
+    assert scheduler_under_test.progress_snapshot().in_progress is False
+    assert status.last_scrape_at is not None

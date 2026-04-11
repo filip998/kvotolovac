@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from ..models.schemas import (
     BookmakerOut,
@@ -27,11 +27,16 @@ async def list_bookmakers():
 
 @router.get("/status", response_model=SystemStatus)
 async def system_status():
-    return await odds_store.get_system_status(scheduler_running=scheduler.is_running)
+    return await odds_store.get_system_status(
+        scheduler_running=scheduler.is_running,
+        scan_progress=scheduler.progress_snapshot(),
+    )
 
 
 @router.post("/scrape/trigger", response_model=ScrapeResponse)
 async def trigger_scrape():
+    if scheduler.is_cycle_in_progress:
+        raise HTTPException(status_code=409, detail="Scrape already in progress")
     result = await scheduler.run_cycle()
     return ScrapeResponse(
         message="Scrape completed",

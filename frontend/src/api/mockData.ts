@@ -330,6 +330,15 @@ export const mockSystemStatus: SystemStatus = {
   total_discrepancies: 10,
   active_bookmakers: 3,
   scheduler_running: true,
+  scan: {
+    in_progress: true,
+    phase: 'scraping',
+    started_at: ago(0),
+    total_tasks: 8,
+    completed_tasks: 3,
+    failed_tasks: 1,
+    active_tasks: 4,
+  },
   active_discrepancies: 10,
   bookmaker_status: [
     { id: 'mozzart', name: 'Mozzart', last_scrape: ago(2), is_active: true },

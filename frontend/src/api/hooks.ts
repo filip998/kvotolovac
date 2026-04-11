@@ -201,7 +201,7 @@ export function useSystemStatus() {
       const { data } = await client.get<SystemStatus>('/status');
       return data;
     },
-    refetchInterval: 15000,
+    refetchInterval: (query) => (query.state.data?.scan?.in_progress ? 2000 : 15000),
   });
 }
 

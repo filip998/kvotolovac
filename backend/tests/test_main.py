@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import FastAPI
 
-from app.main import _close_http_clients, _create_real_scrapers, _shutdown_resources
+from app.main import _close_http_clients, _create_real_scrapers, _shutdown_resources, lifespan
 from app.scrapers.http_client import HttpClient
+from app.scrapers.registry import registry
 
 
 @pytest.mark.asyncio
@@ -84,3 +86,35 @@ async def test_shutdown_resources_closes_db_even_when_http_cleanup_fails():
         )
 
     assert shutdown_order == ["http", "db"]
+
+
+@pytest.mark.asyncio
+async def test_lifespan_starts_scheduler_without_blocking_on_run_cycle(monkeypatch: pytest.MonkeyPatch):
+    calls: list[str] = []
+
+    async def fake_init_db(_: str) -> None:
+        calls.append("init_db")
+
+    async def fake_scheduler_start() -> None:
+        calls.append("scheduler.start")
+
+    async def fake_scheduler_stop() -> None:
+        calls.append("scheduler.stop")
+
+    async def fake_shutdown_resources(_: list[HttpClient]) -> None:
+        calls.append("shutdown")
+
+    async def unexpected_run_cycle() -> None:
+        raise AssertionError("run_cycle should not be awaited during startup")
+
+    monkeypatch.setattr("app.main.init_db", fake_init_db)
+    monkeypatch.setattr("app.main._shutdown_resources", fake_shutdown_resources)
+    monkeypatch.setattr("app.main.scheduler.start", fake_scheduler_start)
+    monkeypatch.setattr("app.main.scheduler.stop", fake_scheduler_stop)
+    monkeypatch.setattr("app.main.scheduler.run_cycle", unexpected_run_cycle)
+
+    registry._scrapers.clear()
+    async with lifespan(FastAPI()):
+        assert "scheduler.start" in calls
+
+    assert "scheduler.stop" in calls

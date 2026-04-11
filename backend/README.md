@@ -36,6 +36,9 @@ Copy `.env.example` to `.env` and adjust:
 
 - The scheduler runs scraper tasks concurrently at the top level, so slow bookmakers do not stall the whole scrape phase.
 - In `real` mode, each scraper gets its own `HttpClient`, so HTTP rate limiting is isolated per bookmaker instead of being shared globally across all bookmakers.
+- The API now starts immediately and the initial scrape runs in the scheduler background loop instead of blocking app startup.
+- `GET /api/v1/status` includes live scan progress metadata while a cycle is running, so the frontend can show warmup/progress state instead of timing out on first load.
+- `POST /api/v1/scrape/trigger` now rejects with `409` while a scan is already running, so callers do not queue duplicate full cycles behind the background scheduler.
 - Normalization, storage, analysis, and notifications still run after scraping with the same downstream behavior as before.
 
 ## API Endpoints

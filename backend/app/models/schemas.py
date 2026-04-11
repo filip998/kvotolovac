@@ -114,6 +114,16 @@ class NotificationOut(BaseModel):
 
 
 # ── System Status ──────────────────────────────────────────
+class ScanProgressOut(BaseModel):
+    in_progress: bool = False
+    phase: str = "idle"
+    started_at: Optional[str] = None
+    total_tasks: int = 0
+    completed_tasks: int = 0
+    failed_tasks: int = 0
+    active_tasks: int = 0
+
+
 class SystemStatus(BaseModel):
     status: str = "ok"
     last_scrape_at: Optional[str] = None
@@ -122,6 +132,7 @@ class SystemStatus(BaseModel):
     total_discrepancies: int = 0
     active_bookmakers: int = 0
     scheduler_running: bool = False
+    scan: ScanProgressOut = Field(default_factory=ScanProgressOut)
 
 
 # ── Scrape trigger response ────────────────────────────────

@@ -141,12 +141,9 @@ async def lifespan(app: FastAPI):
             except ValueError:
                 logger.warning("No mock scraper for bookmaker: %s", bm_id)
 
-    # Run initial scrape so there is data immediately
-    try:
-        await scheduler.run_cycle()
-        logger.info("Initial scrape completed")
-    except Exception:
-        logger.exception("Initial scrape failed")
+    # Start scheduler loop in the background so the API is responsive immediately.
+    await scheduler.start()
+    logger.info("Scheduler background loop started")
 
     yield
 

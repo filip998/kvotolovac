@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.database import init_db, close_db
 from app.main import app
+from app.models.schemas import RawOddsData
+from app.scrapers.base import BaseScraper
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
 from app.services.scheduler import scheduler
@@ -43,6 +47,8 @@ async def test_status_endpoint(client: AsyncClient):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "ok"
+    assert data["scan"]["in_progress"] is False
+    assert data["scan"]["phase"] == "idle"
 
 
 @pytest.mark.asyncio
@@ -53,6 +59,53 @@ async def test_trigger_scrape(client: AsyncClient):
     assert data["matches_scraped"] > 0
     assert data["odds_scraped"] > 0
     assert data["discrepancies_found"] > 0
+
+
+@pytest.mark.asyncio
+async def test_trigger_scrape_rejects_when_cycle_is_already_running(client: AsyncClient):
+    class SlowScraper(BaseScraper):
+        def get_bookmaker_id(self) -> str:
+            return "slow"
+
+        def get_bookmaker_name(self) -> str:
+            return "Slow"
+
+        def get_supported_leagues(self) -> list[str]:
+            return ["euroleague"]
+
+        async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
+            await asyncio.sleep(0.05)
+            return [
+                RawOddsData(
+                    bookmaker_id="slow",
+                    league_id=league_id,
+                    home_team="Olympiacos",
+                    away_team="Real Madrid",
+                    market_type="player_points",
+                    player_name="Sasha Vezenkov",
+                    threshold=18.5,
+                    over_odds=1.9,
+                    under_odds=1.9,
+                    start_time="2030-01-01T20:00:00+00:00",
+                )
+            ]
+
+    registry._scrapers.clear()
+    registry.register(SlowScraper())
+
+    cycle_task = asyncio.create_task(scheduler.run_cycle())
+    for _ in range(10):
+        if scheduler.is_cycle_in_progress:
+            break
+        await asyncio.sleep(0.01)
+
+    assert scheduler.is_cycle_in_progress is True
+
+    resp = await client.post("/api/v1/scrape/trigger")
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Scrape already in progress"
+
+    await cycle_task
 
 
 @pytest.mark.asyncio
