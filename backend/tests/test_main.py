@@ -13,6 +13,7 @@ async def test_create_real_scrapers_uses_distinct_http_clients():
     scrapers, clients = _create_real_scrapers(
         ["mozzart", "maxbet"],
         rate_limit_per_second=7,
+        meridian_rate_limit_per_second=2,
         proxies=["http://proxy.example:8080"],
     )
 
@@ -39,6 +40,23 @@ async def test_create_real_scrapers_uses_distinct_http_clients():
         await _close_http_clients(clients)
 
     assert all(client._client is None for client in clients)
+
+
+@pytest.mark.asyncio
+async def test_create_real_scrapers_applies_meridian_rate_limit_override():
+    scrapers, clients = _create_real_scrapers(
+        ["meridian", "maxbet"],
+        rate_limit_per_second=1,
+        meridian_rate_limit_per_second=4,
+        proxies=None,
+    )
+
+    try:
+        assert [scraper.get_bookmaker_id() for scraper in scrapers] == ["meridian", "maxbet"]
+        assert scrapers[0]._http.rate_limit_per_second == pytest.approx(4)
+        assert scrapers[1]._http.rate_limit_per_second == pytest.approx(1)
+    finally:
+        await _close_http_clients(clients)
 
 
 @pytest.mark.asyncio

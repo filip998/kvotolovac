@@ -43,6 +43,7 @@ def _create_real_scrapers(
     bookmaker_ids: list[str],
     *,
     rate_limit_per_second: float,
+    meridian_rate_limit_per_second: float,
     proxies: list[str] | None,
 ) -> tuple[list[BaseScraper], list[HttpClient]]:
     scrapers: list[BaseScraper] = []
@@ -61,8 +62,12 @@ def _create_real_scrapers(
             logger.info("Registered mock scraper (no real scraper yet): %s", bm_id)
             continue
 
+        effective_rate_limit = rate_limit_per_second
+        if bm_id == "meridian":
+            effective_rate_limit = meridian_rate_limit_per_second
+
         http_client = HttpClient(
-            rate_limit_per_second=rate_limit_per_second,
+            rate_limit_per_second=effective_rate_limit,
             proxies=proxies,
         )
         scrapers.append(scraper_factory(http_client))
@@ -128,6 +133,7 @@ async def lifespan(app: FastAPI):
         scrapers, managed_clients = _create_real_scrapers(
             settings.bookmaker_list,
             rate_limit_per_second=settings.rate_limit_per_second,
+            meridian_rate_limit_per_second=settings.meridian_rate_limit_per_second,
             proxies=settings.proxy_url_list or None,
         )
         for scraper in scrapers:

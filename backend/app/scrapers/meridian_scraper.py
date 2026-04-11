@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+import math
 import time
 from datetime import datetime, timezone
 
@@ -40,6 +42,8 @@ _DEFAULT_HEADERS = {
 
 _TOKEN_REFRESH_MARGIN_S = 60
 _MAX_PAGES = 10
+_MAX_DETAIL_CONCURRENCY = 8
+_MIN_DETAIL_CONCURRENCY = 2
 
 
 def _build_basic_auth() -> str:
@@ -71,6 +75,59 @@ def _parse_start_time(epoch_ms: int | None) -> str | None:
 def _is_player_market(name: str) -> bool:
     """Return True if the market name looks like a player ('LastName, FirstName')."""
     return "," in name
+
+
+def _get_detail_fetch_concurrency(http_client: HttpClient, event_count: int) -> int:
+    if event_count <= 0:
+        return 0
+
+    if http_client.rate_limit_per_second <= 0:
+        return min(event_count, _MAX_DETAIL_CONCURRENCY)
+
+    return min(
+        event_count,
+        _MAX_DETAIL_CONCURRENCY,
+        max(_MIN_DETAIL_CONCURRENCY, math.ceil(http_client.rate_limit_per_second)),
+    )
+
+
+def _build_event_context(event: dict, *, now_epoch_ms: int) -> dict[str, object] | None:
+    header = event.get("header", {})
+    event_id = header.get("eventId")
+    if not event_id:
+        logger.debug("Meridian: skipping event without eventId")
+        return None
+
+    if header.get("state") != "ACTIVE":
+        logger.debug(
+            "Meridian: skipping event %s with state=%s",
+            event_id,
+            header.get("state"),
+        )
+        return None
+
+    rivals = header.get("rivals", [])
+    if len(rivals) < 2 or not rivals[0] or not rivals[1]:
+        logger.debug("Meridian: skipping event %s with invalid rivals payload", event_id)
+        return None
+
+    start_epoch_ms = header.get("startTime")
+    if start_epoch_ms and start_epoch_ms < now_epoch_ms:
+        logger.debug(
+            "Meridian: skipping past event %s with startTime=%s",
+            event_id,
+            start_epoch_ms,
+        )
+        return None
+
+    league_info = header.get("league", {})
+    return {
+        "event_id": event_id,
+        "home_team": rivals[0],
+        "away_team": rivals[1],
+        "start_time": _parse_start_time(start_epoch_ms),
+        "league_id": league_info.get("slug", "basketball"),
+    }
 
 
 def _parse_markets(
@@ -225,6 +282,69 @@ class MeridianScraper(BaseScraper):
             logger.debug("Meridian: no markets for event %s group %s", event_id, game_group_id)
             return []
 
+    async def _fetch_market_group(
+        self,
+        token: str,
+        event_context: dict[str, object],
+        market_type: str,
+        game_group_id: str,
+        semaphore: asyncio.Semaphore,
+    ) -> list[RawOddsData]:
+        async with semaphore:
+            markets_payload = await self._fetch_markets(
+                token,
+                int(event_context["event_id"]),
+                game_group_id,
+            )
+
+        if not markets_payload:
+            return []
+
+        return _parse_markets(
+            markets_payload,
+            event_id=int(event_context["event_id"]),
+            home_team=str(event_context["home_team"]),
+            away_team=str(event_context["away_team"]),
+            league_id=str(event_context["league_id"]),
+            start_time=event_context["start_time"],
+            market_type=market_type,
+        )
+
+    async def _fetch_event_markets(
+        self,
+        token: str,
+        event_context: dict[str, object],
+        semaphore: asyncio.Semaphore,
+    ) -> list[RawOddsData]:
+        player_points = await self._fetch_market_group(
+            token,
+            event_context,
+            "player_points",
+            _GAME_GROUPS["player_points"],
+            semaphore,
+        )
+        if not player_points:
+            return []
+
+        secondary_batches = await asyncio.gather(
+            *(
+                self._fetch_market_group(
+                    token,
+                    event_context,
+                    market_type,
+                    game_group_id,
+                    semaphore,
+                )
+                for market_type, game_group_id in _GAME_GROUPS.items()
+                if market_type != "player_points"
+            )
+        )
+
+        results = list(player_points)
+        for batch in secondary_batches:
+            results.extend(batch)
+        return results
+
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         if league_id != "basketball":
             return []
@@ -240,51 +360,30 @@ class MeridianScraper(BaseScraper):
             logger.warning("Meridian: no basketball events found")
             return []
 
-        results: list[RawOddsData] = []
+        now_epoch_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        event_contexts = [
+            context
+            for context in (
+                _build_event_context(event, now_epoch_ms=now_epoch_ms) for event in events
+            )
+            if context is not None
+        ]
+        if not event_contexts:
+            logger.warning("Meridian: 0 candidate events after filtering %d listed events", len(events))
+            return []
 
-        for event in events:
-            header = event.get("header", {})
-            event_id = header.get("eventId")
-            if not event_id:
-                continue
-
-            rivals = header.get("rivals", [])
-            home_team = rivals[0] if len(rivals) > 0 else ""
-            away_team = rivals[1] if len(rivals) > 1 else ""
-            start_time = _parse_start_time(header.get("startTime"))
-
-            league_info = header.get("league", {})
-            event_league = league_info.get("slug", "basketball")
-
-            # Fetch player_points first; if the event has no player props
-            # at all, skip rebounds/assists to avoid wasted requests.
-            has_player_props = False
-
-            for market_type, game_group_id in _GAME_GROUPS.items():
-                if not has_player_props and market_type != "player_points":
-                    continue
-
-                markets_payload = await self._fetch_markets(token, event_id, game_group_id)
-                if not markets_payload:
-                    continue
-
-                parsed = _parse_markets(
-                    markets_payload,
-                    event_id,
-                    home_team,
-                    away_team,
-                    event_league,
-                    start_time,
-                    market_type,
-                )
-
-                if parsed and market_type == "player_points":
-                    has_player_props = True
-
-                results.extend(parsed)
+        concurrency = _get_detail_fetch_concurrency(self._http, len(event_contexts))
+        semaphore = asyncio.Semaphore(concurrency)
+        event_results = await asyncio.gather(
+            *(self._fetch_event_markets(token, event_context, semaphore) for event_context in event_contexts)
+        )
+        results = [item for batch in event_results for item in batch]
 
         logger.info(
-            "Meridian scraped %d player odds from %d events",
-            len(results), len(events),
+            "Meridian scraped %d player odds from %d listed events (%d candidates, detail concurrency=%d)",
+            len(results),
+            len(events),
+            len(event_contexts),
+            concurrency,
         )
         return results

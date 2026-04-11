@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     scraper_mode: str = "mock"  # "mock" or "real"
     proxy_list: str = ""
     rate_limit_per_second: float = 1.0
+    meridian_rate_limit_per_second: float = 2.0
 
     @property
     def bookmaker_list(self) -> list[str]:
