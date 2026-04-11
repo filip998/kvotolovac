@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import aiosqlite
 
+from ..config import settings
 from ..database import get_db
 from ..models.schemas import (
     BookmakerOut,
@@ -67,6 +68,43 @@ async def get_leagues(sport: str | None = None) -> list[LeagueOut]:
     return [LeagueOut(**_row_to_dict(r)) for r in rows]
 
 
+# ── Snapshot state ──────────────────────────────────────────
+
+
+async def set_current_snapshot(snapshot_at: str) -> None:
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO scrape_state (id, current_snapshot_at, updated_at)
+           VALUES (1, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(id) DO UPDATE SET
+               current_snapshot_at = excluded.current_snapshot_at,
+               updated_at = CURRENT_TIMESTAMP""",
+        (snapshot_at,),
+    )
+    await db.commit()
+
+
+async def _get_current_snapshot_at(db: aiosqlite.Connection) -> str | None:
+    row = await db.execute_fetchall(
+        "SELECT current_snapshot_at FROM scrape_state WHERE id = 1"
+    )
+    if not row or not row[0][0]:
+        return None
+    return row[0][0]
+
+
+async def _get_legacy_snapshot_cutoff(db: aiosqlite.Connection) -> tuple[str, str] | None:
+    row = await db.execute_fetchall("SELECT MAX(scraped_at) AS t FROM odds")
+    if not row or not row[0][0]:
+        return None
+
+    latest_scrape_at = row[0][0]
+    latest_dt = datetime.fromisoformat(latest_scrape_at)
+    lookback_minutes = max(settings.scrape_interval_minutes, 15)
+    cutoff_at = (latest_dt - timedelta(minutes=lookback_minutes)).isoformat()
+    return latest_scrape_at, cutoff_at
+
+
 # ── Matches ────────────────────────────────────────────────
 
 async def upsert_match(
@@ -93,15 +131,37 @@ async def get_matches(
     offset: int = 0,
 ) -> list[MatchOut]:
     db = await get_db()
-    q = "SELECT * FROM matches WHERE 1=1"
-    params: list = []
+    current_snapshot_at = await _get_current_snapshot_at(db)
+    params: list
+    if current_snapshot_at is not None:
+        q = """SELECT m.*
+               FROM matches m
+               WHERE EXISTS (
+                   SELECT 1
+                   FROM odds o
+                   WHERE o.match_id = m.id AND o.scraped_at = ?
+               )"""
+        params = [current_snapshot_at]
+    else:
+        legacy_window = await _get_legacy_snapshot_cutoff(db)
+        if legacy_window is None:
+            return []
+        _, cutoff_at = legacy_window
+        q = """SELECT m.*
+               FROM matches m
+               WHERE EXISTS (
+                   SELECT 1
+                   FROM odds o
+                   WHERE o.match_id = m.id AND o.scraped_at >= ?
+               )"""
+        params = [cutoff_at]
     if league_id:
-        q += " AND league_id = ?"
+        q += " AND m.league_id = ?"
         params.append(league_id)
     if status:
-        q += " AND status = ?"
+        q += " AND m.status = ?"
         params.append(status)
-    q += " ORDER BY start_time ASC LIMIT ? OFFSET ?"
+    q += " ORDER BY m.start_time ASC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     rows = await db.execute_fetchall(q, params)
     return [MatchOut(**_row_to_dict(r)) for r in rows]
@@ -119,7 +179,7 @@ async def get_match(match_id: str) -> MatchOut | None:
 
 # ── Odds ───────────────────────────────────────────────────
 
-async def upsert_odds(odds: NormalizedOdds) -> int:
+async def upsert_odds(odds: NormalizedOdds, *, scraped_at: str) -> int:
     db = await get_db()
     await db.execute(
         """INSERT OR REPLACE INTO odds
@@ -133,7 +193,7 @@ async def upsert_odds(odds: NormalizedOdds) -> int:
             odds.threshold,
             odds.over_odds,
             odds.under_odds,
-            datetime.utcnow().isoformat(),
+            scraped_at,
         ),
     )
     # Also insert into history
@@ -149,7 +209,7 @@ async def upsert_odds(odds: NormalizedOdds) -> int:
             odds.threshold,
             odds.over_odds,
             odds.under_odds,
-            datetime.utcnow().isoformat(),
+            scraped_at,
         ),
     )
     await db.commit()
@@ -160,14 +220,29 @@ async def upsert_odds(odds: NormalizedOdds) -> int:
 
 async def get_odds_for_match(match_id: str) -> list[OddsOut]:
     db = await get_db()
-    rows = await db.execute_fetchall(
-        """SELECT o.*, b.name as bookmaker_name
-           FROM odds o
-           LEFT JOIN bookmakers b ON o.bookmaker_id = b.id
-           WHERE o.match_id = ?
-           ORDER BY o.market_type, o.player_name, o.threshold""",
-        (match_id,),
-    )
+    current_snapshot_at = await _get_current_snapshot_at(db)
+    if current_snapshot_at is not None:
+        rows = await db.execute_fetchall(
+            """SELECT o.*, b.name as bookmaker_name
+               FROM odds o
+               LEFT JOIN bookmakers b ON o.bookmaker_id = b.id
+               WHERE o.match_id = ? AND o.scraped_at = ?
+               ORDER BY o.market_type, o.player_name, o.threshold""",
+            (match_id, current_snapshot_at),
+        )
+    else:
+        legacy_window = await _get_legacy_snapshot_cutoff(db)
+        if legacy_window is None:
+            return []
+        _, cutoff_at = legacy_window
+        rows = await db.execute_fetchall(
+            """SELECT o.*, b.name as bookmaker_name
+               FROM odds o
+               LEFT JOIN bookmakers b ON o.bookmaker_id = b.id
+               WHERE o.match_id = ? AND o.scraped_at >= ?
+               ORDER BY o.market_type, o.player_name, o.threshold""",
+            (match_id, cutoff_at),
+        )
     return [OddsOut(**_row_to_dict(r)) for r in rows]
 
 
@@ -313,17 +388,45 @@ async def get_notifications(unread_only: bool = False, limit: int = 50) -> list[
 
 async def get_system_status(scheduler_running: bool = False) -> SystemStatus:
     db = await get_db()
-    matches_row = await db.execute_fetchall("SELECT COUNT(*) as c FROM matches")
-    odds_row = await db.execute_fetchall("SELECT COUNT(*) as c FROM odds")
+    current_snapshot_at = await _get_current_snapshot_at(db)
+    if current_snapshot_at is not None:
+        matches_row = await db.execute_fetchall(
+            "SELECT COUNT(DISTINCT match_id) as c FROM odds WHERE scraped_at = ?",
+            (current_snapshot_at,),
+        )
+        odds_row = await db.execute_fetchall(
+            "SELECT COUNT(*) as c FROM odds WHERE scraped_at = ?",
+            (current_snapshot_at,),
+        )
+        matches_count = matches_row[0][0]
+        odds_count = odds_row[0][0]
+        last_scrape_at = current_snapshot_at
+    else:
+        legacy_window = await _get_legacy_snapshot_cutoff(db)
+        if legacy_window is None:
+            matches_count = 0
+            odds_count = 0
+            last_scrape_at = None
+        else:
+            last_scrape_at, cutoff_at = legacy_window
+            matches_row = await db.execute_fetchall(
+                "SELECT COUNT(DISTINCT match_id) as c FROM odds WHERE scraped_at >= ?",
+                (cutoff_at,),
+            )
+            odds_row = await db.execute_fetchall(
+                "SELECT COUNT(*) as c FROM odds WHERE scraped_at >= ?",
+                (cutoff_at,),
+            )
+            matches_count = matches_row[0][0]
+            odds_count = odds_row[0][0]
     disc_row = await db.execute_fetchall("SELECT COUNT(*) as c FROM discrepancies WHERE is_active = TRUE")
     bm_row = await db.execute_fetchall("SELECT COUNT(*) as c FROM bookmakers WHERE is_active = TRUE")
-    last_scrape = await db.execute_fetchall("SELECT MAX(scraped_at) as t FROM odds")
 
     return SystemStatus(
         status="ok",
-        last_scrape_at=last_scrape[0][0] if last_scrape and last_scrape[0][0] else None,
-        total_matches=matches_row[0][0],
-        total_odds=odds_row[0][0],
+        last_scrape_at=last_scrape_at,
+        total_matches=matches_count,
+        total_odds=odds_count,
         total_discrepancies=disc_row[0][0],
         active_bookmakers=bm_row[0][0],
         scheduler_running=scheduler_running,

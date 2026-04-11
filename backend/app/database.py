@@ -80,6 +80,12 @@ CREATE TABLE IF NOT EXISTS notifications (
     is_read BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS scrape_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    current_snapshot_at TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 _db_connection: aiosqlite.Connection | None = None

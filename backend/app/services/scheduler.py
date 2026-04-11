@@ -127,6 +127,7 @@ class Scheduler:
         normalized = normalize_odds(all_raw)
 
         # Store matches & odds
+        cycle_scraped_at = datetime.utcnow().isoformat()
         seen_matches: set[str] = set()
         for o in normalized:
             if o.match_id not in seen_matches:
@@ -141,7 +142,8 @@ class Scheduler:
                     start_time=o.start_time,
                 )
                 seen_matches.add(o.match_id)
-            await odds_store.upsert_odds(o)
+            await odds_store.upsert_odds(o, scraped_at=cycle_scraped_at)
+        await odds_store.set_current_snapshot(cycle_scraped_at)
 
         # Analyse
         await odds_store.deactivate_all_discrepancies()

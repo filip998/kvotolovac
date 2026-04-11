@@ -4,11 +4,12 @@ import asyncio
 
 import pytest
 
-from app.models.schemas import RawOddsData
+from app.models.schemas import NormalizedOdds, RawOddsData
 from app.scrapers.base import BaseScraper
 from app.services.scheduler import Scheduler
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
+from app.store import odds_store
 
 
 _UNSET = object()
@@ -232,6 +233,171 @@ async def test_scheduler_run_cycle_returns_expected_output_shape():
     ):
         assert isinstance(result[key], int)
         assert result[key] >= 0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_hides_stale_matches_from_latest_snapshot():
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("stale", "euroleague", "Bayern Munich", "Maccabi Tel Aviv")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="stale",
+            bookmaker_id="meridian",
+            league_id="euroleague",
+            home_team="Bayern Munich",
+            away_team="Maccabi Tel Aviv",
+            market_type="player_points",
+            player_name="Saben Lee",
+            threshold=13.5,
+            over_odds=1.8,
+            under_odds=2.0,
+        ),
+        scraped_at="2026-04-10T13:39:04.516801",
+    )
+
+    _register_test_scrapers(
+        StubScraper(
+            "meridian",
+            payload_by_league={
+                "euroleague": [
+                    RawOddsData(
+                        bookmaker_id="meridian",
+                        league_id="euroleague",
+                        home_team="Maccabi Tel Aviv",
+                        away_team="Hapoel Tel-Aviv",
+                        market_type="player_points",
+                        player_name="Tamir Blatt",
+                        threshold=6.5,
+                        over_odds=2.09,
+                        under_odds=1.66,
+                        start_time="2030-01-01T20:00:00+00:00",
+                    )
+                ]
+            },
+        )
+    )
+
+    await Scheduler(interval_minutes=1).run_cycle()
+
+    matches = await odds_store.get_matches()
+
+    assert len(matches) == 1
+    assert matches[0].home_team == "Maccabi Tel Aviv"
+    assert matches[0].away_team == "Hapoel Tel-Aviv"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_advances_snapshot_when_cycle_is_empty():
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("stale", "euroleague", "Bayern Munich", "Maccabi Tel Aviv")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="stale",
+            bookmaker_id="meridian",
+            league_id="euroleague",
+            home_team="Bayern Munich",
+            away_team="Maccabi Tel Aviv",
+            market_type="player_points",
+            player_name="Saben Lee",
+            threshold=13.5,
+            over_odds=1.8,
+            under_odds=2.0,
+        ),
+        scraped_at="2026-04-10T13:39:04.516801",
+    )
+
+    _register_test_scrapers(StubScraper("meridian", payload_by_league={"euroleague": []}))
+
+    await Scheduler(interval_minutes=1).run_cycle()
+
+    matches = await odds_store.get_matches()
+    status = await odds_store.get_system_status()
+
+    assert matches == []
+    assert status.total_matches == 0
+    assert status.total_odds == 0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_keeps_previous_snapshot_if_store_fails_mid_batch(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("old", "euroleague", "Bayern Munich", "Maccabi Tel Aviv")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="old",
+            bookmaker_id="meridian",
+            league_id="euroleague",
+            home_team="Bayern Munich",
+            away_team="Maccabi Tel Aviv",
+            market_type="player_points",
+            player_name="Saben Lee",
+            threshold=13.5,
+            over_odds=1.8,
+            under_odds=2.0,
+        ),
+        scraped_at="2026-04-10T13:39:04.516801",
+    )
+    await odds_store.set_current_snapshot("2026-04-10T13:39:04.516801")
+
+    original_upsert_odds = odds_store.upsert_odds
+    call_count = 0
+
+    async def failing_upsert_odds(odds, *, scraped_at):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise RuntimeError("simulated store failure")
+        return await original_upsert_odds(odds, scraped_at=scraped_at)
+
+    monkeypatch.setattr(odds_store, "upsert_odds", failing_upsert_odds)
+
+    _register_test_scrapers(
+        StubScraper(
+            "meridian",
+            payload_by_league={
+                "euroleague": [
+                    RawOddsData(
+                        bookmaker_id="meridian",
+                        league_id="euroleague",
+                        home_team="Maccabi Tel Aviv",
+                        away_team="Hapoel Tel-Aviv",
+                        market_type="player_points",
+                        player_name="Tamir Blatt",
+                        threshold=6.5,
+                        over_odds=2.09,
+                        under_odds=1.66,
+                        start_time="2030-01-01T20:00:00+00:00",
+                    ),
+                    RawOddsData(
+                        bookmaker_id="meridian",
+                        league_id="euroleague",
+                        home_team="Partizan",
+                        away_team="Crvena Zvezda",
+                        market_type="player_points",
+                        player_name="Iffe Lundberg",
+                        threshold=16.5,
+                        over_odds=1.85,
+                        under_odds=1.95,
+                        start_time="2030-01-01T21:00:00+00:00",
+                    ),
+                ]
+            },
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="simulated store failure"):
+        await Scheduler(interval_minutes=1).run_cycle()
+
+    matches = await odds_store.get_matches(limit=10)
+    status = await odds_store.get_system_status()
+
+    assert [match.id for match in matches] == ["old"]
+    assert status.last_scrape_at == "2026-04-10T13:39:04.516801"
 
 
 @pytest.mark.asyncio
