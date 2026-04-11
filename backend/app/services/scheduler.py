@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 
 from ..config import settings
+from ..models.schemas import RawOddsData
+from ..scrapers.base import BaseScraper
 from ..scrapers.registry import registry
 from ..services.normalizer import normalize_odds
 from ..services.analyzer import analyze
@@ -57,23 +60,61 @@ class Scheduler:
                 logger.exception("Scheduler cycle failed")
             await asyncio.sleep(self.interval_minutes * 60)
 
+    async def _scrape_one(
+        self, scraper: BaseScraper, league_id: str
+    ) -> list[RawOddsData]:
+        bookmaker_id = scraper.get_bookmaker_id()
+        started_at = time.perf_counter()
+
+        try:
+            raw = await scraper.scrape_odds(league_id)
+            if not isinstance(raw, list):
+                raise TypeError(
+                    f"Expected list[RawOddsData], got {type(raw).__name__}"
+                )
+            if not all(isinstance(item, RawOddsData) for item in raw):
+                raise TypeError("Expected list[RawOddsData] with valid items")
+        except Exception:
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            logger.exception(
+                "Scraper %s failed for league %s after %d ms",
+                bookmaker_id,
+                league_id,
+                duration_ms,
+            )
+            return []
+
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        logger.info(
+            "Scraper %s completed for league %s in %d ms (%d items)",
+            bookmaker_id,
+            league_id,
+            duration_ms,
+            len(raw),
+        )
+        return raw
+
     async def run_cycle(self) -> dict:
         """Execute one full scrape → normalize → analyze → store → notify cycle."""
+        cycle_started_at = time.perf_counter()
         logger.info("Starting scrape cycle at %s", datetime.utcnow().isoformat())
 
-        all_raw = []
         scrapers = registry.get_all()
-        for scraper in scrapers:
-            for league_id in scraper.get_supported_leagues():
-                try:
-                    raw = await scraper.scrape_odds(league_id)
-                    all_raw.extend(raw)
-                except Exception:
-                    logger.exception(
-                        "Scraper %s failed for league %s",
-                        scraper.get_bookmaker_id(),
-                        league_id,
-                    )
+        scrape_started_at = time.perf_counter()
+        scrape_tasks = [
+            self._scrape_one(scraper, league_id)
+            for scraper in scrapers
+            for league_id in scraper.get_supported_leagues()
+        ]
+        scrape_batches = await asyncio.gather(*scrape_tasks) if scrape_tasks else []
+        all_raw = [item for batch in scrape_batches for item in batch]
+        scrape_duration_ms = int((time.perf_counter() - scrape_started_at) * 1000)
+        logger.info(
+            "Scrape phase complete: %d tasks, %d raw items in %d ms",
+            len(scrape_tasks),
+            len(all_raw),
+            scrape_duration_ms,
+        )
 
         # Ensure bookmakers exist
         for scraper in scrapers:
@@ -129,6 +170,8 @@ class Scheduler:
             "odds_scraped": len(normalized),
             "discrepancies_found": len(discrepancies),
             "notifications_sent": notified,
+            "scrape_duration_ms": scrape_duration_ms,
+            "cycle_duration_ms": int((time.perf_counter() - cycle_started_at) * 1000),
         }
         logger.info("Cycle complete: %s", result)
         return result
