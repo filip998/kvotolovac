@@ -28,6 +28,15 @@ Copy `.env.example` to `.env` and adjust:
 | LOG_LEVEL | INFO | Logging level |
 | CORS_ORIGINS | * | Allowed CORS origins |
 | BOOKMAKERS | mozzart,meridian,maxbet | Active bookmakers |
+| SCRAPER_MODE | mock | `mock` for fixtures, `real` for live bookmaker scrapers |
+| RATE_LIMIT_PER_SECOND | 1.0 | Per-real-scraper request rate limit |
+| PROXY_LIST | (empty) | Comma-separated proxy URLs applied to each real scraper client |
+
+## Scrape throughput model
+
+- The scheduler runs scraper tasks concurrently at the top level, so slow bookmakers do not stall the whole scrape phase.
+- In `real` mode, each scraper gets its own `HttpClient`, so HTTP rate limiting is isolated per bookmaker instead of being shared globally across all bookmakers.
+- Normalization, storage, analysis, and notifications still run after scraping with the same downstream behavior as before.
 
 ## API Endpoints
 

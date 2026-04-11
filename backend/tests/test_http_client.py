@@ -153,3 +153,34 @@ async def test_get_json_rate_limit_is_concurrency_safe():
     assert elapsed < 0.3
 
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_is_isolated_per_http_client():
+    class RecordingTransport(httpx.AsyncBaseTransport):
+        def __init__(self) -> None:
+            self.started_at: list[float] = []
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            self.started_at.append(time.monotonic())
+            await asyncio.sleep(0.01)
+            return httpx.Response(200, json={"ok": True})
+
+    transport_a = RecordingTransport()
+    transport_b = RecordingTransport()
+    client_a = HttpClient(rate_limit_per_second=5)
+    client_b = HttpClient(rate_limit_per_second=5)
+    client_a._client = httpx.AsyncClient(transport=transport_a)
+    client_b._client = httpx.AsyncClient(transport=transport_b)
+
+    await asyncio.gather(
+        client_a.get_json("https://example.com/api/a"),
+        client_b.get_json("https://example.com/api/b"),
+    )
+
+    assert len(transport_a.started_at) == 1
+    assert len(transport_b.started_at) == 1
+    assert abs(transport_a.started_at[0] - transport_b.started_at[0]) < 0.08
+
+    await client_a.close()
+    await client_b.close()
