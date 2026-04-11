@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     scrape_interval_minutes: int = 10
     log_level: str = "INFO"
     cors_origins: str = "*"
-    bookmakers: str = "mozzart,meridian,maxbet,oktagonbet,admiralbet"
+    bookmakers: str = "mozzart,meridian,maxbet,oktagonbet,admiralbet,balkanbet,merkurxtip,pinnbet"
     notification_gap_threshold: float = 1.5
     scraper_mode: str = "mock"  # "mock" or "real"
     proxy_list: str = ""

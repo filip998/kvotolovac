@@ -1,0 +1,51 @@
+[
+  {
+    "id": 2160799,
+    "name": "Alfonso Plummer - KK Bosna",
+    "competitionId": 22317,
+    "regionId": 464,
+    "sportId": 3,
+    "mappingTypeId": 5,
+    "code": "59796",
+    "dateTime": "2026-04-11T16:00:00",
+    "betsCount": 3,
+    "isPlayable": true,
+    "systemStatus": 1,
+    "bets": [
+      {
+        "id": 395921243,
+        "eventId": 2160799,
+        "competitionId": 22317,
+        "regionId": 464
+      }
+    ]
+  },
+  {
+    "id": 2160800,
+    "name": "Marko Simonovic - KK Crvena Zvezda",
+    "competitionId": 22317,
+    "regionId": 464,
+    "sportId": 3,
+    "mappingTypeId": 5,
+    "code": "59797",
+    "dateTime": "2026-04-11T18:00:00",
+    "betsCount": 2,
+    "isPlayable": true,
+    "systemStatus": 1,
+    "bets": []
+  },
+  {
+    "id": 2160801,
+    "name": "KK Bosna - KK Crvena Zvezda",
+    "competitionId": 22317,
+    "regionId": 464,
+    "sportId": 3,
+    "mappingTypeId": 1,
+    "code": "59798",
+    "dateTime": "2026-04-11T16:00:00",
+    "betsCount": 50,
+    "isPlayable": true,
+    "systemStatus": 1,
+    "bets": []
+  }
+]

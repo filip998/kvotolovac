@@ -1,0 +1,48 @@
+{
+  "bets": [
+    {
+      "betTypeId": 1200,
+      "betTypeName": "Ukupno poena",
+      "sBV": "12.5",
+      "eventId": 2160799,
+      "feedStatus": true,
+      "systemStatus": true,
+      "betOutcomes": [
+        {
+          "betTypeId": 1200,
+          "betTypeOutcomeId": 3929,
+          "name": "manje",
+          "sBV": "12.5",
+          "odd": 2.40,
+          "isPlayable": true
+        },
+        {
+          "betTypeId": 1200,
+          "betTypeOutcomeId": 3928,
+          "name": "više",
+          "sBV": "12.5",
+          "odd": 1.50,
+          "isPlayable": true
+        }
+      ]
+    },
+    {
+      "betTypeId": 1201,
+      "betTypeName": "Nešto drugo",
+      "sBV": "5.5",
+      "eventId": 2160799,
+      "feedStatus": true,
+      "systemStatus": true,
+      "betOutcomes": [
+        {
+          "betTypeId": 1201,
+          "betTypeOutcomeId": 4000,
+          "name": "više",
+          "sBV": "5.5",
+          "odd": 1.80,
+          "isPlayable": true
+        }
+      ]
+    }
+  ]
+}

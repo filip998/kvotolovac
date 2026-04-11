@@ -1,0 +1,29 @@
+{
+  "data": {
+    "id": 2503489480,
+    "name": "A.Plummer (Bosna)",
+    "startsAt": "2026-04-11T16:00:00.000Z",
+    "categoryId": 2334,
+    "tournamentId": 29368,
+    "markets": [
+      {
+        "marketId": 2402,
+        "name": "POENI IGRAČA",
+        "specialValues": ["12.5"],
+        "outcomes": [
+          { "name": "Manje", "odds": 2.40 },
+          { "name": "Više", "odds": 1.50 }
+        ]
+      },
+      {
+        "marketId": 9999,
+        "name": "OTHER MARKET",
+        "specialValues": ["5.5"],
+        "outcomes": [
+          { "name": "Manje", "odds": 1.80 },
+          { "name": "Više", "odds": 1.90 }
+        ]
+      }
+    ]
+  }
+}

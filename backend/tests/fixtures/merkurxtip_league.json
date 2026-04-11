@@ -1,0 +1,44 @@
+{
+  "esMatches": [
+    {
+      "id": 132935920,
+      "home": "Dubljevic B.",
+      "away": "Zaragoza",
+      "kickOffTime": 1775923200000,
+      "odds": {"51681": 1.8, "51679": 1.9},
+      "params": {"ouPlPoints": "18.5"},
+      "leagueName": "ACB Igrači",
+      "leagueId": 2314422
+    },
+    {
+      "id": 132935921,
+      "home": "Smith J.",
+      "away": "Barcelona",
+      "kickOffTime": 1775923200000,
+      "odds": {"51681": 1.75, "51679": 1.95, "51685": 1.6, "51687": 2.1},
+      "params": {"ouPlPoints": "22.5", "ouPlRebounds": "5.5"},
+      "leagueName": "ACB Igrači",
+      "leagueId": 2314422
+    },
+    {
+      "id": 132935922,
+      "home": "Real Madrid",
+      "away": "Barcelona",
+      "kickOffTime": 1775923200000,
+      "odds": {"1": 1.5, "2": 2.5},
+      "params": {"total": "170.5"},
+      "leagueName": "ACB Liga",
+      "leagueId": 2314400
+    },
+    {
+      "id": 132935923,
+      "home": "Garcia M.",
+      "away": "Valencia",
+      "kickOffTime": 1775923200000,
+      "odds": {},
+      "params": {"ouPlPoints": "12.5"},
+      "leagueName": "ACB Igrači",
+      "leagueId": 2314422
+    }
+  ]
+}
