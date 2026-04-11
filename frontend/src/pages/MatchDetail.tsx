@@ -49,6 +49,14 @@ export default function MatchDetail() {
     marketGroups.push({ key, title, offers });
   }
 
+  const trackedPlayers = Array.from(
+    new Set(
+      (odds || [])
+        .map((offer) => offer.player_name)
+        .filter((playerName): playerName is string => Boolean(playerName))
+    )
+  ).sort((a, b) => a.localeCompare(b));
+
   // Filter discrepancies for this match
   const matchDiscrepancies = discrepancies?.filter((d) => d.match_id === id) || [];
 
@@ -85,8 +93,39 @@ export default function MatchDetail() {
               {matchDiscrepancies.length} discrepancies found
             </span>
           )}
+          <span className="rounded-full bg-gray-800 px-2 py-0.5 text-xs font-semibold text-gray-300">
+            {(odds || []).length} offers fetched
+          </span>
+          {trackedPlayers.length > 0 && (
+            <span className="rounded-full bg-gray-800 px-2 py-0.5 text-xs font-semibold text-gray-300">
+              {trackedPlayers.length} players tracked
+            </span>
+          )}
         </div>
       </div>
+
+      {trackedPlayers.length > 0 && (
+        <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-4">
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-300">
+              Tracked players
+            </h3>
+            <p className="text-sm text-gray-500">
+              These player names were fetched for this match, even if no discrepancies were found.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {trackedPlayers.map((player) => (
+              <span
+                key={player}
+                className="rounded-full border border-gray-700 bg-gray-950/50 px-3 py-1 text-sm text-gray-300"
+              >
+                {player}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Markets */}
       {marketGroups.length === 0 ? (

@@ -70,7 +70,15 @@ export function useDiscrepancy(id: number) {
 
 // --- Matches ---
 
-export function useMatches(params: { league?: string; status?: string } = {}) {
+export function useMatches(
+  params: {
+    league?: string;
+    status?: string;
+    limit?: number;
+    offset?: number;
+    loadAll?: boolean;
+  } = {}
+) {
   return useQuery<Match[]>({
     queryKey: ['matches', params],
     queryFn: async () => {
@@ -85,8 +93,27 @@ export function useMatches(params: { league?: string; status?: string } = {}) {
         }
         return results;
       }
-      const { data } = await client.get<Match[]>('/matches', { params });
-      return data;
+
+      if (!params.loadAll) {
+        const { data } = await client.get<Match[]>('/matches', { params });
+        return data;
+      }
+
+      const pageSize = params.limit ?? 200;
+      const initialOffset = params.offset ?? 0;
+      const allMatches: Match[] = [];
+
+      for (let offset = initialOffset; ; offset += pageSize) {
+        const { data } = await client.get<Match[]>('/matches', {
+          params: { ...params, limit: pageSize, offset },
+        });
+        allMatches.push(...data);
+        if (data.length < pageSize) {
+          break;
+        }
+      }
+
+      return allMatches;
     },
   });
 }

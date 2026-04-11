@@ -1,11 +1,12 @@
 import { useState, useMemo } from 'react';
-import { useDiscrepancies } from '../api/hooks';
+import { useDiscrepancies, useMatches } from '../api/hooks';
 import type { DiscrepancyFilters, Discrepancy } from '../api/types';
 import FilterBar from '../components/FilterBar';
 import SortControls from '../components/SortControls';
 import MatchAccordion from '../components/MatchAccordion';
 import LoadingSpinner from '../components/LoadingSpinner';
 import EmptyState from '../components/EmptyState';
+import TrackedMatchesPanel from '../components/TrackedMatchesPanel';
 
 interface MatchGroup {
   matchId: string;
@@ -40,6 +41,12 @@ export default function Dashboard() {
   };
 
   const { data: discrepancies, isLoading, isError, error } = useDiscrepancies(filters);
+  const {
+    data: matches,
+    isLoading: matchesLoading,
+    isError: matchesError,
+    error: matchesLoadError,
+  } = useMatches({ limit: 200, loadAll: true });
 
   // Group discrepancies by league, then by match
   const grouped = useMemo<LeagueGroup[]>(() => {
@@ -102,7 +109,17 @@ export default function Dashboard() {
           </p>
         </div>
       ) : !discrepancies || discrepancies.length === 0 ? (
-        <EmptyState />
+        <div className="space-y-6">
+          <EmptyState
+            title="No discrepancies right now"
+            message="Scraping may still be working normally. Check the tracked matches below to inspect fetched player markets and odds."
+          />
+          <TrackedMatchesPanel
+            matches={matches || []}
+            isLoading={matchesLoading}
+            errorMessage={matchesError ? (matchesLoadError as Error)?.message || 'Unknown error' : null}
+          />
+        </div>
       ) : (
         <div className="space-y-6">
           {grouped.map((lg) => (
@@ -134,6 +151,11 @@ export default function Dashboard() {
               )}
             </section>
           ))}
+          <TrackedMatchesPanel
+            matches={matches || []}
+            isLoading={matchesLoading}
+            errorMessage={matchesError ? (matchesLoadError as Error)?.message || 'Unknown error' : null}
+          />
         </div>
       )}
     </div>

@@ -322,9 +322,14 @@ export const mockDiscrepancies: Discrepancy[] = [
 ];
 
 export const mockSystemStatus: SystemStatus = {
+  status: 'ok',
+  last_scrape_at: ago(2),
   last_scrape: ago(2),
   total_matches: 6,
+  total_odds: mockOddsOffers.length,
   total_discrepancies: 10,
+  active_bookmakers: 3,
+  scheduler_running: true,
   active_discrepancies: 10,
   bookmaker_status: [
     { id: 'mozzart', name: 'Mozzart', last_scrape: ago(2), is_active: true },
