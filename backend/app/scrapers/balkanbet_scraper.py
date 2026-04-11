@@ -5,6 +5,7 @@ import logging
 import math
 import re
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from .base import BaseScraper
 from .http_client import HttpClient
@@ -50,8 +51,16 @@ _DEFAULT_PARAMS = {
 
 _UNLIMITED_DETAIL_CONCURRENCY = 10
 _MIN_DETAIL_CONCURRENCY = 2
+_REQUEST_TIMEZONE = ZoneInfo("Europe/Belgrade")
 
 _PLAYER_NAME_RE = re.compile(r"^(.+?)\s*\(([^)]+)\)\s*$")
+
+
+def _format_filter_from(dt: datetime | None = None) -> str:
+    """Return BalkanBet's accepted naive Belgrade-local timestamp format."""
+    if dt is None:
+        dt = datetime.now(tz=timezone.utc)
+    return dt.astimezone(_REQUEST_TIMEZONE).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _parse_player_name(name: str) -> tuple[str, str | None]:
@@ -209,7 +218,7 @@ class BalkanBetScraper(BaseScraper):
         if league_id != "basketball":
             return []
 
-        now_iso = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        now_iso = _format_filter_from()
         list_params = {**_DEFAULT_PARAMS, "filter[from]": now_iso}
 
         try:

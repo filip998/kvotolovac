@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -9,6 +11,7 @@ import pytest
 
 from app.scrapers.balkanbet_scraper import (
     BalkanBetScraper,
+    _format_filter_from,
     _parse_player_name,
     _parse_event_detail,
     _get_event_ids,
@@ -49,6 +52,12 @@ def test_normalize_start_time_none():
 
 def test_normalize_start_time_invalid():
     assert _normalize_start_time("not-a-date") == "not-a-date"
+
+
+def test_format_filter_from_uses_naive_utc_seconds():
+    assert _format_filter_from(datetime.fromisoformat("2026-04-11T19:53:04+00:00")) == (
+        "2026-04-11T21:53:04"
+    )
 
 
 # ── _parse_player_name ────────────────────────────────────
@@ -366,3 +375,23 @@ async def test_scraper_detail_failure_skipped():
     assert http_client.max_active > 1
     assert len(results) == 2
     assert all(r.player_name == "J.Doe" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_scraper_list_request_uses_live_accepted_filter_from_format():
+    scraper = BalkanBetScraper()
+    captured_params: list[dict] = []
+
+    async def mock_get(url, **kwargs):
+        captured_params.append(kwargs.get("params", {}))
+        return {"data": {"events": []}}
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert results == []
+    assert captured_params
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}",
+        captured_params[0]["filter[from]"],
+    )
