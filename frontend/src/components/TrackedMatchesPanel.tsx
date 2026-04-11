@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { Match } from '../api/types';
 import { formatDateTime } from '../utils/format';
@@ -13,7 +14,24 @@ export default function TrackedMatchesPanel({
   isLoading = false,
   errorMessage = null,
 }: TrackedMatchesPanelProps) {
-  const sortedMatches = [...matches].sort((a, b) => a.start_time.localeCompare(b.start_time));
+  const [referenceTimeMs, setReferenceTimeMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setReferenceTimeMs(Date.now());
+    }, 60_000);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  const upcomingMatches = matches.filter((match) => {
+    const startAt = Date.parse(match.start_time);
+    if (Number.isNaN(startAt)) {
+      return true;
+    }
+    return startAt >= referenceTimeMs;
+  });
+  const sortedMatches = [...upcomingMatches].sort((a, b) => a.start_time.localeCompare(b.start_time));
 
   return (
     <section className="space-y-4 rounded-xl border border-gray-800 bg-gray-900/30 p-4 sm:p-5">
@@ -21,8 +39,8 @@ export default function TrackedMatchesPanel({
         <div>
           <h3 className="text-lg font-bold text-white">Tracked matches</h3>
           <p className="text-sm text-gray-400">
-            No discrepancy is not the same as no scrape. Open a match to inspect fetched player
-            markets and bookmaker odds.
+            Upcoming fetched matches only. Open a match to inspect fetched player markets and
+            bookmaker odds.
           </p>
         </div>
         <span className="rounded-full bg-gray-800 px-2.5 py-1 text-xs font-medium text-gray-300">
@@ -40,7 +58,7 @@ export default function TrackedMatchesPanel({
         </div>
       ) : sortedMatches.length === 0 ? (
         <div className="rounded-lg border border-dashed border-gray-800 px-4 py-6 text-center text-sm text-gray-500">
-          No fetched matches are stored yet.
+          No upcoming fetched matches are stored right now.
         </div>
       ) : (
         <div className="grid gap-3">

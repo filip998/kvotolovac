@@ -17,7 +17,10 @@ function delay(ms = 300): Promise<void> {
 
 // --- Discrepancies ---
 
-export function useDiscrepancies(filters: DiscrepancyFilters = {}) {
+export function useDiscrepancies(
+  filters: DiscrepancyFilters = {},
+  options: { enabled?: boolean } = {}
+) {
   return useQuery<Discrepancy[]>({
     queryKey: ['discrepancies', filters],
     queryFn: async () => {
@@ -48,7 +51,8 @@ export function useDiscrepancies(filters: DiscrepancyFilters = {}) {
       const { data } = await client.get<Discrepancy[]>('/discrepancies', { params: filters });
       return data;
     },
-    refetchInterval: 30000,
+    enabled: options.enabled ?? true,
+    refetchInterval: options.enabled === false ? false : 30000,
   });
 }
 
@@ -77,7 +81,8 @@ export function useMatches(
     limit?: number;
     offset?: number;
     loadAll?: boolean;
-  } = {}
+  } = {},
+  options: { enabled?: boolean } = {}
 ) {
   return useQuery<Match[]>({
     queryKey: ['matches', params],
@@ -115,6 +120,7 @@ export function useMatches(
 
       return allMatches;
     },
+    enabled: options.enabled ?? true,
   });
 }
 
