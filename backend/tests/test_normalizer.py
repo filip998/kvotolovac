@@ -122,6 +122,205 @@ def test_normalize_odds_keeps_ambiguous_single_initial_players():
     ]
 
 
+def test_normalize_odds_keeps_ambiguous_short_prefix_players():
+    raw = [
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Dallas Mavericks",
+            market_type="player_points",
+            player_name="Jalen Williams",
+            threshold=18.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Dallas Mavericks",
+            market_type="player_assists",
+            player_name="Jalen Williams",
+            threshold=5.5,
+            over_odds=1.8,
+            under_odds=2.0,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="oktagon",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Dallas Mavericks",
+            market_type="player_points",
+            player_name="Jaylin Williams",
+            threshold=8.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Dallas Mavericks",
+            market_type="player_points",
+            player_name="Ja. Williams",
+            threshold=17.5,
+            over_odds=1.8,
+            under_odds=2.0,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert [offer.player_name for offer in normalized] == [
+        "Jalen Williams",
+        "Jalen Williams",
+        "Jaylin Williams",
+        "Ja. Williams",
+    ]
+
+
+def test_normalize_odds_resolves_unique_match_local_player_variants():
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Phoenix Suns",
+            market_type="player_assists",
+            player_name="Aaron Wiggins",
+            threshold=2.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Phoenix Suns",
+            market_type="player_assists",
+            player_name="Aar.Wiggins",
+            threshold=2.5,
+            over_odds=1.7,
+            under_odds=2.0,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Phoenix Suns",
+            market_type="player_assists",
+            player_name="Jalen Green",
+            threshold=4.5,
+            over_odds=1.95,
+            under_odds=1.75,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Phoenix Suns",
+            market_type="player_assists",
+            player_name="Jal.Green",
+            threshold=4.5,
+            over_odds=1.9,
+            under_odds=1.8,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Phoenix Suns",
+            market_type="player_assists",
+            player_name="Mark Williams",
+            threshold=7.5,
+            over_odds=1.88,
+            under_odds=1.92,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Phoenix Suns",
+            market_type="player_assists",
+            player_name="Mar.Williams",
+            threshold=7.5,
+            over_odds=1.82,
+            under_odds=1.98,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert [offer.player_name for offer in normalized] == [
+        "Aaron Wiggins",
+        "Aaron Wiggins",
+        "Jalen Green",
+        "Jalen Green",
+        "Mark Williams",
+        "Mark Williams",
+    ]
+
+
+def test_normalize_odds_prefers_more_supported_full_name_variant():
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Phoenix Suns",
+            market_type="player_assists",
+            player_name="Aaron Wiggins",
+            threshold=2.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Phoenix Suns",
+            market_type="player_points",
+            player_name="Aaron Wiggins",
+            threshold=9.5,
+            over_odds=1.9,
+            under_odds=1.8,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Phoenix Suns",
+            market_type="player_assists",
+            player_name="Arron Wiggins",
+            threshold=2.5,
+            over_odds=1.7,
+            under_odds=2.0,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert [offer.player_name for offer in normalized] == [
+        "Aaron Wiggins",
+        "Aaron Wiggins",
+        "Aaron Wiggins",
+    ]
+
+
 def test_normalize_player_none():
     assert normalize_player_name(None) is None
     assert normalize_player_name("") is None

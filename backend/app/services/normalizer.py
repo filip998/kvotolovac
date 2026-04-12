@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
+import unicodedata
+from collections import Counter, defaultdict
 
 from thefuzz import fuzz
 
@@ -214,6 +217,166 @@ def normalize_player_name(raw_name: str | None) -> str | None:
     return best_match
 
 
+def _normalize_person_tokens(name: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKD", name)
+    ascii_name = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    cleaned = re.sub(r"[^a-z0-9\s-]+", " ", ascii_name.lower().replace("_", " "))
+    return [token.strip("-") for token in cleaned.split() if token.strip("-")]
+
+
+def _player_name_parts(name: str) -> tuple[list[str], str] | None:
+    tokens = _normalize_person_tokens(name)
+    if len(tokens) < 2:
+        return None
+    return tokens[:-1], tokens[-1]
+
+
+def _player_name_completeness(first_tokens: list[str]) -> int:
+    return sum(len(token) for token in first_tokens if len(token) > 1)
+
+
+def _has_multiple_initials(first_tokens: list[str]) -> bool:
+    return len(first_tokens) > 1 and all(len(token) == 1 for token in first_tokens)
+
+
+def _is_contextual_player_match(raw_name: str, candidate_name: str) -> bool:
+    raw_parts = _player_name_parts(raw_name)
+    candidate_parts = _player_name_parts(candidate_name)
+    if not raw_parts or not candidate_parts:
+        return False
+
+    raw_first_tokens, raw_last_name = raw_parts
+    candidate_first_tokens, candidate_last_name = candidate_parts
+    if (
+        not raw_first_tokens
+        or not candidate_first_tokens
+        or raw_last_name != candidate_last_name
+        or _has_multiple_initials(raw_first_tokens)
+    ):
+        return False
+
+    raw_first = raw_first_tokens[0]
+    candidate_first = candidate_first_tokens[0]
+    if raw_first == candidate_first:
+        return True
+    if len(raw_first) == 1:
+        return False
+    if candidate_first.startswith(raw_first) or raw_first.startswith(candidate_first):
+        return True
+    return raw_first[0] == candidate_first[0] and fuzz.ratio(raw_first, candidate_first) >= 80
+
+
+def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOddsData]:
+    names_by_match_and_surname: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+
+    for raw in raw_list:
+        if not raw.player_name:
+            continue
+
+        parts = _player_name_parts(raw.player_name)
+        if not parts:
+            continue
+
+        league_id = normalize_league_id(raw.league_id)
+        home_team = normalize_team_name(raw.home_team, league_id)
+        away_team = normalize_team_name(raw.away_team, league_id)
+        match_id = generate_match_id(home_team, away_team, league_id)
+        _, last_name = parts
+        names_by_match_and_surname[(match_id, last_name)][raw.player_name.strip()] += 1
+
+    replacements: dict[tuple[str, str], str] = {}
+
+    for match_and_surname, name_counts in names_by_match_and_surname.items():
+        observed_names = list(name_counts)
+        for raw_name in observed_names:
+            raw_parts = _player_name_parts(raw_name)
+            if not raw_parts:
+                continue
+
+            raw_first_tokens, _ = raw_parts
+            raw_completeness = _player_name_completeness(raw_first_tokens)
+            candidates = [
+                candidate
+                for candidate in observed_names
+                if candidate != raw_name and _is_contextual_player_match(raw_name, candidate)
+            ]
+            if not candidates:
+                continue
+            candidate_first_names = {
+                _player_name_parts(candidate)[0][0] for candidate in candidates if _player_name_parts(candidate)
+            }
+            if len(candidate_first_names) > 1:
+                continue
+
+            ranked = sorted(
+                candidates,
+                key=lambda candidate: (
+                    name_counts[candidate],
+                    _player_name_completeness(_player_name_parts(candidate)[0]),
+                    len(candidate.strip()),
+                    candidate,
+                ),
+                reverse=True,
+            )
+            best_candidate = ranked[0]
+            best_parts = _player_name_parts(best_candidate)
+            if not best_parts:
+                continue
+            best_completeness = _player_name_completeness(best_parts[0])
+            if best_completeness < raw_completeness:
+                continue
+            if best_completeness == raw_completeness and name_counts[best_candidate] <= name_counts[raw_name]:
+                continue
+
+            if len(ranked) > 1:
+                runner_up = ranked[1]
+                runner_up_parts = _player_name_parts(runner_up)
+                if runner_up_parts and (
+                    name_counts[runner_up],
+                    _player_name_completeness(runner_up_parts[0]),
+                    len(runner_up.strip()),
+                ) == (
+                    name_counts[best_candidate],
+                    best_completeness,
+                    len(best_candidate.strip()),
+                ):
+                    continue
+
+            replacements[(match_and_surname[0], raw_name)] = best_candidate
+
+    resolved: list[RawOddsData] = []
+    for raw in raw_list:
+        if not raw.player_name:
+            resolved.append(raw)
+            continue
+
+        league_id = normalize_league_id(raw.league_id)
+        home_team = normalize_team_name(raw.home_team, league_id)
+        away_team = normalize_team_name(raw.away_team, league_id)
+        match_id = generate_match_id(home_team, away_team, league_id)
+        replacement = replacements.get((match_id, raw.player_name.strip()))
+        if not replacement:
+            resolved.append(raw)
+            continue
+
+        resolved.append(
+            RawOddsData(
+                bookmaker_id=raw.bookmaker_id,
+                league_id=raw.league_id,
+                home_team=raw.home_team,
+                away_team=raw.away_team,
+                market_type=raw.market_type,
+                player_name=replacement,
+                threshold=raw.threshold,
+                over_odds=raw.over_odds,
+                under_odds=raw.under_odds,
+                start_time=raw.start_time,
+            )
+        )
+
+    return resolved
+
+
 def normalize_league_id(raw_league_id: str) -> str:
     key = " ".join(
         raw_league_id.strip().lower().replace("_", " ").replace("-", " ").split()
@@ -336,7 +499,9 @@ def _resolve_shared_platform_matchups(raw_list: list[RawOddsData]) -> list[RawOd
     return resolved
 def normalize_odds(raw_list: list[RawOddsData]) -> list[NormalizedOdds]:
     results: list[NormalizedOdds] = []
-    resolved_raw_list = _resolve_shared_platform_matchups(raw_list)
+    resolved_raw_list = _resolve_contextual_player_names(
+        _resolve_shared_platform_matchups(raw_list)
+    )
     for raw in resolved_raw_list:
         league_id = normalize_league_id(raw.league_id)
         home = normalize_team_name(raw.home_team, league_id)
