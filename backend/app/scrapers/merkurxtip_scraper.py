@@ -100,6 +100,7 @@ _FIXED_POINTS_LADDERS = [
 ]
 
 _KNOWN_LEAGUE_IDS: list[int] = [
+    2314461,  # NBA Igrači
     2314422,  # ACB Igrači
 ]
 
