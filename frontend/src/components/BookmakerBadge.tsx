@@ -2,7 +2,7 @@ const BOOKMAKER_CONFIG: Record<string, { initials: string; logoSrc?: string }> =
   mozzart: { initials: 'MZ', logoSrc: '/bookmaker-logos/mozzart.png' },
   meridian: { initials: 'MR', logoSrc: '/bookmaker-logos/meridian.png' },
   maxbet: { initials: 'MB', logoSrc: '/bookmaker-logos/maxbet.png' },
-  oktagonbet: { initials: 'OK', logoSrc: '/bookmaker-logos/oktagonbet.svg' },
+  oktagonbet: { initials: 'OK', logoSrc: '/bookmaker-logos/oktagonbet.png' },
   admiralbet: { initials: 'AD', logoSrc: '/bookmaker-logos/admiralbet.png' },
   balkanbet: { initials: 'BB', logoSrc: '/bookmaker-logos/balkanbet.png' },
   merkurxtip: { initials: 'MX', logoSrc: '/bookmaker-logos/merkurxtip.png' },
