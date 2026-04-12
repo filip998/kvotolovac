@@ -1,77 +1,124 @@
 import { Link } from 'react-router-dom';
+import BookmakerBadge from '../components/BookmakerBadge';
+import PageShell from '../components/PageShell';
+
+const bookmakers = [
+  'Mozzart',
+  'Meridian',
+  'MaxBet',
+  'OktagonBet',
+  'AdmiralBet',
+  'BalkanBet',
+  'MerkurXTip',
+  'PinnBet',
+];
+
+const pillars = [
+  {
+    title: 'Continuous monitoring',
+    body: 'The backend scheduler keeps cycling through bookmaker sources, storing fresh snapshots and exposing progress so the frontend never feels stale or opaque.',
+  },
+  {
+    title: 'Smart normalization',
+    body: 'Teams, players, leagues, and market types are normalized before analysis so cross-bookmaker comparisons stay trustworthy.',
+  },
+  {
+    title: 'Discrepancy detection',
+    body: 'Threshold gaps are ranked by profit margin so the highest-value middles float to the top of the board immediately.',
+  },
+  {
+    title: 'Drill-down inspection',
+    body: 'Every tracked match can be opened to review full fetched odds, player coverage, and discrepancy-linked lines even when the surface board is quiet.',
+  },
+];
 
 export default function About() {
   return (
-    <div className="mx-auto max-w-2xl space-y-8">
-      <div>
-        <div className="mb-4 text-center text-5xl">🎯</div>
-        <h2 className="text-center text-2xl font-bold text-white">KvotoLovac</h2>
-        <p className="mt-1 text-center text-sm text-brand-400">Odds Hunter</p>
-      </div>
-
-      <div className="space-y-4 text-sm leading-relaxed text-gray-400">
-        <p>
-          <strong className="text-white">KvotoLovac</strong> (Odds Hunter) is an odds comparison
-          tool designed for Serbian bookmakers. It monitors basketball betting lines across
-          multiple bookmakers and detects discrepancies — situations where different bookmakers
-          offer odds on the same market with different thresholds.
-        </p>
-
-        <h3 className="pt-4 text-lg font-semibold text-white">How It Works</h3>
-        <ol className="list-inside list-decimal space-y-2">
-          <li>
-            <strong className="text-gray-200">Scraping:</strong> The system periodically scrapes
-            odds from Serbian bookmakers (Mozzart, Meridian, MaxBet).
-          </li>
-          <li>
-            <strong className="text-gray-200">Comparison:</strong> For each market (player
-            points, game totals), it compares thresholds and odds across bookmakers.
-          </li>
-          <li>
-            <strong className="text-gray-200">Detection:</strong> When a threshold gap is found
-            (e.g., one bookmaker offers Over 18.5 while another offers Under 20.5), the system
-            calculates the profit margin.
-          </li>
-          <li>
-            <strong className="text-gray-200">Alerting:</strong> Discrepancies are ranked by
-            profit margin and displayed on the dashboard.
-          </li>
-        </ol>
-
-        <h3 className="pt-4 text-lg font-semibold text-white">Understanding Discrepancies</h3>
-        <p>
-          A <strong className="text-brand-400">discrepancy</strong> occurs when two bookmakers
-          set different thresholds for the same player/market. For example:
-        </p>
-        <div className="rounded-lg border border-gray-800 bg-gray-900/50 p-4 font-mono text-xs">
-          <div className="text-gray-300">Mozzart: Vezenkov Points Over 18.5 @ 1.85</div>
-          <div className="text-gray-300">Meridian: Vezenkov Points Under 20.5 @ 1.90</div>
-          <div className="mt-2 text-brand-400">
-            → Gap: 2.0 pts | Both bets win if Vezenkov scores 19 or 20 points
+    <PageShell
+      eyebrow="About the platform"
+      title="A disciplined market radar for basketball props."
+      description="KvotoLovac turns noisy bookmaker feeds into a readable board of threshold gaps, match coverage, and real-time scan status. It is built for bettors and analysts who care more about fast pattern recognition than sportsbook spectacle."
+      aside={
+        <div className="space-y-5">
+          <div>
+            <p className="text-sm text-slate-400">Coverage</p>
+            <p className="mt-2 text-3xl font-semibold text-white">8</p>
+            <p className="mt-2 text-sm text-slate-400">supported bookmaker integrations in code</p>
+          </div>
+          <div className="rounded-lg border border-line-700/70 bg-ink-950 px-4 py-3 text-sm text-slate-400">
+            Current focus: basketball player props, game totals, and discrepancy-first scanning
+            across Serbian books.
           </div>
         </div>
-
-        <h3 className="pt-4 text-lg font-semibold text-white">Supported Bookmakers</h3>
-        <div className="grid grid-cols-3 gap-3">
-          {['Mozzart', 'Meridian', 'MaxBet'].map((name) => (
-            <div
-              key={name}
-              className="rounded-lg border border-gray-800 bg-gray-900/50 p-3 text-center font-medium text-gray-200"
+      }
+    >
+      <div className="space-y-6">
+        <section className="grid gap-4 lg:grid-cols-2">
+          {pillars.map((pillar) => (
+            <article
+              key={pillar.title}
+              className="rounded-xl border border-line-700/70 bg-ink-900 p-6"
             >
-              {name}
-            </div>
+              <p className="text-xs text-slate-400">System pillar</p>
+              <h3 className="mt-3 text-xl font-semibold text-white">{pillar.title}</h3>
+              <p className="mt-3 text-sm leading-7 text-slate-400">{pillar.body}</p>
+            </article>
           ))}
-        </div>
-      </div>
+        </section>
 
-      <div className="text-center">
-        <Link
-          to="/"
-          className="inline-block rounded-lg bg-brand-600 px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-500"
-        >
-          Go to Dashboard →
-        </Link>
+        <section className="rounded-xl border border-line-700/70 bg-ink-900 p-6">
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+            <div>
+              <p className="text-sm text-slate-400">Example opportunity</p>
+              <h3 className="mt-3 text-xl font-semibold text-white">Why threshold gaps matter more than raw odds.</h3>
+              <p className="mt-3 text-sm leading-7 text-slate-400">
+                If one bookmaker lists a player line at Over 18.5 and another shows Under 20.5, a
+                narrow scoring band can let both bets win. KvotoLovac surfaces those windows,
+                ranks them by profit margin, and links straight into the underlying market tables.
+              </p>
+            </div>
+            <div className="rounded-xl border border-line-700/70 bg-ink-950 p-5">
+              <div className="space-y-3 font-mono text-sm text-slate-100">
+                <div className="rounded-lg border border-line-700/70 bg-ink-950 px-4 py-3">
+                  Mozzart → Over 18.5 @ 1.85
+                </div>
+                <div className="rounded-lg border border-line-700/70 bg-ink-950 px-4 py-3">
+                  Meridian → Under 20.5 @ 1.90
+                </div>
+              </div>
+              <p className="mt-4 text-sm leading-6 text-slate-200">
+                If the player lands on 19 or 20, both tickets cash. That is the core signal the
+                dashboard is designed to expose quickly.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-line-700/70 bg-ink-900 p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm text-slate-400">Supported bookmakers</p>
+              <h3 className="mt-3 text-xl font-semibold text-white">Current integrations</h3>
+            </div>
+            <Link
+              to="/"
+              className="rounded-lg border border-line-700/70 bg-ink-950 px-4 py-2 text-sm font-medium text-slate-200 transition hover:border-line-500 hover:text-white"
+            >
+              Back to dashboard
+            </Link>
+          </div>
+          <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {bookmakers.map((name) => (
+              <div
+                key={name}
+                className="rounded-lg border border-line-700/70 bg-ink-950 px-4 py-4"
+              >
+                <BookmakerBadge name={name} />
+              </div>
+            ))}
+          </div>
+        </section>
       </div>
-    </div>
+    </PageShell>
   );
 }

@@ -16,9 +16,9 @@ export default function SortControls({ filters, onChange }: SortControlsProps) {
   const currentOrder = filters.sort_order || 'desc';
 
   return (
-    <div className="flex items-center gap-2">
-      <span className="text-xs font-medium text-gray-500">Sort:</span>
-      <div className="flex flex-wrap gap-1">
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-sm font-medium text-slate-300">Sort by</span>
+      <div className="flex flex-wrap gap-2">
         {SORT_OPTIONS.map((opt) => (
           <button
             key={opt.value}
@@ -29,10 +29,10 @@ export default function SortControls({ filters, onChange }: SortControlsProps) {
                 onChange({ ...filters, sort_by: opt.value, sort_order: 'desc' });
               }
             }}
-            className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
+            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${
               currentSort === opt.value
-                ? 'bg-brand-600/20 text-brand-400'
-                : 'text-gray-500 hover:bg-gray-800 hover:text-gray-300'
+                ? 'border-line-500 bg-white/[0.05] text-white'
+                : 'border-line-700/70 bg-ink-950 text-slate-400 hover:border-line-600 hover:text-slate-200'
             }`}
           >
             {opt.label}

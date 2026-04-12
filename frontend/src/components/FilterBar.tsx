@@ -15,14 +15,15 @@ export default function FilterBar({ filters, onChange }: FilterBarProps) {
   };
 
   return (
-    <div className="flex flex-wrap items-end gap-3">
-      {/* League */}
-      <div className="min-w-[140px] flex-1 sm:flex-none">
-        <label className="mb-1 block text-xs font-medium text-gray-500">League</label>
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.15fr)_auto]">
+      <div>
+        <label className="mb-2 block text-sm font-medium text-slate-300">
+          League
+        </label>
         <select
           value={filters.league || ''}
           onChange={(e) => update({ league: e.target.value || undefined })}
-          className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 outline-none transition focus:border-brand-500"
+          className="w-full rounded-lg border border-line-700/70 bg-ink-950 px-3 py-2.5 text-sm text-slate-100 outline-none transition focus:border-line-500"
         >
           <option value="">All Leagues</option>
           {leagues?.map((l) => (
@@ -33,17 +34,18 @@ export default function FilterBar({ filters, onChange }: FilterBarProps) {
         </select>
       </div>
 
-      {/* Market Type */}
-      <div className="min-w-[140px] flex-1 sm:flex-none">
-        <label className="mb-1 block text-xs font-medium text-gray-500">Market Type</label>
+      <div>
+        <label className="mb-2 block text-sm font-medium text-slate-300">
+          Market
+        </label>
         <select
           value={filters.market_type || ''}
           onChange={(e) =>
             update({
               market_type: e.target.value ? (e.target.value as MarketType) : undefined,
-            })
+              })
           }
-          className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 outline-none transition focus:border-brand-500"
+          className="w-full rounded-lg border border-line-700/70 bg-ink-950 px-3 py-2.5 text-sm text-slate-100 outline-none transition focus:border-line-500"
         >
           <option value="">All Markets</option>
           {MARKET_TYPES.map((marketType) => (
@@ -54,10 +56,12 @@ export default function FilterBar({ filters, onChange }: FilterBarProps) {
         </select>
       </div>
 
-      {/* Min Gap */}
-      <div className="min-w-[120px] flex-1 sm:flex-none">
-        <label className="mb-1 block text-xs font-medium text-gray-500">
-          Min Gap: <span className="font-mono text-gray-300">{filters.min_gap?.toFixed(1) || '0.0'}</span>
+      <div>
+        <label className="mb-2 flex items-center justify-between text-sm font-medium text-slate-300">
+          <span>Minimum gap</span>
+          <span className="font-mono text-sm tracking-normal text-white">
+            {filters.min_gap?.toFixed(1) || '0.0'} pts
+          </span>
         </label>
         <input
           type="range"
@@ -66,17 +70,18 @@ export default function FilterBar({ filters, onChange }: FilterBarProps) {
           step="0.5"
           value={filters.min_gap || 0}
           onChange={(e) => update({ min_gap: parseFloat(e.target.value) || undefined })}
-          className="w-full accent-brand-500"
+          className="mt-2 h-2 w-full cursor-pointer appearance-none rounded-full bg-ink-800"
         />
       </div>
 
-      {/* Reset */}
-      <button
-        onClick={() => onChange({ sort_by: 'profit_margin', sort_order: 'desc' })}
-        className="rounded-lg border border-gray-700 bg-gray-800/50 px-3 py-2 text-sm text-gray-400 transition hover:border-gray-600 hover:text-gray-200"
-      >
-        Reset
-      </button>
+      <div className="flex items-end">
+        <button
+          onClick={() => onChange({ sort_by: 'profit_margin', sort_order: 'desc' })}
+          className="w-full rounded-lg border border-line-700/70 bg-ink-950 px-4 py-2.5 text-sm font-medium text-slate-300 transition hover:border-line-500 hover:text-white"
+        >
+          Reset filters
+        </button>
+      </div>
     </div>
   );
 }

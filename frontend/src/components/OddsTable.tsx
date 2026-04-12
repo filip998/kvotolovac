@@ -1,5 +1,6 @@
 import type { OddsOffer, Discrepancy } from '../api/types';
 import { formatOdds, formatThreshold } from '../utils/format';
+import BookmakerBadge from './BookmakerBadge';
 
 interface OddsTableProps {
   offers: OddsOffer[];
@@ -21,18 +22,23 @@ export default function OddsTable({ offers, discrepancies = [], title }: OddsTab
     discrepancyKeys.has(`${bookId}-${threshold}`);
 
   return (
-    <div className="rounded-xl border border-gray-800 bg-gray-900/30 overflow-hidden">
-      <div className="border-b border-gray-800 px-4 py-3">
-        <h4 className="text-sm font-semibold text-white">{title}</h4>
+    <div className="overflow-hidden rounded-xl border border-line-700/70 bg-ink-900">
+      <div className="border-b border-line-700/70 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h4 className="text-base font-semibold text-white">{title}</h4>
+          <span className="rounded-full border border-line-700/70 bg-ink-950 px-3 py-1 text-xs font-medium text-slate-400">
+            {offers.length} offers
+          </span>
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-gray-800 text-left text-xs text-gray-500">
-              <th className="px-4 py-2.5 font-medium">Bookmaker</th>
-              <th className="px-4 py-2.5 font-medium text-right">Threshold</th>
-              <th className="px-4 py-2.5 font-medium text-right">Over</th>
-              <th className="px-4 py-2.5 font-medium text-right">Under</th>
+            <tr className="border-b border-line-700/70 text-left text-xs font-medium text-slate-500">
+              <th className="px-4 py-3">Bookmaker</th>
+              <th className="px-4 py-3 text-right">Threshold</th>
+              <th className="px-4 py-3 text-right">Over</th>
+              <th className="px-4 py-3 text-right">Under</th>
             </tr>
           </thead>
           <tbody>
@@ -41,24 +47,29 @@ export default function OddsTable({ offers, discrepancies = [], title }: OddsTab
               return (
                 <tr
                   key={offer.id}
-                  className={`border-b border-gray-800/50 transition ${
+                  className={`border-b border-line-700/50 transition ${
                     highlighted
-                      ? 'bg-brand-500/5'
-                      : 'hover:bg-gray-800/30'
+                      ? 'bg-white/[0.04]'
+                      : 'hover:bg-white/[0.03]'
                   }`}
                 >
-                  <td className="px-4 py-2.5">
-                    <span className={`font-medium ${highlighted ? 'text-brand-400' : 'text-gray-300'}`}>
-                      {offer.bookmaker_name}
-                    </span>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      <BookmakerBadge name={offer.bookmaker_name} compact />
+                      {highlighted && (
+                        <span className="rounded-full border border-line-600 bg-white/[0.04] px-2 py-1 text-[10px] font-medium text-slate-200">
+                          Opportunity
+                        </span>
+                      )}
+                    </div>
                   </td>
-                  <td className="px-4 py-2.5 text-right font-mono text-gray-300">
+                  <td className="px-4 py-3 text-right font-mono text-slate-300">
                     {formatThreshold(offer.threshold)}
                   </td>
-                  <td className="px-4 py-2.5 text-right font-mono font-semibold text-white">
+                  <td className="px-4 py-3 text-right font-mono font-semibold text-white">
                     {formatOdds(offer.over_odds)}
                   </td>
-                  <td className="px-4 py-2.5 text-right font-mono font-semibold text-white">
+                  <td className="px-4 py-3 text-right font-mono font-semibold text-white">
                     {formatOdds(offer.under_odds)}
                   </td>
                 </tr>

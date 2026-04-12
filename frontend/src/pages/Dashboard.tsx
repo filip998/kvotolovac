@@ -7,6 +7,7 @@ import SortControls from '../components/SortControls';
 import MatchAccordion from '../components/MatchAccordion';
 import LoadingSpinner from '../components/LoadingSpinner';
 import EmptyState from '../components/EmptyState';
+import PageShell from '../components/PageShell';
 import TrackedMatchesPanel from '../components/TrackedMatchesPanel';
 
 interface MatchGroup {
@@ -114,137 +115,177 @@ export default function Dashboard() {
     return result;
   }, [discrepancies]);
 
+  const discrepancyCount = discrepancies?.length ?? 0;
+
   return (
-    <div className="space-y-6">
-      {/* Title */}
-      <div>
-        <h2 className="text-xl font-bold text-white sm:text-2xl">
-          {activeTab === 'discrepancies' ? 'Discrepancy Dashboard' : 'Tracked Odds Dashboard'}
-        </h2>
-        <p className="text-sm text-gray-500">
-          {activeTab === 'discrepancies'
-            ? 'Find profitable odds gaps across Serbian bookmakers'
-            : 'Inspect upcoming fetched matches and open per-match player odds even when no discrepancies exist'}
-        </p>
-      </div>
-
-      <div className="rounded-xl border border-gray-800 bg-gray-900/30 p-2">
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            onClick={() => setActiveTab('discrepancies')}
-            className={`rounded-lg px-4 py-3 text-sm font-semibold transition ${
-              activeTab === 'discrepancies'
-                ? 'bg-brand-600/20 text-brand-300'
-                : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-            }`}
-          >
-            Discrepancies
-          </button>
-          <button
-            onClick={() => setActiveTab('tracked')}
-            className={`rounded-lg px-4 py-3 text-sm font-semibold transition ${
-              activeTab === 'tracked'
-                ? 'bg-brand-600/20 text-brand-300'
-                : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-            }`}
-          >
-            Tracked Odds
-          </button>
-        </div>
-      </div>
-
-      {activeTab === 'discrepancies' && (
-        <div className="space-y-3 rounded-xl border border-gray-800 bg-gray-900/30 p-4">
-          <FilterBar filters={filters} onChange={setFilters} />
-          <div className="border-t border-gray-800 pt-3">
-            <SortControls filters={filters} onChange={setFilters} />
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'discrepancies' ? (
-        isLoading ? (
-          <LoadingSpinner />
-        ) : isInitialScanInProgress && (isTimeoutError || !discrepancies || discrepancies.length === 0) ? (
-          <div className="rounded-xl border border-brand-500/20 bg-brand-500/10 p-6">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h3 className="text-base font-semibold text-white">Initial scan in progress</h3>
-                <p className="text-sm text-gray-300">
-                  The backend is warming up and scraping bookmakers for the first snapshot. This
-                  page will populate automatically when the scan completes.
-                </p>
-              </div>
-              <div className="text-sm text-brand-300">
-                {status.scan.completed_tasks}/{status.scan.total_tasks} finished
-                {status.scan.failed_tasks > 0 ? ` · ${status.scan.failed_tasks} failed` : ''}
-              </div>
-            </div>
-            <div className="mt-4 h-2 overflow-hidden rounded-full bg-gray-800">
-              <div
-                className="h-full rounded-full bg-brand-400 transition-all"
-                style={{
-                  width: `${status.scan.total_tasks > 0 ? Math.max(5, Math.round((status.scan.completed_tasks / status.scan.total_tasks) * 100)) : 10}%`,
-                }}
-              />
-            </div>
-            <p className="mt-2 text-xs uppercase tracking-wide text-gray-400">
-              Phase: {status.scan.phase}
+    <PageShell
+      eyebrow="Live discrepancy board"
+      title={
+        activeTab === 'discrepancies'
+          ? 'Find exploitable line gaps before the market closes.'
+          : 'Inspect the stored board even when no gap is flashing.'
+      }
+      description={
+        activeTab === 'discrepancies'
+          ? 'Group the current snapshot by league and matchup, then work downward from the highest-margin thresholds. Filters stay lightweight so the board remains fast to scan.'
+          : 'Open tracked matches to review player markets, current bookmaker prices, and any discrepancy-linked lines already captured by the backend.'
+      }
+      aside={
+        <div className="space-y-4">
+          <div>
+            <p className="text-sm text-slate-400">Board summary</p>
+            <p className="mt-2 text-3xl font-semibold text-white">
+              {activeTab === 'discrepancies' ? discrepancyCount : status?.total_matches ?? 0}
+            </p>
+            <p className="mt-2 text-sm text-slate-400">
+              {activeTab === 'discrepancies' ? 'live discrepancies on board' : 'matches in the active snapshot'}
             </p>
           </div>
-        ) : isError ? (
-          <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-6 text-center">
-            <p className="text-sm text-red-400">
-              Failed to load discrepancies: {(error as Error)?.message || 'Unknown error'}
-            </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-lg border border-line-700/70 bg-ink-950 px-3 py-4">
+              <div className="text-2xl font-semibold text-white">
+                {grouped.length}
+              </div>
+              <div className="mt-1 text-xs text-slate-500">leagues</div>
+            </div>
+            <div className="rounded-lg border border-line-700/70 bg-ink-950 px-3 py-4">
+              <div className="text-2xl font-semibold text-white">
+                {status?.scan.in_progress ? status.scan.phase : 'idle'}
+              </div>
+              <div className="mt-1 text-xs text-slate-500">scan phase</div>
+            </div>
           </div>
-        ) : !discrepancies || discrepancies.length === 0 ? (
-          <div className="space-y-6">
+          <div className="rounded-lg border border-line-700/70 bg-ink-950 px-4 py-3 text-sm leading-6 text-slate-400">
+            {status?.scan.in_progress
+              ? `The backend is currently ${status.scan.phase}. Progress is reflected live in the status rail above.`
+              : 'Use the discrepancy board for opportunity-first scanning, then jump to tracked matches when you need the wider market context.'}
+          </div>
+        </div>
+      }
+    >
+      <div className="space-y-6">
+        <section className="rounded-xl border border-line-700/70 bg-ink-900 p-3">
+          <div className="grid gap-3 lg:grid-cols-[auto_1fr]">
+            <div className="inline-flex rounded-lg border border-line-700/70 bg-ink-950 p-1">
+              <button
+                onClick={() => setActiveTab('discrepancies')}
+                className={`rounded-md px-4 py-2.5 text-sm font-medium transition ${
+                  activeTab === 'discrepancies'
+                    ? 'bg-ink-750 text-white'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Discrepancies
+              </button>
+              <button
+                onClick={() => setActiveTab('tracked')}
+                className={`rounded-md px-4 py-2.5 text-sm font-medium transition ${
+                  activeTab === 'tracked'
+                    ? 'bg-ink-750 text-white'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Tracked odds
+              </button>
+            </div>
+            {activeTab === 'discrepancies' && (
+              <div className="rounded-lg border border-line-700/70 bg-ink-950 p-4">
+                <FilterBar filters={filters} onChange={setFilters} />
+                <div className="mt-4 border-t border-line-700/60 pt-4">
+                  <SortControls filters={filters} onChange={setFilters} />
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {activeTab === 'discrepancies' ? (
+          isLoading ? (
+            <LoadingSpinner />
+          ) : isInitialScanInProgress && (isTimeoutError || !discrepancies || discrepancies.length === 0) ? (
+            <div className="rounded-xl border border-line-700/70 bg-ink-900 p-6">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-xl font-semibold text-white">Initial scan in progress</h3>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
+                    The backend is warming up and scraping bookmakers for the first complete
+                    snapshot. This board will fill itself as soon as the cycle completes.
+                  </p>
+                </div>
+                <div className="rounded-full border border-line-700/70 bg-ink-950/55 px-4 py-2 text-sm font-medium text-slate-200">
+                  {status.scan.completed_tasks}/{status.scan.total_tasks} finished
+                  {status.scan.failed_tasks > 0 ? ` · ${status.scan.failed_tasks} failed` : ''}
+                </div>
+              </div>
+              <div className="mt-5 overflow-hidden rounded-full border border-line-700/70 bg-ink-950/80">
+                <div
+                  className="h-2 rounded-full bg-gradient-to-r from-brand-100 via-brand-300 to-brand-500 transition-all"
+                  style={{
+                    width: `${status.scan.total_tasks > 0 ? Math.max(5, Math.round((status.scan.completed_tasks / status.scan.total_tasks) * 100)) : 10}%`,
+                  }}
+                />
+              </div>
+              <p className="mt-3 text-xs text-slate-500">Phase: {status.scan.phase}</p>
+            </div>
+          ) : isError ? (
+            <div className="rounded-xl border border-rose-300/20 bg-rose-300/10 p-6 text-center">
+              <p className="text-sm text-rose-100">
+                Failed to load discrepancies: {(error as Error)?.message || 'Unknown error'}
+              </p>
+            </div>
+          ) : !discrepancies || discrepancies.length === 0 ? (
             <EmptyState
               title="No discrepancies right now"
-              message="Scraping may still be working normally. Switch to the Tracked Odds tab to inspect upcoming fetched matches and player markets."
+              message="Scraping may still be working normally. Switch to the tracked board to inspect upcoming fetched matches and player markets."
             />
-          </div>
+          ) : (
+            <div className="space-y-8">
+              {grouped.map((lg) => (
+                <section key={lg.league}>
+                  <button
+                    onClick={() => toggleLeague(lg.league)}
+                    className="mb-4 flex w-full items-center gap-3 text-left"
+                  >
+                    <span
+                      className={`inline-flex h-8 w-8 items-center justify-center rounded-lg border border-line-700/70 bg-ink-900 text-sm text-slate-300 transition-transform ${
+                        collapsedLeagues.has(lg.league) ? '' : 'rotate-90'
+                      }`}
+                    >
+                      ›
+                    </span>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <h3 className="text-xl font-semibold text-white">{lg.league}</h3>
+                      <span className="rounded-full border border-line-700/70 bg-ink-950 px-3 py-1 text-xs font-medium text-slate-400">
+                        {lg.matches.reduce((sum, m) => sum + m.discrepancies.length, 0)} discrepancies
+                      </span>
+                    </div>
+                  </button>
+                  {!collapsedLeagues.has(lg.league) && (
+                    <div className="space-y-4">
+                      {lg.matches.map((mg) => (
+                        <MatchAccordion
+                          key={mg.matchId}
+                          matchId={mg.matchId}
+                          homeTeam={mg.homeTeam}
+                          awayTeam={mg.awayTeam}
+                          startTime={mg.startTime}
+                          discrepancies={mg.discrepancies}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </section>
+              ))}
+            </div>
+          )
         ) : (
-          <div className="space-y-6">
-            {grouped.map((lg) => (
-              <section key={lg.league}>
-                <button
-                  onClick={() => toggleLeague(lg.league)}
-                  className="mb-3 flex w-full items-center gap-2 text-left transition-opacity hover:opacity-80"
-                >
-                  <span className={`text-xs text-gray-500 transition-transform ${collapsedLeagues.has(lg.league) ? '' : 'rotate-90'}`}>▶</span>
-                  <span className="text-lg">🏀</span>
-                  <h3 className="text-base font-bold text-white">{lg.league}</h3>
-                  <span className="rounded-full bg-gray-800 px-2 py-0.5 text-xs text-gray-400">
-                    {lg.matches.reduce((sum, m) => sum + m.discrepancies.length, 0)} discrepancies
-                  </span>
-                </button>
-                {!collapsedLeagues.has(lg.league) && (
-                  <div className="space-y-3">
-                    {lg.matches.map((mg) => (
-                      <MatchAccordion
-                        key={mg.matchId}
-                        matchId={mg.matchId}
-                        homeTeam={mg.homeTeam}
-                        awayTeam={mg.awayTeam}
-                        startTime={mg.startTime}
-                        discrepancies={mg.discrepancies}
-                      />
-                    ))}
-                  </div>
-                )}
-              </section>
-            ))}
-          </div>
-        )
-      ) : (
-        <TrackedMatchesPanel
-          matches={matches || []}
-          isLoading={matchesLoading}
-          errorMessage={matchesError ? (matchesLoadError as Error)?.message || 'Unknown error' : null}
-        />
-      )}
-    </div>
+          <TrackedMatchesPanel
+            matches={matches || []}
+            isLoading={matchesLoading}
+            errorMessage={matchesError ? (matchesLoadError as Error)?.message || 'Unknown error' : null}
+          />
+        )}
+      </div>
+    </PageShell>
   );
 }

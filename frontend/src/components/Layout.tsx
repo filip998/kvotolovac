@@ -11,29 +11,28 @@ export default function Layout() {
   const location = useLocation();
 
   return (
-    <div className="flex min-h-screen flex-col">
-      {/* Header */}
-      <header className="border-b border-gray-800 bg-gray-950">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-          <Link to="/" className="flex items-center gap-2">
-            <span className="text-2xl">🎯</span>
-            <div>
-              <h1 className="text-lg font-bold leading-tight text-white">KvotoLovac</h1>
-              <p className="text-[10px] font-medium uppercase tracking-widest text-brand-400">
-                Odds Hunter
-              </p>
+    <div className="relative flex min-h-screen flex-col">
+      <header className="sticky top-0 z-40 border-b border-line-700/70 bg-ink-950/95 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6">
+          <Link to="/" className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-base font-semibold text-black">
+              K
+            </div>
+            <div className="min-w-0">
+              <div className="font-display text-lg font-semibold text-white">KvotoLovac</div>
+              <p className="text-xs text-slate-400">Odds Hunter</p>
             </div>
           </Link>
 
-          <nav className="flex items-center gap-1">
+          <nav className="flex items-center gap-1 rounded-xl border border-line-700/80 bg-ink-900 p-1">
             {navLinks.map((link) => (
               <Link
                 key={link.to}
                 to={link.to}
-                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+                className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
                   location.pathname === link.to
-                    ? 'bg-gray-800 text-white'
-                    : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+                    ? 'bg-ink-750 text-white'
+                    : 'text-slate-400 hover:bg-ink-850 hover:text-slate-100'
                 }`}
               >
                 {link.label}
@@ -46,18 +45,16 @@ export default function Layout() {
       {/* Status Bar */}
       <StatusBar />
 
-      {/* Main Content */}
       <main className="flex-1">
-        <div className="mx-auto max-w-6xl px-4 py-6">
+        <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6">
           <ErrorBoundary>
             <Outlet />
           </ErrorBoundary>
         </div>
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-gray-800 px-4 py-4 text-center text-xs text-gray-600">
-        KvotoLovac 🎯 — Odds comparison for Serbian bookmakers
+      <footer className="border-t border-line-700/60 bg-ink-950 px-4 py-5 text-center text-xs text-slate-500">
+        KvotoLovac - Basketball odds comparison for Serbian bookmakers
       </footer>
     </div>
   );

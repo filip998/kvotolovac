@@ -8,10 +8,10 @@ export default function EmptyState({
   message = 'Try adjusting your filters to see more discrepancies.',
 }: EmptyStateProps) {
   return (
-    <div className="flex flex-col items-center justify-center py-16 text-center">
-      <div className="mb-4 text-5xl opacity-40">🎯</div>
-      <h3 className="mb-2 text-lg font-semibold text-gray-300">{title}</h3>
-      <p className="max-w-sm text-sm text-gray-500">{message}</p>
+    <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-line-700/70 bg-ink-900 px-6 py-16 text-center">
+      <div className="mb-4 text-4xl opacity-50">🎯</div>
+      <h3 className="text-xl font-semibold text-white">{title}</h3>
+      <p className="mt-3 max-w-md text-sm leading-6 text-slate-400">{message}</p>
     </div>
   );
 }

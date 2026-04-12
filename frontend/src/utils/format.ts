@@ -42,13 +42,13 @@ export function formatRelativeTime(isoString: string | null | undefined): string
 }
 
 export function profitColor(margin: number): string {
-  if (margin >= 3.0) return 'text-green-400';
-  if (margin >= 1.5) return 'text-amber-400';
-  return 'text-gray-400';
+  if (margin >= 3.0) return 'text-white';
+  if (margin >= 1.5) return 'text-amber-200';
+  return 'text-slate-200';
 }
 
 export function profitBgColor(margin: number): string {
-  if (margin >= 3.0) return 'bg-green-500/10 border-green-500/20';
-  if (margin >= 1.5) return 'bg-amber-500/10 border-amber-500/20';
-  return 'bg-gray-500/10 border-gray-500/20';
+  if (margin >= 3.0) return 'bg-white/[0.06] border-line-500';
+  if (margin >= 1.5) return 'bg-amber-200/10 border-amber-200/25';
+  return 'bg-white/[0.03] border-line-600';
 }
