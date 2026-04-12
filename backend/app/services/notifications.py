@@ -48,13 +48,14 @@ class NotificationService:
                 message = (
                     f"{d.bookmaker_a_id} over {d.threshold_a} vs "
                     f"{d.bookmaker_b_id} under {d.threshold_b} — "
-                    f"gap {d.gap}, margin {d.profit_margin}"
+                    f"gap {d.gap}, edge ROI {d.profit_margin}, middle ROI {d.middle_profit_margin}"
                 )
                 data = {
                     "match_id": d.match_id,
                     "player_name": d.player_name,
                     "gap": d.gap,
                     "profit_margin": d.profit_margin,
+                    "middle_profit_margin": d.middle_profit_margin,
                     "bookmaker_a": d.bookmaker_a_id,
                     "bookmaker_b": d.bookmaker_b_id,
                 }

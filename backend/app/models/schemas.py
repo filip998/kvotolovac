@@ -90,6 +90,7 @@ class DiscrepancyOut(BaseModel):
     odds_b: Optional[float] = None
     gap: float
     profit_margin: Optional[float] = None
+    middle_profit_margin: Optional[float] = None
     detected_at: Optional[str] = None
     is_active: bool = True
 

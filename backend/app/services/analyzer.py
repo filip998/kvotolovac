@@ -19,6 +19,7 @@ class Discrepancy:
     odds_b: float | None  # under odds from bookmaker B (higher threshold)
     gap: float
     profit_margin: float | None
+    middle_profit_margin: float | None = None
 
 
 def _comparison_market_type(market_type: str) -> str:
@@ -37,14 +38,28 @@ def _implied_probability(odds: float) -> float:
 
 def _profit_margin(odds_a: float | None, odds_b: float | None) -> float | None:
     """
-    Calculate profit margin when betting both sides.
-    Margin = 1 - (1/odds_a + 1/odds_b)
-    Positive means guaranteed profit (arbitrage).
+    Calculate guaranteed edge ROI when stake sizing equalizes the low/high outcomes.
+    Positive means both edge outcomes are profitable; zero means break-even outside the middle.
     """
     if not odds_a or not odds_b or odds_a <= 0 or odds_b <= 0:
         return None
     total_implied = _implied_probability(odds_a) + _implied_probability(odds_b)
-    return round(1.0 - total_implied, 4)
+    if total_implied <= 0:
+        return None
+    return round((1.0 / total_implied) - 1.0, 4)
+
+
+def _middle_profit_margin(odds_a: float | None, odds_b: float | None) -> float | None:
+    """
+    Calculate ROI when the result lands inside the threshold gap and both tickets win,
+    using the same balanced stakes as _profit_margin().
+    """
+    if not odds_a or not odds_b or odds_a <= 0 or odds_b <= 0:
+        return None
+    total_implied = _implied_probability(odds_a) + _implied_probability(odds_b)
+    if total_implied <= 0:
+        return None
+    return round((2.0 / total_implied) - 1.0, 4)
 
 
 def find_threshold_gaps(
@@ -95,6 +110,7 @@ def find_threshold_gaps(
                                 odds_b=b.over_odds,
                                 gap=0.0,
                                 profit_margin=margin,
+                                middle_profit_margin=None,
                             )
                         )
                 continue
@@ -107,6 +123,7 @@ def find_threshold_gaps(
             if a.over_odds is None or b.under_odds is None:
                 continue
             margin = _profit_margin(a.over_odds, b.under_odds)
+            middle_margin = _middle_profit_margin(a.over_odds, b.under_odds)
 
             discrepancies.append(
                 Discrepancy(
@@ -121,6 +138,7 @@ def find_threshold_gaps(
                     odds_b=b.under_odds,
                     gap=round(gap, 1),
                     profit_margin=margin,
+                    middle_profit_margin=middle_margin,
                 )
             )
 

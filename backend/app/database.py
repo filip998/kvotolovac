@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS discrepancies (
     odds_b REAL,
     gap REAL,
     profit_margin REAL,
+    middle_profit_margin REAL,
     detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_active BOOLEAN DEFAULT TRUE
 );
@@ -91,6 +92,13 @@ CREATE TABLE IF NOT EXISTS scrape_state (
 _db_connection: aiosqlite.Connection | None = None
 
 
+async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
+    columns = await conn.execute_fetchall("PRAGMA table_info(discrepancies)")
+    existing = {row[1] for row in columns}
+    if "middle_profit_margin" not in existing:
+        await conn.execute("ALTER TABLE discrepancies ADD COLUMN middle_profit_margin REAL")
+
+
 async def get_db() -> aiosqlite.Connection:
     global _db_connection
     if _db_connection is None:
@@ -103,6 +111,7 @@ async def init_db(db_path: str = ":memory:") -> aiosqlite.Connection:
     _db_connection = await aiosqlite.connect(db_path)
     _db_connection.row_factory = aiosqlite.Row
     await _db_connection.executescript(_SCHEMA)
+    await _ensure_schema_compatibility(_db_connection)
     await _db_connection.commit()
     return _db_connection
 

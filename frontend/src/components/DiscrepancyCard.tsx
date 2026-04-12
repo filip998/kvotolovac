@@ -30,7 +30,7 @@ export default function DiscrepancyCard({ discrepancy: d }: DiscrepancyCardProps
             {formatPercentage(d.profit_margin)}
           </div>
           <div className="mt-1 text-[10px] text-slate-500">
-            profit margin
+            edge ROI
           </div>
         </div>
       </div>
@@ -63,6 +63,11 @@ export default function DiscrepancyCard({ discrepancy: d }: DiscrepancyCardProps
           <span className="rounded-full border border-line-600 bg-white/[0.03] px-3 py-1 font-medium text-slate-200">
             Gap {formatGap(d.gap)} pts
           </span>
+          {d.middle_profit_margin !== undefined && d.middle_profit_margin !== null && d.gap > 0 && (
+            <span className={`rounded-full border px-3 py-1 font-medium ${profitColor(d.middle_profit_margin)} ${profitBgColor(d.middle_profit_margin)}`}>
+              Middle ROI {formatPercentage(d.middle_profit_margin)}
+            </span>
+          )}
           <span className="text-slate-500">Detected {formatRelativeTime(d.detected_at)}</span>
         </div>
         <Link

@@ -41,8 +41,8 @@ export function useDiscrepancies(
         const sortBy = filters.sort_by || 'profit_margin';
         const sortOrder = filters.sort_order || 'desc';
         results.sort((a, b) => {
-          const aVal = a[sortBy as keyof Discrepancy] as number;
-          const bVal = b[sortBy as keyof Discrepancy] as number;
+          const aVal = (a[sortBy as keyof Discrepancy] as number | null | undefined) ?? Number.NEGATIVE_INFINITY;
+          const bVal = (b[sortBy as keyof Discrepancy] as number | null | undefined) ?? Number.NEGATIVE_INFINITY;
           return sortOrder === 'desc' ? bVal - aVal : aVal - bVal;
         });
 

@@ -61,6 +61,7 @@ export interface Discrepancy {
   odds_b: number;
   gap: number;
   profit_margin: number;
+  middle_profit_margin?: number | null;
   detected_at: string;
   is_active: boolean;
 }

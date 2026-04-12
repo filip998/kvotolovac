@@ -236,12 +236,14 @@ async def test_insert_and_get_discrepancy():
         odds_b=2.00,
         gap=2.0,
         profit_margin=0.04,
+        middle_profit_margin=0.96,
     )
     assert disc_id > 0
 
     discs = await odds_store.get_discrepancies()
     assert len(discs) == 1
     assert discs[0].gap == 2.0
+    assert discs[0].middle_profit_margin == 0.96
 
 
 @pytest.mark.asyncio
@@ -255,12 +257,13 @@ async def test_get_discrepancy_detail():
         match_id="m1", market_type="player_points", player_name="Lundberg",
         bookmaker_a_id="mozzart", bookmaker_b_id="meridian",
         threshold_a=16.5, threshold_b=18.5,
-        odds_a=1.85, odds_b=2.0, gap=2.0, profit_margin=0.04,
+        odds_a=1.85, odds_b=2.0, gap=2.0, profit_margin=0.04, middle_profit_margin=0.96,
     )
     detail = await odds_store.get_discrepancy(disc_id)
     assert detail is not None
     assert detail.bookmaker_a_name == "Mozzart"
     assert detail.home_team == "Partizan"
+    assert detail.middle_profit_margin == 0.96
 
 
 @pytest.mark.asyncio

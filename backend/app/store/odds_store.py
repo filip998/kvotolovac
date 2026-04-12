@@ -270,18 +270,19 @@ async def insert_discrepancy(
     odds_b: float | None,
     gap: float,
     profit_margin: float | None,
+    middle_profit_margin: float | None = None,
 ) -> int:
     db = await get_db()
     cursor = await db.execute(
         """INSERT INTO discrepancies
            (match_id, market_type, player_name, bookmaker_a_id, bookmaker_b_id,
-            threshold_a, threshold_b, odds_a, odds_b, gap, profit_margin)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            threshold_a, threshold_b, odds_a, odds_b, gap, profit_margin, middle_profit_margin)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             match_id, market_type, player_name,
             bookmaker_a_id, bookmaker_b_id,
             threshold_a, threshold_b,
-            odds_a, odds_b, gap, profit_margin,
+            odds_a, odds_b, gap, profit_margin, middle_profit_margin,
         ),
     )
     await db.commit()
@@ -334,7 +335,7 @@ async def get_discrepancies(
     if conditions:
         q += " WHERE " + " AND ".join(conditions)
 
-    allowed_sort = {"profit_margin", "gap", "detected_at", "odds_a", "odds_b"}
+    allowed_sort = {"profit_margin", "middle_profit_margin", "gap", "detected_at", "odds_a", "odds_b"}
     col = sort_by if sort_by in allowed_sort else "profit_margin"
     order = "DESC" if sort_order.lower() == "desc" else "ASC"
     q += f" ORDER BY d.{col} {order} LIMIT ? OFFSET ?"

@@ -6,7 +6,8 @@ interface SortControlsProps {
 }
 
 const SORT_OPTIONS = [
-  { value: 'profit_margin', label: 'Profit Margin' },
+  { value: 'profit_margin', label: 'Edge ROI' },
+  { value: 'middle_profit_margin', label: 'Middle ROI' },
   { value: 'gap', label: 'Gap Size' },
   { value: 'detected_at', label: 'Detection Time' },
 ];

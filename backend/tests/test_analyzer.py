@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 
 from app.models.schemas import NormalizedOdds
-from app.services.analyzer import Discrepancy, analyze, find_threshold_gaps, _profit_margin
+from app.services.analyzer import (
+    Discrepancy,
+    _middle_profit_margin,
+    _profit_margin,
+    analyze,
+    find_threshold_gaps,
+)
 
 
 def _make_odds(
@@ -40,6 +46,8 @@ def test_threshold_gap_detection():
     assert discs[0].threshold_b == 18.5
     assert discs[0].odds_a == 1.85  # over from lower threshold
     assert discs[0].odds_b == 2.00  # under from higher threshold
+    assert discs[0].middle_profit_margin is not None
+    assert discs[0].middle_profit_margin > 0
 
 
 def test_threshold_gap_detection_with_one_sided_lower_line():
@@ -90,6 +98,7 @@ def test_same_threshold_value_difference():
     # Should detect a value difference (0.10 diff in over odds)
     assert len(discs) >= 1
     assert discs[0].gap == 0.0
+    assert discs[0].middle_profit_margin is None
 
 
 def test_min_gap_filter():
@@ -140,22 +149,45 @@ def test_different_matches_no_cross_detection():
 
 
 def test_profit_margin_calculation():
-    # Odds 1.85 and 2.00 → 1/1.85 + 1/2.00 = 0.5405 + 0.5 = 1.0405
-    # Margin = 1 - 1.0405 = -0.0405 (no arbitrage)
+    # Odds 1.85 and 2.00 → total implied 1.0405, balanced edge ROI ≈ -3.90%
     margin = _profit_margin(1.85, 2.00)
     assert margin is not None
     assert margin < 0
+    assert margin == pytest.approx(-0.039, abs=1e-4)
 
-    # Odds 2.10 and 2.10 → margin = 1 - (1/2.10 + 1/2.10) = 1 - 0.952 = 0.048
+    # Odds 2.10 and 2.10 → balanced edge ROI = +5.0%
     margin = _profit_margin(2.10, 2.10)
     assert margin is not None
     assert margin > 0
+    assert margin == pytest.approx(0.05, abs=1e-4)
+
+
+def test_middle_profit_margin_calculation():
+    middle_margin = _middle_profit_margin(2.00, 2.00)
+    assert middle_margin == pytest.approx(1.0, abs=1e-4)
+
+    middle_margin = _middle_profit_margin(2.10, 2.10)
+    assert middle_margin == pytest.approx(1.1, abs=1e-4)
 
 
 def test_profit_margin_none_for_missing_odds():
     assert _profit_margin(None, 2.0) is None
     assert _profit_margin(2.0, None) is None
     assert _profit_margin(0.0, 2.0) is None
+    assert _middle_profit_margin(None, 2.0) is None
+    assert _middle_profit_margin(2.0, None) is None
+    assert _middle_profit_margin(0.0, 2.0) is None
+
+
+def test_gap_with_two_to_one_odds_has_break_even_edge_and_positive_middle():
+    odds = [
+        _make_odds("mozzart", "Lundberg", 16.5, over=2.00, under=1.85),
+        _make_odds("meridian", "Lundberg", 18.5, over=1.80, under=2.00),
+    ]
+    discs = find_threshold_gaps(odds)
+    assert len(discs) == 1
+    assert discs[0].profit_margin == pytest.approx(0.0, abs=1e-4)
+    assert discs[0].middle_profit_margin == pytest.approx(1.0, abs=1e-4)
 
 
 def test_analyze_entrypoint():

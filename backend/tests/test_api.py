@@ -162,6 +162,7 @@ async def test_list_discrepancies(client: AsyncClient):
     assert resp.status_code == 200
     discs = resp.json()
     assert len(discs) > 0
+    assert "middle_profit_margin" in discs[0]
 
 
 @pytest.mark.asyncio
@@ -180,6 +181,7 @@ async def test_discrepancy_detail(client: AsyncClient):
     resp = await client.get(f"/api/v1/discrepancies/{disc_id}")
     assert resp.status_code == 200
     assert resp.json()["id"] == disc_id
+    assert "middle_profit_margin" in resp.json()
 
 
 @pytest.mark.asyncio

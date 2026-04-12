@@ -217,6 +217,7 @@ class Scheduler:
                     odds_b=d.odds_b,
                     gap=d.gap,
                     profit_margin=d.profit_margin,
+                    middle_profit_margin=d.middle_profit_margin,
                 )
 
             self._scan_phase = "notifying"
