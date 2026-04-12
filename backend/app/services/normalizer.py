@@ -252,6 +252,7 @@ def _is_contextual_player_match(raw_name: str, candidate_name: str) -> bool:
         or not candidate_first_tokens
         or raw_last_name != candidate_last_name
         or _has_multiple_initials(raw_first_tokens)
+        or (len(raw_first_tokens) == 1 and len(raw_first_tokens[0]) == 1 and _has_multiple_initials(candidate_first_tokens))
     ):
         return False
 
@@ -260,7 +261,7 @@ def _is_contextual_player_match(raw_name: str, candidate_name: str) -> bool:
     if raw_first == candidate_first:
         return True
     if len(raw_first) == 1:
-        return False
+        return candidate_first.startswith(raw_first)
     if candidate_first.startswith(raw_first) or raw_first.startswith(candidate_first):
         return True
     return raw_first[0] == candidate_first[0] and fuzz.ratio(raw_first, candidate_first) >= 80
@@ -295,6 +296,7 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
 
             raw_first_tokens, _ = raw_parts
             raw_completeness = _player_name_completeness(raw_first_tokens)
+            raw_is_single_initial = len(raw_first_tokens) == 1 and len(raw_first_tokens[0]) == 1
             candidates = [
                 candidate
                 for candidate in observed_names
@@ -324,6 +326,8 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
                 continue
             best_completeness = _player_name_completeness(best_parts[0])
             if best_completeness < raw_completeness:
+                continue
+            if raw_is_single_initial and name_counts[best_candidate] <= name_counts[raw_name]:
                 continue
             if best_completeness == raw_completeness and name_counts[best_candidate] <= name_counts[raw_name]:
                 continue

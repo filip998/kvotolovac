@@ -122,6 +122,104 @@ def test_normalize_odds_keeps_ambiguous_single_initial_players():
     ]
 
 
+def test_normalize_odds_resolves_supported_single_initial_players():
+    raw = [
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="nba",
+            home_team="Phoenix Suns",
+            away_team="Denver Nuggets",
+            market_type="player_points",
+            player_name="Colin Gillespie",
+            threshold=7.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Phoenix",
+            away_team="Denver",
+            market_type="player_assists",
+            player_name="Colin Gillespie",
+            threshold=2.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Phoenix Suns",
+            away_team="Denver Nuggets",
+            market_type="player_points",
+            player_name="C. Gillespie",
+            threshold=7.5,
+            over_odds=1.8,
+            under_odds=2.0,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert [offer.player_name for offer in normalized] == [
+        "Colin Gillespie",
+        "Colin Gillespie",
+        "Colin Gillespie",
+    ]
+
+
+def test_normalize_odds_keeps_single_initial_separate_from_multi_initial_candidates():
+    raw = [
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C.J. McCollum",
+            threshold=21.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_assists",
+            player_name="C.J. McCollum",
+            threshold=4.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=20.5,
+            over_odds=1.8,
+            under_odds=2.0,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert [offer.player_name for offer in normalized] == [
+        "C.J. McCollum",
+        "C.J. McCollum",
+        "C. McCollum",
+    ]
+
+
 def test_normalize_odds_keeps_ambiguous_short_prefix_players():
     raw = [
         RawOddsData(
