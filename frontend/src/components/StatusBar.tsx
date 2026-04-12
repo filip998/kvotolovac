@@ -14,11 +14,11 @@ export default function StatusBar() {
 
   if (isLoading || !status) {
     return (
-      <div className="border-b border-line-700/70 bg-ink-900/55 px-4 py-4 backdrop-blur">
-        <div className="mx-auto grid max-w-7xl gap-3 sm:grid-cols-3 sm:px-2">
-          <div className="h-24 animate-pulse rounded-[24px] border border-line-700/80 bg-ink-850/80" />
-          <div className="h-24 animate-pulse rounded-[24px] border border-line-700/80 bg-ink-850/80" />
-          <div className="h-24 animate-pulse rounded-[24px] border border-line-700/80 bg-ink-850/80" />
+      <div className="border-b border-border bg-surface px-5 py-3">
+        <div className="mx-auto flex max-w-7xl gap-6 sm:px-1">
+          <div className="h-12 w-32 animate-pulse rounded-md bg-surface-raised" />
+          <div className="h-12 w-32 animate-pulse rounded-md bg-surface-raised" />
+          <div className="h-12 w-32 animate-pulse rounded-md bg-surface-raised" />
         </div>
       </div>
     );
@@ -26,7 +26,7 @@ export default function StatusBar() {
 
   const metrics = [
     {
-      label: 'Active discrepancies',
+      label: 'Discrepancies',
       value: String(status.active_discrepancies ?? status.total_discrepancies ?? 0),
     },
     {
@@ -37,110 +37,91 @@ export default function StatusBar() {
           : 'Warming up',
     },
     {
-      label: 'Tracked matches',
+      label: 'Matches',
       value: String(status.total_matches ?? 0),
     },
   ];
 
   return (
-    <div className="border-b border-line-700/70 bg-ink-900/70 px-4 py-4">
-      <div className="mx-auto max-w-7xl space-y-4 sm:px-2">
-        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_260px]">
-          <div className="grid gap-3 md:grid-cols-3">
-            {metrics.map((metric) => (
-              <div
-                key={metric.label}
-                className="rounded-xl border border-line-700/70 bg-ink-850 px-4 py-4"
-              >
-                <p className="text-xs text-slate-400">{metric.label}</p>
-                <p className="mt-1 text-2xl font-semibold text-white">{metric.value}</p>
-              </div>
-            ))}
-          </div>
-
-          <div className="rounded-xl border border-line-700/70 bg-ink-850 px-4 py-4">
-            <div className="flex h-full flex-col justify-between gap-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs text-slate-400">Scheduler</p>
-                  <p className="mt-2 text-sm text-slate-300">
-                    {scanProgress?.in_progress
-                      ? `${scanProgress.phase} · ${scanProgress.completed_tasks}/${scanProgress.total_tasks} tasks`
-                      : 'Ready for manual or scheduled scans'}
-                  </p>
-                </div>
-                <span
-                  className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-medium ${
-                    scanProgress?.in_progress
-                      ? 'border-line-600 bg-white/[0.04] text-white'
-                      : 'border-line-700/70 bg-ink-950 text-slate-300'
-                  }`}
-                >
-                  <span
-                    className={`h-2 w-2 rounded-full ${
-                      scanProgress?.in_progress ? 'bg-white animate-pulse' : 'bg-slate-400'
-                    }`}
-                  />
-                  {scanProgress?.in_progress ? 'Scanning' : 'Online'}
-                </span>
-              </div>
-
-              <button
-                onClick={() => triggerScrape.mutate()}
-                disabled={triggerScrape.isPending || scanProgress?.in_progress}
-                className="inline-flex items-center justify-center rounded-lg bg-white px-4 py-2.5 text-sm font-medium text-black transition hover:bg-brand-200 disabled:cursor-not-allowed disabled:opacity-55"
-              >
-                {scanProgress?.in_progress
-                  ? `Scanning ${scanPercent}%`
-                  : triggerScrape.isPending
-                    ? 'Starting scan...'
-                    : 'Run fresh scan'}
-              </button>
+    <div className="border-b border-border bg-surface px-5 py-3">
+      <div className="mx-auto max-w-7xl space-y-3 sm:px-1">
+        {/* Top row: metrics + scan button */}
+        <div className="flex flex-wrap items-center gap-6">
+          {metrics.map((metric) => (
+            <div key={metric.label} className="flex items-baseline gap-2">
+              <span className="font-mono text-lg font-semibold text-text">{metric.value}</span>
+              <span className="text-xs text-text-muted">{metric.label}</span>
             </div>
+          ))}
+
+          <div className="ml-auto flex items-center gap-3">
+            <span
+              className={`flex items-center gap-1.5 text-xs ${
+                scanProgress?.in_progress ? 'text-accent' : 'text-text-muted'
+              }`}
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  scanProgress?.in_progress ? 'bg-accent animate-pulse' : 'bg-text-muted'
+                }`}
+              />
+              {scanProgress?.in_progress
+                ? `${scanProgress.phase} · ${scanProgress.completed_tasks}/${scanProgress.total_tasks}`
+                : 'Idle'}
+            </span>
+            <button
+              onClick={() => triggerScrape.mutate()}
+              disabled={triggerScrape.isPending || scanProgress?.in_progress}
+              className="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-bg transition hover:bg-accent-dim disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {scanProgress?.in_progress
+                ? `${scanPercent}%`
+                : triggerScrape.isPending
+                  ? 'Starting…'
+                  : 'Scan now'}
+            </button>
           </div>
         </div>
 
-        <div className="rounded-xl border border-line-700/70 bg-ink-850 px-4 py-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <p className="mr-2 text-xs text-slate-400">Bookmakers</p>
-            {(status.bookmaker_status ?? []).map((bm) => (
-              <div
-                key={bm.id}
-                title={`${bm.name}: ${bm.is_active ? 'Active' : 'Inactive'} · ${formatRelativeTime(bm.last_scrape)}`}
-                className="relative rounded-lg border border-line-700/60 bg-ink-900 px-2 py-2"
-              >
-                <span
-                  className={`absolute right-2 top-2 h-2.5 w-2.5 rounded-full border border-ink-900 ${
-                    bm.is_active ? 'bg-white' : 'bg-rose-300'
-                  }`}
-                />
-                <BookmakerBadge name={bm.name} compact />
-              </div>
-            ))}
-            {(!status.bookmaker_status || status.bookmaker_status.length === 0) && (
-              <div className="text-sm text-slate-400">
-                {status.active_bookmakers} bookmakers registered
-              </div>
-            )}
-          </div>
-
-          {scanProgress?.in_progress && (
+        {/* Bookmakers row */}
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-[11px] font-medium uppercase tracking-wider text-text-muted">Books</span>
+          {(status.bookmaker_status ?? []).map((bm) => (
             <div
-              className="mt-4 overflow-hidden rounded-full border border-line-700/70 bg-ink-900/80"
+              key={bm.id}
+              title={`${bm.name}: ${bm.is_active ? 'Active' : 'Inactive'} · ${formatRelativeTime(bm.last_scrape)}`}
+              className="relative"
             >
-              <div
-                className="h-2 rounded-full bg-gradient-to-r from-brand-100 via-brand-300 to-brand-500 transition-all"
-                style={{ width: `${Math.max(scanPercent, 5)}%` }}
+              <BookmakerBadge name={bm.name} compact />
+              <span
+                className={`absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ${
+                  bm.is_active ? 'bg-accent' : 'bg-danger'
+                }`}
               />
             </div>
-          )}
-          {scanProgress?.in_progress && (
-            <p className="mt-2 text-xs text-slate-500">
-              Scan started {formatRelativeTime(scanProgress.started_at)}
-              {scanProgress.failed_tasks > 0 ? ` · ${scanProgress.failed_tasks} failed tasks` : ''}
-            </p>
+          ))}
+          {(!status.bookmaker_status || status.bookmaker_status.length === 0) && (
+            <span className="text-xs text-text-muted">
+              {status.active_bookmakers} registered
+            </span>
           )}
         </div>
+
+        {/* Scan progress bar */}
+        {scanProgress?.in_progress && (
+          <div>
+            <div className="h-0.5 overflow-hidden rounded-full bg-surface-raised">
+              <div
+                className="h-full rounded-full bg-accent transition-all"
+                style={{ width: `${Math.max(scanPercent, 3)}%` }}
+              />
+            </div>
+            <p className="mt-1 text-[11px] text-text-muted">
+              Started {formatRelativeTime(scanProgress.started_at)}
+              {scanProgress.failed_tasks > 0 ? ` · ${scanProgress.failed_tasks} failed` : ''}
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -6,10 +6,10 @@ interface SortControlsProps {
 }
 
 const SORT_OPTIONS = [
-  { value: 'profit_margin', label: 'Edge ROI' },
-  { value: 'middle_profit_margin', label: 'Middle ROI' },
-  { value: 'gap', label: 'Gap Size' },
-  { value: 'detected_at', label: 'Detection Time' },
+  { value: 'profit_margin', label: 'Edge' },
+  { value: 'middle_profit_margin', label: 'Middle' },
+  { value: 'gap', label: 'Gap' },
+  { value: 'detected_at', label: 'Time' },
 ];
 
 export default function SortControls({ filters, onChange }: SortControlsProps) {
@@ -18,8 +18,8 @@ export default function SortControls({ filters, onChange }: SortControlsProps) {
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span className="text-sm font-medium text-slate-300">Sort by</span>
-      <div className="flex flex-wrap gap-2">
+      <span className="text-[11px] font-medium uppercase tracking-wider text-text-muted">Sort</span>
+      <div className="flex gap-1">
         {SORT_OPTIONS.map((opt) => (
           <button
             key={opt.value}
@@ -30,10 +30,10 @@ export default function SortControls({ filters, onChange }: SortControlsProps) {
                 onChange({ ...filters, sort_by: opt.value, sort_order: 'desc' });
               }
             }}
-            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+            className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
               currentSort === opt.value
-                ? 'border-line-500 bg-white/[0.05] text-white'
-                : 'border-line-700/70 bg-ink-950 text-slate-400 hover:border-line-600 hover:text-slate-200'
+                ? 'bg-accent/15 text-accent'
+                : 'text-text-muted hover:text-text-secondary'
             }`}
           >
             {opt.label}

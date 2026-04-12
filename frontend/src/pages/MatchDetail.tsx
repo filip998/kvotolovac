@@ -24,16 +24,14 @@ export default function MatchDetail() {
   if (!match) {
     return (
       <div className="py-16 text-center">
-        <div className="mb-4 text-5xl">🔍</div>
-        <h2 className="mb-2 text-lg font-semibold text-slate-300">Match not found</h2>
-        <Link to="/" className="text-sm text-slate-300 hover:text-white">
+        <h2 className="mb-2 text-base font-semibold text-text-secondary">Match not found</h2>
+        <Link to="/" className="text-sm text-text-muted hover:text-accent">
           ← Back to Dashboard
         </Link>
       </div>
     );
   }
 
-  // Group odds by market (market_type + player_name)
   const marketGroups: MarketGroup[] = [];
   const marketMap = new Map<string, OddsOffer[]>();
 
@@ -58,61 +56,45 @@ export default function MatchDetail() {
     )
   ).sort((a, b) => a.localeCompare(b));
 
-  // Filter discrepancies for this match
   const matchDiscrepancies = discrepancies?.filter((d) => d.match_id === id) || [];
 
   return (
     <div className="space-y-6">
-      <Link to="/" className="inline-flex items-center text-sm text-slate-500 transition hover:text-white">
+      <Link to="/" className="inline-flex items-center text-sm text-text-muted transition hover:text-accent">
         ← Back to Dashboard
       </Link>
 
       <PageShell
         eyebrow={match.league_name}
         title={`${match.home_team} vs ${match.away_team}`}
-        description={`Snapshot time ${formatDateTime(match.start_time)} · Open this board to inspect every fetched market for the matchup, including players with no active discrepancy right now.`}
-        aside={
-          <div className="space-y-3">
-            <div className="rounded-lg border border-line-700/70 bg-ink-950 px-4 py-4">
-              <p className="text-sm text-slate-400">Match status</p>
-              <p className="mt-2 text-2xl font-semibold text-white">{match.status}</p>
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="rounded-lg border border-line-700/70 bg-ink-950 px-3 py-4 text-center">
-                <div className="text-2xl font-semibold text-white">{matchDiscrepancies.length}</div>
-                <div className="mt-1 text-xs text-slate-500">discrepancies</div>
-              </div>
-              <div className="rounded-lg border border-line-700/70 bg-ink-950 px-3 py-4 text-center">
-                <div className="text-2xl font-semibold text-white">{(odds || []).length}</div>
-                <div className="mt-1 text-xs text-slate-500">offers</div>
-              </div>
-              <div className="rounded-lg border border-line-700/70 bg-ink-950 px-3 py-4 text-center">
-                <div className="text-2xl font-semibold text-white">{trackedPlayers.length}</div>
-                <div className="mt-1 text-xs text-slate-500">players</div>
-              </div>
-            </div>
-          </div>
-        }
+        description={`${formatDateTime(match.start_time)} · ${match.status}`}
       >
+        {/* Inline stats */}
+        <div className="flex flex-wrap items-center gap-6">
+          <div className="flex items-baseline gap-1.5">
+            <span className="font-mono text-lg font-semibold text-text">{matchDiscrepancies.length}</span>
+            <span className="text-xs text-text-muted">discrepancies</span>
+          </div>
+          <div className="flex items-baseline gap-1.5">
+            <span className="font-mono text-lg font-semibold text-text">{(odds || []).length}</span>
+            <span className="text-xs text-text-muted">offers</span>
+          </div>
+          <div className="flex items-baseline gap-1.5">
+            <span className="font-mono text-lg font-semibold text-text">{trackedPlayers.length}</span>
+            <span className="text-xs text-text-muted">players</span>
+          </div>
+        </div>
+
         {trackedPlayers.length > 0 && (
-          <section className="rounded-xl border border-line-700/70 bg-ink-900 p-5">
-            <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-              <div>
-                <h3 className="text-xl font-semibold text-white">Tracked players</h3>
-                <p className="mt-2 text-sm leading-6 text-slate-400">
-                  These player names were fetched for this matchup, including markets with no active
-                  discrepancy.
-                </p>
-              </div>
-              <span className="rounded-full border border-line-700/70 bg-ink-950 px-3 py-1 text-xs font-medium text-slate-300">
-                {trackedPlayers.length} tracked
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-2">
+          <section>
+            <h3 className="mb-3 text-[11px] font-medium uppercase tracking-wider text-text-muted">
+              Tracked players
+            </h3>
+            <div className="flex flex-wrap gap-1.5">
               {trackedPlayers.map((player) => (
                 <span
                   key={player}
-                  className="rounded-full border border-line-700/70 bg-ink-950/65 px-4 py-2 text-sm text-slate-200"
+                  className="rounded-md border border-border bg-surface px-3 py-1.5 text-xs text-text-secondary"
                 >
                   {player}
                 </span>
@@ -122,19 +104,14 @@ export default function MatchDetail() {
         )}
 
         {marketGroups.length === 0 ? (
-          <div className="rounded-xl border border-line-700/70 bg-ink-900 p-8 text-center">
-            <p className="text-sm text-slate-500">No odds data available for this match yet.</p>
+          <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center">
+            <p className="text-sm text-text-muted">No odds data available for this match yet.</p>
           </div>
         ) : (
           <section className="space-y-4">
-            <div className="flex flex-wrap items-end justify-between gap-3">
-              <div>
-                <h3 className="text-xl font-semibold text-white">Markets & odds</h3>
-                <p className="mt-2 text-sm text-slate-400">
-                  Full snapshot of the stored offers for this match, grouped by market and player.
-                </p>
-              </div>
-            </div>
+            <h3 className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
+              Markets & odds
+            </h3>
             {marketGroups.map((group) => (
               <OddsTable
                 key={group.key}

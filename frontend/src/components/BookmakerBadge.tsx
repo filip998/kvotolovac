@@ -27,7 +27,7 @@ export default function BookmakerBadge({
 
   return (
     <span className="inline-flex items-center gap-2">
-      <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-line-700/80 bg-white p-1">
+      <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-white p-0.5">
         {config.logoSrc ? (
           <img
             src={config.logoSrc}
@@ -36,12 +36,12 @@ export default function BookmakerBadge({
             loading="lazy"
           />
         ) : (
-          <span className="text-[10px] font-semibold tracking-[0.18em] text-black">
+          <span className="text-[9px] font-bold tracking-wider text-black">
             {config.initials}
           </span>
         )}
       </span>
-      {!compact && <span className="text-sm text-slate-200">{name}</span>}
+      {!compact && <span className="text-sm text-text-secondary">{name}</span>}
     </span>
   );
 }

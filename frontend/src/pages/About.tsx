@@ -16,7 +16,7 @@ const bookmakers = [
 const pillars = [
   {
     title: 'Continuous monitoring',
-    body: 'The backend scheduler keeps cycling through bookmaker sources, storing fresh snapshots and exposing progress so the frontend never feels stale or opaque.',
+    body: 'The backend scheduler keeps cycling through bookmaker sources, storing fresh snapshots and exposing progress so the frontend never feels stale.',
   },
   {
     title: 'Smart normalization',
@@ -28,90 +28,69 @@ const pillars = [
   },
   {
     title: 'Drill-down inspection',
-    body: 'Every tracked match can be opened to review full fetched odds, player coverage, and discrepancy-linked lines even when the surface board is quiet.',
+    body: 'Every tracked match can be opened to review full fetched odds, player coverage, and discrepancy-linked lines.',
   },
 ];
 
 export default function About() {
   return (
     <PageShell
-      eyebrow="About the platform"
+      eyebrow="About"
       title="A disciplined market radar for basketball props."
-      description="KvotoLovac turns noisy bookmaker feeds into a readable board of threshold gaps, match coverage, and real-time scan status. It is built for bettors and analysts who care more about fast pattern recognition than sportsbook spectacle."
-      aside={
-        <div className="space-y-5">
-          <div>
-            <p className="text-sm text-slate-400">Coverage</p>
-            <p className="mt-2 text-3xl font-semibold text-white">8</p>
-            <p className="mt-2 text-sm text-slate-400">supported bookmaker integrations in code</p>
-          </div>
-          <div className="rounded-lg border border-line-700/70 bg-ink-950 px-4 py-3 text-sm text-slate-400">
-            Current focus: basketball player props, game totals, and discrepancy-first scanning
-            across Serbian books.
-          </div>
-        </div>
-      }
+      description="KvotoLovac turns noisy bookmaker feeds into a readable board of threshold gaps, match coverage, and real-time scan status."
     >
       <div className="space-y-6">
-        <section className="grid gap-4 lg:grid-cols-2">
+        <section className="grid gap-3 lg:grid-cols-2">
           {pillars.map((pillar) => (
             <article
               key={pillar.title}
-              className="rounded-xl border border-line-700/70 bg-ink-900 p-6"
+              className="rounded-lg border border-border bg-surface p-5"
             >
-              <p className="text-xs text-slate-400">System pillar</p>
-              <h3 className="mt-3 text-xl font-semibold text-white">{pillar.title}</h3>
-              <p className="mt-3 text-sm leading-7 text-slate-400">{pillar.body}</p>
+              <h3 className="text-sm font-semibold text-text">{pillar.title}</h3>
+              <p className="mt-2 text-sm leading-relaxed text-text-secondary">{pillar.body}</p>
             </article>
           ))}
         </section>
 
-        <section className="rounded-xl border border-line-700/70 bg-ink-900 p-6">
-          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+        <section className="rounded-lg border border-border bg-surface p-5">
+          <div className="grid gap-6 xl:grid-cols-[1fr_340px]">
             <div>
-              <p className="text-sm text-slate-400">Example opportunity</p>
-              <h3 className="mt-3 text-xl font-semibold text-white">Why threshold gaps matter more than raw odds.</h3>
-              <p className="mt-3 text-sm leading-7 text-slate-400">
+              <h3 className="text-sm font-semibold text-text">Why threshold gaps matter more than raw odds</h3>
+              <p className="mt-2 text-sm leading-relaxed text-text-secondary">
                 If one bookmaker lists a player line at Over 18.5 and another shows Under 20.5, a
                 narrow scoring band can let both bets win. KvotoLovac surfaces those windows,
                 ranks them by profit margin, and links straight into the underlying market tables.
               </p>
             </div>
-            <div className="rounded-xl border border-line-700/70 bg-ink-950 p-5">
-              <div className="space-y-3 font-mono text-sm text-slate-100">
-                <div className="rounded-lg border border-line-700/70 bg-ink-950 px-4 py-3">
-                  Mozzart → Over 18.5 @ 1.85
-                </div>
-                <div className="rounded-lg border border-line-700/70 bg-ink-950 px-4 py-3">
-                  Meridian → Under 20.5 @ 1.90
-                </div>
+            <div className="space-y-2">
+              <div className="rounded-md bg-surface-raised px-4 py-3 font-mono text-sm text-text">
+                Mozzart → Over 18.5 @ 1.85
               </div>
-              <p className="mt-4 text-sm leading-6 text-slate-200">
-                If the player lands on 19 or 20, both tickets cash. That is the core signal the
-                dashboard is designed to expose quickly.
+              <div className="rounded-md bg-surface-raised px-4 py-3 font-mono text-sm text-text">
+                Meridian → Under 20.5 @ 1.90
+              </div>
+              <p className="mt-3 text-sm text-text-secondary">
+                If the player lands on 19 or 20, both tickets cash.
               </p>
             </div>
           </div>
         </section>
 
-        <section className="rounded-xl border border-line-700/70 bg-ink-900 p-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-sm text-slate-400">Supported bookmakers</p>
-              <h3 className="mt-3 text-xl font-semibold text-white">Current integrations</h3>
-            </div>
+        <section className="rounded-lg border border-border bg-surface p-5">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-text">Supported bookmakers</h3>
             <Link
               to="/"
-              className="rounded-lg border border-line-700/70 bg-ink-950 px-4 py-2 text-sm font-medium text-slate-200 transition hover:border-line-500 hover:text-white"
+              className="text-xs font-medium text-text-muted transition hover:text-accent"
             >
-              Back to dashboard
+              Back to dashboard →
             </Link>
           </div>
-          <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
             {bookmakers.map((name) => (
               <div
                 key={name}
-                className="rounded-lg border border-line-700/70 bg-ink-950 px-4 py-4"
+                className="rounded-md bg-surface-raised px-4 py-3"
               >
                 <BookmakerBadge name={name} />
               </div>

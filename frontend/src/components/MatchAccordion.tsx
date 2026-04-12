@@ -22,33 +22,33 @@ export default function MatchAccordion({
   const [isOpen, setIsOpen] = useState(true);
 
   return (
-    <div className="rounded-xl border border-line-700/75 bg-ink-900">
+    <div className="rounded-lg border border-border bg-surface">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left transition hover:bg-white/[0.02]"
+        className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left transition hover:bg-surface-raised"
       >
         <div className="flex items-center gap-3">
-          <span className="text-sm text-slate-500">
-            <span className={`inline-block transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`}>
-              ▶
-            </span>
+          <span
+            className={`inline-block text-xs text-text-muted transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`}
+          >
+            ▶
           </span>
           <div>
-            <Link to={`/matches/${matchId}`} onClick={(e) => e.stopPropagation()} className="text-base font-semibold text-white transition hover:text-slate-200">
+            <Link to={`/matches/${matchId}`} onClick={(e) => e.stopPropagation()} className="text-sm font-semibold text-text transition hover:text-accent">
               {homeTeam} vs {awayTeam}
             </Link>
-            <div className="mt-1 text-xs text-slate-500">
+            <div className="mt-0.5 text-xs text-text-muted">
               {formatDateTime(startTime)}
             </div>
           </div>
         </div>
-        <span className="rounded-full border border-line-700/70 bg-ink-850 px-3 py-1 text-xs font-medium text-slate-200">
-          {discrepancies.length} {discrepancies.length === 1 ? 'discrepancy' : 'discrepancies'}
+        <span className="font-mono text-xs text-text-secondary">
+          {discrepancies.length}
         </span>
       </button>
 
       {isOpen && (
-        <div className="space-y-3 border-t border-line-700/60 px-4 pb-4 pt-4">
+        <div className="space-y-3 border-t border-border px-4 pb-4 pt-3">
           {discrepancies.map((d) => (
             <DiscrepancyCard key={d.id} discrepancy={d} />
           ))}
