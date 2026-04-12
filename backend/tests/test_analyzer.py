@@ -95,10 +95,37 @@ def test_same_threshold_value_difference():
         _make_odds("meridian", "Lundberg", 16.5, over=1.95, under=1.85),
     ]
     discs = find_threshold_gaps(odds)
-    # Should detect a value difference (0.10 diff in over odds)
-    assert len(discs) >= 1
+    # Negative-margin same-threshold pairs are filtered out
+    assert len(discs) == 0
+
+
+def test_same_threshold_positive_margin_emitted():
+    odds = [
+        _make_odds("mozzart", "Lundberg", 16.5, over=1.85, under=2.20),
+        _make_odds("meridian", "Lundberg", 16.5, over=2.20, under=1.85),
+    ]
+    discs = find_threshold_gaps(odds)
+    assert len(discs) == 1
     assert discs[0].gap == 0.0
+    assert discs[0].profit_margin is not None
+    assert discs[0].profit_margin > 0
     assert discs[0].middle_profit_margin is None
+
+
+def test_same_threshold_cross_book_best_combo():
+    """Picks the better cross-book combo, not worst-under."""
+    odds = [
+        _make_odds("a", "Lundberg", 16.5, over=2.05, under=2.15),
+        _make_odds("b", "Lundberg", 16.5, over=2.15, under=1.70),
+    ]
+    discs = find_threshold_gaps(odds)
+    # b.over + a.under = 2.15 + 2.15 → profitable
+    assert len(discs) == 1
+    assert discs[0].profit_margin is not None
+    assert discs[0].profit_margin > 0
+    assert discs[0].bookmaker_a_id == "b"  # over from b
+    assert discs[0].odds_a == 2.15
+    assert discs[0].odds_b == 2.15  # under from a
 
 
 def test_min_gap_filter():
@@ -188,6 +215,33 @@ def test_gap_with_two_to_one_odds_has_break_even_edge_and_positive_middle():
     assert len(discs) == 1
     assert discs[0].profit_margin == pytest.approx(0.0, abs=1e-4)
     assert discs[0].middle_profit_margin == pytest.approx(1.0, abs=1e-4)
+
+
+def test_negative_margin_gap_still_surfaced_for_middle():
+    """Gap > 0 with negative edge but positive middle is still useful."""
+    odds = [
+        _make_odds("mozzart", "Lundberg", 16.5, over=1.30, under=1.30),
+        _make_odds("meridian", "Lundberg", 17.0, over=1.30, under=1.30),
+    ]
+    discs = find_threshold_gaps(odds)
+    assert len(discs) == 1
+    assert discs[0].profit_margin is not None
+    assert discs[0].profit_margin < 0
+    assert discs[0].middle_profit_margin is not None
+    assert discs[0].middle_profit_margin > 0
+
+
+def test_positive_middle_but_negative_edge_still_surfaced():
+    """Edge is negative but middle is positive → still useful."""
+    odds = [
+        _make_odds("mozzart", "Lundberg", 16.5, over=2.00, under=1.85),
+        _make_odds("meridian", "Lundberg", 18.5, over=1.80, under=2.00),
+    ]
+    discs = find_threshold_gaps(odds)
+    assert len(discs) == 1
+    assert discs[0].profit_margin == pytest.approx(0.0, abs=1e-4)
+    assert discs[0].middle_profit_margin is not None
+    assert discs[0].middle_profit_margin > 0
 
 
 def test_analyze_entrypoint():

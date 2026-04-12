@@ -89,30 +89,51 @@ def find_threshold_gaps(
                 a, b = b, a
 
             if a.threshold == b.threshold:
-                # Same threshold — check for value difference
+                # Same threshold — evaluate both cross-book combinations
                 if a.over_odds and b.over_odds:
                     diff = abs(a.over_odds - b.over_odds)
                     if diff >= 0.05:
-                        margin = _profit_margin(
-                            max(a.over_odds, b.over_odds),
-                            min(a.under_odds or 0, b.under_odds or 0) if (a.under_odds and b.under_odds) else None,
-                        )
-                        discrepancies.append(
-                            Discrepancy(
-                                match_id=key[0],
-                                market_type=key[1],
-                                player_name=key[2],
-                                bookmaker_a_id=a.bookmaker_id,
-                                bookmaker_b_id=b.bookmaker_id,
-                                threshold_a=a.threshold,
-                                threshold_b=b.threshold,
-                                odds_a=a.over_odds,
-                                odds_b=b.over_odds,
-                                gap=0.0,
-                                profit_margin=margin,
-                                middle_profit_margin=None,
+                        margin_ab = _profit_margin(a.over_odds, b.under_odds) if b.under_odds else None
+                        margin_ba = _profit_margin(b.over_odds, a.under_odds) if a.under_odds else None
+
+                        # Pick the better profitable combination
+                        best_margin = None
+                        best_over = a.over_odds
+                        best_under = b.over_odds
+                        best_a_id = a.bookmaker_id
+                        best_b_id = b.bookmaker_id
+
+                        if margin_ab is not None and margin_ab > 0:
+                            best_margin = margin_ab
+                            best_over = a.over_odds
+                            best_under = b.under_odds
+                            best_a_id = a.bookmaker_id
+                            best_b_id = b.bookmaker_id
+
+                        if margin_ba is not None and margin_ba > 0 and (best_margin is None or margin_ba > best_margin):
+                            best_margin = margin_ba
+                            best_over = b.over_odds
+                            best_under = a.under_odds
+                            best_a_id = b.bookmaker_id
+                            best_b_id = a.bookmaker_id
+
+                        if best_margin is not None and best_margin > 0:
+                            discrepancies.append(
+                                Discrepancy(
+                                    match_id=key[0],
+                                    market_type=key[1],
+                                    player_name=key[2],
+                                    bookmaker_a_id=best_a_id,
+                                    bookmaker_b_id=best_b_id,
+                                    threshold_a=a.threshold,
+                                    threshold_b=b.threshold,
+                                    odds_a=best_over,
+                                    odds_b=best_under,
+                                    gap=0.0,
+                                    profit_margin=best_margin,
+                                    middle_profit_margin=None,
+                                )
                             )
-                        )
                 continue
 
             gap = b.threshold - a.threshold
