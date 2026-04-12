@@ -329,10 +329,13 @@ async def test_scraper_no_player_events():
 @pytest.mark.asyncio
 async def test_scraper_integration(events_data, bets_data):
     scraper = PinnBetScraper()
+    list_call_count = 0
 
     async def mock_get(url, **kwargs):
+        nonlocal list_call_count
         if "getWebEventsSelections" in url:
-            return events_data
+            list_call_count += 1
+            return events_data if list_call_count == 1 else []
         return bets_data
 
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
@@ -352,11 +355,13 @@ async def test_scraper_detail_failure_skipped(events_data, bets_data):
     """If one detail fetch fails, others still succeed."""
     scraper = PinnBetScraper()
     call_count = 0
+    list_call_count = 0
 
     async def mock_get(url, **kwargs):
-        nonlocal call_count
+        nonlocal call_count, list_call_count
         if "getWebEventsSelections" in url:
-            return events_data
+            list_call_count += 1
+            return events_data if list_call_count == 1 else []
         call_count += 1
         if call_count == 1:
             raise Exception("detail failed")
@@ -374,11 +379,13 @@ async def test_scraper_concurrent_detail_fetches(events_data, bets_data):
     scraper = PinnBetScraper()
     active = 0
     max_active = 0
+    list_call_count = 0
 
     async def mock_get(url, **kwargs):
-        nonlocal active, max_active
+        nonlocal active, max_active, list_call_count
         if "getWebEventsSelections" in url:
-            return events_data
+            list_call_count += 1
+            return events_data if list_call_count == 1 else []
         active += 1
         max_active = max(max_active, active)
         await asyncio.sleep(0.02)

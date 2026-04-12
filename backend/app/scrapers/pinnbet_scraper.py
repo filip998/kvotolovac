@@ -47,7 +47,8 @@ _DEFAULT_PARAMS: dict[str, str] = {}
 
 # (sportId, regionId, competitionId)
 _KNOWN_COMPETITIONS: list[tuple[int, int, int]] = [
-    (3, 464, 22317),
+    (3, 462, 3221),   # NBA
+    (3, 464, 22317),  # NBA (legacy ID, kept as fallback)
 ]
 
 _DETAIL_CONCURRENCY = 5

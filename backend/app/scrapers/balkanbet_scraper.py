@@ -138,10 +138,10 @@ def _parse_event_detail(data: dict) -> list[RawOddsData]:
         under_odds: float | None = None
         for oc in outcomes:
             oc_name = (oc.get("name") or "").lower()
-            if oc_name == "više":
-                over_odds = oc.get("odds")
-            elif oc_name == "manje":
-                under_odds = oc.get("odds")
+            if oc_name.startswith("više"):
+                over_odds = oc.get("odd") or oc.get("odds")
+            elif oc_name.startswith("manje"):
+                under_odds = oc.get("odd") or oc.get("odds")
 
         if over_odds is None and under_odds is None:
             continue
