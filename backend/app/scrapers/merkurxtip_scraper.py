@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 from datetime import datetime, timezone
 
 from .base import BaseScraper
@@ -130,6 +131,24 @@ def _extract_league_id(league_name: str) -> str:
     return raw or "basketball"
 
 
+_REVERSED_NAME_RE = re.compile(
+    r"^([A-Za-zÀ-ž'-]+(?:\s+[A-Za-zÀ-ž'-]+)*)\s+([A-Za-zÀ-ž]{1,4})\.$"
+)
+
+
+def _fix_reversed_name(raw: str) -> str:
+    """Convert 'Surname Init.' format to 'Init. Surname'.
+
+    MerkurXTip returns 'James L.' meaning LeBron James. Other scrapers
+    use 'L. James' or 'LeBron James'. Reversing here standardises the
+    format so the contextual resolver can match across bookmakers.
+    """
+    m = _REVERSED_NAME_RE.match(raw.strip())
+    if m:
+        return f"{m.group(2)}.{m.group(1)}"
+    return raw
+
+
 def _parse_match_detail(match: dict) -> list[RawOddsData]:
     """Parse a single match detail response into RawOddsData for all threshold lines."""
     results: list[RawOddsData] = []
@@ -140,7 +159,7 @@ def _parse_match_detail(match: dict) -> list[RawOddsData]:
 
     params = match.get("params", {})
     odds = match.get("odds", {})
-    player_name = match.get("home", "")
+    player_name = _fix_reversed_name(match.get("home", ""))
     team = match.get("away", "")
     start_time = _parse_start_time(match.get("kickOffTime"))
     league_id = _extract_league_id(league_name)

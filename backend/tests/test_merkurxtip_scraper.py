@@ -173,7 +173,7 @@ def test_parse_match_detail_bookmaker_id(match_data):
 
 def test_parse_match_detail_has_player_names(match_data):
     for r in _parse_match_detail(match_data):
-        assert r.player_name == "Batemon J."
+        assert r.player_name == "J.Batemon"
 
 
 def test_parse_match_detail_has_thresholds(match_data):
