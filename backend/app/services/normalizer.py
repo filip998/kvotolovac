@@ -127,6 +127,8 @@ _CANONICAL_PLAYERS: dict[str, str] = {
 FUZZY_THRESHOLD = 75
 _CANONICAL_LEAGUES: dict[str, str] = {
     "usa nba": "nba",
+    "nba play offs": "nba",
+    "nba promotion play offs": "nba",
     "aba liga": "aba_liga",
     "aba league": "aba_liga",
     "aba liga winners stage": "aba_liga",

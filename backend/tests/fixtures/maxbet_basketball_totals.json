@@ -1,0 +1,56 @@
+{
+  "esMatches": [
+    {
+      "away": "Inst.de Cordoba",
+      "home": "Obras",
+      "id": 23241505,
+      "kickOffTime": 1776121200000,
+      "leagueName": "Košarka ARGENTINA",
+      "odds": {
+        "227": 1.85,
+        "228": 1.85,
+        "427": 1.93,
+        "429": 1.8,
+        "50444": 1.9,
+        "50445": 1.85,
+        "50448": 1.8,
+        "50449": 1.93,
+        "50979": 1.85,
+        "50980": 1.85
+      },
+      "params": {
+        "overUnder": "157.5",
+        "overUnder2": "156.5",
+        "overUnderFirstPeriod": "39.5",
+        "overUnderFourthPeriod": "40.5",
+        "overUnderHandicapOvertime": "2.5/157.5",
+        "overUnderMBTOT1": "157.5",
+        "overUnderOvertime": "157.5",
+        "overUnderOvertime2": "156.5",
+        "overUnderOvertime3": "158.5",
+        "overUnderOvertime4": "155.5",
+        "overUnderOvertime5": "159.5",
+        "overUnderOvertime6": "154.5",
+        "overUnderOvertime7": "160.5",
+        "overUnderP": "77.5",
+        "overUnderSecondPeriod": "37.5",
+        "overUnderThirdPeriod": "39.5"
+      }
+    },
+    {
+      "away": "Cangrejeros",
+      "home": "Capitanes de A.",
+      "id": 23244580,
+      "kickOffTime": 1776124800000,
+      "leagueName": "Košarka PUERTO RICO",
+      "odds": {
+        "50444": 1.92,
+        "50445": 1.83
+      },
+      "params": {
+        "overUnderMBTOT1": "184.5",
+        "overUnderOvertime": "184.5"
+      }
+    }
+  ]
+}

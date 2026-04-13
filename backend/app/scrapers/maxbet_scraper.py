@@ -11,7 +11,8 @@ from ..models.schemas import RawOddsData
 
 logger = logging.getLogger(__name__)
 
-_LIST_URL = "https://www.maxbet.rs/restapi/offer/sr/sport/SK/mob"
+_PLAYER_LIST_URL = "https://www.maxbet.rs/restapi/offer/sr/sport/SK/mob"
+_TOTALS_LIST_URL = "https://www.maxbet.rs/restapi/offer/sr/sport/B/mob"
 _MATCH_URL = "https://www.maxbet.rs/restapi/offer/sr/match/{match_id}"
 
 _DEFAULT_PARAMS = {
@@ -72,6 +73,11 @@ _THRESHOLD_LINES = [
     (_PRA_OVER, _PRA_UNDER, "ouPlTPRA", "player_points_rebounds_assists"),
 ]
 
+_GAME_TOTAL_LINES = [
+    ("227", "228", "overUnder"),
+    ("429", "427", "overUnder2"),
+]
+
 _LIST_MATCH_PARAM_KEYS = {
     "ouPlPoints",
     "ouPlRebounds",
@@ -101,10 +107,13 @@ _FIXED_POINTS_LADDERS = [
 
 _UNLIMITED_DETAIL_CONCURRENCY = 10
 _MIN_DETAIL_CONCURRENCY = 2
-_LEAGUE_PREFIX = "poeni igrača"
+_PLAYER_LEAGUE_PREFIX = "poeni igrača"
+_BASKETBALL_LEAGUE_PREFIX = "košarka"
 _CANONICAL_LEAGUES = {
     "nba": "nba",
     "usa nba": "nba",
+    "nba play offs": "nba",
+    "nba promotion play offs": "nba",
     "euroleague": "euroleague",
     "aba liga": "aba_liga",
     "aba league": "aba_liga",
@@ -113,6 +122,10 @@ _CANONICAL_LEAGUES = {
     "aba liga plej of": "aba_liga",
     "admiralbet aba liga": "aba_liga",
     "admiralbet aba liga plej of": "aba_liga",
+    "argentina": "argentina_1",
+    "argentina 1": "argentina_1",
+    "puerto rico": "portoriko_1",
+    "portoriko 1": "portoriko_1",
 }
 
 
@@ -129,15 +142,15 @@ def _normalize_league_key(raw: str | None) -> str:
 
 
 def _extract_league_id(league_name: str) -> str:
-    lower = league_name.lower()
-    idx = lower.find(_LEAGUE_PREFIX)
-    if idx >= 0:
-        raw = lower[idx + len(_LEAGUE_PREFIX) :].strip()
-    else:
-        raw = lower.strip()
-
+    raw = league_name.lower().strip()
+    for prefix in (_PLAYER_LEAGUE_PREFIX, _BASKETBALL_LEAGUE_PREFIX):
+        if raw.startswith(prefix):
+            raw = raw[len(prefix) :].strip(" ~-")
+            break
     normalized = _normalize_league_key(raw)
-    return _CANONICAL_LEAGUES.get(normalized, raw) or "basketball"
+    if not normalized:
+        return "basketball"
+    return _CANONICAL_LEAGUES.get(normalized, normalized.replace(" ", "_"))
 
 
 def _parse_match_detail(match: dict) -> list[RawOddsData]:
@@ -145,7 +158,7 @@ def _parse_match_detail(match: dict) -> list[RawOddsData]:
     results: list[RawOddsData] = []
 
     league_name = match.get("leagueName", "")
-    if "poeni igrača" not in league_name.lower():
+    if _PLAYER_LEAGUE_PREFIX not in league_name.lower():
         return results
 
     params = match.get("params", {})
@@ -215,11 +228,61 @@ def _parse_match_detail(match: dict) -> list[RawOddsData]:
     return results
 
 
+def _parse_game_total_match(match: dict) -> list[RawOddsData]:
+    results: list[RawOddsData] = []
+
+    league_name = match.get("leagueName", "")
+    if not league_name or _PLAYER_LEAGUE_PREFIX in league_name.lower():
+        return results
+
+    home_team = match.get("home", "").strip()
+    away_team = match.get("away", "").strip()
+    if not home_team or not away_team:
+        return results
+
+    params = match.get("params", {})
+    odds = match.get("odds", {})
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    league_id = _extract_league_id(league_name)
+
+    # Only ingest the regular-time totals confirmed in MaxBet's "Ukupno poena" tab.
+    for over_code, under_code, param_key in _GAME_TOTAL_LINES:
+        threshold_str = params.get(param_key)
+        if not threshold_str:
+            continue
+        try:
+            threshold = float(threshold_str)
+        except (ValueError, TypeError):
+            continue
+
+        over_odds = odds.get(over_code)
+        under_odds = odds.get(under_code)
+        if over_odds is None and under_odds is None:
+            continue
+
+        results.append(
+            RawOddsData(
+                bookmaker_id="maxbet",
+                league_id=league_id,
+                home_team=home_team,
+                away_team=away_team,
+                market_type="game_total",
+                player_name=None,
+                threshold=threshold,
+                over_odds=over_odds,
+                under_odds=under_odds,
+                start_time=start_time,
+            )
+        )
+
+    return results
+
+
 def _get_player_match_ids(matches: list[dict]) -> list[int]:
     """Extract supported player-props match IDs from the bulk listing."""
     ids: list[int] = []
     for m in matches:
-        if "poeni igrača" not in m.get("leagueName", "").lower():
+        if _PLAYER_LEAGUE_PREFIX not in m.get("leagueName", "").lower():
             continue
         params = m.get("params", {})
         if not any(params.get(param_key) for param_key in _LIST_MATCH_PARAM_KEYS):
@@ -244,7 +307,7 @@ def _get_detail_fetch_concurrency(http_client: HttpClient, match_count: int) -> 
 
 
 class MaxBetScraper(BaseScraper):
-    """Real scraper for MaxBet basketball player props."""
+    """Real scraper for MaxBet basketball player props and regular-time totals."""
 
     def __init__(self, http_client: HttpClient | None = None) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
@@ -276,41 +339,60 @@ class MaxBetScraper(BaseScraper):
 
         return _parse_match_detail(detail)
 
-    async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
-        if league_id != "basketball":
-            return []
-
-        # Step 1: Get bulk listing to find player points match IDs
+    async def _fetch_list_matches(self, url: str, label: str) -> list[dict]:
         try:
             data = await self._http.get_json(
-                _LIST_URL,
+                url,
                 params=_DEFAULT_PARAMS,
                 headers=_DEFAULT_HEADERS,
             )
         except Exception:
-            logger.exception("MaxBet list scrape failed")
+            logger.warning("MaxBet: failed to fetch %s list", label, exc_info=True)
             return []
 
         matches = data.get("esMatches", [])
         if not matches:
-            logger.warning("MaxBet returned 0 matches")
+            logger.info("MaxBet: no %s matches found", label)
+        return matches
+
+    async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
+        if league_id != "basketball":
             return []
 
-        match_ids = _get_player_match_ids(matches)
-        if not match_ids:
-            logger.warning("MaxBet: no player points matches found")
-            return []
-
-        # Step 2: Fetch detail for each player to get alt thresholds
-        concurrency = _get_detail_fetch_concurrency(self._http, len(match_ids))
-        semaphore = asyncio.Semaphore(concurrency)
-        detail_results = await asyncio.gather(
-            *(self._fetch_match_detail(mid, semaphore) for mid in match_ids)
+        player_matches, total_matches = await asyncio.gather(
+            self._fetch_list_matches(_PLAYER_LIST_URL, "player props"),
+            self._fetch_list_matches(_TOTALS_LIST_URL, "game totals"),
         )
-        results = [item for batch in detail_results for item in batch]
 
+        total_results: list[RawOddsData] = []
+        total_match_count = 0
+        for match in total_matches:
+            parsed = _parse_game_total_match(match)
+            if parsed:
+                total_match_count += 1
+                total_results.extend(parsed)
+
+        player_results: list[RawOddsData] = []
+        match_ids = _get_player_match_ids(player_matches)
+        concurrency = 0
+        if match_ids:
+            concurrency = _get_detail_fetch_concurrency(self._http, len(match_ids))
+            semaphore = asyncio.Semaphore(concurrency)
+            detail_results = await asyncio.gather(
+                *(self._fetch_match_detail(mid, semaphore) for mid in match_ids)
+            )
+            player_results = [item for batch in detail_results for item in batch]
+        else:
+            logger.info("MaxBet: no player points matches found")
+
+        results = total_results + player_results
         logger.info(
-            "MaxBet scraped %d player odds from %d players (detail concurrency=%d)",
-            len(results), len(match_ids), concurrency,
+            "MaxBet scraped %d odds (%d game totals from %d matches, %d player odds from %d players, detail concurrency=%d)",
+            len(results),
+            len(total_results),
+            total_match_count,
+            len(player_results),
+            len(match_ids),
+            concurrency,
         )
         return results

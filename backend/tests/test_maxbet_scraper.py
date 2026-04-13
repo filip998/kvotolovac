@@ -10,25 +10,35 @@ import pytest
 from app.scrapers.maxbet_scraper import (
     MaxBetScraper,
     _extract_league_id,
+    _parse_game_total_match,
     _parse_match_detail,
     _get_player_match_ids,
     _parse_start_time,
 )
 from app.models.schemas import RawOddsData
 
-FIXTURE_PATH = Path(__file__).parent / "fixtures" / "maxbet_specials.json"
+SPECIALS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "maxbet_specials.json"
+TOTALS_FIXTURE_PATH = (
+    Path(__file__).parent / "fixtures" / "maxbet_basketball_totals.json"
+)
 
 
 @pytest.fixture
-def fixture_data() -> dict:
-    with open(FIXTURE_PATH) as f:
+def specials_fixture_data() -> dict:
+    with open(SPECIALS_FIXTURE_PATH) as f:
         return json.load(f)
 
 
 @pytest.fixture
-def player_matches(fixture_data) -> list[dict]:
+def basketball_fixture_data() -> dict:
+    with open(TOTALS_FIXTURE_PATH) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def player_matches(specials_fixture_data) -> list[dict]:
     """Extract only player points matches from fixture."""
-    return [m for m in fixture_data["esMatches"]
+    return [m for m in specials_fixture_data["esMatches"]
             if "poeni igrača" in m.get("leagueName", "").lower()
             and m.get("params", {}).get("ouPlPoints")]
 
@@ -48,23 +58,46 @@ def test_parse_start_time_none():
 
 def test_extract_league_id_known_variants():
     assert _extract_league_id("Poeni igrača USA NBA") == "nba"
+    assert _extract_league_id("Košarka NBA - Play Offs") == "nba"
+    assert _extract_league_id("Košarka NBA - Promotion - Play Offs") == "nba"
     assert _extract_league_id("Poeni igrača Euroleague") == "euroleague"
     assert _extract_league_id("Poeni igrača ABA Liga - Winners stage") == "aba_liga"
     assert _extract_league_id("Poeni igrača ABA League") == "aba_liga"
+    assert _extract_league_id("Košarka ARGENTINA") == "argentina_1"
+    assert _extract_league_id("Košarka PUERTO RICO") == "portoriko_1"
 
 
 def test_extract_league_id_fallback():
     assert _extract_league_id("Poeni igrača Germany") == "germany"
+    assert _extract_league_id("Košarka URUGUAY - Winners stage") == "uruguay_winners_stage"
     assert _extract_league_id("") == "basketball"
 
 
 # ── Parsing real fixture data ─────────────────────────────
 
 
-def test_get_player_match_ids(fixture_data):
-    ids = _get_player_match_ids(fixture_data["esMatches"])
+def test_get_player_match_ids(specials_fixture_data):
+    ids = _get_player_match_ids(specials_fixture_data["esMatches"])
     assert len(ids) > 0
     assert all(isinstance(i, int) for i in ids)
+
+
+def test_parse_game_total_match_returns_regular_time_lines(basketball_fixture_data):
+    results = _parse_game_total_match(basketball_fixture_data["esMatches"][0])
+
+    assert len(results) == 2
+    assert all(isinstance(r, RawOddsData) for r in results)
+    assert {r.market_type for r in results} == {"game_total"}
+    assert {r.player_name for r in results} == {None}
+    assert {r.league_id for r in results} == {"argentina_1"}
+    assert {(r.threshold, r.over_odds, r.under_odds) for r in results} == {
+        (157.5, 1.85, 1.85),
+        (156.5, 1.8, 1.93),
+    }
+
+
+def test_parse_game_total_match_ignores_overtime_only_lines(basketball_fixture_data):
+    assert _parse_game_total_match(basketball_fixture_data["esMatches"][1]) == []
 
 
 def test_parse_match_detail_returns_data(player_matches):
@@ -297,13 +330,14 @@ def test_parse_match_detail_malformed_threshold():
 
 
 @pytest.mark.asyncio
-async def test_scraper_returns_data(player_matches):
+async def test_scraper_returns_data(player_matches, basketball_fixture_data):
     scraper = MaxBetScraper()
-    # Mock: list returns fixture, detail returns each player match
+
     async def mock_get(url, **kwargs):
-        if "/mob" in url:
+        if url.endswith("/sport/SK/mob"):
             return {"esMatches": player_matches}
-        # Detail endpoint — find by match ID in URL
+        if url.endswith("/sport/B/mob"):
+            return basketball_fixture_data
         for m in player_matches:
             if str(m.get("id", "")) in url:
                 return m
@@ -314,6 +348,8 @@ async def test_scraper_returns_data(player_matches):
 
     assert len(results) > 0
     assert all(isinstance(r, RawOddsData) for r in results)
+    assert any(r.market_type == "game_total" for r in results)
+    assert any(r.player_name for r in results)
 
 
 @pytest.mark.asyncio
@@ -349,6 +385,49 @@ async def test_scraper_interface():
     assert scraper.get_bookmaker_id() == "maxbet"
     assert scraper.get_bookmaker_name() == "MaxBet"
     assert "basketball" in scraper.get_supported_leagues()
+
+
+@pytest.mark.asyncio
+async def test_scraper_returns_totals_when_player_list_fails(basketball_fixture_data):
+    scraper = MaxBetScraper()
+
+    async def mock_get(url, **kwargs):
+        if url.endswith("/sport/SK/mob"):
+            raise Exception("player list failed")
+        if url.endswith("/sport/B/mob"):
+            return basketball_fixture_data
+        raise AssertionError(f"unexpected url {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert {(result.market_type, result.threshold) for result in results} == {
+        ("game_total", 156.5),
+        ("game_total", 157.5),
+    }
+    assert all(result.player_name is None for result in results)
+
+
+@pytest.mark.asyncio
+async def test_scraper_returns_players_when_totals_list_fails(player_matches):
+    scraper = MaxBetScraper()
+
+    async def mock_get(url, **kwargs):
+        if url.endswith("/sport/B/mob"):
+            raise Exception("totals list failed")
+        if url.endswith("/sport/SK/mob"):
+            return {"esMatches": player_matches}
+        for match in player_matches:
+            if str(match["id"]) in url:
+                return match
+        raise AssertionError(f"unexpected url {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert results
+    assert all(result.market_type != "game_total" for result in results)
+    assert any(result.player_name for result in results)
 
 
 @pytest.mark.asyncio
@@ -396,8 +475,10 @@ async def test_scraper_fetches_details_concurrently_and_skips_failures():
             self.max_active_details = 0
 
         async def get_json(self, url: str, **kwargs):
-            if "/mob" in url:
+            if url.endswith("/sport/SK/mob"):
                 return {"esMatches": list_matches}
+            if url.endswith("/sport/B/mob"):
+                return {"esMatches": []}
 
             match_id = int(url.rsplit("/", 1)[-1])
             self.active_details += 1
