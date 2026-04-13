@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from .base import BaseScraper
 from .http_client import HttpClient
 from ..models.schemas import RawOddsData
+from ..services.normalizer import normalize_team_name
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +23,34 @@ _SPORT_ID = 3
 _OFFICE_ID = "6"
 _LANGUAGE = "sr-Latn"
 
-_PLAYER_POINTS_BET_TYPE = 1200
 _MAPPING_TYPE_PLAYER = 5
 _EVENT_MAPPING_TYPES = [1, 2, 3, 4, 5]
+
+_BET_TYPE_MARKETS: dict[int, str] = {
+    1200: "player_points",
+    1201: "player_assists",
+    1202: "player_rebounds",
+    1203: "player_points_assists",
+    1204: "player_points_rebounds",
+    1205: "player_rebounds_assists",
+    1206: "player_points_rebounds_assists",
+    1191: "player_steals",
+    1194: "player_blocks",
+    1195: "player_3points",
+}
+
+_BET_TYPE_NAME_MARKETS: dict[str, str] = {
+    "ukupno poena": "player_points",
+    "ukupno asistencija": "player_assists",
+    "ukupno skokova": "player_rebounds",
+    "ukupno poena+asistencija": "player_points_assists",
+    "ukupno poena+skokova": "player_points_rebounds",
+    "ukupno asistencija+skokova": "player_rebounds_assists",
+    "ukupno poena+asistencija+skokova": "player_points_rebounds_assists",
+    "ukupno ukradenih lopti": "player_steals",
+    "ukupno blokada": "player_blocks",
+    "ukupno postignutih trojki": "player_3points",
+}
 
 _DEFAULT_HEADERS: dict[str, str] = {
     "Accept": (
@@ -140,6 +166,56 @@ def _parse_event_name(name: str) -> tuple[str, str | None]:
     return name.strip(), None
 
 
+def _normalize_bet_type_key(raw: str | None) -> str:
+    if not raw:
+        return ""
+    lowered = " ".join(raw.strip().lower().split())
+    return lowered.replace(" + ", "+").replace("+ ", "+").replace(" +", "+")
+
+
+def _resolve_market_type(bet: dict) -> str | None:
+    bet_type_id = bet.get("betTypeId")
+    if isinstance(bet_type_id, int) and bet_type_id in _BET_TYPE_MARKETS:
+        return _BET_TYPE_MARKETS[bet_type_id]
+    if isinstance(bet_type_id, str):
+        try:
+            bet_type_id_int = int(bet_type_id)
+        except ValueError:
+            bet_type_id_int = None
+        if bet_type_id_int is not None and bet_type_id_int in _BET_TYPE_MARKETS:
+            return _BET_TYPE_MARKETS[bet_type_id_int]
+    return _BET_TYPE_NAME_MARKETS.get(_normalize_bet_type_key(bet.get("betTypeName")))
+
+
+def _resolve_matchup_from_short_name(
+    short_name: str | None,
+    event_team: str | None,
+    league_id: str,
+) -> tuple[str, str] | None:
+    if not short_name or not event_team:
+        return None
+
+    normalized_event_team = normalize_team_name(event_team, league_id)
+    best_match: tuple[str, str] | None = None
+    best_match_length = -1
+    for idx, char in enumerate(short_name):
+        if char != "-":
+            continue
+        home_team = short_name[:idx].strip(" -")
+        away_team = short_name[idx + 1 :].strip(" -")
+        if not home_team or not away_team:
+            continue
+        matched_side_length = -1
+        if normalize_team_name(home_team, league_id) == normalized_event_team:
+            matched_side_length = len(home_team)
+        if normalize_team_name(away_team, league_id) == normalized_event_team:
+            matched_side_length = max(matched_side_length, len(away_team))
+        if matched_side_length > best_match_length:
+            best_match = (home_team, away_team)
+            best_match_length = matched_side_length
+    return best_match
+
+
 def _get_player_event_ids(events: list[dict]) -> list[dict]:
     """Return full event dicts whose ``mappingTypeId`` equals 5 (player specials)."""
     return [e for e in events if e.get("mappingTypeId") == _MAPPING_TYPE_PLAYER]
@@ -160,9 +236,17 @@ def _parse_event_detail(
 
     start_time = _normalize_start_time(event.get("dateTime"))
     effective_league_id = league_id or _extract_league_id(event)
+    resolved_matchup = _resolve_matchup_from_short_name(
+        event.get("shortName"),
+        team,
+        effective_league_id,
+    )
+    home_team = resolved_matchup[0] if resolved_matchup else (team or "")
+    away_team = resolved_matchup[1] if resolved_matchup else player_name
 
     for bet in bets_data.get("bets", []):
-        if bet.get("betTypeId") != _PLAYER_POINTS_BET_TYPE:
+        market_type = _resolve_market_type(bet)
+        if market_type is None:
             continue
 
         sbv = bet.get("sBV")
@@ -191,9 +275,9 @@ def _parse_event_detail(
             RawOddsData(
                 bookmaker_id="pinnbet",
                 league_id=effective_league_id,
-                home_team=team or "",
-                away_team=player_name,
-                market_type="player_points",
+                home_team=home_team,
+                away_team=away_team,
+                market_type=market_type,
                 player_name=player_name,
                 threshold=threshold,
                 over_odds=over_odds,

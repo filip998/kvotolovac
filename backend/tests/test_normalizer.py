@@ -23,6 +23,10 @@ def test_normalize_team_alias():
     assert normalize_team_name("barcelona") == "FC Barcelona"
     assert normalize_team_name("Houston", "nba") == "Houston Rockets"
     assert normalize_team_name("Minnesota", "nba") == "Minnesota Timberwolves"
+    assert normalize_team_name("Crv.Zvezda") == "Crvena Zvezda"
+    assert normalize_team_name("Cluj Napoc") == "Universitatea Cluj"
+    assert normalize_team_name("Budućnost") == "Buducnost"
+    assert normalize_team_name("KK Crvena Zvezda") == "Crvena Zvezda"
 
 
 def test_normalize_team_nba_aliases_are_league_scoped():
@@ -671,6 +675,142 @@ def test_normalize_odds_normalizes_new_market_types():
     assert normalized[0].home_team == "Olympiacos"
     assert normalized[0].away_team == "FC Barcelona"
     assert normalized[0].player_name == "Sasha Vezenkov"
+
+
+def test_normalize_odds_resolves_prefix_player_variants_with_shared_matchup():
+    raw = [
+        RawOddsData(
+            bookmaker_id="pinnbet",
+            league_id="aba_liga",
+            home_team="Crv.Zvezda",
+            away_team="Cluj Napoc",
+            market_type="player_points",
+            player_name="Ja.Butler",
+            threshold=11.5,
+            over_odds=1.45,
+            under_odds=2.5,
+            start_time="2026-04-13T16:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="aba_liga",
+            home_team="Crvena Zvezda",
+            away_team="Universitatea Cluj",
+            market_type="player_points",
+            player_name="Jar.Butler",
+            threshold=13.5,
+            over_odds=1.82,
+            under_odds=1.97,
+            start_time="2026-04-13T16:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="oktagonbet",
+            league_id="aba_liga",
+            home_team="Crvena Zvezda",
+            away_team="Universitatea Cluj",
+            market_type="player_points",
+            player_name="Jared Butler",
+            threshold=15.5,
+            over_odds=2.30,
+            under_odds=1.53,
+            start_time="2026-04-13T16:00:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert [offer.player_name for offer in normalized] == [
+        "Jared Butler",
+        "Jared Butler",
+        "Jared Butler",
+    ]
+    assert {offer.home_team for offer in normalized} == {"Crvena Zvezda"}
+    assert {offer.away_team for offer in normalized} == {"Universitatea Cluj"}
+
+
+def test_normalize_odds_merges_hyphen_and_space_surnames():
+    raw = [
+        RawOddsData(
+            bookmaker_id="pinnbet",
+            league_id="aba_liga",
+            home_team="Dubai",
+            away_team="Buducnost",
+            market_type="player_points",
+            player_name="Codi Miller-McIntyre",
+            threshold=10.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T18:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="aba_liga",
+            home_team="Dubai",
+            away_team="Budućnost",
+            market_type="player_points",
+            player_name="Codi Miller McIntyre",
+            threshold=12.5,
+            over_odds=1.8,
+            under_odds=2.0,
+            start_time="2026-04-13T18:00:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert [offer.player_name for offer in normalized] == [
+        "Codi Miller-McIntyre",
+        "Codi Miller-McIntyre",
+    ]
+
+
+def test_normalize_odds_prefers_full_name_over_initial_and_diacritic_variants():
+    raw = [
+        RawOddsData(
+            bookmaker_id="pinnbet",
+            league_id="aba_liga",
+            home_team="Crv.Zvezda",
+            away_team="Cluj Napoc",
+            market_type="player_points",
+            player_name="S.Miljenovic",
+            threshold=9.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T16:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="aba_liga",
+            home_team="Crvena Zvezda",
+            away_team="Universitatea Cluj",
+            market_type="player_points",
+            player_name="S. Miljenović",
+            threshold=11.5,
+            over_odds=1.8,
+            under_odds=2.0,
+            start_time="2026-04-13T16:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="oktagonbet",
+            league_id="aba_liga",
+            home_team="Crvena Zvezda",
+            away_team="Universitatea Cluj",
+            market_type="player_points",
+            player_name="Stefan Miljenović",
+            threshold=13.5,
+            over_odds=1.7,
+            under_odds=2.1,
+            start_time="2026-04-13T16:00:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert [offer.player_name for offer in normalized] == [
+        "Stefan Miljenović",
+        "Stefan Miljenović",
+        "Stefan Miljenović",
+    ]
 
 
 def test_normalize_preserves_thresholds():

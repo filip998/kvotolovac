@@ -14,6 +14,7 @@ from app.scrapers.pinnbet_scraper import (
     _parse_event_detail,
     _get_player_event_ids,
     _normalize_start_time,
+    _resolve_matchup_from_short_name,
 )
 from app.models.schemas import RawOddsData
 
@@ -143,7 +144,7 @@ def test_parse_event_detail_basic(events_data, bets_data):
     assert r.bookmaker_id == "pinnbet"
     assert r.player_name == "Alfonso Plummer"
     assert r.home_team == "KK Bosna"
-    assert r.away_team == "Alfonso Plummer"
+    assert r.away_team == "KK Crvena Zvezda"
     assert r.threshold == 12.5
     assert r.over_odds == 1.50
     assert r.under_odds == 2.40
@@ -153,7 +154,7 @@ def test_parse_event_detail_basic(events_data, bets_data):
 
 
 def test_parse_event_detail_only_bet_type_1200(events_data, bets_data):
-    """Only betTypeId 1200 should be parsed, not 1201."""
+    """Only supported threshold market types should be parsed from the fixture."""
     event = events_data[0]
     results = _parse_event_detail(event, bets_data)
     assert len(results) == 1
@@ -263,6 +264,7 @@ def test_parse_event_detail_no_name():
 def test_parse_event_detail_multiple_thresholds():
     event = {
         "name": "Player One - Team X",
+        "shortName": "Team X-Team Y",
         "dateTime": "2026-04-11T16:00:00",
     }
     detail = {
@@ -289,6 +291,119 @@ def test_parse_event_detail_multiple_thresholds():
     assert len(results) == 2
     thresholds = sorted([r.threshold for r in results])
     assert thresholds == [12.5, 14.5]
+
+
+def test_parse_event_detail_parses_supported_market_types():
+    event = {
+        "name": "Player One - Team X",
+        "shortName": "Team X-Team Y",
+        "competitionName": "AdmiralBet ABA liga - plej of",
+        "dateTime": "2026-04-11T16:00:00",
+    }
+    detail = {
+        "bets": [
+            {
+                "betTypeId": 1201,
+                "betTypeName": "Ukupno asistencija",
+                "sBV": "5.5",
+                "betOutcomes": [
+                    {"name": "više", "odd": 1.8, "isPlayable": True},
+                    {"name": "manje", "odd": 1.9, "isPlayable": True},
+                ],
+            },
+            {
+                "betTypeId": 1202,
+                "betTypeName": "Ukupno skokova",
+                "sBV": "7.5",
+                "betOutcomes": [
+                    {"name": "više", "odd": 1.7, "isPlayable": True},
+                    {"name": "manje", "odd": 2.0, "isPlayable": True},
+                ],
+            },
+            {
+                "betTypeId": 1195,
+                "betTypeName": "Ukupno postignutih trojki",
+                "sBV": "2.5",
+                "betOutcomes": [
+                    {"name": "više", "odd": 2.2, "isPlayable": True},
+                    {"name": "manje", "odd": 1.6, "isPlayable": True},
+                ],
+            },
+            {
+                "betTypeId": 1206,
+                "betTypeName": "Ukupno poena+asistencija+skokova",
+                "sBV": "25.5",
+                "betOutcomes": [
+                    {"name": "više", "odd": 1.9, "isPlayable": True},
+                    {"name": "manje", "odd": 1.9, "isPlayable": True},
+                ],
+            },
+            {
+                "betTypeId": 1207,
+                "betTypeName": "Double double EF",
+                "sBV": None,
+                "betOutcomes": [
+                    {"name": "da", "odd": 2.5, "isPlayable": True},
+                ],
+            },
+        ]
+    }
+
+    results = _parse_event_detail(event, detail)
+
+    assert [(r.market_type, r.threshold) for r in results] == [
+        ("player_assists", 5.5),
+        ("player_rebounds", 7.5),
+        ("player_3points", 2.5),
+        ("player_points_rebounds_assists", 25.5),
+    ]
+    assert {r.home_team for r in results} == {"Team X"}
+    assert {r.away_team for r in results} == {"Team Y"}
+
+
+def test_parse_event_detail_resolves_matchup_from_short_name_aliases():
+    event = {
+        "name": "Jared Butler - Crvena zvezda",
+        "shortName": "Crv.Zvezda-Cluj Napoc",
+        "competitionName": "AdmiralBet ABA liga - plej of",
+        "competitionId": 22317,
+        "dateTime": "2026-04-11T16:00:00",
+    }
+    detail = {
+        "bets": [
+            {
+                "betTypeId": 1200,
+                "betTypeName": "Ukupno poena",
+                "sBV": "13.5",
+                "betOutcomes": [
+                    {"name": "više", "odd": 1.8, "isPlayable": True},
+                    {"name": "manje", "odd": 1.9, "isPlayable": True},
+                ],
+            }
+        ]
+    }
+
+    results = _parse_event_detail(event, detail)
+
+    assert len(results) == 1
+    assert results[0].home_team == "Crv.Zvezda"
+    assert results[0].away_team == "Cluj Napoc"
+
+
+def test_resolve_matchup_from_short_name_prefers_full_team_over_internal_hyphen_split():
+    assert _resolve_matchup_from_short_name(
+        "Maccabi Tel-Aviv-Partizan",
+        "Maccabi Tel Aviv",
+        "euroleague",
+    ) == ("Maccabi Tel-Aviv", "Partizan")
+
+
+def test_resolve_matchup_from_short_name_handles_internal_hyphen_before_away_team():
+    assert _resolve_matchup_from_short_name(
+        "Paris-Levallois-Monaco",
+        "Monaco",
+        "france",
+    ) == ("Paris-Levallois", "Monaco")
 
 
 # -- Scraper interface -----------------------------------------------------
@@ -369,6 +484,8 @@ async def test_scraper_integration(events_data, bets_data):
     players = {r.player_name for r in results}
     assert "Alfonso Plummer" in players
     assert "Marko Simonovic" in players
+    assert {r.home_team for r in results} == {"KK Bosna"}
+    assert {r.away_team for r in results} == {"KK Crvena Zvezda"}
 
 
 @pytest.mark.asyncio

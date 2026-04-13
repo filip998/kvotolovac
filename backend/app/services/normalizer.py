@@ -22,6 +22,8 @@ _CANONICAL_TEAMS: dict[str, str] = {
     "barcelona": "FC Barcelona",
     "partizan": "Partizan",
     "crvena zvezda": "Crvena Zvezda",
+    "crv zvezda": "Crvena Zvezda",
+    "kk crvena zvezda": "Crvena Zvezda",
     "red star": "Crvena Zvezda",
     "panathinaikos": "Panathinaikos",
     "anadolu efes": "Anadolu Efes",
@@ -30,6 +32,12 @@ _CANONICAL_TEAMS: dict[str, str] = {
     "bayern": "Bayern Munich",
     "maccabi tel aviv": "Maccabi Tel Aviv",
     "maccabi": "Maccabi Tel Aviv",
+    "universitatea cluj": "Universitatea Cluj",
+    "cluj napoc": "Universitatea Cluj",
+    "cluj napoca": "Universitatea Cluj",
+    "buducnost": "Buducnost",
+    "buducnost voli": "Buducnost",
+    "kk bosna": "KK Bosna",
 }
 
 _NBA_CANONICAL_TEAMS: dict[str, str] = {
@@ -190,11 +198,26 @@ _MARKET_TYPE_MAPPING: dict[str, str] = {
 }
 
 
+def _normalize_team_key(raw_name: str) -> str:
+    normalized = unicodedata.normalize("NFKD", raw_name)
+    ascii_name = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    cleaned = re.sub(r"[^a-z0-9\s]+", " ", ascii_name.lower().replace("_", " "))
+    return " ".join(cleaned.split())
+
+
 def normalize_team_name(raw_name: str, league_id: str | None = None) -> str:
-    key = " ".join(raw_name.strip().lower().split())
-    team_mapping = dict(_CANONICAL_TEAMS)
+    key = _normalize_team_key(raw_name)
+    team_mapping = {
+        _normalize_team_key(canon_key): canon_val
+        for canon_key, canon_val in _CANONICAL_TEAMS.items()
+    }
     if normalize_league_id(league_id or "") == "nba":
-        team_mapping.update(_NBA_CANONICAL_TEAMS)
+        team_mapping.update(
+            {
+                _normalize_team_key(canon_key): canon_val
+                for canon_key, canon_val in _NBA_CANONICAL_TEAMS.items()
+            }
+        )
 
     if key in team_mapping:
         return team_mapping[key]
@@ -238,6 +261,10 @@ def _normalize_person_tokens(name: str) -> list[str]:
     return [token.strip("-") for token in cleaned.split() if token.strip("-")]
 
 
+def _compact_person_name(name: str) -> str:
+    return "".join(token.replace("-", "") for token in _normalize_person_tokens(name))
+
+
 def _player_name_parts(name: str) -> tuple[list[str], str] | None:
     tokens = _normalize_person_tokens(name)
     if len(tokens) < 2:
@@ -251,6 +278,24 @@ def _player_name_completeness(first_tokens: list[str]) -> int:
 
 def _has_multiple_initials(first_tokens: list[str]) -> bool:
     return len(first_tokens) > 1 and all(len(token) == 1 for token in first_tokens)
+
+
+def _collapse_first_name_variants(first_names: set[str]) -> set[str]:
+    collapsed: list[str] = []
+    for name in sorted(first_names, key=lambda value: (len(value), value), reverse=True):
+        if any(existing.startswith(name) or name.startswith(existing) for existing in collapsed):
+            continue
+        collapsed.append(name)
+    return set(collapsed)
+
+
+def _name_surface_richness(name: str) -> tuple[int, int, int]:
+    stripped = name.strip()
+    return (
+        sum(1 for ch in stripped if not ch.isascii()),
+        stripped.count("-"),
+        len(stripped),
+    )
 
 
 def _is_contextual_player_match(raw_name: str, candidate_name: str) -> bool:
@@ -282,43 +327,49 @@ def _is_contextual_player_match(raw_name: str, candidate_name: str) -> bool:
 
 
 def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOddsData]:
-    names_by_match_and_surname: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+    names_by_match: dict[str, Counter[str]] = defaultdict(Counter)
 
     for raw in raw_list:
         if not raw.player_name:
-            continue
-
-        parts = _player_name_parts(raw.player_name)
-        if not parts:
             continue
 
         league_id = normalize_league_id(raw.league_id)
         home_team = normalize_team_name(raw.home_team, league_id)
         away_team = normalize_team_name(raw.away_team, league_id)
         match_id = generate_match_id(home_team, away_team, league_id)
-        _, last_name = parts
-        names_by_match_and_surname[(match_id, last_name)][raw.player_name.strip()] += 1
+        names_by_match[match_id][raw.player_name.strip()] += 1
 
-    # Pre-pass: merge names that differ only in casing into the most frequent variant
+    # Pre-pass: merge names that differ only by punctuation, spacing, or diacritics.
     case_replacements: dict[tuple[str, str], str] = {}
-    for match_and_surname, name_counts in names_by_match_and_surname.items():
-        by_lower: dict[str, list[str]] = defaultdict(list)
+    compact_canonical_names: set[tuple[str, str]] = set()
+    for match_id, name_counts in names_by_match.items():
+        by_compact: dict[str, list[str]] = defaultdict(list)
         for name in name_counts:
-            by_lower[name.lower()].append(name)
-        for _lower_key, variants in by_lower.items():
+            by_compact[_compact_person_name(name)].append(name)
+        for compact_key, variants in by_compact.items():
+            if not compact_key:
+                continue
             if len(variants) <= 1:
                 continue
-            best = max(variants, key=lambda v: (name_counts[v], v))
+            best = max(
+                variants,
+                key=lambda v: (
+                    name_counts[v],
+                    _name_surface_richness(v),
+                    v,
+                ),
+            )
             merged_count = sum(name_counts[v] for v in variants)
+            compact_canonical_names.add((match_id, best))
             for v in variants:
                 if v != best:
-                    case_replacements[(match_and_surname[0], v)] = best
+                    case_replacements[(match_id, v)] = best
                     name_counts[best] = merged_count
                     del name_counts[v]
 
     replacements: dict[tuple[str, str], str] = dict(case_replacements)
 
-    for match_and_surname, name_counts in names_by_match_and_surname.items():
+    for match_id, name_counts in names_by_match.items():
         observed_names = list(name_counts)
         for raw_name in observed_names:
             raw_parts = _player_name_parts(raw_name)
@@ -335,9 +386,9 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
             ]
             if not candidates:
                 continue
-            candidate_first_names = {
+            candidate_first_names = _collapse_first_name_variants({
                 _player_name_parts(candidate)[0][0] for candidate in candidates if _player_name_parts(candidate)
-            }
+            })
             if len(candidate_first_names) > 1:
                 continue
 
@@ -356,9 +407,10 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
             if not best_parts:
                 continue
             best_completeness = _player_name_completeness(best_parts[0])
+            raw_has_compact_alias_support = (match_id, raw_name) in compact_canonical_names
             if best_completeness < raw_completeness:
                 continue
-            if raw_is_single_initial and name_counts[best_candidate] <= name_counts[raw_name]:
+            if raw_is_single_initial and not raw_has_compact_alias_support and name_counts[best_candidate] <= name_counts[raw_name]:
                 continue
             if best_completeness == raw_completeness and name_counts[best_candidate] <= name_counts[raw_name]:
                 continue
@@ -377,7 +429,7 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
                 ):
                     continue
 
-            replacements[(match_and_surname[0], raw_name)] = best_candidate
+            replacements[(match_id, raw_name)] = best_candidate
 
     resolved: list[RawOddsData] = []
     for raw in raw_list:
@@ -390,6 +442,13 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
         away_team = normalize_team_name(raw.away_team, league_id)
         match_id = generate_match_id(home_team, away_team, league_id)
         replacement = replacements.get((match_id, raw.player_name.strip()))
+        seen_replacements: set[str] = set()
+        while replacement and replacement not in seen_replacements:
+            seen_replacements.add(replacement)
+            next_replacement = replacements.get((match_id, replacement))
+            if not next_replacement:
+                break
+            replacement = next_replacement
         if not replacement:
             resolved.append(raw)
             continue
