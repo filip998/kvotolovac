@@ -1,0 +1,120 @@
+{
+  "items": [
+    {
+      "id": 709678,
+      "home": {
+        "id": 8987,
+        "name": "Obras"
+      },
+      "visitor": {
+        "id": 6102,
+        "name": "Instituto"
+      },
+      "competition": {
+        "id": 4277,
+        "name": "Argentina 1",
+        "originId": 2374
+      },
+      "startTime": 1776121200000,
+      "oddsGroup": [
+        {
+          "id": 190372827,
+          "groupId": "67a5d4bfcfb73b48fec34b8b",
+          "groupName": "Ukupno poena na meču",
+          "odds": [
+            {
+              "id": 190372827,
+              "specialOddValue": "156.5",
+              "subgame": {
+                "id": 2,
+                "name": "manje"
+              },
+              "game": {
+                "id": 14,
+                "name": "Ukupno poena na meču",
+                "specialOddValueType": "MARGIN"
+              },
+              "value": 1.85,
+              "oddStatus": "ACTIVE"
+            },
+            {
+              "id": 190372826,
+              "specialOddValue": "156.5",
+              "subgame": {
+                "id": 1,
+                "name": "više"
+              },
+              "game": {
+                "id": 14,
+                "name": "Ukupno poena na meču",
+                "specialOddValueType": "MARGIN"
+              },
+              "value": 1.85,
+              "oddStatus": "ACTIVE"
+            }
+          ],
+          "specialOddValue": "156.5",
+          "rank": 5
+        }
+      ]
+    },
+    {
+      "id": 709677,
+      "home": {
+        "id": 8076,
+        "name": "Boca Juniors"
+      },
+      "visitor": {
+        "id": 56427,
+        "name": "Independiente"
+      },
+      "competition": {
+        "id": 4277,
+        "name": "Argentina 1",
+        "originId": 2374
+      },
+      "startTime": 1776123000000,
+      "oddsGroup": [
+        {
+          "id": 189717225,
+          "groupId": "67a5d4bfcfb73b48fec34b8b",
+          "groupName": "Ukupno poena na meču",
+          "odds": [
+            {
+              "id": 189717225,
+              "specialOddValue": "168.5",
+              "subgame": {
+                "id": 2,
+                "name": "manje"
+              },
+              "game": {
+                "id": 14,
+                "name": "Ukupno poena na meču",
+                "specialOddValueType": "MARGIN"
+              },
+              "value": 1.85,
+              "oddStatus": "ACTIVE"
+            },
+            {
+              "id": 189717226,
+              "specialOddValue": "168.5",
+              "subgame": {
+                "id": 1,
+                "name": "više"
+              },
+              "game": {
+                "id": 14,
+                "name": "Ukupno poena na meču",
+                "specialOddValueType": "MARGIN"
+              },
+              "value": 1.85,
+              "oddStatus": "ACTIVE"
+            }
+          ],
+          "specialOddValue": "168.5",
+          "rank": 5
+        }
+      ]
+    }
+  ]
+}

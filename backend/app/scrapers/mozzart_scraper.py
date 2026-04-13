@@ -10,7 +10,8 @@ from ..models.schemas import RawOddsData
 
 logger = logging.getLogger(__name__)
 
-_API_URL = "https://www.mozzartbet.com/betting/specialMatches"
+_SPECIALS_API_URL = "https://www.mozzartbet.com/betting/specialMatches"
+_MATCHES_API_URL = "https://www.mozzartbet.com/betting/matches"
 
 _DEFAULT_HEADERS = {
     "Accept": "application/json",
@@ -41,7 +42,14 @@ _PLAYER_GROUP_KEYWORDS = [
 ]
 
 _BASKETBALL_SPORT_ID = 2
+_MATCHES_MATCH_TYPE = 0
 _SPECIALS_MATCH_TYPE = 2
+_MATCHES_DATE = "all"
+_PAGE_SIZE = 50
+_GAME_TOTAL_GROUP_NAMES = {
+    "ukupno poena na meču",
+    "ukupno poena na mecu",
+}
 _CANONICAL_LEAGUES = {
     "nba": "nba",
     "usa nba": "nba",
@@ -53,9 +61,9 @@ _CANONICAL_LEAGUES = {
 }
 
 
-def _build_request_body(
+def _build_specials_request_body(
     competition_ids: list[int] | None = None,
-    page_size: int = 50,
+    page_size: int = _PAGE_SIZE,
 ) -> dict:
     body_inner: dict = {
         "sportIds": [_BASKETBALL_SPORT_ID],
@@ -80,6 +88,23 @@ def _build_request_body(
         "pageSize": page_size,
         "body": body_inner,
         "uri": "/matches",
+    }
+
+
+def _build_matches_request_body(
+    current_page: int = 0,
+    competition_ids: list[int] | None = None,
+    page_size: int = _PAGE_SIZE,
+) -> dict:
+    return {
+        "date": _MATCHES_DATE,
+        "sort": "bycompetition",
+        "currentPage": current_page,
+        "pageSize": page_size,
+        "sportId": _BASKETBALL_SPORT_ID,
+        "competitionIds": competition_ids or [],
+        "search": "",
+        "matchTypeId": _MATCHES_MATCH_TYPE,
     }
 
 
@@ -115,6 +140,21 @@ def _extract_league_id(competition_name: str | None) -> str:
     return raw.replace(" ", "_") or "basketball"
 
 
+def _parse_threshold(raw_value: object) -> float | None:
+    try:
+        threshold = float(raw_value)
+    except (ValueError, TypeError):
+        return None
+    return threshold if threshold > 0 else None
+
+
+def _assign_over_under(odds: dict[str, float | None], subgame_name: str, value: float) -> None:
+    if "više" in subgame_name or "vise" in subgame_name:
+        odds["over"] = value
+    elif "manje" in subgame_name:
+        odds["under"] = value
+
+
 def _parse_items(items: list[dict]) -> list[RawOddsData]:
     results: list[RawOddsData] = []
 
@@ -129,7 +169,7 @@ def _parse_items(items: list[dict]) -> list[RawOddsData]:
         aggregated: dict[tuple[str, float, str], dict] = {}
 
         for group in match.get("oddsGroup", []):
-            group_name = group.get("groupName", "").lower()
+            group_name = group.get("groupName", "").strip().lower()
             if not any(kw in group_name for kw in _PLAYER_GROUP_KEYWORDS):
                 continue
 
@@ -141,23 +181,16 @@ def _parse_items(items: list[dict]) -> list[RawOddsData]:
                 extracted_name, market_type = _extract_player_and_market(game_name)
                 subgame_name = odd.get("subgame", {}).get("name", "").lower()
 
-                try:
-                    sov = float(odd.get("specialOddValue", "0"))
-                except (ValueError, TypeError):
-                    continue
-
+                sov = _parse_threshold(odd.get("specialOddValue"))
                 value = odd.get("value")
-                if not extracted_name or sov <= 0 or value is None:
+                if not extracted_name or sov is None or value is None:
                     continue
 
                 key = (extracted_name, sov, market_type)
                 if key not in aggregated:
                     aggregated[key] = {"over": None, "under": None}
 
-                if "više" in subgame_name or "vise" in subgame_name:
-                    aggregated[key]["over"] = value
-                elif "manje" in subgame_name:
-                    aggregated[key]["under"] = value
+                _assign_over_under(aggregated[key], subgame_name, value)
 
         for (player_name, threshold, market_type), odds in aggregated.items():
             results.append(
@@ -178,8 +211,59 @@ def _parse_items(items: list[dict]) -> list[RawOddsData]:
     return results
 
 
+def _parse_game_total_items(items: list[dict]) -> list[RawOddsData]:
+    results: list[RawOddsData] = []
+
+    for match in items:
+        home = match.get("home", {}).get("name", "")
+        visitor = match.get("visitor", {}).get("name", "")
+        competition = match.get("competition", {}).get("name", "")
+        start_time = _parse_start_time(match.get("startTime"))
+        league_id = _extract_league_id(competition)
+
+        aggregated: dict[float, dict[str, float | None]] = {}
+
+        for group in match.get("oddsGroup", []):
+            group_name = group.get("groupName", "").strip().lower()
+            if group_name not in _GAME_TOTAL_GROUP_NAMES:
+                continue
+
+            for odd in group.get("odds", []):
+                if odd.get("oddStatus") != "ACTIVE":
+                    continue
+
+                threshold = _parse_threshold(
+                    odd.get("specialOddValue") or group.get("specialOddValue"),
+                )
+                value = odd.get("value")
+                if threshold is None or value is None:
+                    continue
+
+                subgame_name = odd.get("subgame", {}).get("name", "").lower()
+                aggregated.setdefault(threshold, {"over": None, "under": None})
+                _assign_over_under(aggregated[threshold], subgame_name, value)
+
+        for threshold, odds in aggregated.items():
+            results.append(
+                RawOddsData(
+                    bookmaker_id="mozzart",
+                    league_id=league_id,
+                    home_team=home,
+                    away_team=visitor,
+                    market_type="game_total",
+                    player_name=None,
+                    threshold=threshold,
+                    over_odds=odds["over"],
+                    under_odds=odds["under"],
+                    start_time=start_time,
+                )
+            )
+
+    return results
+
+
 class MozzartScraper(BaseScraper):
-    """Real scraper for Mozzart bookmaker player points over/under odds."""
+    """Real scraper for Mozzart player props and game total over/under odds."""
 
     def __init__(self, http_client: HttpClient | None = None) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
@@ -193,27 +277,67 @@ class MozzartScraper(BaseScraper):
     def get_supported_leagues(self) -> list[str]:
         return ["basketball"]
 
-    async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
-        if league_id != "basketball":
-            return []
-
-        body = _build_request_body()
+    async def _fetch_special_items(self) -> list[dict]:
+        body = _build_specials_request_body()
 
         try:
             data = await self._http.post_json(
-                _API_URL,
+                _SPECIALS_API_URL,
                 json_body=body,
                 headers=_DEFAULT_HEADERS,
             )
         except Exception:
-            logger.exception("Mozzart scrape failed")
+            logger.exception("Mozzart specials scrape failed")
             return []
 
-        items = data.get("items", [])
-        if not items:
-            logger.warning("Mozzart returned 0 items")
+        return data.get("items", [])
+
+    async def _fetch_match_items(self) -> list[dict]:
+        items: list[dict] = []
+        current_page = 0
+
+        while True:
+            body = _build_matches_request_body(current_page=current_page)
+            try:
+                data = await self._http.post_json(
+                    _MATCHES_API_URL,
+                    json_body=body,
+                    headers=_DEFAULT_HEADERS,
+                )
+            except Exception:
+                logger.exception("Mozzart match scrape failed on page %d", current_page)
+                return items
+
+            page_items = data.get("items", [])
+            if not page_items:
+                return items
+
+            items.extend(page_items)
+            if len(page_items) < _PAGE_SIZE:
+                return items
+
+            current_page += 1
+
+    async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
+        if league_id != "basketball":
             return []
 
-        results = _parse_items(items)
-        logger.info("Mozzart scraped %d player odds from %d matches", len(results), len(items))
+        special_items = await self._fetch_special_items()
+        match_items = await self._fetch_match_items()
+
+        if not special_items and not match_items:
+            logger.warning("Mozzart returned 0 items across specials and prematch matches")
+            return []
+
+        player_results = _parse_items(special_items)
+        game_total_results = _parse_game_total_items(match_items)
+        results = player_results + game_total_results
+        logger.info(
+            "Mozzart scraped %d odds (%d player props, %d game totals) from %d specials and %d prematch matches",
+            len(results),
+            len(player_results),
+            len(game_total_results),
+            len(special_items),
+            len(match_items),
+        )
         return results

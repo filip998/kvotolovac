@@ -13,7 +13,7 @@ from app.services.analyzer import (
 
 
 def _make_odds(
-    bookmaker: str, player: str, threshold: float,
+    bookmaker: str, player: str | None, threshold: float,
     over: float = 1.85, under: float = 1.95,
     match_id: str = "m1",
     market_type: str = "player_points",
@@ -173,6 +173,36 @@ def test_different_matches_no_cross_detection():
     ]
     discs = find_threshold_gaps(odds)
     assert len(discs) == 0
+
+
+def test_game_totals_group_without_player_name():
+    odds = [
+        _make_odds(
+            "mozzart",
+            None,
+            156.5,
+            over=1.85,
+            under=1.90,
+            market_type="game_total",
+        ),
+        _make_odds(
+            "meridian",
+            None,
+            158.5,
+            over=1.80,
+            under=2.00,
+            market_type="game_total",
+        ),
+    ]
+
+    discs = find_threshold_gaps(odds)
+
+    assert len(discs) == 1
+    assert discs[0].market_type == "game_total"
+    assert discs[0].player_name is None
+    assert discs[0].gap == 2.0
+    assert discs[0].bookmaker_a_id == "mozzart"
+    assert discs[0].bookmaker_b_id == "meridian"
 
 
 def test_profit_margin_calculation():

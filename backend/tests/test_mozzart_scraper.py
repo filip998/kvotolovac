@@ -8,19 +8,29 @@ import pytest
 
 from app.scrapers.mozzart_scraper import (
     MozzartScraper,
+    _MATCHES_API_URL,
+    _SPECIALS_API_URL,
     _extract_league_id,
     _extract_player_and_market,
+    _parse_game_total_items,
     _parse_items,
     _parse_start_time,
 )
 from app.models.schemas import RawOddsData
 
-FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mozzart_specials.json"
+SPECIALS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mozzart_specials.json"
+MATCHES_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mozzart_matches.json"
 
 
 @pytest.fixture
 def fixture_data() -> dict:
-    with open(FIXTURE_PATH) as f:
+    with open(SPECIALS_FIXTURE_PATH) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def matches_fixture_data() -> dict:
+    with open(MATCHES_FIXTURE_PATH) as f:
         return json.load(f)
 
 
@@ -238,6 +248,55 @@ def test_parse_items_uses_canonical_aba_league_id():
     assert results[0].league_id == "aba_liga"
 
 
+def test_parse_game_total_items_returns_data(matches_fixture_data):
+    results = _parse_game_total_items(matches_fixture_data["items"])
+
+    assert len(results) == 2
+    assert all(isinstance(r, RawOddsData) for r in results)
+    assert all(r.market_type == "game_total" for r in results)
+    assert all(r.player_name is None for r in results)
+
+    by_match = {(r.home_team, r.away_team): r for r in results}
+    assert by_match[("Obras", "Instituto")].threshold == 156.5
+    assert by_match[("Obras", "Instituto")].over_odds == 1.85
+    assert by_match[("Obras", "Instituto")].under_odds == 1.85
+    assert by_match[("Boca Juniors", "Independiente")].threshold == 168.5
+
+
+def test_parse_game_total_items_ignores_team_totals_and_uses_group_threshold():
+    items = [{
+        "home": {"name": "Team A"},
+        "visitor": {"name": "Team B"},
+        "competition": {"name": "Test"},
+        "startTime": 1775775600000,
+        "oddsGroup": [
+            {
+                "groupName": "Ukupno poena domaćin",
+                "specialOddValue": "80.5",
+                "odds": [
+                    {"value": 1.8, "oddStatus": "ACTIVE", "subgame": {"name": "više"}},
+                    {"value": 1.9, "oddStatus": "ACTIVE", "subgame": {"name": "manje"}},
+                ],
+            },
+            {
+                "groupName": "  Ukupno poena na meču  ",
+                "specialOddValue": "160.5",
+                "odds": [
+                    {"value": 1.85, "oddStatus": "ACTIVE", "subgame": {"name": "više"}},
+                    {"value": 1.95, "oddStatus": "ACTIVE", "subgame": {"name": "manje"}},
+                ],
+            },
+        ],
+    }]
+
+    results = _parse_game_total_items(items)
+
+    assert len(results) == 1
+    assert results[0].threshold == 160.5
+    assert results[0].over_odds == 1.85
+    assert results[0].under_odds == 1.95
+
+
 # ── Integration: MozzartScraper with mocked HTTP ──────────
 
 
@@ -250,6 +309,43 @@ async def test_scraper_returns_data(fixture_data):
 
     assert len(results) > 0
     assert all(isinstance(r, RawOddsData) for r in results)
+
+
+@pytest.mark.asyncio
+async def test_scraper_returns_player_props_and_game_totals(fixture_data, matches_fixture_data):
+    scraper = MozzartScraper()
+    with patch.object(scraper._http, "post_json", new_callable=AsyncMock) as mock_post:
+        mock_post.side_effect = [fixture_data, matches_fixture_data]
+        results = await scraper.scrape_odds("basketball")
+
+    market_types = {result.market_type for result in results}
+    game_totals = [result for result in results if result.market_type == "game_total"]
+
+    assert "player_points" in market_types
+    assert "game_total" in market_types
+    assert len(game_totals) == 2
+    assert all(result.player_name is None for result in game_totals)
+    assert mock_post.await_args_list[0].args[0] == _SPECIALS_API_URL
+    assert mock_post.await_args_list[1].args[0] == _MATCHES_API_URL
+    assert mock_post.await_args_list[1].kwargs["json_body"]["date"] == "all"
+
+
+@pytest.mark.asyncio
+async def test_scraper_paginates_match_totals_until_short_page(fixture_data, matches_fixture_data):
+    scraper = MozzartScraper()
+    page_zero = {"items": [{} for _ in range(50)]}
+    with patch.object(scraper._http, "post_json", new_callable=AsyncMock) as mock_post:
+        mock_post.side_effect = [fixture_data, page_zero, matches_fixture_data]
+        results = await scraper.scrape_odds("basketball")
+
+    match_calls = [
+        call for call in mock_post.await_args_list
+        if call.args[0] == _MATCHES_API_URL
+    ]
+
+    assert any(result.market_type == "game_total" for result in results)
+    assert [call.kwargs["json_body"]["currentPage"] for call in match_calls] == [0, 1]
+    assert all(call.kwargs["json_body"]["date"] == "all" for call in match_calls)
 
 
 @pytest.mark.asyncio
@@ -278,6 +374,28 @@ async def test_scraper_http_error():
 
     # Should return empty list, not raise
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_scraper_returns_totals_when_specials_fail(matches_fixture_data):
+    scraper = MozzartScraper()
+    with patch.object(scraper._http, "post_json", new_callable=AsyncMock) as mock_post:
+        mock_post.side_effect = [Exception("Network error"), matches_fixture_data]
+        results = await scraper.scrape_odds("basketball")
+
+    assert {result.market_type for result in results} == {"game_total"}
+    assert len(results) == 2
+
+
+@pytest.mark.asyncio
+async def test_scraper_returns_player_props_when_matches_fail(fixture_data):
+    scraper = MozzartScraper()
+    with patch.object(scraper._http, "post_json", new_callable=AsyncMock) as mock_post:
+        mock_post.side_effect = [fixture_data, Exception("Network error")]
+        results = await scraper.scrape_odds("basketball")
+
+    assert len(results) > 0
+    assert "game_total" not in {result.market_type for result in results}
 
 
 @pytest.mark.asyncio
