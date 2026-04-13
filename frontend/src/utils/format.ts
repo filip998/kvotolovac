@@ -1,3 +1,13 @@
+function parseAppDate(isoString: string): Date | null {
+  const trimmed = isoString.trim();
+  if (!trimmed) return null;
+
+  const hasTimezone = /(?:[zZ]|[+-]\d{2}:\d{2})$/.test(trimmed);
+  const normalized = hasTimezone ? trimmed : `${trimmed}Z`;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 export function formatOdds(value: number | null): string {
   if (value === null || value === undefined) return '—';
   return value.toFixed(2);
@@ -17,7 +27,8 @@ export function formatThreshold(value: number): string {
 }
 
 export function formatDateTime(isoString: string): string {
-  const date = new Date(isoString);
+  const date = parseAppDate(isoString);
+  if (!date) return '—';
   return date.toLocaleDateString('en-GB', {
     month: 'short',
     day: 'numeric',
@@ -28,8 +39,9 @@ export function formatDateTime(isoString: string): string {
 
 export function formatRelativeTime(isoString: string | null | undefined): string {
   if (!isoString) return 'Never';
+  const date = parseAppDate(isoString);
+  if (!date) return 'Never';
   const now = new Date();
-  const date = new Date(isoString);
   const diffMs = now.getTime() - date.getTime();
   const diffMinutes = Math.floor(diffMs / 60000);
 
