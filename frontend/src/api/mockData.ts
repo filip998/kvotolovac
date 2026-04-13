@@ -113,6 +113,8 @@ export const mockOddsOffers: OddsOffer[] = [
   // Match 6: FMP vs Vojvodina
   { id: 26, match_id: 'match-6', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'game_total', player_name: null, threshold: 158.5, over_odds: 1.88, under_odds: 1.90, scraped_at: ago(12) },
   { id: 27, match_id: 'match-6', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'game_total', player_name: null, threshold: 161.5, over_odds: 1.82, under_odds: 1.95, scraped_at: ago(8) },
+  { id: 28, match_id: 'match-6', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'game_total_ot', player_name: null, threshold: 160.5, over_odds: 2.02, under_odds: 1.84, scraped_at: ago(6) },
+  { id: 29, match_id: 'match-6', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'game_total_ot', player_name: null, threshold: 163.5, over_odds: 1.86, under_odds: 2.02, scraped_at: ago(5) },
 ];
 
 export const mockDiscrepancies: Discrepancy[] = [
@@ -336,6 +338,28 @@ export const mockDiscrepancies: Discrepancy[] = [
     detected_at: ago(6),
     is_active: true,
   },
+  {
+    id: 11,
+    match_id: 'match-6',
+    home_team: 'FMP',
+    away_team: 'Vojvodina',
+    league_name: 'KLS',
+    market_type: 'game_total_ot',
+    player_name: null,
+    bookmaker_a_id: 'maxbet',
+    bookmaker_a_name: 'MaxBet',
+    bookmaker_b_id: 'meridian',
+    bookmaker_b_name: 'Meridian',
+    threshold_a: 160.5,
+    threshold_b: 163.5,
+    odds_a: 2.02,
+    odds_b: 2.02,
+    gap: 3.0,
+    profit_margin: 0.01,
+    middle_profit_margin: 1.02,
+    detected_at: ago(5),
+    is_active: true,
+  },
 ];
 
 export const mockUnresolvedOdds: UnresolvedOdds[] = [
@@ -410,7 +434,7 @@ export const mockSystemStatus: SystemStatus = {
   last_scrape: ago(2),
   total_matches: 6,
   total_odds: mockOddsOffers.length,
-  total_discrepancies: 10,
+  total_discrepancies: mockDiscrepancies.length,
   active_bookmakers: 3,
   scheduler_running: true,
   scan: {

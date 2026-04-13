@@ -28,7 +28,8 @@ export type MarketType =
   | 'player_points_assists'
   | 'player_rebounds_assists'
   | 'player_points_rebounds_assists'
-  | 'game_total';
+  | 'game_total'
+  | 'game_total_ot';
 
 export interface OddsOffer {
   id: number;

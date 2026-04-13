@@ -78,6 +78,13 @@ _GAME_TOTAL_LINES = [
     ("429", "427", "overUnder2"),
 ]
 
+# OT-inclusive full-game totals confirmed from the live basketball list feed.
+_GAME_TOTAL_OT_LINES = [
+    ("50444", "50445", "overUnderOvertime"),
+    ("50448", "50449", "overUnderOvertime2"),
+    ("50979", "50980", "overUnderOvertime7"),
+]
+
 _LIST_MATCH_PARAM_KEYS = {
     "ouPlPoints",
     "ouPlRebounds",
@@ -229,6 +236,18 @@ def _parse_match_detail(match: dict) -> list[RawOddsData]:
 
 
 def _parse_game_total_match(match: dict) -> list[RawOddsData]:
+    return _parse_game_total_lines(match, _GAME_TOTAL_LINES, "game_total")
+
+
+def _parse_game_total_ot_match(match: dict) -> list[RawOddsData]:
+    return _parse_game_total_lines(match, _GAME_TOTAL_OT_LINES, "game_total_ot")
+
+
+def _parse_game_total_lines(
+    match: dict,
+    lines: list[tuple[str, str, str]],
+    market_type: str,
+) -> list[RawOddsData]:
     results: list[RawOddsData] = []
 
     league_name = match.get("leagueName", "")
@@ -245,8 +264,7 @@ def _parse_game_total_match(match: dict) -> list[RawOddsData]:
     start_time = _parse_start_time(match.get("kickOffTime"))
     league_id = _extract_league_id(league_name)
 
-    # Only ingest the regular-time totals confirmed in MaxBet's "Ukupno poena" tab.
-    for over_code, under_code, param_key in _GAME_TOTAL_LINES:
+    for over_code, under_code, param_key in lines:
         threshold_str = params.get(param_key)
         if not threshold_str:
             continue
@@ -266,7 +284,7 @@ def _parse_game_total_match(match: dict) -> list[RawOddsData]:
                 league_id=league_id,
                 home_team=home_team,
                 away_team=away_team,
-                market_type="game_total",
+                market_type=market_type,
                 player_name=None,
                 threshold=threshold,
                 over_odds=over_odds,
@@ -307,7 +325,7 @@ def _get_detail_fetch_concurrency(http_client: HttpClient, match_count: int) -> 
 
 
 class MaxBetScraper(BaseScraper):
-    """Real scraper for MaxBet basketball player props and regular-time totals."""
+    """Real scraper for MaxBet basketball player props and full-game totals."""
 
     def __init__(self, http_client: HttpClient | None = None) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
@@ -364,13 +382,16 @@ class MaxBetScraper(BaseScraper):
             self._fetch_list_matches(_TOTALS_LIST_URL, "game totals"),
         )
 
-        total_results: list[RawOddsData] = []
+        regular_total_results: list[RawOddsData] = []
+        ot_total_results: list[RawOddsData] = []
         total_match_count = 0
         for match in total_matches:
-            parsed = _parse_game_total_match(match)
-            if parsed:
+            regular_parsed = _parse_game_total_match(match)
+            ot_parsed = _parse_game_total_ot_match(match)
+            if regular_parsed or ot_parsed:
                 total_match_count += 1
-                total_results.extend(parsed)
+            regular_total_results.extend(regular_parsed)
+            ot_total_results.extend(ot_parsed)
 
         player_results: list[RawOddsData] = []
         match_ids = _get_player_match_ids(player_matches)
@@ -385,11 +406,13 @@ class MaxBetScraper(BaseScraper):
         else:
             logger.info("MaxBet: no player points matches found")
 
+        total_results = regular_total_results + ot_total_results
         results = total_results + player_results
         logger.info(
-            "MaxBet scraped %d odds (%d game totals from %d matches, %d player odds from %d players, detail concurrency=%d)",
+            "MaxBet scraped %d odds (%d regular-time game totals, %d OT-inclusive game totals from %d matches, %d player odds from %d players, detail concurrency=%d)",
             len(results),
-            len(total_results),
+            len(regular_total_results),
+            len(ot_total_results),
             total_match_count,
             len(player_results),
             len(match_ids),

@@ -205,6 +205,59 @@ def test_game_totals_group_without_player_name():
     assert discs[0].bookmaker_b_id == "meridian"
 
 
+def test_game_total_ot_group_without_player_name():
+    odds = [
+        _make_odds(
+            "maxbet",
+            None,
+            167.5,
+            over=1.90,
+            under=1.87,
+            market_type="game_total_ot",
+        ),
+        _make_odds(
+            "meridian",
+            None,
+            169.5,
+            over=1.82,
+            under=1.95,
+            market_type="game_total_ot",
+        ),
+    ]
+
+    discs = find_threshold_gaps(odds)
+
+    assert len(discs) == 1
+    assert discs[0].market_type == "game_total_ot"
+    assert discs[0].player_name is None
+    assert discs[0].gap == 2.0
+    assert discs[0].bookmaker_a_id == "maxbet"
+    assert discs[0].bookmaker_b_id == "meridian"
+
+
+def test_game_total_ot_does_not_cross_with_regular_time_game_total():
+    odds = [
+        _make_odds(
+            "maxbet",
+            None,
+            167.5,
+            over=1.90,
+            under=1.87,
+            market_type="game_total_ot",
+        ),
+        _make_odds(
+            "meridian",
+            None,
+            169.5,
+            over=1.82,
+            under=1.95,
+            market_type="game_total",
+        ),
+    ]
+
+    assert find_threshold_gaps(odds) == []
+
+
 def test_same_bookmaker_alternate_lines_are_ignored_for_game_totals():
     odds = [
         _make_odds(
@@ -241,6 +294,48 @@ def test_same_bookmaker_alternate_lines_are_ignored_for_game_totals():
     assert len(discs) == 1
     assert discs[0].bookmaker_a_id == "maxbet"
     assert discs[0].bookmaker_b_id == "mozzart"
+    assert discs[0].threshold_a == 216.5
+    assert discs[0].threshold_b == 217.5
+    assert discs[0].gap == 1.0
+
+
+def test_same_bookmaker_alternate_lines_are_ignored_for_ot_game_totals():
+    odds = [
+        _make_odds(
+            "maxbet",
+            None,
+            216.5,
+            over=1.90,
+            under=1.84,
+            match_id="m3",
+            market_type="game_total_ot",
+        ),
+        _make_odds(
+            "maxbet",
+            None,
+            217.5,
+            over=1.94,
+            under=1.80,
+            match_id="m3",
+            market_type="game_total_ot",
+        ),
+        _make_odds(
+            "meridian",
+            None,
+            217.5,
+            over=1.88,
+            under=1.96,
+            match_id="m3",
+            market_type="game_total_ot",
+        ),
+    ]
+
+    discs = find_threshold_gaps(odds)
+
+    assert len(discs) == 1
+    assert discs[0].market_type == "game_total_ot"
+    assert discs[0].bookmaker_a_id == "maxbet"
+    assert discs[0].bookmaker_b_id == "meridian"
     assert discs[0].threshold_a == 216.5
     assert discs[0].threshold_b == 217.5
     assert discs[0].gap == 1.0

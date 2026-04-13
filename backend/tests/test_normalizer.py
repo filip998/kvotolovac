@@ -548,6 +548,8 @@ def test_normalize_player_none():
         ("game_total", "game_total"),
         ("Game Total", "game_total"),
         ("total", "game_total"),
+        ("game_total_ot", "game_total_ot"),
+        ("Game Total OT", "game_total_ot"),
     ],
 )
 def test_normalize_market_type(raw_type, expected):

@@ -198,6 +198,8 @@ _MARKET_TYPE_MAPPING: dict[str, str] = {
     "game_total": "game_total",
     "game total": "game_total",
     "total": "game_total",
+    "game_total_ot": "game_total_ot",
+    "game total ot": "game_total_ot",
 }
 
 

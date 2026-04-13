@@ -11,6 +11,7 @@ from app.scrapers.maxbet_scraper import (
     MaxBetScraper,
     _extract_league_id,
     _parse_game_total_match,
+    _parse_game_total_ot_match,
     _parse_match_detail,
     _get_player_match_ids,
     _parse_start_time,
@@ -98,6 +99,32 @@ def test_parse_game_total_match_returns_regular_time_lines(basketball_fixture_da
 
 def test_parse_game_total_match_ignores_overtime_only_lines(basketball_fixture_data):
     assert _parse_game_total_match(basketball_fixture_data["esMatches"][1]) == []
+
+
+def test_parse_game_total_ot_match_returns_ot_lines(basketball_fixture_data):
+    results = _parse_game_total_ot_match(basketball_fixture_data["esMatches"][0])
+
+    assert len(results) == 3
+    assert all(isinstance(r, RawOddsData) for r in results)
+    assert {r.market_type for r in results} == {"game_total_ot"}
+    assert {(r.threshold, r.over_odds, r.under_odds) for r in results} == {
+        (157.5, 1.9, 1.85),
+        (156.5, 1.8, 1.93),
+        (160.5, 1.85, 1.85),
+    }
+
+
+def test_parse_game_total_ot_match_returns_ot_only_lines(basketball_fixture_data):
+    results = _parse_game_total_ot_match(basketball_fixture_data["esMatches"][1])
+
+    assert len(results) == 1
+    assert results[0].market_type == "game_total_ot"
+    assert results[0].league_id == "portoriko_1"
+    assert (results[0].threshold, results[0].over_odds, results[0].under_odds) == (
+        184.5,
+        1.92,
+        1.83,
+    )
 
 
 def test_parse_match_detail_returns_data(player_matches):
@@ -349,6 +376,7 @@ async def test_scraper_returns_data(player_matches, basketball_fixture_data):
     assert len(results) > 0
     assert all(isinstance(r, RawOddsData) for r in results)
     assert any(r.market_type == "game_total" for r in results)
+    assert any(r.market_type == "game_total_ot" for r in results)
     assert any(r.player_name for r in results)
 
 
@@ -404,6 +432,10 @@ async def test_scraper_returns_totals_when_player_list_fails(basketball_fixture_
     assert {(result.market_type, result.threshold) for result in results} == {
         ("game_total", 156.5),
         ("game_total", 157.5),
+        ("game_total_ot", 156.5),
+        ("game_total_ot", 157.5),
+        ("game_total_ot", 160.5),
+        ("game_total_ot", 184.5),
     }
     assert all(result.player_name is None for result in results)
 
@@ -426,7 +458,7 @@ async def test_scraper_returns_players_when_totals_list_fails(player_matches):
         results = await scraper.scrape_odds("basketball")
 
     assert results
-    assert all(result.market_type != "game_total" for result in results)
+    assert all(result.market_type not in {"game_total", "game_total_ot"} for result in results)
     assert any(result.player_name for result in results)
 
 
