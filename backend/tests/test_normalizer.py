@@ -28,6 +28,7 @@ def test_normalize_team_alias():
     assert normalize_team_name("Cluj Napoc") == "Universitatea Cluj"
     assert normalize_team_name("Budućnost") == "Buducnost"
     assert normalize_team_name("KK Crvena Zvezda") == "Crvena Zvezda"
+    assert normalize_team_name("Ostrow") == "Ostrow Wielkopolski"
 
 
 def test_normalize_team_nba_aliases_are_league_scoped():
@@ -309,6 +310,68 @@ def test_normalize_odds_with_issues_reports_unresolved_shared_platform_rows():
     assert len(unresolved) == 1
     assert unresolved[0].reason_code == "no_canonical_matchup_for_team_at_slot"
     assert unresolved[0].raw_team_name == "Borac Cacak"
+
+
+def test_normalize_odds_with_issues_infers_two_team_shared_platform_slot():
+    normalized, unresolved = normalize_odds_with_issues(
+        [
+            RawOddsData(
+                bookmaker_id="admiralbet",
+                league_id="poljska 1",
+                home_team="Ostrow Wielkopolski",
+                away_team="Daniel Laster",
+                market_type="player_points",
+                player_name="Daniel Laster",
+                threshold=11.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-13T16:15:00+00:00",
+            ),
+            RawOddsData(
+                bookmaker_id="admiralbet",
+                league_id="poljska 1",
+                home_team="Zielona Gora",
+                away_team="Mareks Mejeris",
+                market_type="player_points",
+                player_name="Mareks Mejeris",
+                threshold=10.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2026-04-13T16:15:00+00:00",
+            ),
+            RawOddsData(
+                bookmaker_id="maxbet",
+                league_id="poland",
+                home_team="Ostrow",
+                away_team="Chris Smith",
+                market_type="player_points",
+                player_name="Chris Smith",
+                threshold=12.5,
+                over_odds=1.85,
+                under_odds=1.95,
+                start_time="2026-04-13T16:15:00+00:00",
+            ),
+            RawOddsData(
+                bookmaker_id="maxbet",
+                league_id="poland",
+                home_team="Zielona Gora",
+                away_team="Ty Nichols",
+                market_type="player_points",
+                player_name="Ty Nichols",
+                threshold=14.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2026-04-13T16:15:00+00:00",
+            ),
+        ]
+    )
+
+    assert unresolved == []
+    assert len(normalized) == 4
+    assert {
+        (offer.home_team, offer.away_team)
+        for offer in normalized
+    } == {("Ostrow Wielkopolski", "Zielona Gora")}
 
 
 def test_normalize_odds_resolves_unique_match_local_player_variants():

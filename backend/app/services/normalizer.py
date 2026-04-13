@@ -38,6 +38,7 @@ _CANONICAL_TEAMS: dict[str, str] = {
     "buducnost": "Buducnost",
     "buducnost voli": "Buducnost",
     "kk bosna": "KK Bosna",
+    "ostrow": "Ostrow Wielkopolski",
 }
 
 _NBA_CANONICAL_TEAMS: dict[str, str] = {
@@ -529,6 +530,37 @@ def _build_canonical_matchups(
     return canonical
 
 
+def _build_inferred_shared_platform_matchups(
+    raw_list: list[RawOddsData],
+    matchups_by_slot: dict[tuple[str, str | None], list[tuple[str, str]]],
+) -> dict[tuple[str, str | None], tuple[str, str]]:
+    teams_by_slot: dict[tuple[str, str | None], set[str]] = defaultdict(set)
+
+    for raw in raw_list:
+        if not _is_unresolved_shared_platform_prop(raw):
+            continue
+
+        league_id = normalize_league_id(raw.league_id)
+        slot = (league_id, raw.start_time)
+        if matchups_by_slot.get(slot):
+            continue
+
+        normalized_team = normalize_team_name(raw.home_team, league_id)
+        if not normalized_team:
+            continue
+        teams_by_slot[slot].add(normalized_team)
+
+    inferred: dict[tuple[str, str | None], tuple[str, str]] = {}
+    for slot, teams in teams_by_slot.items():
+        if len(teams) != 2:
+            continue
+        # Shared-platform rows only tell us which team the player belongs to,
+        # not the actual home/away orientation, so use a stable synthetic pair.
+        inferred[slot] = tuple(sorted(teams))
+
+    return inferred
+
+
 def _resolve_shared_platform_matchups(
     raw_list: list[RawOddsData],
 ) -> tuple[list[RawOddsData], list[UnresolvedOddsDiagnostic]]:
@@ -536,6 +568,10 @@ def _resolve_shared_platform_matchups(
     matchups_by_slot: dict[tuple[str, str | None], list[tuple[str, str]]] = {}
     for (league_id, start_time, _matchup_key), matchup in canonical_matchups.items():
         matchups_by_slot.setdefault((league_id, start_time), []).append(matchup)
+    for slot, matchup in _build_inferred_shared_platform_matchups(
+        raw_list, matchups_by_slot
+    ).items():
+        matchups_by_slot.setdefault(slot, []).append(matchup)
 
     resolved: list[RawOddsData] = []
     unresolved: list[UnresolvedOddsDiagnostic] = []
