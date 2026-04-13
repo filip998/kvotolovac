@@ -205,6 +205,47 @@ def test_game_totals_group_without_player_name():
     assert discs[0].bookmaker_b_id == "meridian"
 
 
+def test_same_bookmaker_alternate_lines_are_ignored_for_game_totals():
+    odds = [
+        _make_odds(
+            "maxbet",
+            None,
+            216.5,
+            over=1.85,
+            under=1.92,
+            match_id="m2",
+            market_type="game_total",
+        ),
+        _make_odds(
+            "maxbet",
+            None,
+            217.5,
+            over=1.90,
+            under=1.87,
+            match_id="m2",
+            market_type="game_total",
+        ),
+        _make_odds(
+            "mozzart",
+            None,
+            217.5,
+            over=1.90,
+            under=1.90,
+            match_id="m2",
+            market_type="game_total",
+        ),
+    ]
+
+    discs = find_threshold_gaps(odds)
+
+    assert len(discs) == 1
+    assert discs[0].bookmaker_a_id == "maxbet"
+    assert discs[0].bookmaker_b_id == "mozzart"
+    assert discs[0].threshold_a == 216.5
+    assert discs[0].threshold_b == 217.5
+    assert discs[0].gap == 1.0
+
+
 def test_profit_margin_calculation():
     # Odds 1.85 and 2.00 → total implied 1.0405, balanced edge ROI ≈ -3.90%
     margin = _profit_margin(1.85, 2.00)

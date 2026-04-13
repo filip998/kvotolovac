@@ -84,6 +84,9 @@ def find_threshold_gaps(
 
         # Compare every pair of bookmakers
         for a, b in combinations(group, 2):
+            if a.bookmaker_id == b.bookmaker_id:
+                continue
+
             # Ensure a has the lower threshold
             if a.threshold > b.threshold:
                 a, b = b, a
