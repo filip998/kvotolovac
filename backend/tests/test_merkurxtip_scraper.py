@@ -358,12 +358,14 @@ def test_parse_match_detail_malformed_threshold():
 
 
 @pytest.mark.asyncio
-async def test_scraper_returns_data(match_data, league_data):
+async def test_scraper_returns_data_from_bulk_listing(match_data, league_data):
     scraper = MerkurXTipScraper()
 
     async def mock_get(url, **kwargs):
-        if "/league/" in url:
+        if url.endswith("/sport/SK/mob"):
             return league_data
+        if "/league/" in url:
+            pytest.fail("legacy league fallback should not run when bulk listing has player matches")
         return match_data
 
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
@@ -406,6 +408,41 @@ async def test_scraper_interface():
     assert scraper.get_bookmaker_id() == "merkurxtip"
     assert scraper.get_bookmaker_name() == "MERKUR X TIP"
     assert "basketball" in scraper.get_supported_leagues()
+
+
+@pytest.mark.asyncio
+async def test_scraper_falls_back_to_legacy_leagues_when_bulk_listing_empty():
+    scraper = MerkurXTipScraper()
+    calls: list[str] = []
+    league_matches = [
+        {
+            "id": 201,
+            "leagueName": "ACB Igrači",
+            "params": {"ouPlPoints": "26.5"},
+        },
+    ]
+    detail_match = {
+        "home": "Player One",
+        "away": "Team One",
+        "leagueName": "ACB Igrači",
+        "kickOffTime": 1775923200000,
+        "params": {"ouPlPoints": "26.5"},
+        "odds": {"51679": 1.9, "51681": 1.9},
+    }
+
+    async def mock_get(url, **kwargs):
+        calls.append(url)
+        if url.endswith("/sport/SK/mob"):
+            return {"esMatches": []}
+        if "/league/" in url:
+            return {"esMatches": league_matches}
+        return detail_match
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert len(results) == 1
+    assert any("/league/" in call for call in calls)
 
 
 @pytest.mark.asyncio
@@ -453,7 +490,7 @@ async def test_scraper_fetches_details_concurrently_and_skips_failures():
             self.max_active_details = 0
 
         async def get_json(self, url: str, **kwargs):
-            if "/league/" in url:
+            if url.endswith("/sport/SK/mob"):
                 return {"esMatches": league_matches}
 
             match_id = int(url.rsplit("/", 1)[-1])
@@ -491,7 +528,7 @@ async def test_scraper_detail_failure_does_not_crash():
     ]
 
     async def mock_get(url, **kwargs):
-        if "/league/" in url:
+        if url.endswith("/sport/SK/mob"):
             return {"esMatches": league_matches}
         raise Exception("detail failed")
 

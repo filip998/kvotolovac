@@ -71,7 +71,9 @@ def test_extract_league_id_nba():
 
 
 def test_extract_league_id_competition_name():
-    assert _extract_league_id("AdmiralBet ABA Liga") == "admiralbet aba liga"
+    assert _extract_league_id("AdmiralBet ABA Liga") == "aba_liga"
+    assert _extract_league_id("AdmiralBet ABA liga - plej of") == "aba_liga"
+    assert _extract_league_id("Euroleague") == "euroleague"
     assert _extract_league_id("Španija 1") == "španija 1"
 
 
@@ -237,6 +239,7 @@ def test_parse_event_combines_types():
     event = {
         "name": "Michael Young - KK Bosna",
         "dateTime": "2026-04-11T16:00:00",
+        "competitionName": "AdmiralBet ABA Liga",
         "bets": [
             {"betTypeId": 1683, "isPlayable": True, "betOutcomes": [
                 {"name": "5+", "odd": 1.15, "isPlayable": True},
@@ -251,6 +254,7 @@ def test_parse_event_combines_types():
     assert len(results) == 2
     types = {r.market_type for r in results}
     assert types == {"player_points", "player_points_milestones"}
+    assert {r.league_id for r in results} == {"aba_liga"}
 
 
 def test_parse_event_no_team():

@@ -84,6 +84,11 @@ def test_extract_league_id_euroleague():
     assert _extract_league_id("Igrači ~ Euroleague") == "euroleague"
 
 
+def test_extract_league_id_aba():
+    assert _extract_league_id("Igrači ~ ABA League") == "aba_liga"
+    assert _extract_league_id("Igrači ~ AdmiralBet ABA liga - plej of") == "aba_liga"
+
+
 def test_extract_league_id_empty():
     assert _extract_league_id("") == "basketball"
 
@@ -237,6 +242,22 @@ def test_parse_match_multiple_markets():
         "player_rebounds_assists",
         "player_points_rebounds_assists",
     }
+
+
+def test_parse_match_uses_canonical_aba_league_id():
+    match = {
+        "home": "Player A",
+        "away": "Team A",
+        "leagueName": "Igrači ~ ABA League",
+        "leagueCategory": "PL",
+        "kickOffTime": 1775862000000,
+        "params": {"ouPlPoints": "17.5"},
+        "odds": {"51679": 1.85, "51681": 1.85},
+    }
+
+    results = _parse_match(match)
+    assert len(results) == 1
+    assert results[0].league_id == "aba_liga"
 
 
 def test_parse_match_missing_threshold():

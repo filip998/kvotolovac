@@ -12,6 +12,7 @@ from ..models.schemas import RawOddsData
 
 logger = logging.getLogger(__name__)
 
+_LIST_URL = "https://www.merkurxtip.rs/restapi/offer/sr/sport/SK/mob"
 _LEAGUE_URL = "https://www.merkurxtip.rs/restapi/offer/sr/sport/SK/league/{league_id}/mob"
 _MATCH_URL = "https://www.merkurxtip.rs/restapi/offer/sr/match/{match_id}"
 
@@ -286,8 +287,23 @@ class MerkurXTipScraper(BaseScraper):
 
         return _parse_match_detail(detail)
 
+    async def _fetch_bulk_match_ids(self) -> list[int]:
+        """Fetch the bulk basketball listing and extract player match IDs."""
+        try:
+            data = await self._http.get_json(
+                _LIST_URL,
+                params=_DEFAULT_PARAMS,
+                headers=_DEFAULT_HEADERS,
+            )
+        except Exception:
+            logger.warning("MerkurXTip: failed to fetch bulk basketball listing")
+            return []
+
+        matches = data.get("esMatches", [])
+        return _get_player_match_ids(matches)
+
     async def _fetch_league(self, league_id: int) -> list[int]:
-        """Fetch a league listing and return player match IDs."""
+        """Fetch a legacy league listing and return player match IDs."""
         try:
             data = await self._http.get_json(
                 _LEAGUE_URL.format(league_id=league_id),
@@ -305,14 +321,24 @@ class MerkurXTipScraper(BaseScraper):
         if league_id != "basketball":
             return []
 
-        # Step 1: Fetch all known leagues to collect player match IDs
-        all_match_ids: list[int] = []
-        for known_league in _KNOWN_LEAGUE_IDS:
-            match_ids = await self._fetch_league(known_league)
-            all_match_ids.extend(match_ids)
+        # Step 1: Fetch the bulk sport listing. Fall back to legacy
+        # league-specific endpoints if Merkur's bulk listing is empty.
+        all_match_ids = await self._fetch_bulk_match_ids()
+        source = "bulk listing"
 
         if not all_match_ids:
-            logger.warning("MerkurXTip: no player matches found across %d leagues", len(_KNOWN_LEAGUE_IDS))
+            source = "legacy league listing"
+            for known_league in _KNOWN_LEAGUE_IDS:
+                match_ids = await self._fetch_league(known_league)
+                all_match_ids.extend(match_ids)
+
+        all_match_ids = list(dict.fromkeys(all_match_ids))
+
+        if not all_match_ids:
+            logger.warning(
+                "MerkurXTip: no player matches found in bulk listing or %d fallback leagues",
+                len(_KNOWN_LEAGUE_IDS),
+            )
             return []
 
         # Step 2: Fan out detail fetches with concurrency limit
@@ -324,7 +350,7 @@ class MerkurXTipScraper(BaseScraper):
         results = [item for batch in detail_results for item in batch]
 
         logger.info(
-            "MerkurXTip scraped %d player odds from %d players (detail concurrency=%d)",
-            len(results), len(all_match_ids), concurrency,
+            "MerkurXTip scraped %d player odds from %d players via %s (detail concurrency=%d)",
+            len(results), len(all_match_ids), source, concurrency,
         )
         return results

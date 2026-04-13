@@ -8,6 +8,7 @@ import pytest
 
 from app.scrapers.mozzart_scraper import (
     MozzartScraper,
+    _extract_league_id,
     _extract_player_and_market,
     _parse_items,
     _parse_start_time,
@@ -68,6 +69,18 @@ def test_parse_start_time():
 
 def test_parse_start_time_none():
     assert _parse_start_time(None) is None
+
+
+def test_extract_league_id_known_competitions():
+    assert _extract_league_id("USA NBA") == "nba"
+    assert _extract_league_id("Euroleague") == "euroleague"
+    assert _extract_league_id("ABA League") == "aba_liga"
+    assert _extract_league_id("AdmiralBet ABA liga - plej of") == "aba_liga"
+
+
+def test_extract_league_id_fallback_slug():
+    assert _extract_league_id("Italija 1") == "italija_1"
+    assert _extract_league_id("") == "basketball"
 
 
 # ── Parsing real fixture data ─────────────────────────────
@@ -191,6 +204,38 @@ def test_parse_items_interleaved_odds_order():
     assert by_player["Player1"].under_odds == 2.0
     assert by_player["Player2"].over_odds == 1.9
     assert by_player["Player2"].under_odds == 1.85
+
+
+def test_parse_items_uses_canonical_aba_league_id():
+    items = [{
+        "home": {"name": "Team A"},
+        "visitor": {"name": "Team B"},
+        "competition": {"name": "AdmiralBet ABA liga - plej of"},
+        "startTime": 1775775600000,
+        "oddsGroup": [{
+            "groupName": "Broj poena igrača",
+            "odds": [
+                {
+                    "specialOddValue": "15.5",
+                    "value": 1.8,
+                    "oddStatus": "ACTIVE",
+                    "game": {"name": "Broj poena Player1"},
+                    "subgame": {"name": "više"},
+                },
+                {
+                    "specialOddValue": "15.5",
+                    "value": 2.0,
+                    "oddStatus": "ACTIVE",
+                    "game": {"name": "Broj poena Player1"},
+                    "subgame": {"name": "manje"},
+                },
+            ],
+        }],
+    }]
+
+    results = _parse_items(items)
+    assert len(results) == 1
+    assert results[0].league_id == "aba_liga"
 
 
 # ── Integration: MozzartScraper with mocked HTTP ──────────

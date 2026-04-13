@@ -45,11 +45,25 @@ _DEFAULT_HEADERS: dict[str, str] = {
 
 _DEFAULT_PARAMS: dict[str, str] = {}
 
-# (sportId, regionId, competitionId)
+# (sportId, regionId, competitionId, fallback league_id)
 _KNOWN_COMPETITIONS: list[tuple[int, int, int, str]] = [
-    (3, 462, 3221, "nba"),    # NBA
-    (3, 464, 22317, "nba"),   # NBA (legacy ID, kept as fallback)
+    (3, 462, 3221, "nba"),       # NBA when available
+    (3, 464, 22317, "aba_liga"), # AdmiralBet ABA liga - plej of (current live fallback)
 ]
+
+_COMPETITION_NAME_LEAGUE_MAP: dict[str, str] = {
+    "nba": "nba",
+    "usa nba": "nba",
+    "euroleague": "euroleague",
+    "aba liga": "aba_liga",
+    "aba league": "aba_liga",
+    "admiralbet aba liga": "aba_liga",
+    "admiralbet aba liga plej of": "aba_liga",
+}
+_COMPETITION_ID_LEAGUE_MAP: dict[int, str] = {
+    3221: "nba",
+    22317: "aba_liga",
+}
 
 _DETAIL_CONCURRENCY = 5
 
@@ -88,6 +102,31 @@ def _normalize_start_time(raw: str | None) -> str | None:
         return raw
 
 
+def _normalize_competition_key(raw: str | None) -> str:
+    if not raw:
+        return ""
+    return " ".join(raw.strip().lower().replace("_", " ").replace("-", " ").split())
+
+
+def _extract_league_id(event: dict, fallback_league_id: str = "basketball") -> str:
+    competition_name = event.get("competitionName")
+    key = _normalize_competition_key(
+        competition_name if isinstance(competition_name, str) else None
+    )
+    if key:
+        return _COMPETITION_NAME_LEAGUE_MAP.get(key, key)
+
+    competition_id = event.get("competitionId")
+    try:
+        competition_id_int = int(competition_id)
+    except (TypeError, ValueError):
+        competition_id_int = None
+
+    if competition_id_int is not None:
+        return _COMPETITION_ID_LEAGUE_MAP.get(competition_id_int, fallback_league_id)
+    return fallback_league_id
+
+
 def _parse_event_name(name: str) -> tuple[str, str | None]:
     """Split ``'Player Name - Team Name'`` into *(player, team)*.
 
@@ -104,7 +143,11 @@ def _get_player_event_ids(events: list[dict]) -> list[dict]:
     return [e for e in events if e.get("mappingTypeId") == _MAPPING_TYPE_PLAYER]
 
 
-def _parse_event_detail(event: dict, bets_data: dict, league_id: str = "nba") -> list[RawOddsData]:
+def _parse_event_detail(
+    event: dict,
+    bets_data: dict,
+    league_id: str | None = None,
+) -> list[RawOddsData]:
     """Combine a list-endpoint event with its detail bets into *RawOddsData*."""
     results: list[RawOddsData] = []
 
@@ -114,6 +157,7 @@ def _parse_event_detail(event: dict, bets_data: dict, league_id: str = "nba") ->
         return results
 
     start_time = _normalize_start_time(event.get("dateTime"))
+    effective_league_id = league_id or _extract_league_id(event)
 
     for bet in bets_data.get("bets", []):
         if bet.get("betTypeId") != _PLAYER_POINTS_BET_TYPE:
@@ -144,7 +188,7 @@ def _parse_event_detail(event: dict, bets_data: dict, league_id: str = "nba") ->
         results.append(
             RawOddsData(
                 bookmaker_id="pinnbet",
-                league_id=league_id,
+                league_id=effective_league_id,
                 home_team=team or "",
                 away_team=player_name,
                 market_type="player_points",
@@ -178,7 +222,7 @@ class PinnBetScraper(BaseScraper):
         self,
         event: dict,
         semaphore: asyncio.Semaphore,
-        league_id: str = "nba",
+        league_id: str | None = None,
     ) -> list[RawOddsData]:
         sport_id = event.get("sportId", _SPORT_ID)
         region_id = event.get("regionId")
@@ -245,7 +289,11 @@ class PinnBetScraper(BaseScraper):
             semaphore = asyncio.Semaphore(_DETAIL_CONCURRENCY)
             detail_results = await asyncio.gather(
                 *(
-                    self._fetch_event_detail(ev, semaphore, league_id=comp_league_id)
+                    self._fetch_event_detail(
+                        ev,
+                        semaphore,
+                        league_id=_extract_league_id(ev, fallback_league_id=comp_league_id),
+                    )
                     for ev in player_events
                 )
             )

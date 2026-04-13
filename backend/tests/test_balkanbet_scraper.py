@@ -11,6 +11,7 @@ import pytest
 
 from app.scrapers.balkanbet_scraper import (
     BalkanBetScraper,
+    _extract_league_id,
     _format_filter_from,
     _parse_player_name,
     _parse_event_detail,
@@ -94,6 +95,17 @@ def test_parse_player_name_nested_parens():
     assert team is None
 
 
+def test_extract_league_id_known_tournament():
+    assert _extract_league_id(2334, 29368) == "aba_liga"
+    assert _extract_league_id(2334, 30757) == "turkey"
+    assert _extract_league_id(2334, 31317) == "italy"
+    assert _extract_league_id(2334, 31353) == "germany"
+
+
+def test_extract_league_id_falls_back_to_tournament_slug():
+    assert _extract_league_id(2334, 99999) == "balkanbet_tournament_99999"
+
+
 # ── _get_event_ids ────────────────────────────────────────
 
 
@@ -134,7 +146,7 @@ def test_parse_event_detail_from_fixture(detail_data):
     assert r.over_odds == 1.50
     assert r.under_odds == 2.40
     assert r.start_time == "2026-04-11T16:00:00+00:00"
-    assert r.league_id == "nba"
+    assert r.league_id == "aba_liga"
 
 
 def test_parse_event_detail_empty():

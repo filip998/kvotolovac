@@ -101,12 +101,43 @@ _FIXED_POINTS_LADDERS = [
 
 _UNLIMITED_DETAIL_CONCURRENCY = 10
 _MIN_DETAIL_CONCURRENCY = 2
+_LEAGUE_PREFIX = "poeni igrača"
+_CANONICAL_LEAGUES = {
+    "nba": "nba",
+    "usa nba": "nba",
+    "euroleague": "euroleague",
+    "aba liga": "aba_liga",
+    "aba league": "aba_liga",
+    "aba liga winners stage": "aba_liga",
+    "aba liga losers stage": "aba_liga",
+    "aba liga plej of": "aba_liga",
+    "admiralbet aba liga": "aba_liga",
+    "admiralbet aba liga plej of": "aba_liga",
+}
 
 
 def _parse_start_time(epoch_ms: int | None) -> str | None:
     if not epoch_ms:
         return None
     return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).isoformat()
+
+
+def _normalize_league_key(raw: str | None) -> str:
+    if not raw:
+        return ""
+    return " ".join(raw.strip().lower().replace("_", " ").replace("-", " ").split())
+
+
+def _extract_league_id(league_name: str) -> str:
+    lower = league_name.lower()
+    idx = lower.find(_LEAGUE_PREFIX)
+    if idx >= 0:
+        raw = lower[idx + len(_LEAGUE_PREFIX) :].strip()
+    else:
+        raw = lower.strip()
+
+    normalized = _normalize_league_key(raw)
+    return _CANONICAL_LEAGUES.get(normalized, raw) or "basketball"
 
 
 def _parse_match_detail(match: dict) -> list[RawOddsData]:
@@ -123,9 +154,7 @@ def _parse_match_detail(match: dict) -> list[RawOddsData]:
     team = match.get("away", "")
     start_time = _parse_start_time(match.get("kickOffTime"))
 
-    league_id = league_name.lower().replace("poeni igrača", "").strip()
-    if not league_id:
-        league_id = "basketball"
+    league_id = _extract_league_id(league_name)
 
     def build_raw_odds(
         *,

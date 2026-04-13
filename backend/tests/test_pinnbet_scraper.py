@@ -9,6 +9,7 @@ import pytest
 
 from app.scrapers.pinnbet_scraper import (
     PinnBetScraper,
+    _extract_league_id,
     _parse_event_name,
     _parse_event_detail,
     _get_player_event_ids,
@@ -84,6 +85,16 @@ def test_parse_event_name_whitespace():
     assert team == "Team"
 
 
+def test_extract_league_id_from_competition_name():
+    event = {"competitionName": "AdmiralBet ABA liga - plej of", "competitionId": 22317}
+    assert _extract_league_id(event, fallback_league_id="nba") == "aba_liga"
+
+
+def test_extract_league_id_falls_back_to_competition_id():
+    event = {"competitionId": 3221}
+    assert _extract_league_id(event) == "nba"
+
+
 # -- _get_player_event_ids -------------------------------------------------
 
 
@@ -127,7 +138,7 @@ def test_parse_event_detail_basic(events_data, bets_data):
     assert r.over_odds == 1.50
     assert r.under_odds == 2.40
     assert r.market_type == "player_points"
-    assert r.league_id == "nba"
+    assert r.league_id == "aba_liga"
     assert r.start_time == "2026-04-11T16:00:00+00:00"
 
 

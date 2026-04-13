@@ -118,6 +118,20 @@ _CANONICAL_PLAYERS: dict[str, str] = {
 FUZZY_THRESHOLD = 75
 _CANONICAL_LEAGUES: dict[str, str] = {
     "usa nba": "nba",
+    "aba liga": "aba_liga",
+    "aba league": "aba_liga",
+    "aba liga winners stage": "aba_liga",
+    "aba liga losers stage": "aba_liga",
+    "aba liga plej of": "aba_liga",
+    "admiralbet aba liga": "aba_liga",
+    "admiralbet aba liga plej of": "aba_liga",
+    "italija 1": "italy",
+    "italy lega a": "italy",
+    "nemačka 1": "germany",
+    "germany bbl": "germany",
+    "poljska 1": "poland",
+    "turska 1": "turkey",
+    "turkey super league": "turkey",
 }
 
 _MARKET_TYPE_MAPPING: dict[str, str] = {

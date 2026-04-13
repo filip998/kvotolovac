@@ -52,6 +52,12 @@ _DEFAULT_PARAMS = {
 _UNLIMITED_DETAIL_CONCURRENCY = 10
 _MIN_DETAIL_CONCURRENCY = 2
 _REQUEST_TIMEZONE = ZoneInfo("Europe/Belgrade")
+_TOURNAMENT_LEAGUE_MAP: dict[int, str] = {
+    29368: "aba_liga",
+    30757: "turkey",
+    31317: "italy",
+    31353: "germany",
+}
 
 _PLAYER_NAME_RE = re.compile(r"^(.+?)\s*\(([^)]+)\)\s*$")
 
@@ -107,7 +113,17 @@ def _normalize_start_time(raw: str | None) -> str | None:
         return raw
 
 
-def _parse_event_detail(data: dict) -> list[RawOddsData]:
+def _extract_league_id(category_id: int | None, tournament_id: int | None) -> str:
+    if tournament_id in _TOURNAMENT_LEAGUE_MAP:
+        return _TOURNAMENT_LEAGUE_MAP[tournament_id]
+    if tournament_id is not None:
+        return f"balkanbet_tournament_{tournament_id}"
+    if category_id is not None:
+        return f"balkanbet_category_{category_id}"
+    return "basketball"
+
+
+def _parse_event_detail(data: dict, league_id: str | None = None) -> list[RawOddsData]:
     """Parse a single event detail response into RawOddsData entries."""
     results: list[RawOddsData] = []
 
@@ -118,6 +134,10 @@ def _parse_event_detail(data: dict) -> list[RawOddsData]:
     raw_name = detail.get("name", "")
     player_name, team = _parse_player_name(raw_name)
     start_time = _normalize_start_time(detail.get("startsAt"))
+    effective_league_id = league_id or _extract_league_id(
+        detail.get("categoryId"),
+        detail.get("tournamentId"),
+    )
 
     markets = detail.get("markets") or []
     for mkt in markets:
@@ -149,7 +169,7 @@ def _parse_event_detail(data: dict) -> list[RawOddsData]:
         results.append(
             RawOddsData(
                 bookmaker_id="balkanbet",
-                league_id="nba",
+                league_id=effective_league_id,
                 home_team=team or "",
                 away_team=player_name,
                 market_type="player_points",

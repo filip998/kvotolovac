@@ -9,6 +9,7 @@ import pytest
 
 from app.scrapers.maxbet_scraper import (
     MaxBetScraper,
+    _extract_league_id,
     _parse_match_detail,
     _get_player_match_ids,
     _parse_start_time,
@@ -43,6 +44,18 @@ def test_parse_start_time():
 
 def test_parse_start_time_none():
     assert _parse_start_time(None) is None
+
+
+def test_extract_league_id_known_variants():
+    assert _extract_league_id("Poeni igrača USA NBA") == "nba"
+    assert _extract_league_id("Poeni igrača Euroleague") == "euroleague"
+    assert _extract_league_id("Poeni igrača ABA Liga - Winners stage") == "aba_liga"
+    assert _extract_league_id("Poeni igrača ABA League") == "aba_liga"
+
+
+def test_extract_league_id_fallback():
+    assert _extract_league_id("Poeni igrača Germany") == "germany"
+    assert _extract_league_id("") == "basketball"
 
 
 # ── Parsing real fixture data ─────────────────────────────
@@ -189,6 +202,21 @@ def test_parse_match_detail_includes_expanded_markets_and_fixed_ladders():
         (19.5, 1.32),
         (49.5, 8.5),
     }
+
+
+def test_parse_match_detail_uses_canonical_aba_league_id():
+    match = {
+        "home": "Player One",
+        "away": "Team A",
+        "leagueName": "Poeni igrača ABA Liga - Winners stage",
+        "kickOffTime": 1775779200000,
+        "params": {"ouPlPoints": "12.5"},
+        "odds": {"51679": 1.88, "51681": 1.92},
+    }
+
+    results = _parse_match_detail(match)
+    assert len(results) == 1
+    assert results[0].league_id == "aba_liga"
 
 
 def test_parse_match_detail_missing_threshold():

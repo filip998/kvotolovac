@@ -38,7 +38,18 @@ _BET_POINTS_MILESTONES = 1683  # "Postiže poena" — milestone outcomes (5+, 10
 _COMPETITION_LEAGUE_MAP: dict[str, str] = {
     "nba": "nba",
     "usa nba": "nba",
+    "euroleague": "euroleague",
+    "aba liga": "aba_liga",
+    "aba league": "aba_liga",
+    "admiralbet aba liga": "aba_liga",
+    "admiralbet aba liga plej of": "aba_liga",
 }
+
+
+def _normalize_league_key(raw: str | None) -> str:
+    if not raw:
+        return ""
+    return " ".join(raw.strip().lower().replace("_", " ").replace("-", " ").split())
 
 
 def _extract_league_id(competition_name: str | None) -> str:
@@ -49,10 +60,11 @@ def _extract_league_id(competition_name: str | None) -> str:
     """
     if not competition_name:
         return "basketball"
-    key = competition_name.strip().lower()
-    if key in _COMPETITION_LEAGUE_MAP:
-        return _COMPETITION_LEAGUE_MAP[key]
-    return key or "basketball"
+    raw = competition_name.strip().lower()
+    normalized = _normalize_league_key(raw)
+    if normalized in _COMPETITION_LEAGUE_MAP:
+        return _COMPETITION_LEAGUE_MAP[normalized]
+    return raw or "basketball"
 
 # Milestone outcome thresholds — "5+" means 5 or more, equivalent to over 4.5
 _MILESTONE_THRESHOLDS: dict[str, float] = {

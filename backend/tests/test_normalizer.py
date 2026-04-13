@@ -478,6 +478,10 @@ def test_normalize_league_id_alias():
     assert normalize_league_id("usa-nba") == "nba"
     assert normalize_league_id("USA NBA") == "nba"
     assert normalize_league_id("usa_nba") == "nba"
+    assert normalize_league_id("aba liga - winners stage") == "aba_liga"
+    assert normalize_league_id("AdmiralBet ABA liga - plej of") == "aba_liga"
+    assert normalize_league_id("italija_1") == "italy"
+    assert normalize_league_id("Germany BBL") == "germany"
     assert normalize_league_id("euroleague") == "euroleague"
 
 

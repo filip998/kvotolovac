@@ -42,6 +42,15 @@ _PLAYER_GROUP_KEYWORDS = [
 
 _BASKETBALL_SPORT_ID = 2
 _SPECIALS_MATCH_TYPE = 2
+_CANONICAL_LEAGUES = {
+    "nba": "nba",
+    "usa nba": "nba",
+    "euroleague": "euroleague",
+    "aba liga": "aba_liga",
+    "aba league": "aba_liga",
+    "admiralbet aba liga": "aba_liga",
+    "admiralbet aba liga plej of": "aba_liga",
+}
 
 
 def _build_request_body(
@@ -89,6 +98,23 @@ def _parse_start_time(epoch_ms: int | None) -> str | None:
     return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).isoformat()
 
 
+def _normalize_league_key(raw: str | None) -> str:
+    if not raw:
+        return ""
+    return " ".join(raw.strip().lower().replace("_", " ").replace("-", " ").split())
+
+
+def _extract_league_id(competition_name: str | None) -> str:
+    if not competition_name:
+        return "basketball"
+
+    raw = competition_name.strip().lower()
+    normalized = _normalize_league_key(raw)
+    if normalized in _CANONICAL_LEAGUES:
+        return _CANONICAL_LEAGUES[normalized]
+    return raw.replace(" ", "_") or "basketball"
+
+
 def _parse_items(items: list[dict]) -> list[RawOddsData]:
     results: list[RawOddsData] = []
 
@@ -97,7 +123,7 @@ def _parse_items(items: list[dict]) -> list[RawOddsData]:
         visitor = match.get("visitor", {}).get("name", "")
         competition = match.get("competition", {}).get("name", "")
         start_time = _parse_start_time(match.get("startTime"))
-        league_id = competition.lower().replace(" ", "_") if competition else "basketball"
+        league_id = _extract_league_id(competition)
 
         # Aggregate by (player_name, threshold, market_type) to handle any odds ordering
         aggregated: dict[tuple[str, float, str], dict] = {}

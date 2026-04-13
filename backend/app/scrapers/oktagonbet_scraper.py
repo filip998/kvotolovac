@@ -88,6 +88,14 @@ _UNLIMITED_DETAIL_CONCURRENCY = 10
 # so cross-bookmaker match comparison works (match_id includes league_id).
 _CANONICAL_LEAGUES = {
     "usa nba": "nba",
+    "euroleague": "euroleague",
+    "aba liga": "aba_liga",
+    "aba league": "aba_liga",
+    "aba liga winners stage": "aba_liga",
+    "aba liga losers stage": "aba_liga",
+    "aba liga plej of": "aba_liga",
+    "admiralbet aba liga": "aba_liga",
+    "admiralbet aba liga plej of": "aba_liga",
 }
 
 
@@ -129,7 +137,8 @@ def _extract_league_id(league_name: str) -> str:
     else:
         raw = lower.strip()
 
-    return _CANONICAL_LEAGUES.get(raw, raw) or "basketball"
+    normalized = " ".join(raw.replace("_", " ").replace("-", " ").split())
+    return _CANONICAL_LEAGUES.get(normalized, raw) or "basketball"
 
 
 def _build_raw_odds(
