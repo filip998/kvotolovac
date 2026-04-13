@@ -95,6 +95,16 @@ def test_extract_league_id_falls_back_to_competition_id():
     assert _extract_league_id(event) == "nba"
 
 
+def test_extract_league_id_prefers_known_competition_id_over_unknown_name():
+    event = {"competitionName": "Some Random League Name", "competitionId": 3221}
+    assert _extract_league_id(event) == "nba"
+
+
+def test_extract_league_id_keeps_unknown_name_when_id_is_unknown():
+    event = {"competitionName": "Some Random League Name", "competitionId": 999999}
+    assert _extract_league_id(event) == "some random league name"
+
+
 # -- _get_player_event_ids -------------------------------------------------
 
 

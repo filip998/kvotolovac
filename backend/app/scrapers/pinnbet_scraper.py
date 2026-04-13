@@ -113,8 +113,8 @@ def _extract_league_id(event: dict, fallback_league_id: str = "basketball") -> s
     key = _normalize_competition_key(
         competition_name if isinstance(competition_name, str) else None
     )
-    if key:
-        return _COMPETITION_NAME_LEAGUE_MAP.get(key, key)
+    if key in _COMPETITION_NAME_LEAGUE_MAP:
+        return _COMPETITION_NAME_LEAGUE_MAP[key]
 
     competition_id = event.get("competitionId")
     try:
@@ -122,8 +122,10 @@ def _extract_league_id(event: dict, fallback_league_id: str = "basketball") -> s
     except (TypeError, ValueError):
         competition_id_int = None
 
-    if competition_id_int is not None:
-        return _COMPETITION_ID_LEAGUE_MAP.get(competition_id_int, fallback_league_id)
+    if competition_id_int in _COMPETITION_ID_LEAGUE_MAP:
+        return _COMPETITION_ID_LEAGUE_MAP[competition_id_int]
+    if key:
+        return key
     return fallback_league_id
 
 
