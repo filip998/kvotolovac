@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { useDiscrepancies, useMatches, useSystemStatus } from '../api/hooks';
+import { useDiscrepancies, useMatches, useSystemStatus, useUnresolvedOdds } from '../api/hooks';
 import type { DiscrepancyFilters, Discrepancy } from '../api/types';
 import { formatOdds, formatThreshold, formatPercentage, formatGap, formatRelativeTime, profitColor } from '../utils/format';
 import { MARKET_TYPE_LABELS } from '../utils/constants';
@@ -13,6 +13,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import EmptyState from '../components/EmptyState';
 import PageShell from '../components/PageShell';
 import TrackedMatchesPanel from '../components/TrackedMatchesPanel';
+import UnresolvedOddsPanel from '../components/UnresolvedOddsPanel';
 
 interface MatchGroup {
   matchId: string;
@@ -27,7 +28,7 @@ interface LeagueGroup {
   matches: MatchGroup[];
 }
 
-type DashboardTab = 'discrepancies' | 'tracked';
+type DashboardTab = 'discrepancies' | 'tracked' | 'warnings';
 type ViewMode = 'by-match' | 'flat';
 
 export default function Dashboard() {
@@ -66,6 +67,13 @@ export default function Dashboard() {
     isError: matchesError,
     error: matchesLoadError,
   } = useMatches({ limit: 200, loadAll: true }, { enabled: activeTab === 'tracked' });
+  const {
+    data: unresolvedOdds,
+    isLoading: unresolvedLoading,
+    isError: unresolvedError,
+    error: unresolvedLoadError,
+    refetch: refetchUnresolvedOdds,
+  } = useUnresolvedOdds({ limit: 200, loadAll: true }, { enabled: activeTab === 'warnings' });
   const { data: status } = useSystemStatus();
 
   const isInitialScanInProgress =
@@ -84,9 +92,13 @@ export default function Dashboard() {
       void queryClient.invalidateQueries({ queryKey: ['discrepancies'] });
       void refetchDiscrepancies();
     }
+    if (scanJustFinished && activeTab === 'warnings') {
+      void queryClient.invalidateQueries({ queryKey: ['unresolvedOdds'] });
+      void refetchUnresolvedOdds();
+    }
 
     previousScanInProgressRef.current = scanInProgress;
-  }, [activeTab, queryClient, refetchDiscrepancies, status?.scan.in_progress]);
+  }, [activeTab, queryClient, refetchDiscrepancies, refetchUnresolvedOdds, status?.scan.in_progress]);
 
   // Group discrepancies by league, then by match
   const grouped = useMemo<LeagueGroup[]>(() => {
@@ -122,6 +134,7 @@ export default function Dashboard() {
   }, [discrepancies]);
 
   const discrepancyCount = discrepancies?.length ?? 0;
+  const unresolvedCount = unresolvedOdds?.length ?? 0;
 
   return (
     <PageShell
@@ -129,12 +142,16 @@ export default function Dashboard() {
       title={
         activeTab === 'discrepancies'
           ? 'Find exploitable line gaps before the market closes.'
-          : 'Inspect the stored board even when no gap is flashing.'
+          : activeTab === 'tracked'
+            ? 'Inspect the stored board even when no gap is flashing.'
+            : 'Review dropped player props before they disappear from the board.'
       }
       description={
         activeTab === 'discrepancies'
           ? 'Snapshot grouped by league and matchup. Work downward from the highest-margin thresholds.'
-          : 'Open tracked matches to review player markets, bookmaker prices, and discrepancy-linked lines.'
+          : activeTab === 'tracked'
+            ? 'Open tracked matches to review player markets, bookmaker prices, and discrepancy-linked lines.'
+            : 'Internal warnings for shared-platform props that failed matchup resolution in the current scrape snapshot.'
       }
     >
       <div className="space-y-6">
@@ -164,6 +181,19 @@ export default function Dashboard() {
                 }`}
               >
                 Tracked odds
+              </button>
+              <button
+                onClick={() => setActiveTab('warnings')}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                  activeTab === 'warnings'
+                    ? 'bg-surface-raised text-text'
+                    : 'text-text-muted hover:text-text'
+                }`}
+              >
+                Warnings
+                {activeTab === 'warnings' && unresolvedCount > 0 && (
+                  <span className="ml-1.5 font-mono text-xs text-warning">{unresolvedCount}</span>
+                )}
               </button>
             </div>
             {activeTab === 'discrepancies' && (
@@ -379,11 +409,17 @@ export default function Dashboard() {
               ))}
             </div>
           )
-        ) : (
+        ) : activeTab === 'tracked' ? (
           <TrackedMatchesPanel
             matches={matches || []}
             isLoading={matchesLoading}
             errorMessage={matchesError ? (matchesLoadError as Error)?.message || 'Unknown error' : null}
+          />
+        ) : (
+          <UnresolvedOddsPanel
+            rows={unresolvedOdds || []}
+            isLoading={unresolvedLoading}
+            errorMessage={unresolvedError ? (unresolvedLoadError as Error)?.message || 'Unknown error' : null}
           />
         )}
       </div>

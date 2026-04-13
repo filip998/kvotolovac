@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.models.schemas import NormalizedOdds
+from app.models.schemas import NormalizedOdds, UnresolvedOddsDiagnostic
 from app.store import odds_store
 
 
@@ -215,6 +215,88 @@ async def test_upsert_odds_keeps_line_and_milestone_rows_separate():
         "player_points",
         "player_points_milestones",
     }
+
+
+@pytest.mark.asyncio
+async def test_insert_and_get_unresolved_odds():
+    batch_scraped_at = "2026-04-13T16:36:09.440629"
+    await odds_store.upsert_bookmaker("admiralbet", "AdmiralBet")
+    await odds_store.upsert_league("aba_liga", "ABA Liga", "basketball")
+    await odds_store.insert_unresolved_odds(
+        UnresolvedOddsDiagnostic(
+            bookmaker_id="admiralbet",
+            raw_league_id="AdmiralBet ABA Liga",
+            league_id="aba_liga",
+            market_type="player_points",
+            player_name="P. Nikolic",
+            raw_team_name="Borac Cacak",
+            normalized_team_name="Borac Cacak",
+            start_time="2026-04-13T16:00:00+00:00",
+            threshold=10.5,
+            over_odds=1.8,
+            under_odds=2.0,
+            reason_code="no_canonical_matchup_for_team_at_slot",
+            candidate_count=0,
+            candidate_matchups=[],
+            available_matchups_same_slot=["Dubai vs Buducnost"],
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    unresolved = await odds_store.get_unresolved_odds()
+
+    assert len(unresolved) == 1
+    assert unresolved[0].bookmaker_name == "AdmiralBet"
+    assert unresolved[0].league_name == "ABA Liga"
+    assert unresolved[0].available_matchups_same_slot == ["Dubai vs Buducnost"]
+
+
+@pytest.mark.asyncio
+async def test_get_unresolved_odds_respects_current_snapshot():
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    await odds_store.insert_unresolved_odds(
+        UnresolvedOddsDiagnostic(
+            bookmaker_id="maxbet",
+            raw_league_id="ABA Liga",
+            league_id="aba_liga",
+            market_type="player_points",
+            player_name="S. Ilic",
+            raw_team_name="Borac",
+            normalized_team_name="Borac",
+            start_time="2026-04-13T16:00:00+00:00",
+            threshold=9.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            reason_code="no_canonical_matchup_for_team_at_slot",
+            candidate_count=0,
+        ),
+        scraped_at="2026-04-13T16:00:00+00:00",
+    )
+    await odds_store.insert_unresolved_odds(
+        UnresolvedOddsDiagnostic(
+            bookmaker_id="maxbet",
+            raw_league_id="ABA Liga",
+            league_id="aba_liga",
+            market_type="player_points",
+            player_name="S. Ilic",
+            raw_team_name="Borac",
+            normalized_team_name="Borac",
+            start_time="2026-04-13T18:00:00+00:00",
+            threshold=10.5,
+            over_odds=1.8,
+            under_odds=2.0,
+            reason_code="no_canonical_matchup_for_team_at_slot",
+            candidate_count=0,
+        ),
+        scraped_at="2026-04-13T18:00:00+00:00",
+    )
+    await odds_store.set_current_snapshot("2026-04-13T18:00:00+00:00")
+
+    unresolved = await odds_store.get_unresolved_odds()
+
+    assert len(unresolved) == 1
+    assert unresolved[0].threshold == 10.5
 
 
 @pytest.mark.asyncio

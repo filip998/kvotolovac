@@ -20,11 +20,25 @@ from ..models.schemas import (
     OddsOut,
     ScanProgressOut,
     SystemStatus,
+    UnresolvedOddsDiagnostic,
+    UnresolvedOddsOut,
 )
 
 
 def _row_to_dict(row: aiosqlite.Row) -> dict:
     return dict(row)
+
+
+def _row_to_unresolved_odds(row: aiosqlite.Row) -> UnresolvedOddsOut:
+    data = _row_to_dict(row)
+    for field in ("candidate_matchups", "available_matchups_same_slot"):
+        value = data.get(field)
+        if not value:
+            data[field] = []
+            continue
+        if isinstance(value, str):
+            data[field] = json.loads(value)
+    return UnresolvedOddsOut(**data)
 
 
 # ── Bookmakers ─────────────────────────────────────────────
@@ -104,6 +118,13 @@ async def _get_legacy_snapshot_cutoff(db: aiosqlite.Connection) -> tuple[str, st
     lookback_minutes = max(settings.scrape_interval_minutes, 15)
     cutoff_at = (latest_dt - timedelta(minutes=lookback_minutes)).isoformat()
     return latest_scrape_at, cutoff_at
+
+
+async def _get_latest_unresolved_snapshot_at(db: aiosqlite.Connection) -> str | None:
+    row = await db.execute_fetchall("SELECT MAX(scraped_at) AS t FROM unresolved_odds")
+    if not row or not row[0][0]:
+        return None
+    return row[0][0]
 
 
 # ── Matches ────────────────────────────────────────────────
@@ -254,6 +275,88 @@ async def get_odds_history_for_match(match_id: str) -> list[OddsOut]:
         (match_id,),
     )
     return [OddsOut(**_row_to_dict(r)) for r in rows]
+
+
+# ── Unresolved odds ────────────────────────────────────────
+
+async def insert_unresolved_odds(
+    unresolved: UnresolvedOddsDiagnostic,
+    *,
+    scraped_at: str,
+) -> int:
+    db = await get_db()
+    cursor = await db.execute(
+        """INSERT INTO unresolved_odds
+           (bookmaker_id, raw_league_id, league_id, market_type, player_name,
+            raw_team_name, normalized_team_name, start_time, threshold, over_odds,
+            under_odds, reason_code, candidate_count, candidate_matchups,
+            available_matchups_same_slot, scraped_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            unresolved.bookmaker_id,
+            unresolved.raw_league_id,
+            unresolved.league_id,
+            unresolved.market_type,
+            unresolved.player_name,
+            unresolved.raw_team_name,
+            unresolved.normalized_team_name,
+            unresolved.start_time,
+            unresolved.threshold,
+            unresolved.over_odds,
+            unresolved.under_odds,
+            unresolved.reason_code,
+            unresolved.candidate_count,
+            json.dumps(unresolved.candidate_matchups),
+            json.dumps(unresolved.available_matchups_same_slot),
+            scraped_at,
+        ),
+    )
+    await db.commit()
+    return cursor.lastrowid or 0
+
+
+async def get_unresolved_odds(
+    bookmaker_id: str | None = None,
+    reason_code: str | None = None,
+    market_type: str | None = None,
+    league_id: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[UnresolvedOddsOut]:
+    db = await get_db()
+    snapshot_at = await _get_current_snapshot_at(db)
+    if snapshot_at is None:
+        snapshot_at = await _get_latest_unresolved_snapshot_at(db)
+    if snapshot_at is None:
+        return []
+
+    q = """SELECT u.*, b.name as bookmaker_name, l.name as league_name
+           FROM unresolved_odds u
+           LEFT JOIN bookmakers b ON u.bookmaker_id = b.id
+           LEFT JOIN leagues l ON u.league_id = l.id"""
+    conditions = ["u.scraped_at = ?"]
+    params: list = [snapshot_at]
+
+    if bookmaker_id:
+        conditions.append("u.bookmaker_id = ?")
+        params.append(bookmaker_id)
+    if reason_code:
+        conditions.append("u.reason_code = ?")
+        params.append(reason_code)
+    if market_type:
+        conditions.append("u.market_type = ?")
+        params.append(market_type)
+    if league_id:
+        conditions.append("u.league_id = ?")
+        params.append(league_id)
+
+    q += " WHERE " + " AND ".join(conditions)
+    q += """ ORDER BY u.reason_code ASC, u.bookmaker_id ASC, u.start_time ASC,
+                    u.raw_team_name ASC, u.player_name ASC
+             LIMIT ? OFFSET ?"""
+    params.extend([limit, offset])
+    rows = await db.execute_fetchall(q, params)
+    return [_row_to_unresolved_odds(r) for r in rows]
 
 
 # ── Discrepancies ──────────────────────────────────────────

@@ -54,6 +54,26 @@ CREATE TABLE IF NOT EXISTS odds_history (
     scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS unresolved_odds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bookmaker_id TEXT REFERENCES bookmakers(id),
+    raw_league_id TEXT NOT NULL,
+    league_id TEXT NOT NULL,
+    market_type TEXT NOT NULL,
+    player_name TEXT,
+    raw_team_name TEXT NOT NULL,
+    normalized_team_name TEXT NOT NULL,
+    start_time TIMESTAMP,
+    threshold REAL NOT NULL,
+    over_odds REAL,
+    under_odds REAL,
+    reason_code TEXT NOT NULL,
+    candidate_count INTEGER NOT NULL DEFAULT 0,
+    candidate_matchups TEXT NOT NULL DEFAULT '[]',
+    available_matchups_same_slot TEXT NOT NULL DEFAULT '[]',
+    scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS discrepancies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     match_id TEXT REFERENCES matches(id),

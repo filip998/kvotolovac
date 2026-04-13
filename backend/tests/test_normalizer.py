@@ -7,6 +7,7 @@ from app.services.normalizer import (
     normalize_league_id,
     normalize_market_type,
     normalize_odds,
+    normalize_odds_with_issues,
     normalize_player_name,
     normalize_team_name,
 )
@@ -284,6 +285,30 @@ def test_normalize_odds_keeps_ambiguous_short_prefix_players():
         "Jaylin Williams",
         "Ja. Williams",
     ]
+
+
+def test_normalize_odds_with_issues_reports_unresolved_shared_platform_rows():
+    normalized, unresolved = normalize_odds_with_issues(
+        [
+            RawOddsData(
+                bookmaker_id="admiralbet",
+                league_id="aba_liga",
+                home_team="Borac Cacak",
+                away_team="P. Nikolic",
+                market_type="player_points",
+                player_name="P. Nikolic",
+                threshold=10.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-13T16:00:00+00:00",
+            )
+        ]
+    )
+
+    assert normalized == []
+    assert len(unresolved) == 1
+    assert unresolved[0].reason_code == "no_canonical_matchup_for_team_at_slot"
+    assert unresolved[0].raw_team_name == "Borac Cacak"
 
 
 def test_normalize_odds_resolves_unique_match_local_player_variants():

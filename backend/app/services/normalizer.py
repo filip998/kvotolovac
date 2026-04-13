@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 
 from thefuzz import fuzz
 
-from ..models.schemas import NormalizedOdds, RawOddsData
+from ..models.schemas import NormalizedOdds, RawOddsData, UnresolvedOddsDiagnostic
 
 logger = logging.getLogger(__name__)
 
@@ -493,6 +493,10 @@ def _is_unresolved_shared_platform_prop(raw: RawOddsData) -> bool:
     return bool(raw.player_name and raw.away_team.strip() == raw.player_name.strip())
 
 
+def _format_matchup(matchup: tuple[str, str]) -> str:
+    return f"{matchup[0]} vs {matchup[1]}"
+
+
 def _build_canonical_matchups(
     raw_list: list[RawOddsData],
 ) -> dict[tuple[str, str | None, tuple[str, str]], tuple[str, str]]:
@@ -525,13 +529,16 @@ def _build_canonical_matchups(
     return canonical
 
 
-def _resolve_shared_platform_matchups(raw_list: list[RawOddsData]) -> list[RawOddsData]:
+def _resolve_shared_platform_matchups(
+    raw_list: list[RawOddsData],
+) -> tuple[list[RawOddsData], list[UnresolvedOddsDiagnostic]]:
     canonical_matchups = _build_canonical_matchups(raw_list)
     matchups_by_slot: dict[tuple[str, str | None], list[tuple[str, str]]] = {}
     for (league_id, start_time, _matchup_key), matchup in canonical_matchups.items():
         matchups_by_slot.setdefault((league_id, start_time), []).append(matchup)
 
     resolved: list[RawOddsData] = []
+    unresolved: list[UnresolvedOddsDiagnostic] = []
 
     for raw in raw_list:
         league_id = normalize_league_id(raw.league_id)
@@ -566,11 +573,39 @@ def _resolve_shared_platform_matchups(raw_list: list[RawOddsData]) -> list[RawOd
         ]
 
         if len(candidates) != 1:
+            reason_code = (
+                "no_canonical_matchup_for_team_at_slot"
+                if len(candidates) == 0
+                else "ambiguous_multiple_matchups_for_team_at_slot"
+            )
+            unresolved.append(
+                UnresolvedOddsDiagnostic(
+                    bookmaker_id=raw.bookmaker_id,
+                    raw_league_id=raw.league_id,
+                    league_id=league_id,
+                    market_type=raw.market_type,
+                    player_name=raw.player_name,
+                    raw_team_name=raw.home_team,
+                    normalized_team_name=known_team,
+                    start_time=raw.start_time,
+                    threshold=raw.threshold,
+                    over_odds=raw.over_odds,
+                    under_odds=raw.under_odds,
+                    reason_code=reason_code,
+                    candidate_count=len(candidates),
+                    candidate_matchups=[_format_matchup(matchup) for matchup in candidates[:8]],
+                    available_matchups_same_slot=[
+                        _format_matchup(matchup)
+                        for matchup in matchups_by_slot.get(slot, [])[:12]
+                    ],
+                )
+            )
             logger.warning(
-                "Dropping unresolved shared-platform prop for %s (%s, %s)",
+                "Dropping unresolved shared-platform prop for %s (%s, %s, %s)",
                 raw.player_name,
                 raw.bookmaker_id,
                 known_team,
+                reason_code,
             )
             continue
 
@@ -590,12 +625,15 @@ def _resolve_shared_platform_matchups(raw_list: list[RawOddsData]) -> list[RawOd
             )
         )
 
-    return resolved
-def normalize_odds(raw_list: list[RawOddsData]) -> list[NormalizedOdds]:
+    return resolved, unresolved
+
+
+def normalize_odds_with_issues(
+    raw_list: list[RawOddsData],
+) -> tuple[list[NormalizedOdds], list[UnresolvedOddsDiagnostic]]:
     results: list[NormalizedOdds] = []
-    resolved_raw_list = _resolve_contextual_player_names(
-        _resolve_shared_platform_matchups(raw_list)
-    )
+    resolved_shared_platform, unresolved = _resolve_shared_platform_matchups(raw_list)
+    resolved_raw_list = _resolve_contextual_player_names(resolved_shared_platform)
     for raw in resolved_raw_list:
         league_id = normalize_league_id(raw.league_id)
         home = normalize_team_name(raw.home_team, league_id)
@@ -619,4 +657,8 @@ def normalize_odds(raw_list: list[RawOddsData]) -> list[NormalizedOdds]:
                 start_time=raw.start_time,
             )
         )
-    return results
+    return results, unresolved
+
+
+def normalize_odds(raw_list: list[RawOddsData]) -> list[NormalizedOdds]:
+    return normalize_odds_with_issues(raw_list)[0]

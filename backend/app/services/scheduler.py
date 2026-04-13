@@ -10,7 +10,7 @@ from ..models.schemas import RawOddsData
 from ..scrapers.base import BaseScraper
 from ..scrapers.registry import registry
 from ..models.schemas import ScanProgressOut
-from ..services.normalizer import normalize_odds
+from ..services.normalizer import normalize_odds_with_issues
 from ..services.analyzer import analyze
 from ..services.notifications import NotificationService, InAppNotificationProvider
 from ..store import odds_store
@@ -179,7 +179,7 @@ class Scheduler:
                 )
 
             self._scan_phase = "normalizing"
-            normalized = normalize_odds(all_raw)
+            normalized, unresolved_odds = normalize_odds_with_issues(all_raw)
 
             self._scan_phase = "storing"
             cycle_scraped_at = datetime.utcnow().isoformat()
@@ -198,6 +198,10 @@ class Scheduler:
                     )
                     seen_matches.add(o.match_id)
                 await odds_store.upsert_odds(o, scraped_at=cycle_scraped_at)
+            for unresolved in unresolved_odds:
+                await odds_store.insert_unresolved_odds(
+                    unresolved, scraped_at=cycle_scraped_at
+                )
             await odds_store.set_current_snapshot(cycle_scraped_at)
 
             self._scan_phase = "analyzing"

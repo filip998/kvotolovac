@@ -288,6 +288,38 @@ async def test_scheduler_run_cycle_returns_expected_output_shape():
 
 
 @pytest.mark.asyncio
+async def test_scheduler_run_cycle_persists_unresolved_odds():
+    _register_test_scrapers(
+        StubScraper(
+            "admiralbet",
+            payload_by_league={
+                "euroleague": [
+                    RawOddsData(
+                        bookmaker_id="admiralbet",
+                        league_id="aba_liga",
+                        home_team="Borac Cacak",
+                        away_team="P. Nikolic",
+                        market_type="player_points",
+                        player_name="P. Nikolic",
+                        threshold=10.5,
+                        over_odds=1.8,
+                        under_odds=2.0,
+                        start_time="2030-01-01T20:00:00+00:00",
+                    )
+                ]
+            },
+        )
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+    unresolved = await odds_store.get_unresolved_odds()
+
+    assert result["matches_scraped"] == 0
+    assert result["odds_scraped"] == 0
+    assert len(unresolved) == 1
+    assert unresolved[0].reason_code == "no_canonical_matchup_for_team_at_slot"
+    assert unresolved[0].raw_team_name == "Borac Cacak"
+@pytest.mark.asyncio
 async def test_scheduler_run_cycle_hides_stale_matches_from_latest_snapshot():
     await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
     await odds_store.upsert_match("stale", "euroleague", "Bayern Munich", "Maccabi Tel Aviv")

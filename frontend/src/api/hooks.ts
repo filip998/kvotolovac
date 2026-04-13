@@ -1,11 +1,21 @@
 import { useQuery, useMutation } from '@tanstack/react-query';
 import client from './client';
-import type { League, Match, OddsOffer, Discrepancy, SystemStatus, DiscrepancyFilters } from './types';
+import type {
+  League,
+  Match,
+  OddsOffer,
+  Discrepancy,
+  SystemStatus,
+  DiscrepancyFilters,
+  UnresolvedOdds,
+  UnresolvedOddsFilters,
+} from './types';
 import {
   mockLeagues,
   mockMatches,
   mockOddsOffers,
   mockDiscrepancies,
+  mockUnresolvedOdds,
   mockSystemStatus,
 } from './mockData';
 
@@ -69,6 +79,64 @@ export function useDiscrepancy(id: number) {
       const { data } = await client.get<Discrepancy>(`/discrepancies/${id}`);
       return data;
     },
+  });
+}
+
+// --- Unresolved odds ---
+
+export function useUnresolvedOdds(
+  filters: UnresolvedOddsFilters = {},
+  options: { enabled?: boolean } = {}
+) {
+  return useQuery<UnresolvedOdds[]>({
+    queryKey: ['unresolvedOdds', filters],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        let results = [...mockUnresolvedOdds];
+
+        if (filters.bookmaker_id) {
+          results = results.filter((row) => row.bookmaker_id === filters.bookmaker_id);
+        }
+        if (filters.reason_code) {
+          results = results.filter((row) => row.reason_code === filters.reason_code);
+        }
+        if (filters.market_type) {
+          results = results.filter((row) => row.market_type === filters.market_type);
+        }
+        if (filters.league_id) {
+          results = results.filter((row) => row.league_id === filters.league_id);
+        }
+
+        return results;
+      }
+
+      const { loadAll, ...requestFilters } = filters;
+      if (!loadAll) {
+        const { data } = await client.get<UnresolvedOdds[]>('/unresolved-odds', {
+          params: requestFilters,
+        });
+        return data;
+      }
+
+      const pageSize = requestFilters.limit ?? 200;
+      const initialOffset = requestFilters.offset ?? 0;
+      const allRows: UnresolvedOdds[] = [];
+
+      for (let offset = initialOffset; ; offset += pageSize) {
+        const { data } = await client.get<UnresolvedOdds[]>('/unresolved-odds', {
+          params: { ...requestFilters, limit: pageSize, offset },
+        });
+        allRows.push(...data);
+        if (data.length < pageSize) {
+          break;
+        }
+      }
+
+      return allRows;
+    },
+    enabled: options.enabled ?? true,
+    refetchInterval: options.enabled === false ? false : 30000,
   });
 }
 

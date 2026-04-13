@@ -47,6 +47,31 @@ class OddsOut(BaseModel):
     scraped_at: Optional[str] = None
 
 
+class UnresolvedOddsDiagnostic(BaseModel):
+    bookmaker_id: str
+    raw_league_id: str
+    league_id: str
+    market_type: str
+    player_name: Optional[str] = None
+    raw_team_name: str
+    normalized_team_name: str
+    start_time: Optional[str] = None
+    threshold: float
+    over_odds: Optional[float] = None
+    under_odds: Optional[float] = None
+    reason_code: str
+    candidate_count: int = 0
+    candidate_matchups: list[str] = Field(default_factory=list)
+    available_matchups_same_slot: list[str] = Field(default_factory=list)
+
+
+class UnresolvedOddsOut(UnresolvedOddsDiagnostic):
+    id: int
+    bookmaker_name: Optional[str] = None
+    league_name: Optional[str] = None
+    scraped_at: Optional[str] = None
+
+
 # ── Raw odds from scrapers ─────────────────────────────────
 class RawOddsData(BaseModel):
     bookmaker_id: str

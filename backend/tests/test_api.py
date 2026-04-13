@@ -7,11 +7,12 @@ from httpx import ASGITransport, AsyncClient
 
 from app.database import init_db, close_db
 from app.main import app
-from app.models.schemas import RawOddsData
+from app.models.schemas import RawOddsData, UnresolvedOddsDiagnostic
 from app.scrapers.base import BaseScraper
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
 from app.services.scheduler import scheduler
+from app.store import odds_store
 
 
 @pytest.fixture(autouse=True)
@@ -204,3 +205,37 @@ async def test_list_bookmakers(client: AsyncClient):
     assert resp.status_code == 200
     bms = resp.json()
     assert len(bms) == 3
+
+
+@pytest.mark.asyncio
+async def test_list_unresolved_odds(client: AsyncClient):
+    batch_scraped_at = "2026-04-13T16:36:09.440629"
+    await odds_store.upsert_bookmaker("admiralbet", "AdmiralBet")
+    await odds_store.insert_unresolved_odds(
+        UnresolvedOddsDiagnostic(
+            bookmaker_id="admiralbet",
+            raw_league_id="AdmiralBet ABA Liga",
+            league_id="aba_liga",
+            market_type="player_points",
+            player_name="P. Nikolic",
+            raw_team_name="Borac Cacak",
+            normalized_team_name="Borac Cacak",
+            start_time="2026-04-13T16:00:00+00:00",
+            threshold=10.5,
+            over_odds=1.8,
+            under_odds=2.0,
+            reason_code="no_canonical_matchup_for_team_at_slot",
+            candidate_count=0,
+            available_matchups_same_slot=["Dubai vs Buducnost"],
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    resp = await client.get("/api/v1/unresolved-odds")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["bookmaker_name"] == "AdmiralBet"
+    assert data[0]["reason_code"] == "no_canonical_matchup_for_team_at_slot"

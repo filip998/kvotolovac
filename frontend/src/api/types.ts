@@ -66,6 +66,28 @@ export interface Discrepancy {
   is_active: boolean;
 }
 
+export interface UnresolvedOdds {
+  id: number;
+  bookmaker_id: string;
+  bookmaker_name: string | null;
+  raw_league_id: string;
+  league_id: string;
+  league_name: string | null;
+  market_type: string;
+  player_name: string | null;
+  raw_team_name: string;
+  normalized_team_name: string;
+  start_time: string | null;
+  threshold: number;
+  over_odds: number | null;
+  under_odds: number | null;
+  reason_code: string;
+  candidate_count: number;
+  candidate_matchups: string[];
+  available_matchups_same_slot: string[];
+  scraped_at: string | null;
+}
+
 export interface BookmakerStatus {
   id: string;
   name: string;
@@ -107,4 +129,14 @@ export interface DiscrepancyFilters {
   sort_order?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
+}
+
+export interface UnresolvedOddsFilters {
+  bookmaker_id?: string;
+  reason_code?: string;
+  market_type?: string;
+  league_id?: string;
+  limit?: number;
+  offset?: number;
+  loadAll?: boolean;
 }
