@@ -46,9 +46,9 @@ _DEFAULT_HEADERS: dict[str, str] = {
 _DEFAULT_PARAMS: dict[str, str] = {}
 
 # (sportId, regionId, competitionId)
-_KNOWN_COMPETITIONS: list[tuple[int, int, int]] = [
-    (3, 462, 3221),   # NBA
-    (3, 464, 22317),  # NBA (legacy ID, kept as fallback)
+_KNOWN_COMPETITIONS: list[tuple[int, int, int, str]] = [
+    (3, 462, 3221, "nba"),    # NBA
+    (3, 464, 22317, "nba"),   # NBA (legacy ID, kept as fallback)
 ]
 
 _DETAIL_CONCURRENCY = 5
@@ -104,7 +104,7 @@ def _get_player_event_ids(events: list[dict]) -> list[dict]:
     return [e for e in events if e.get("mappingTypeId") == _MAPPING_TYPE_PLAYER]
 
 
-def _parse_event_detail(event: dict, bets_data: dict) -> list[RawOddsData]:
+def _parse_event_detail(event: dict, bets_data: dict, league_id: str = "nba") -> list[RawOddsData]:
     """Combine a list-endpoint event with its detail bets into *RawOddsData*."""
     results: list[RawOddsData] = []
 
@@ -144,7 +144,7 @@ def _parse_event_detail(event: dict, bets_data: dict) -> list[RawOddsData]:
         results.append(
             RawOddsData(
                 bookmaker_id="pinnbet",
-                league_id="basketball",
+                league_id=league_id,
                 home_team=team or "",
                 away_team=player_name,
                 market_type="player_points",
@@ -178,6 +178,7 @@ class PinnBetScraper(BaseScraper):
         self,
         event: dict,
         semaphore: asyncio.Semaphore,
+        league_id: str = "nba",
     ) -> list[RawOddsData]:
         sport_id = event.get("sportId", _SPORT_ID)
         region_id = event.get("regionId")
@@ -204,7 +205,7 @@ class PinnBetScraper(BaseScraper):
                 )
                 return []
 
-        return _parse_event_detail(event, detail)
+        return _parse_event_detail(event, detail, league_id=league_id)
 
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         if league_id != "basketball":
@@ -212,7 +213,7 @@ class PinnBetScraper(BaseScraper):
 
         all_results: list[RawOddsData] = []
 
-        for sport_id, region_id, competition_id in _KNOWN_COMPETITIONS:
+        for sport_id, region_id, competition_id, comp_league_id in _KNOWN_COMPETITIONS:
             url = _build_list_url(sport_id, region_id, competition_id)
 
             try:
@@ -244,7 +245,7 @@ class PinnBetScraper(BaseScraper):
             semaphore = asyncio.Semaphore(_DETAIL_CONCURRENCY)
             detail_results = await asyncio.gather(
                 *(
-                    self._fetch_event_detail(ev, semaphore)
+                    self._fetch_event_detail(ev, semaphore, league_id=comp_league_id)
                     for ev in player_events
                 )
             )

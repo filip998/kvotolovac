@@ -134,7 +134,7 @@ def test_parse_event_detail_from_fixture(detail_data):
     assert r.over_odds == 1.50
     assert r.under_odds == 2.40
     assert r.start_time == "2026-04-11T16:00:00+00:00"
-    assert r.league_id == "basketball"
+    assert r.league_id == "nba"
 
 
 def test_parse_event_detail_empty():

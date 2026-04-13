@@ -285,7 +285,24 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
         _, last_name = parts
         names_by_match_and_surname[(match_id, last_name)][raw.player_name.strip()] += 1
 
-    replacements: dict[tuple[str, str], str] = {}
+    # Pre-pass: merge names that differ only in casing into the most frequent variant
+    case_replacements: dict[tuple[str, str], str] = {}
+    for match_and_surname, name_counts in names_by_match_and_surname.items():
+        by_lower: dict[str, list[str]] = defaultdict(list)
+        for name in name_counts:
+            by_lower[name.lower()].append(name)
+        for _lower_key, variants in by_lower.items():
+            if len(variants) <= 1:
+                continue
+            best = max(variants, key=lambda v: (name_counts[v], v))
+            merged_count = sum(name_counts[v] for v in variants)
+            for v in variants:
+                if v != best:
+                    case_replacements[(match_and_surname[0], v)] = best
+                    name_counts[best] = merged_count
+                    del name_counts[v]
+
+    replacements: dict[tuple[str, str], str] = dict(case_replacements)
 
     for match_and_surname, name_counts in names_by_match_and_surname.items():
         observed_names = list(name_counts)

@@ -127,7 +127,7 @@ def test_parse_event_detail_basic(events_data, bets_data):
     assert r.over_odds == 1.50
     assert r.under_odds == 2.40
     assert r.market_type == "player_points"
-    assert r.league_id == "basketball"
+    assert r.league_id == "nba"
     assert r.start_time == "2026-04-11T16:00:00+00:00"
 
 

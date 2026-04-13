@@ -149,7 +149,7 @@ def _parse_event_detail(data: dict) -> list[RawOddsData]:
         results.append(
             RawOddsData(
                 bookmaker_id="balkanbet",
-                league_id="basketball",
+                league_id="nba",
                 home_team=team or "",
                 away_team=player_name,
                 market_type="player_points",
