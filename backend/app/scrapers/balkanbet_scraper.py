@@ -17,6 +17,9 @@ _LIST_URL = "https://sports-sm-distribution-api.de-2.nsoftcdn.com/api/v1/events"
 _DETAIL_URL = "https://sports-sm-distribution-api.de-2.nsoftcdn.com/api/v1/events/{event_id}"
 
 _COMPANY_UUID = "4f54c6aa-82a9-475d-bf0e-dc02ded89225"
+_BASKETBALL_SPORT_ID = "36"
+_PLAYER_SPORT_ID = "273"
+_GAME_TOTAL_OT_MARKET_ID = 530
 _PLAYER_POINTS_MARKET_ID = 2402
 
 _LIST_DATA_FORMAT = '{"default":"object","events":"array","outcomes":"array"}'
@@ -37,10 +40,9 @@ _DEFAULT_HEADERS = {
     ),
 }
 
-_DEFAULT_PARAMS = {
+_BASE_LIST_PARAMS = {
     "deliveryPlatformId": "3",
     "companyUuid": _COMPANY_UUID,
-    "filter[sportId]": "273",
     "sort": "categoryPosition,categoryName,tournamentPosition,tournamentName,startsAt",
     "offerTemplate": "WEB_OVERVIEW",
     "shortProps": "1",
@@ -48,11 +50,17 @@ _DEFAULT_PARAMS = {
     "language": _LIST_LANGUAGE,
     "timezone": "Europe/Belgrade",
 }
+_PLAYER_LIST_PARAMS = {**_BASE_LIST_PARAMS, "filter[sportId]": _PLAYER_SPORT_ID}
+_GAME_TOTAL_OT_LIST_PARAMS = {
+    **_BASE_LIST_PARAMS,
+    "filter[sportId]": _BASKETBALL_SPORT_ID,
+}
 
 _UNLIMITED_DETAIL_CONCURRENCY = 10
 _MIN_DETAIL_CONCURRENCY = 2
 _REQUEST_TIMEZONE = ZoneInfo("Europe/Belgrade")
 _TOURNAMENT_LEAGUE_MAP: dict[int, str] = {
+    252: "euroleague",
     29368: "aba_liga",
     30757: "turkey",
     31317: "italy",
@@ -79,18 +87,28 @@ def _parse_player_name(name: str) -> tuple[str, str | None]:
     return (name.strip(), None)
 
 
+def _iter_list_markets(event: dict) -> list[dict]:
+    markets = event.get("o") or {}
+    if isinstance(markets, dict):
+        return [market for market in markets.values() if isinstance(market, dict)]
+    if isinstance(markets, list):
+        return [market for market in markets if isinstance(market, dict)]
+    return []
+
+
+def _get_events_with_market_id(data: dict, market_id: int) -> list[dict]:
+    events = data.get("data", {}).get("events", [])
+    matching_events: list[dict] = []
+    for event in events:
+        if any(market.get("b") == market_id for market in _iter_list_markets(event)):
+            matching_events.append(event)
+    return matching_events
+
+
 def _get_event_ids(data: dict) -> list[int]:
     """Extract event IDs that have a player-points market from list response."""
-    events = data.get("data", {}).get("events", [])
     ids: list[int] = []
-    for ev in events:
-        markets = ev.get("o") or {}
-        has_player_points = any(
-            (mk.get("b") == _PLAYER_POINTS_MARKET_ID)
-            for mk in (markets.values() if isinstance(markets, dict) else markets)
-        )
-        if not has_player_points:
-            continue
+    for ev in _get_events_with_market_id(data, _PLAYER_POINTS_MARKET_ID):
         event_id = ev.get("a")
         if event_id:
             ids.append(int(event_id))
@@ -121,6 +139,27 @@ def _extract_league_id(category_id: int | None, tournament_id: int | None) -> st
     if category_id is not None:
         return f"balkanbet_category_{category_id}"
     return "basketball"
+
+
+def _extract_outcome_price(outcome: dict) -> float | None:
+    for key in ("odd", "odds", "g"):
+        value = outcome.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _extract_over_under_odds(outcomes: list[dict]) -> tuple[float | None, float | None]:
+    over_odds: float | None = None
+    under_odds: float | None = None
+    for outcome in outcomes:
+        outcome_name = (outcome.get("name") or outcome.get("e") or "").lower()
+        outcome_price = _extract_outcome_price(outcome)
+        if outcome_name.startswith("više"):
+            over_odds = outcome_price
+        elif outcome_name.startswith("manje"):
+            under_odds = outcome_price
+    return over_odds, under_odds
 
 
 def _parse_event_detail(data: dict, league_id: str | None = None) -> list[RawOddsData]:
@@ -154,14 +193,7 @@ def _parse_event_detail(data: dict, league_id: str | None = None) -> list[RawOdd
             continue
 
         outcomes = mkt.get("outcomes") or []
-        over_odds: float | None = None
-        under_odds: float | None = None
-        for oc in outcomes:
-            oc_name = (oc.get("name") or "").lower()
-            if oc_name.startswith("više"):
-                over_odds = oc.get("odd") or oc.get("odds")
-            elif oc_name.startswith("manje"):
-                under_odds = oc.get("odd") or oc.get("odds")
+        over_odds, under_odds = _extract_over_under_odds(outcomes)
 
         if over_odds is None and under_odds is None:
             continue
@@ -184,6 +216,64 @@ def _parse_event_detail(data: dict, league_id: str | None = None) -> list[RawOdd
     return results
 
 
+def _split_match_name(name: str) -> tuple[str, str] | None:
+    home_team, separator, away_team = name.partition(" - ")
+    if not separator:
+        return None
+    home_team = home_team.strip()
+    away_team = away_team.strip()
+    if not home_team or not away_team:
+        return None
+    return home_team, away_team
+
+
+def _parse_game_total_ot_list(data: dict) -> list[RawOddsData]:
+    results: list[RawOddsData] = []
+
+    for event in _get_events_with_market_id(data, _GAME_TOTAL_OT_MARKET_ID):
+        matchup = _split_match_name(event.get("j") or event.get("name") or "")
+        if matchup is None:
+            continue
+
+        home_team, away_team = matchup
+        start_time = _normalize_start_time(event.get("n") or event.get("startsAt"))
+        league_id = _extract_league_id(event.get("c"), event.get("f"))
+
+        for market in _iter_list_markets(event):
+            if market.get("b") != _GAME_TOTAL_OT_MARKET_ID:
+                continue
+
+            special_values = market.get("g") or market.get("specialValues") or []
+            if not special_values:
+                continue
+
+            try:
+                threshold = float(special_values[0])
+            except (ValueError, TypeError, IndexError):
+                continue
+
+            outcomes = market.get("h") or market.get("outcomes") or []
+            over_odds, under_odds = _extract_over_under_odds(outcomes)
+            if over_odds is None and under_odds is None:
+                continue
+
+            results.append(
+                RawOddsData(
+                    bookmaker_id="balkanbet",
+                    league_id=league_id,
+                    home_team=home_team,
+                    away_team=away_team,
+                    market_type="game_total_ot",
+                    threshold=threshold,
+                    over_odds=over_odds,
+                    under_odds=under_odds,
+                    start_time=start_time,
+                )
+            )
+
+    return results
+
+
 def _get_detail_fetch_concurrency(http_client: HttpClient, event_count: int) -> int:
     if event_count <= 0:
         return 0
@@ -196,7 +286,7 @@ def _get_detail_fetch_concurrency(http_client: HttpClient, event_count: int) -> 
 
 
 class BalkanBetScraper(BaseScraper):
-    """Scraper for BalkanBet basketball player points."""
+    """Scraper for BalkanBet basketball player points and OT-inclusive totals."""
 
     def __init__(self, http_client: HttpClient | None = None) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
@@ -234,37 +324,55 @@ class BalkanBetScraper(BaseScraper):
 
         return _parse_event_detail(detail)
 
+    async def _fetch_list(self, params: dict, label: str) -> dict:
+        try:
+            return await self._http.get_json(
+                _LIST_URL,
+                params=params,
+                headers=_DEFAULT_HEADERS,
+            )
+        except Exception:
+            logger.warning("BalkanBet: failed to fetch %s list", label, exc_info=True)
+            return {}
+
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         if league_id != "basketball":
             return []
 
         now_iso = _format_filter_from()
-        list_params = {**_DEFAULT_PARAMS, "filter[from]": now_iso}
+        player_list_params = {**_PLAYER_LIST_PARAMS, "filter[from]": now_iso}
+        total_list_params = {**_GAME_TOTAL_OT_LIST_PARAMS, "filter[from]": now_iso}
 
-        try:
-            data = await self._http.get_json(
-                _LIST_URL,
-                params=list_params,
-                headers=_DEFAULT_HEADERS,
-            )
-        except Exception:
-            logger.exception("BalkanBet list scrape failed")
-            return []
-
-        event_ids = _get_event_ids(data)
-        if not event_ids:
-            logger.warning("BalkanBet: no player-points events found")
-            return []
-
-        concurrency = _get_detail_fetch_concurrency(self._http, len(event_ids))
-        semaphore = asyncio.Semaphore(concurrency)
-        detail_results = await asyncio.gather(
-            *(self._fetch_event_detail(eid, semaphore) for eid in event_ids)
+        player_data, total_data = await asyncio.gather(
+            self._fetch_list(player_list_params, "player-points"),
+            self._fetch_list(total_list_params, "game-total-ot"),
         )
-        results = [item for batch in detail_results for item in batch]
+
+        player_event_ids = _get_event_ids(player_data)
+        player_results: list[RawOddsData] = []
+        if player_event_ids:
+            concurrency = _get_detail_fetch_concurrency(self._http, len(player_event_ids))
+            semaphore = asyncio.Semaphore(concurrency)
+            detail_results = await asyncio.gather(
+                *(self._fetch_event_detail(eid, semaphore) for eid in player_event_ids)
+            )
+            player_results = [item for batch in detail_results for item in batch]
+        else:
+            concurrency = 0
+
+        ot_total_events = _get_events_with_market_id(total_data, _GAME_TOTAL_OT_MARKET_ID)
+        total_results = _parse_game_total_ot_list(total_data)
+        results = [*player_results, *total_results]
 
         logger.info(
-            "BalkanBet scraped %d player odds from %d events (detail concurrency=%d)",
-            len(results), len(event_ids), concurrency,
+            (
+                "BalkanBet scraped %d player odds from %d player events "
+                "(detail concurrency=%d) and %d OT total odds from %d basketball events"
+            ),
+            len(player_results),
+            len(player_event_ids),
+            concurrency,
+            len(total_results),
+            len(ot_total_events),
         )
         return results

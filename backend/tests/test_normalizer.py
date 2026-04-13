@@ -29,6 +29,9 @@ def test_normalize_team_alias():
     assert normalize_team_name("Budućnost") == "Buducnost"
     assert normalize_team_name("KK Crvena Zvezda") == "Crvena Zvezda"
     assert normalize_team_name("Ostrow") == "Ostrow Wielkopolski"
+    assert normalize_team_name("Fenerbahce Istanbul", "euroleague") == "Fenerbahce"
+    assert normalize_team_name("ASVEL Lyon-Villeurbanne", "euroleague") == "Asvel"
+    assert normalize_team_name("Lyon-Villeurb.", "euroleague") == "Asvel"
 
 
 def test_normalize_team_nba_aliases_are_league_scoped():

@@ -15,6 +15,7 @@ from app.scrapers.balkanbet_scraper import (
     _format_filter_from,
     _parse_player_name,
     _parse_event_detail,
+    _parse_game_total_ot_list,
     _get_event_ids,
     _normalize_start_time,
 )
@@ -22,6 +23,7 @@ from app.models.schemas import RawOddsData
 
 LIST_FIXTURE = Path(__file__).parent / "fixtures" / "balkanbet_list.json"
 DETAIL_FIXTURE = Path(__file__).parent / "fixtures" / "balkanbet_detail.json"
+GAME_TOTAL_OT_LIST_FIXTURE = Path(__file__).parent / "fixtures" / "balkanbet_game_total_ot_list.json"
 
 
 @pytest.fixture
@@ -33,6 +35,12 @@ def list_data() -> dict:
 @pytest.fixture
 def detail_data() -> dict:
     with open(DETAIL_FIXTURE) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def game_total_ot_list_data() -> dict:
+    with open(GAME_TOTAL_OT_LIST_FIXTURE) as f:
         return json.load(f)
 
 
@@ -96,6 +104,7 @@ def test_parse_player_name_nested_parens():
 
 
 def test_extract_league_id_known_tournament():
+    assert _extract_league_id(108, 252) == "euroleague"
     assert _extract_league_id(2334, 29368) == "aba_liga"
     assert _extract_league_id(2334, 30757) == "turkey"
     assert _extract_league_id(2334, 31317) == "italy"
@@ -272,6 +281,51 @@ def test_parse_event_detail_no_name():
     assert results[0].home_team == ""
 
 
+def test_parse_game_total_ot_list_from_fixture(game_total_ot_list_data):
+    results = _parse_game_total_ot_list(game_total_ot_list_data)
+
+    assert len(results) == 3
+    assert all(isinstance(r, RawOddsData) for r in results)
+    assert all(r.market_type == "game_total_ot" for r in results)
+    assert [r.threshold for r in results] == [164.5, 165.5, 166.5]
+    assert all(r.league_id == "euroleague" for r in results)
+    assert all(r.home_team == "ASVEL Lyon-Villeurbanne" for r in results)
+    assert all(r.away_team == "Fenerbahce Istanbul" for r in results)
+    assert all(r.start_time == "2026-04-16T18:00:00+00:00" for r in results)
+    assert [(r.over_odds, r.under_odds) for r in results] == [
+        (1.82, 1.99),
+        (1.9, 1.9),
+        (1.99, 1.82),
+    ]
+
+
+def test_parse_game_total_ot_list_skips_invalid_match_name():
+    data = {
+        "data": {
+            "events": [
+                {
+                    "j": "ASVEL Lyon-Villeurbanne",
+                    "n": "2026-04-16T18:00:00.000Z",
+                    "c": 108,
+                    "f": 252,
+                    "o": {
+                        "m1": {
+                            "b": 530,
+                            "g": ["165.5"],
+                            "h": [
+                                {"e": "Manje od 165.5", "g": 1.9},
+                                {"e": "Više od 165.5", "g": 1.9},
+                            ],
+                        }
+                    },
+                }
+            ]
+        }
+    }
+
+    assert _parse_game_total_ot_list(data) == []
+
+
 # ── Integration: BalkanBetScraper with mocked HTTP ───────
 
 
@@ -301,6 +355,24 @@ async def test_scraper_returns_data(detail_data):
 
 
 @pytest.mark.asyncio
+async def test_scraper_returns_ot_totals_from_basketball_list(game_total_ot_list_data):
+    scraper = BalkanBetScraper()
+
+    async def mock_get(url, **kwargs):
+        if "/events/" in url:
+            pytest.fail("OT totals should be parsed from the list response")
+        if kwargs.get("params", {}).get("filter[sportId]") == "36":
+            return game_total_ot_list_data
+        return {"data": {"events": []}}
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert len(results) == 3
+    assert {r.market_type for r in results} == {"game_total_ot"}
+
+
+@pytest.mark.asyncio
 async def test_scraper_unsupported_league():
     scraper = BalkanBetScraper()
     results = await scraper.scrape_odds("football")
@@ -323,6 +395,49 @@ async def test_scraper_http_error():
         mock_get.side_effect = Exception("Network error")
         results = await scraper.scrape_odds("basketball")
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_scraper_keeps_player_points_when_ot_list_fails(detail_data):
+    scraper = BalkanBetScraper()
+    player_list_response = {
+        "data": {
+            "events": [
+                {"a": 100, "o": {"m1": {"a": 1, "b": 2402}}},
+            ]
+        }
+    }
+
+    async def mock_get(url, **kwargs):
+        if "/events/" in url:
+            return detail_data
+        if kwargs.get("params", {}).get("filter[sportId]") == "36":
+            raise Exception("OT list failed")
+        return player_list_response
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert len(results) == 1
+    assert results[0].market_type == "player_points"
+
+
+@pytest.mark.asyncio
+async def test_scraper_keeps_ot_totals_when_player_list_fails(game_total_ot_list_data):
+    scraper = BalkanBetScraper()
+
+    async def mock_get(url, **kwargs):
+        if "/events/" in url:
+            pytest.fail("No player detail requests expected when player list fails")
+        if kwargs.get("params", {}).get("filter[sportId]") == "273":
+            raise Exception("player list failed")
+        return game_total_ot_list_data
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert len(results) == 3
+    assert {r.market_type for r in results} == {"game_total_ot"}
 
 
 @pytest.mark.asyncio
@@ -403,7 +518,8 @@ async def test_scraper_list_request_uses_live_accepted_filter_from_format():
 
     assert results == []
     assert captured_params
-    assert re.fullmatch(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}",
-        captured_params[0]["filter[from]"],
+    assert {params["filter[sportId]"] for params in captured_params} == {"273", "36"}
+    assert all(
+        re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", params["filter[from]"])
+        for params in captured_params
     )
