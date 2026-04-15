@@ -24,7 +24,7 @@ export interface Match {
   league_name: string;
   home_team: string;
   away_team: string;
-  start_time: string;
+  start_time: string | null;
   status: 'upcoming' | 'live' | 'finished';
   available_bookmakers: MatchBookmaker[];
 }

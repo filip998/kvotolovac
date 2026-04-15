@@ -8,7 +8,7 @@ interface MatchAccordionProps {
   matchId: string;
   homeTeam: string;
   awayTeam: string;
-  startTime: string;
+  startTime: string | null;
   discrepancies: Discrepancy[];
 }
 

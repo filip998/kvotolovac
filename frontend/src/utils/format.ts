@@ -1,4 +1,14 @@
-function parseAppDate(isoString: string): Date | null {
+const MATCH_TIMEZONE = 'Europe/Belgrade';
+const MATCH_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-GB', {
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  timeZone: MATCH_TIMEZONE,
+});
+
+function parseAppDate(isoString: string | null | undefined): Date | null {
+  if (!isoString) return null;
   const trimmed = isoString.trim();
   if (!trimmed) return null;
 
@@ -26,15 +36,10 @@ export function formatThreshold(value: number): string {
   return value.toFixed(1);
 }
 
-export function formatDateTime(isoString: string): string {
+export function formatDateTime(isoString: string | null | undefined): string {
   const date = parseAppDate(isoString);
   if (!date) return '—';
-  return date.toLocaleDateString('en-GB', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return MATCH_DATE_TIME_FORMATTER.format(date);
 }
 
 export function formatRelativeTime(isoString: string | null | undefined): string {

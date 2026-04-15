@@ -30,13 +30,24 @@ export default function TrackedMatchesPanel({
   }, []);
 
   const upcomingMatches = matches.filter((match) => {
+    if (!match.start_time) {
+      return true;
+    }
+
     const startAt = Date.parse(match.start_time);
     if (Number.isNaN(startAt)) {
       return true;
     }
     return startAt >= referenceTimeMs;
   });
-  const sortedMatches = [...upcomingMatches].sort((a, b) => a.start_time.localeCompare(b.start_time));
+  const sortedMatches = [...upcomingMatches].sort((a, b) => {
+    if (a.start_time && b.start_time) {
+      return a.start_time.localeCompare(b.start_time);
+    }
+    if (a.start_time) return -1;
+    if (b.start_time) return 1;
+    return a.home_team.localeCompare(b.home_team) || a.away_team.localeCompare(b.away_team);
+  });
 
   return (
     <section>
