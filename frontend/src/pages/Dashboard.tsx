@@ -240,20 +240,20 @@ export default function Dashboard() {
   return (
     <PageShell
       eyebrow="Live board"
-      title={
-        activeTab === 'discrepancies'
-          ? 'Find exploitable line gaps before the market closes.'
-          : activeTab === 'tracked'
-            ? 'Inspect the stored board even when no gap is flashing.'
-            : 'Review league matching health before duplicate events fragment the board.'
-      }
-      description={
-        activeTab === 'discrepancies'
-          ? 'Snapshot grouped by league and matchup. Work downward from the highest-margin thresholds.'
-          : activeTab === 'tracked'
-            ? 'Open tracked matches to review player markets, bookmaker prices, and discrepancy-linked lines.'
-            : 'Approve league suggestions, inspect inferred matches, and track where raw bookmaker competitions still need a saved alias.'
-      }
+        title={
+          activeTab === 'discrepancies'
+            ? 'Find exploitable line gaps before the market closes.'
+            : activeTab === 'tracked'
+              ? 'Inspect the stored board even when no gap is flashing.'
+              : 'Resolve league aliases before one game splits into multiple events.'
+        }
+        description={
+          activeTab === 'discrepancies'
+            ? 'Snapshot grouped by league and matchup. Work downward from the highest-margin thresholds.'
+            : activeTab === 'tracked'
+              ? 'Open tracked matches to review player markets, bookmaker prices, and discrepancy-linked lines.'
+              : 'Approve the suggested league, save the alias, and keep the board grouped under a single event.'
+        }
     >
       <div className="space-y-6">
         {/* Tabs + Filters */}
