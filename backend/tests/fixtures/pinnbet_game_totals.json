@@ -1,0 +1,153 @@
+[
+  {
+    "id": 2166225,
+    "name": "Lyon Villeurbanne - Fenerbahce",
+    "competitionId": 2207,
+    "competitionName": "Evroliga ",
+    "regionId": 287,
+    "sportId": 2,
+    "dateTime": "2026-04-16T20:00:00",
+    "bets": [
+      {
+        "betTypeId": 167,
+        "betTypeName": "Ukupno poena (+OT)",
+        "sBV": "161.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "manje", "odd": 2.41325, "isPlayable": true},
+          {"name": "više", "odd": 1.4972, "isPlayable": true}
+        ]
+      },
+      {
+        "betTypeId": 167,
+        "betTypeName": "Ukupno poena (+OT)",
+        "sBV": "162.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "manje", "odd": 2.2655, "isPlayable": true},
+          {"name": "više", "odd": 1.5563, "isPlayable": true}
+        ]
+      },
+      {
+        "betTypeId": 167,
+        "betTypeName": "Ukupno poena (+OT)",
+        "sBV": "163.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "manje", "odd": 2.1285, "isPlayable": true},
+          {"name": "više", "odd": 1.6335, "isPlayable": true}
+        ]
+      },
+      {
+        "betTypeId": 167,
+        "betTypeName": "Ukupno poena (+OT)",
+        "sBV": "164.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "manje", "odd": 2.03975, "isPlayable": true},
+          {"name": "više", "odd": 1.74125, "isPlayable": true}
+        ]
+      },
+      {
+        "betTypeId": 167,
+        "betTypeName": "Ukupno poena (+OT)",
+        "sBV": "165.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "manje", "odd": 1.94025, "isPlayable": true},
+          {"name": "više", "odd": 1.791, "isPlayable": true}
+        ]
+      },
+      {
+        "betTypeId": 167,
+        "betTypeName": "Ukupno poena (+OT)",
+        "sBV": "166.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "manje", "odd": 1.9, "isPlayable": true},
+          {"name": "više", "odd": 1.92, "isPlayable": true}
+        ]
+      },
+      {
+        "betTypeId": 167,
+        "betTypeName": "Ukupno poena (+OT)",
+        "sBV": "167.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "manje", "odd": 1.7711, "isPlayable": true},
+          {"name": "više", "odd": 1.9701, "isPlayable": true}
+        ]
+      },
+      {
+        "betTypeId": 167,
+        "betTypeName": "Ukupno poena (+OT)",
+        "sBV": "168.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "manje", "odd": 1.6915, "isPlayable": true},
+          {"name": "više", "odd": 2.03975, "isPlayable": true}
+        ]
+      },
+      {
+        "betTypeId": 167,
+        "betTypeName": "Ukupno poena (+OT)",
+        "sBV": "169.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "manje", "odd": 1.6137, "isPlayable": true},
+          {"name": "više", "odd": 2.178, "isPlayable": true}
+        ]
+      },
+      {
+        "betTypeId": 167,
+        "betTypeName": "Ukupno poena (+OT)",
+        "sBV": "170.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "manje", "odd": 1.52675, "isPlayable": true},
+          {"name": "više", "odd": 2.31475, "isPlayable": true}
+        ]
+      },
+      {
+        "betTypeId": 167,
+        "betTypeName": "Ukupno poena (+OT)",
+        "sBV": "171.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "manje", "odd": 1.4775, "isPlayable": true},
+          {"name": "više", "odd": 2.4625, "isPlayable": true}
+        ]
+      },
+      {
+        "betTypeId": 168,
+        "betTypeName": "Domacin uk poena (+OT)",
+        "sBV": "79.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "manje", "odd": 1.88, "isPlayable": true},
+          {"name": "više", "odd": 1.88, "isPlayable": true}
+        ]
+      },
+      {
+        "betTypeId": 169,
+        "betTypeName": "Gost uk poena (+OT)",
+        "sBV": "86.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "manje", "odd": 1.95, "isPlayable": true},
+          {"name": "više", "odd": 1.82, "isPlayable": true}
+        ]
+      },
+      {
+        "betTypeId": 166,
+        "betTypeName": "Hendikep (+OT)",
+        "sBV": "7.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "1", "odd": 1.90, "isPlayable": true},
+          {"name": "2", "odd": 1.92, "isPlayable": true}
+        ]
+      }
+    ]
+  }
+]

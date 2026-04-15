@@ -12,6 +12,7 @@ from app.scrapers.pinnbet_scraper import (
     _extract_league_id,
     _parse_event_name,
     _parse_event_detail,
+    _parse_game_total_ot_event,
     _get_player_event_ids,
     _normalize_start_time,
     _resolve_matchup_from_short_name,
@@ -20,6 +21,7 @@ from app.models.schemas import RawOddsData
 
 EVENTS_FIXTURE = Path(__file__).parent / "fixtures" / "pinnbet_events.json"
 BETS_FIXTURE = Path(__file__).parent / "fixtures" / "pinnbet_bets.json"
+TOTALS_FIXTURE = Path(__file__).parent / "fixtures" / "pinnbet_game_totals.json"
 
 
 @pytest.fixture
@@ -31,6 +33,12 @@ def events_data() -> list[dict]:
 @pytest.fixture
 def bets_data() -> dict:
     with open(BETS_FIXTURE) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def totals_data() -> list[dict]:
+    with open(TOTALS_FIXTURE) as f:
         return json.load(f)
 
 
@@ -131,6 +139,53 @@ def test_get_player_event_ids_returns_full_dicts(events_data):
         assert "regionId" in e
         assert "competitionId" in e
         assert "id" in e
+
+
+# -- _parse_game_total_ot_event ----------------------------------------------
+
+
+def test_parse_game_total_ot_event_fixture(totals_data):
+    results = _parse_game_total_ot_event(totals_data[0])
+
+    assert len(results) == 11
+    assert {r.market_type for r in results} == {"game_total_ot"}
+    assert {r.league_id for r in results} == {"euroleague"}
+    assert {r.home_team for r in results} == {"Lyon Villeurbanne"}
+    assert {r.away_team for r in results} == {"Fenerbahce"}
+    assert all(r.player_name is None for r in results)
+    assert sorted(r.threshold for r in results) == [
+        161.5,
+        162.5,
+        163.5,
+        164.5,
+        165.5,
+        166.5,
+        167.5,
+        168.5,
+        169.5,
+        170.5,
+        171.5,
+    ]
+
+
+def test_parse_game_total_ot_event_ignores_team_totals_and_handicap(totals_data):
+    results = _parse_game_total_ot_event(totals_data[0])
+
+    assert len(results) == 11
+    assert all(result.market_type == "game_total_ot" for result in results)
+    assert {result.threshold for result in results} == {
+        161.5,
+        162.5,
+        163.5,
+        164.5,
+        165.5,
+        166.5,
+        167.5,
+        168.5,
+        169.5,
+        170.5,
+        171.5,
+    }
 
 
 # -- _parse_event_detail ---------------------------------------------------
@@ -463,43 +518,48 @@ async def test_scraper_no_player_events():
 
 
 @pytest.mark.asyncio
-async def test_scraper_integration(events_data, bets_data):
+async def test_scraper_integration(events_data, bets_data, totals_data):
     scraper = PinnBetScraper()
-    list_call_count = 0
+    player_list_call_count = 0
 
     async def mock_get(url, **kwargs):
-        nonlocal list_call_count
+        nonlocal player_list_call_count
         if "getWebEventsSelections" in url:
-            list_call_count += 1
-            return events_data if list_call_count == 1 else []
+            if "pageId=35&sportId=2" in url:
+                return totals_data
+            player_list_call_count += 1
+            return events_data if player_list_call_count == 1 else []
         return bets_data
 
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
         results = await scraper.scrape_odds("basketball")
 
-    # 2 player events (mappingTypeId 5), each gets 1 bet line from fixture
-    assert len(results) == 2
+    assert len(results) == 13
     assert all(isinstance(r, RawOddsData) for r in results)
     assert all(r.bookmaker_id == "pinnbet" for r in results)
-    players = {r.player_name for r in results}
+    players = {r.player_name for r in results if r.player_name}
     assert "Alfonso Plummer" in players
     assert "Marko Simonovic" in players
-    assert {r.home_team for r in results} == {"KK Bosna"}
-    assert {r.away_team for r in results} == {"KK Crvena Zvezda"}
+    game_totals = [r for r in results if r.market_type == "game_total_ot"]
+    assert len(game_totals) == 11
+    assert {r.home_team for r in game_totals} == {"Lyon Villeurbanne"}
+    assert {r.away_team for r in game_totals} == {"Fenerbahce"}
 
 
 @pytest.mark.asyncio
-async def test_scraper_detail_failure_skipped(events_data, bets_data):
+async def test_scraper_detail_failure_skipped(events_data, bets_data, totals_data):
     """If one detail fetch fails, others still succeed."""
     scraper = PinnBetScraper()
     call_count = 0
-    list_call_count = 0
+    player_list_call_count = 0
 
     async def mock_get(url, **kwargs):
-        nonlocal call_count, list_call_count
+        nonlocal call_count, player_list_call_count
         if "getWebEventsSelections" in url:
-            list_call_count += 1
-            return events_data if list_call_count == 1 else []
+            if "pageId=35&sportId=2" in url:
+                return totals_data
+            player_list_call_count += 1
+            return events_data if player_list_call_count == 1 else []
         call_count += 1
         if call_count == 1:
             raise Exception("detail failed")
@@ -508,22 +568,24 @@ async def test_scraper_detail_failure_skipped(events_data, bets_data):
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
         results = await scraper.scrape_odds("basketball")
 
-    assert len(results) == 1
+    assert len(results) == 12
 
 
 @pytest.mark.asyncio
-async def test_scraper_concurrent_detail_fetches(events_data, bets_data):
+async def test_scraper_concurrent_detail_fetches(events_data, bets_data, totals_data):
     """Detail fetches run concurrently via semaphore."""
     scraper = PinnBetScraper()
     active = 0
     max_active = 0
-    list_call_count = 0
+    player_list_call_count = 0
 
     async def mock_get(url, **kwargs):
-        nonlocal active, max_active, list_call_count
+        nonlocal active, max_active, player_list_call_count
         if "getWebEventsSelections" in url:
-            list_call_count += 1
-            return events_data if list_call_count == 1 else []
+            if "pageId=35&sportId=2" in url:
+                return totals_data
+            player_list_call_count += 1
+            return events_data if player_list_call_count == 1 else []
         active += 1
         max_active = max(max_active, active)
         await asyncio.sleep(0.02)
@@ -534,4 +596,4 @@ async def test_scraper_concurrent_detail_fetches(events_data, bets_data):
         results = await scraper.scrape_odds("basketball")
 
     assert max_active >= 2
-    assert len(results) == 2
+    assert len(results) == 13
