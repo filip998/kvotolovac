@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import re
-import unicodedata
 from collections import Counter, defaultdict
+from functools import lru_cache
 
-from thefuzz import fuzz
+from rapidfuzz import fuzz
 
 from ..models.schemas import NormalizedOdds, RawOddsData, UnresolvedOddsDiagnostic
+from .text_normalizer import (
+    compact_identity_text,
+    normalize_identity_text,
+    tokenize_identity_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +114,21 @@ _NBA_CANONICAL_TEAMS: dict[str, str] = {
     "washington wizards": "Washington Wizards",
 }
 
+_COMPETITION_CANONICAL_TEAMS: dict[str, dict[str, str]] = {
+    "nba": _NBA_CANONICAL_TEAMS,
+    "argentina_1": {
+        "obras": "Obras Sanitarias",
+        "obras sanitarias": "Obras Sanitarias",
+        "instituto": "Instituto de Cordoba",
+        "instituto de cordoba": "Instituto de Cordoba",
+        "inst de cordoba": "Instituto de Cordoba",
+    },
+    "portoriko_1": {
+        "capitanes de arecibo": "Capitanes de Arecibo",
+        "capitanes de a": "Capitanes de Arecibo",
+    },
+}
+
 # Known player canonical names — last name is the key
 _CANONICAL_PLAYERS: dict[str, str] = {
     "vezenkov": "Sasha Vezenkov",
@@ -146,8 +165,13 @@ _CANONICAL_LEAGUES: dict[str, str] = {
     "nemačka 1": "germany",
     "germany bbl": "germany",
     "poljska 1": "poland",
+    "argentina": "argentina_1",
+    "argentina 1": "argentina_1",
     "turska 1": "turkey",
     "turkey super league": "turkey",
+    "puerto rico": "portoriko_1",
+    "puerto rico 1": "portoriko_1",
+    "portoriko 1": "portoriko_1",
 }
 
 _MARKET_TYPE_MAPPING: dict[str, str] = {
@@ -209,25 +233,30 @@ _MARKET_TYPE_MAPPING: dict[str, str] = {
 
 
 def _normalize_team_key(raw_name: str) -> str:
-    normalized = unicodedata.normalize("NFKD", raw_name)
-    ascii_name = "".join(ch for ch in normalized if not unicodedata.combining(ch))
-    cleaned = re.sub(r"[^a-z0-9\s]+", " ", ascii_name.lower().replace("_", " "))
-    return " ".join(cleaned.split())
+    return normalize_identity_text(raw_name)
+
+
+@lru_cache(maxsize=None)
+def _team_mapping_for_league(league_id: str | None) -> tuple[tuple[str, str], ...]:
+    mapping = {
+        _normalize_team_key(canon_key): canon_val
+        for canon_key, canon_val in _CANONICAL_TEAMS.items()
+    }
+
+    competition_id = normalize_league_id(league_id or "")
+    scoped_mapping = _COMPETITION_CANONICAL_TEAMS.get(competition_id, {})
+    mapping.update(
+        {
+            _normalize_team_key(canon_key): canon_val
+            for canon_key, canon_val in scoped_mapping.items()
+        }
+    )
+    return tuple(mapping.items())
 
 
 def normalize_team_name(raw_name: str, league_id: str | None = None) -> str:
     key = _normalize_team_key(raw_name)
-    team_mapping = {
-        _normalize_team_key(canon_key): canon_val
-        for canon_key, canon_val in _CANONICAL_TEAMS.items()
-    }
-    if normalize_league_id(league_id or "") == "nba":
-        team_mapping.update(
-            {
-                _normalize_team_key(canon_key): canon_val
-                for canon_key, canon_val in _NBA_CANONICAL_TEAMS.items()
-            }
-        )
+    team_mapping = dict(_team_mapping_for_league(league_id))
 
     if key in team_mapping:
         return team_mapping[key]
@@ -265,14 +294,11 @@ def normalize_player_name(raw_name: str | None) -> str | None:
 
 
 def _normalize_person_tokens(name: str) -> list[str]:
-    normalized = unicodedata.normalize("NFKD", name)
-    ascii_name = "".join(ch for ch in normalized if not unicodedata.combining(ch))
-    cleaned = re.sub(r"[^a-z0-9\s-]+", " ", ascii_name.lower().replace("_", " "))
-    return [token.strip("-") for token in cleaned.split() if token.strip("-")]
+    return tokenize_identity_text(name, keep_hyphens=True)
 
 
 def _compact_person_name(name: str) -> str:
-    return "".join(token.replace("-", "") for token in _normalize_person_tokens(name))
+    return compact_identity_text(name)
 
 
 def _player_name_parts(name: str) -> tuple[list[str], str] | None:
@@ -482,9 +508,7 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
 
 
 def normalize_league_id(raw_league_id: str) -> str:
-    key = " ".join(
-        raw_league_id.strip().lower().replace("_", " ").replace("-", " ").split()
-    )
+    key = normalize_identity_text(raw_league_id)
     return _CANONICAL_LEAGUES.get(key, key)
 
 
