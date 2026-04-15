@@ -6,6 +6,7 @@ import type { DiscrepancyFilters, Discrepancy } from '../api/types';
 import { formatOdds, formatThreshold, formatPercentage, formatGap, formatRelativeTime, profitColor } from '../utils/format';
 import { MARKET_TYPE_LABELS } from '../utils/constants';
 import FilterBar from '../components/FilterBar';
+import BookmakerFilterDeck from '../components/BookmakerFilterDeck';
 import SortControls from '../components/SortControls';
 import MatchAccordion from '../components/MatchAccordion';
 import BookmakerBadge from '../components/BookmakerBadge';
@@ -14,6 +15,7 @@ import EmptyState from '../components/EmptyState';
 import PageShell from '../components/PageShell';
 import TrackedMatchesPanel from '../components/TrackedMatchesPanel';
 import UnresolvedOddsPanel from '../components/UnresolvedOddsPanel';
+import { useBookmakerFilter } from '../hooks/useBookmakerFilter';
 
 interface MatchGroup {
   matchId: string;
@@ -33,6 +35,11 @@ type ViewMode = 'by-match' | 'flat';
 
 export default function Dashboard() {
   const queryClient = useQueryClient();
+  const {
+    selectedBookmakerIds,
+    updateSelectedBookmakerIds,
+    search: sharedSearch,
+  } = useBookmakerFilter();
   const [filters, setFilters] = useState<DiscrepancyFilters>({
     sort_by: 'profit_margin',
     sort_order: 'desc',
@@ -54,26 +61,48 @@ export default function Dashboard() {
     });
   };
 
+  const discrepancyFilters = useMemo(
+    () => ({
+      ...filters,
+      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
+    }),
+    [filters, selectedBookmakerIds]
+  );
+
   const {
     data: discrepancies,
     isLoading,
     isError,
     error,
     refetch: refetchDiscrepancies,
-  } = useDiscrepancies(filters, { enabled: activeTab === 'discrepancies' });
+  } = useDiscrepancies(discrepancyFilters, { enabled: activeTab === 'discrepancies' });
   const {
     data: matches,
     isLoading: matchesLoading,
     isError: matchesError,
     error: matchesLoadError,
-  } = useMatches({ limit: 200, loadAll: true }, { enabled: activeTab === 'tracked' });
+  } = useMatches(
+    {
+      limit: 200,
+      loadAll: true,
+      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
+    },
+    { enabled: activeTab === 'tracked' }
+  );
   const {
     data: unresolvedOdds,
     isLoading: unresolvedLoading,
     isError: unresolvedError,
     error: unresolvedLoadError,
     refetch: refetchUnresolvedOdds,
-  } = useUnresolvedOdds({ limit: 200, loadAll: true }, { enabled: activeTab === 'warnings' });
+  } = useUnresolvedOdds(
+    {
+      limit: 200,
+      loadAll: true,
+      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
+    },
+    { enabled: activeTab === 'warnings' }
+  );
   const { data: status } = useSystemStatus();
 
   const isInitialScanInProgress =
@@ -157,6 +186,10 @@ export default function Dashboard() {
       <div className="space-y-6">
         {/* Tabs + Filters */}
         <section className="space-y-4">
+          <BookmakerFilterDeck
+            selectedBookmakerIds={selectedBookmakerIds}
+            onChange={updateSelectedBookmakerIds}
+          />
           <div className="flex flex-wrap items-center gap-4">
             <div className="flex gap-1">
               <button
@@ -357,7 +390,7 @@ export default function Dashboard() {
                           </td>
                           <td className="px-4 py-2.5 text-right">
                             <Link
-                              to={`/matches/${d.match_id}`}
+                              to={`/matches/${d.match_id}${sharedSearch}`}
                               aria-label={`View ${d.player_name || marketLabel} for ${d.home_team} vs ${d.away_team}`}
                               className="text-xs font-medium text-text-muted transition hover:text-accent"
                             >
@@ -412,6 +445,7 @@ export default function Dashboard() {
         ) : activeTab === 'tracked' ? (
           <TrackedMatchesPanel
             matches={matches || []}
+            selectedBookmakerIds={selectedBookmakerIds}
             isLoading={matchesLoading}
             errorMessage={matchesError ? (matchesLoadError as Error)?.message || 'Unknown error' : null}
           />

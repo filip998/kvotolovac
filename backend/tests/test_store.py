@@ -46,6 +46,7 @@ async def test_upsert_and_get_match():
     matches = await odds_store.get_matches()
     assert len(matches) == 1
     assert matches[0].home_team == "Partizan"
+    assert [book.id for book in matches[0].available_bookmakers] == ["mozzart"]
 
 
 @pytest.mark.asyncio
@@ -130,6 +131,69 @@ async def test_get_matches_returns_only_latest_scrape_batch():
     matches = await odds_store.get_matches()
 
     assert [match.id for match in matches] == ["fresh"]
+    assert [book.id for book in matches[0].available_bookmakers] == ["meridian"]
+
+
+@pytest.mark.asyncio
+async def test_get_matches_filters_by_bookmakers_and_keeps_full_coverage():
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("m1", "euroleague", "Partizan", "Crvena Zvezda")
+    await odds_store.upsert_match("m2", "euroleague", "Monaco", "Barcelona")
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+
+    batch_scraped_at = "2026-04-11T20:06:00.735723"
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="m1",
+            bookmaker_id="mozzart",
+            league_id="euroleague",
+            home_team="Partizan",
+            away_team="Crvena Zvezda",
+            market_type="player_points",
+            player_name="Iffe Lundberg",
+            threshold=16.5,
+            over_odds=1.85,
+            under_odds=1.95,
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="m1",
+            bookmaker_id="meridian",
+            league_id="euroleague",
+            home_team="Partizan",
+            away_team="Crvena Zvezda",
+            market_type="player_points",
+            player_name="Iffe Lundberg",
+            threshold=17.5,
+            over_odds=1.9,
+            under_odds=1.85,
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="m2",
+            bookmaker_id="mozzart",
+            league_id="euroleague",
+            home_team="Monaco",
+            away_team="Barcelona",
+            market_type="player_points",
+            player_name="Mike James",
+            threshold=19.5,
+            over_odds=1.85,
+            under_odds=1.95,
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    matches = await odds_store.get_matches(bookmaker_ids=["meridian"])
+
+    assert [match.id for match in matches] == ["m1"]
+    assert [book.id for book in matches[0].available_bookmakers] == ["meridian", "mozzart"]
 
 
 @pytest.mark.asyncio
@@ -253,6 +317,39 @@ async def test_insert_and_get_unresolved_odds():
 
 
 @pytest.mark.asyncio
+async def test_get_unresolved_odds_filters_by_multiple_bookmakers():
+    batch_scraped_at = "2026-04-13T18:00:00+00:00"
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+
+    for bookmaker_id in ("maxbet", "meridian"):
+        await odds_store.insert_unresolved_odds(
+            UnresolvedOddsDiagnostic(
+                bookmaker_id=bookmaker_id,
+                raw_league_id="ABA Liga",
+                league_id="aba_liga",
+                market_type="player_points",
+                player_name="S. Ilic",
+                raw_team_name="Borac",
+                normalized_team_name="Borac",
+                start_time="2026-04-13T18:00:00+00:00",
+                threshold=10.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                reason_code="no_canonical_matchup_for_team_at_slot",
+                candidate_count=0,
+            ),
+            scraped_at=batch_scraped_at,
+        )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    unresolved = await odds_store.get_unresolved_odds(bookmaker_ids=["meridian"])
+
+    assert len(unresolved) == 1
+    assert unresolved[0].bookmaker_id == "meridian"
+
+
+@pytest.mark.asyncio
 async def test_get_unresolved_odds_respects_current_snapshot():
     await odds_store.upsert_bookmaker("maxbet", "MaxBet")
     await odds_store.insert_unresolved_odds(
@@ -326,6 +423,48 @@ async def test_insert_and_get_discrepancy():
     assert len(discs) == 1
     assert discs[0].gap == 2.0
     assert discs[0].middle_profit_margin == 0.96
+
+
+@pytest.mark.asyncio
+async def test_get_discrepancies_filters_by_involved_bookmakers():
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("m1", "euroleague", "Partizan", "Crvena Zvezda")
+    await odds_store.upsert_match("m2", "euroleague", "Monaco", "Barcelona")
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+
+    await odds_store.insert_discrepancy(
+        match_id="m1",
+        market_type="player_points",
+        player_name="Iffe Lundberg",
+        bookmaker_a_id="mozzart",
+        bookmaker_b_id="meridian",
+        threshold_a=16.5,
+        threshold_b=18.5,
+        odds_a=1.85,
+        odds_b=2.00,
+        gap=2.0,
+        profit_margin=0.04,
+    )
+    await odds_store.insert_discrepancy(
+        match_id="m2",
+        market_type="player_points",
+        player_name="Mike James",
+        bookmaker_a_id="maxbet",
+        bookmaker_b_id="mozzart",
+        threshold_a=19.5,
+        threshold_b=21.5,
+        odds_a=1.9,
+        odds_b=1.85,
+        gap=2.0,
+        profit_margin=0.03,
+    )
+
+    discs = await odds_store.get_discrepancies(bookmaker_ids=["meridian"])
+
+    assert len(discs) == 1
+    assert discs[0].bookmaker_b_id == "meridian"
 
 
 @pytest.mark.asyncio

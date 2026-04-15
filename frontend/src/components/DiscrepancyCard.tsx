@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import type { Discrepancy } from '../api/types';
 import { formatOdds, formatGap, formatThreshold, formatPercentage, formatRelativeTime, profitColor, profitBgColor } from '../utils/format';
 import { MARKET_TYPE_LABELS } from '../utils/constants';
@@ -9,6 +9,7 @@ interface DiscrepancyCardProps {
 }
 
 export default function DiscrepancyCard({ discrepancy: d }: DiscrepancyCardProps) {
+  const location = useLocation();
   const marketLabel = MARKET_TYPE_LABELS[d.market_type] || d.market_type;
   const label = d.player_name ? `${d.player_name} — ${marketLabel}` : marketLabel;
 
@@ -62,7 +63,7 @@ export default function DiscrepancyCard({ discrepancy: d }: DiscrepancyCardProps
           <span className="text-text-muted">Detected {formatRelativeTime(d.detected_at)}</span>
         </div>
         <Link
-          to={`/matches/${d.match_id}`}
+          to={{ pathname: `/matches/${d.match_id}`, search: location.search }}
           className="font-medium text-text-secondary transition hover:text-accent"
         >
           View match →

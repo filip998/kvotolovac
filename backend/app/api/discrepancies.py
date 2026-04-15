@@ -4,6 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
+from ._params import parse_csv_query_values
 from ..models.schemas import DiscrepancyDetail, DiscrepancyOut
 from ..store import odds_store
 
@@ -14,6 +15,7 @@ router = APIRouter(prefix="/discrepancies", tags=["discrepancies"])
 async def list_discrepancies(
     sport: Optional[str] = Query(None),
     league: Optional[str] = Query(None),
+    bookmaker_ids: Optional[str] = Query(None),
     min_gap: Optional[float] = Query(None),
     market_type: Optional[str] = Query(None),
     sort_by: str = Query("profit_margin"),
@@ -24,6 +26,7 @@ async def list_discrepancies(
     return await odds_store.get_discrepancies(
         sport=sport,
         league_id=league,
+        bookmaker_ids=parse_csv_query_values(bookmaker_ids),
         market_type=market_type,
         min_gap=min_gap,
         sort_by=sort_by,

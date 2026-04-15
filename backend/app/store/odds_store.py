@@ -14,6 +14,7 @@ from ..models.schemas import (
     DiscrepancyDetail,
     DiscrepancyOut,
     LeagueOut,
+    MatchBookmakerOut,
     MatchOut,
     NormalizedOdds,
     NotificationOut,
@@ -39,6 +40,10 @@ def _row_to_unresolved_odds(row: aiosqlite.Row) -> UnresolvedOddsOut:
         if isinstance(value, str):
             data[field] = json.loads(value)
     return UnresolvedOddsOut(**data)
+
+
+def _sql_placeholders(values: list[object]) -> str:
+    return ", ".join("?" for _ in values)
 
 
 # ── Bookmakers ─────────────────────────────────────────────
@@ -149,15 +154,19 @@ async def upsert_match(
 async def get_matches(
     league_id: str | None = None,
     status: str | None = None,
+    bookmaker_ids: list[str] | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[MatchOut]:
     db = await get_db()
     current_snapshot_at = await _get_current_snapshot_at(db)
     params: list
+    snapshot_at: str | None = current_snapshot_at
+    cutoff_at: str | None = None
     if current_snapshot_at is not None:
-        q = """SELECT m.*
+        q = """SELECT m.*, l.name as league_name
                FROM matches m
+               LEFT JOIN leagues l ON m.league_id = l.id
                WHERE EXISTS (
                    SELECT 1
                    FROM odds o
@@ -169,14 +178,20 @@ async def get_matches(
         if legacy_window is None:
             return []
         _, cutoff_at = legacy_window
-        q = """SELECT m.*
+        snapshot_at = None
+        q = """SELECT m.*, l.name as league_name
                FROM matches m
+               LEFT JOIN leagues l ON m.league_id = l.id
                WHERE EXISTS (
                    SELECT 1
                    FROM odds o
                    WHERE o.match_id = m.id AND o.scraped_at >= ?
                )"""
         params = [cutoff_at]
+    if bookmaker_ids:
+        placeholders = _sql_placeholders(bookmaker_ids)
+        q = q[:-1] + f" AND o.bookmaker_id IN ({placeholders}))"
+        params.extend(bookmaker_ids)
     if league_id:
         q += " AND m.league_id = ?"
         params.append(league_id)
@@ -186,17 +201,73 @@ async def get_matches(
     q += " ORDER BY m.start_time ASC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     rows = await db.execute_fetchall(q, params)
-    return [MatchOut(**_row_to_dict(r)) for r in rows]
+
+    match_rows = [_row_to_dict(r) for r in rows]
+    bookmaker_map = await _get_match_bookmaker_map(
+        db,
+        [row["id"] for row in match_rows],
+        snapshot_at=snapshot_at,
+        cutoff_at=cutoff_at,
+    )
+
+    for row in match_rows:
+        row["available_bookmakers"] = bookmaker_map.get(row["id"], [])
+
+    return [MatchOut(**row) for row in match_rows]
 
 
 async def get_match(match_id: str) -> MatchOut | None:
     db = await get_db()
     row = await db.execute_fetchall(
-        "SELECT * FROM matches WHERE id = ?", (match_id,)
+        """SELECT m.*, l.name as league_name
+           FROM matches m
+           LEFT JOIN leagues l ON m.league_id = l.id
+           WHERE m.id = ?""",
+        (match_id,),
     )
     if not row:
         return None
     return MatchOut(**_row_to_dict(row[0]))
+
+
+async def _get_match_bookmaker_map(
+    db: aiosqlite.Connection,
+    match_ids: list[str],
+    *,
+    snapshot_at: str | None,
+    cutoff_at: str | None,
+) -> dict[str, list[MatchBookmakerOut]]:
+    if not match_ids:
+        return {}
+
+    placeholders = _sql_placeholders(match_ids)
+    params: list[object] = list(match_ids)
+
+    q = f"""SELECT DISTINCT o.match_id, b.id AS bookmaker_id, b.name AS bookmaker_name
+            FROM odds o
+            LEFT JOIN bookmakers b ON o.bookmaker_id = b.id
+            WHERE o.match_id IN ({placeholders})"""
+
+    if snapshot_at is not None:
+        q += " AND o.scraped_at = ?"
+        params.append(snapshot_at)
+    elif cutoff_at is not None:
+        q += " AND o.scraped_at >= ?"
+        params.append(cutoff_at)
+
+    q += " ORDER BY b.name ASC"
+    rows = await db.execute_fetchall(q, params)
+
+    bookmaker_map: dict[str, list[MatchBookmakerOut]] = {}
+    for row in rows:
+        match_id = row["match_id"]
+        bookmaker_map.setdefault(match_id, []).append(
+            MatchBookmakerOut(
+                id=row["bookmaker_id"],
+                name=row["bookmaker_name"],
+            )
+        )
+    return bookmaker_map
 
 
 # ── Odds ───────────────────────────────────────────────────
@@ -316,7 +387,7 @@ async def insert_unresolved_odds(
 
 
 async def get_unresolved_odds(
-    bookmaker_id: str | None = None,
+    bookmaker_ids: list[str] | None = None,
     reason_code: str | None = None,
     market_type: str | None = None,
     league_id: str | None = None,
@@ -337,9 +408,10 @@ async def get_unresolved_odds(
     conditions = ["u.scraped_at = ?"]
     params: list = [snapshot_at]
 
-    if bookmaker_id:
-        conditions.append("u.bookmaker_id = ?")
-        params.append(bookmaker_id)
+    if bookmaker_ids:
+        placeholders = _sql_placeholders(bookmaker_ids)
+        conditions.append(f"u.bookmaker_id IN ({placeholders})")
+        params.extend(bookmaker_ids)
     if reason_code:
         conditions.append("u.reason_code = ?")
         params.append(reason_code)
@@ -401,6 +473,7 @@ async def deactivate_all_discrepancies() -> None:
 async def get_discrepancies(
     sport: str | None = None,
     league_id: str | None = None,
+    bookmaker_ids: list[str] | None = None,
     market_type: str | None = None,
     min_gap: float | None = None,
     sort_by: str = "profit_margin",
@@ -425,6 +498,13 @@ async def get_discrepancies(
     if market_type:
         conditions.append("d.market_type = ?")
         params.append(market_type)
+    if bookmaker_ids:
+        placeholders = _sql_placeholders(bookmaker_ids)
+        conditions.append(
+            f"(d.bookmaker_a_id IN ({placeholders}) OR d.bookmaker_b_id IN ({placeholders}))"
+        )
+        params.extend(bookmaker_ids)
+        params.extend(bookmaker_ids)
     if min_gap is not None:
         conditions.append("d.gap >= ?")
         params.append(min_gap)

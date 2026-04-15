@@ -4,6 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
+from ._params import parse_csv_query_values
 from ..models.schemas import MatchOut, OddsOut
 from ..store import odds_store
 
@@ -14,11 +15,16 @@ router = APIRouter(prefix="/matches", tags=["matches"])
 async def list_matches(
     league_id: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    bookmaker_ids: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
     return await odds_store.get_matches(
-        league_id=league_id, status=status, limit=limit, offset=offset
+        league_id=league_id,
+        status=status,
+        bookmaker_ids=parse_csv_query_values(bookmaker_ids),
+        limit=limit,
+        offset=offset,
     )
 
 

@@ -6,6 +6,18 @@ export interface League {
   is_active: boolean;
 }
 
+export interface Bookmaker {
+  id: string;
+  name: string;
+  website_url?: string | null;
+  is_active: boolean;
+}
+
+export interface MatchBookmaker {
+  id: string;
+  name: string;
+}
+
 export interface Match {
   id: string;
   league_id: string;
@@ -14,6 +26,7 @@ export interface Match {
   away_team: string;
   start_time: string;
   status: 'upcoming' | 'live' | 'finished';
+  available_bookmakers: MatchBookmaker[];
 }
 
 export type MarketType =
@@ -124,6 +137,7 @@ export interface SystemStatus {
 export interface DiscrepancyFilters {
   sport?: string;
   league?: string;
+  bookmaker_ids?: string[];
   min_gap?: number;
   market_type?: MarketType;
   sort_by?: string;
@@ -134,6 +148,7 @@ export interface DiscrepancyFilters {
 
 export interface UnresolvedOddsFilters {
   bookmaker_id?: string;
+  bookmaker_ids?: string[];
   reason_code?: string;
   market_type?: string;
   league_id?: string;

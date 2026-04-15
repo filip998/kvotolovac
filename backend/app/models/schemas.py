@@ -14,6 +14,11 @@ class BookmakerOut(BaseModel):
     is_active: bool = True
 
 
+class MatchBookmakerOut(BaseModel):
+    id: str
+    name: str
+
+
 # ── League ─────────────────────────────────────────────────
 class LeagueOut(BaseModel):
     id: str
@@ -27,10 +32,12 @@ class LeagueOut(BaseModel):
 class MatchOut(BaseModel):
     id: str
     league_id: Optional[str] = None
+    league_name: Optional[str] = None
     home_team: str
     away_team: str
     start_time: Optional[str] = None
     status: str = "upcoming"
+    available_bookmakers: list[MatchBookmakerOut] = Field(default_factory=list)
 
 
 # ── Odds ───────────────────────────────────────────────────

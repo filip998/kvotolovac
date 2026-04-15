@@ -1,6 +1,7 @@
 import { useQuery, useMutation } from '@tanstack/react-query';
 import client from './client';
 import type {
+  Bookmaker,
   League,
   Match,
   OddsOffer,
@@ -11,6 +12,7 @@ import type {
   UnresolvedOddsFilters,
 } from './types';
 import {
+  mockBookmakers,
   mockLeagues,
   mockMatches,
   mockOddsOffers,
@@ -23,6 +25,10 @@ const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false';
 
 function delay(ms = 300): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function serializeArrayParam(values?: string[]): string | undefined {
+  return values && values.length > 0 ? values.join(',') : undefined;
 }
 
 // --- Discrepancies ---
@@ -41,6 +47,12 @@ export function useDiscrepancies(
         if (filters.league) {
           results = results.filter((d) => d.league_name === filters.league);
         }
+        if (filters.bookmaker_ids?.length) {
+          const selected = new Set(filters.bookmaker_ids);
+          results = results.filter(
+            (d) => selected.has(d.bookmaker_a_id) || selected.has(d.bookmaker_b_id)
+          );
+        }
         if (filters.market_type) {
           results = results.filter((d) => d.market_type === filters.market_type);
         }
@@ -58,7 +70,12 @@ export function useDiscrepancies(
 
         return results;
       }
-      const { data } = await client.get<Discrepancy[]>('/discrepancies', { params: filters });
+      const { data } = await client.get<Discrepancy[]>('/discrepancies', {
+        params: {
+          ...filters,
+          bookmaker_ids: serializeArrayParam(filters.bookmaker_ids),
+        },
+      });
       return data;
     },
     enabled: options.enabled ?? true,
@@ -98,6 +115,10 @@ export function useUnresolvedOdds(
         if (filters.bookmaker_id) {
           results = results.filter((row) => row.bookmaker_id === filters.bookmaker_id);
         }
+        if (filters.bookmaker_ids?.length) {
+          const selected = new Set(filters.bookmaker_ids);
+          results = results.filter((row) => selected.has(row.bookmaker_id));
+        }
         if (filters.reason_code) {
           results = results.filter((row) => row.reason_code === filters.reason_code);
         }
@@ -112,9 +133,13 @@ export function useUnresolvedOdds(
       }
 
       const { loadAll, ...requestFilters } = filters;
+      const serializedFilters = {
+        ...requestFilters,
+        bookmaker_ids: serializeArrayParam(requestFilters.bookmaker_ids),
+      };
       if (!loadAll) {
         const { data } = await client.get<UnresolvedOdds[]>('/unresolved-odds', {
-          params: requestFilters,
+          params: serializedFilters,
         });
         return data;
       }
@@ -125,7 +150,7 @@ export function useUnresolvedOdds(
 
       for (let offset = initialOffset; ; offset += pageSize) {
         const { data } = await client.get<UnresolvedOdds[]>('/unresolved-odds', {
-          params: { ...requestFilters, limit: pageSize, offset },
+          params: { ...serializedFilters, limit: pageSize, offset },
         });
         allRows.push(...data);
         if (data.length < pageSize) {
@@ -146,6 +171,7 @@ export function useMatches(
   params: {
     league?: string;
     status?: string;
+    bookmaker_ids?: string[];
     limit?: number;
     offset?: number;
     loadAll?: boolean;
@@ -164,11 +190,23 @@ export function useMatches(
         if (params.status) {
           results = results.filter((m) => m.status === params.status);
         }
+        if (params.bookmaker_ids?.length) {
+          const selected = new Set(params.bookmaker_ids);
+          results = results.filter((m) =>
+            m.available_bookmakers.some((bookmaker) => selected.has(bookmaker.id))
+          );
+        }
         return results;
       }
 
+      const requestParams = {
+        ...params,
+        league_id: params.league,
+        league: undefined,
+        bookmaker_ids: serializeArrayParam(params.bookmaker_ids),
+      };
       if (!params.loadAll) {
-        const { data } = await client.get<Match[]>('/matches', { params });
+        const { data } = await client.get<Match[]>('/matches', { params: requestParams });
         return data;
       }
 
@@ -178,7 +216,7 @@ export function useMatches(
 
       for (let offset = initialOffset; ; offset += pageSize) {
         const { data } = await client.get<Match[]>('/matches', {
-          params: { ...params, limit: pageSize, offset },
+          params: { ...requestParams, limit: pageSize, offset },
         });
         allMatches.push(...data);
         if (data.length < pageSize) {
@@ -250,6 +288,21 @@ export function useLeagues() {
         return mockLeagues;
       }
       const { data } = await client.get<League[]>('/leagues');
+      return data;
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+export function useBookmakers() {
+  return useQuery<Bookmaker[]>({
+    queryKey: ['bookmakers'],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        return mockBookmakers;
+      }
+      const { data } = await client.get<Bookmaker[]>('/bookmakers');
       return data;
     },
     staleTime: 5 * 60 * 1000,

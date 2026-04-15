@@ -1,20 +1,25 @@
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import type { Match } from '../api/types';
 import { formatDateTime } from '../utils/format';
+import BookmakerBadge from './BookmakerBadge';
 
 interface TrackedMatchesPanelProps {
   matches: Match[];
+  selectedBookmakerIds: string[];
   isLoading?: boolean;
   errorMessage?: string | null;
 }
 
 export default function TrackedMatchesPanel({
   matches,
+  selectedBookmakerIds,
   isLoading = false,
   errorMessage = null,
 }: TrackedMatchesPanelProps) {
+  const location = useLocation();
   const [referenceTimeMs, setReferenceTimeMs] = useState(() => Date.now());
+  const selectedSet = useMemo(() => new Set(selectedBookmakerIds), [selectedBookmakerIds]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -64,7 +69,7 @@ export default function TrackedMatchesPanel({
           {sortedMatches.map((match) => (
             <Link
               key={match.id}
-              to={`/matches/${match.id}`}
+              to={{ pathname: `/matches/${match.id}`, search: location.search }}
               className="group flex flex-wrap items-center justify-between gap-4 rounded-lg border border-border bg-surface px-4 py-3 transition hover:border-border-hover"
             >
               <div>
@@ -84,6 +89,28 @@ export default function TrackedMatchesPanel({
                   {match.home_team} vs {match.away_team}
                 </div>
                 <div className="mt-0.5 text-xs text-text-muted">{formatDateTime(match.start_time)}</div>
+                {match.available_bookmakers.length > 0 && (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {match.available_bookmakers.map((bookmaker) => {
+                      const highlighted =
+                        selectedSet.size > 0 && selectedSet.has(bookmaker.id);
+
+                      return (
+                        <span
+                          key={`${match.id}-${bookmaker.id}`}
+                          className={`inline-flex items-center rounded-full border px-1.5 py-1 transition ${
+                            highlighted
+                              ? 'border-accent/60 bg-accent/[0.12] shadow-[0_0_0_1px_rgba(250,208,122,0.18)]'
+                              : 'border-border/70 bg-bg/60'
+                          }`}
+                          title={bookmaker.name}
+                        >
+                          <BookmakerBadge name={bookmaker.name} compact />
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
               <span className="text-xs font-medium text-text-muted transition group-hover:text-accent">
                 View →

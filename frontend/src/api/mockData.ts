@@ -1,4 +1,5 @@
 import type {
+  Bookmaker,
   League,
   Match,
   OddsOffer,
@@ -17,6 +18,12 @@ export const mockLeagues: League[] = [
   { id: 'kls', name: 'KLS', sport: 'basketball', country: 'Serbia', is_active: true },
 ];
 
+export const mockBookmakers: Bookmaker[] = [
+  { id: 'mozzart', name: 'Mozzart', is_active: true },
+  { id: 'meridian', name: 'Meridian', is_active: true },
+  { id: 'maxbet', name: 'MaxBet', is_active: true },
+];
+
 export const mockMatches: Match[] = [
   {
     id: 'match-1',
@@ -26,6 +33,11 @@ export const mockMatches: Match[] = [
     away_team: 'Real Madrid',
     start_time: hours(2),
     status: 'upcoming',
+    available_bookmakers: [
+      { id: 'maxbet', name: 'MaxBet' },
+      { id: 'meridian', name: 'Meridian' },
+      { id: 'mozzart', name: 'Mozzart' },
+    ],
   },
   {
     id: 'match-2',
@@ -35,6 +47,11 @@ export const mockMatches: Match[] = [
     away_team: 'Partizan',
     start_time: hours(3),
     status: 'upcoming',
+    available_bookmakers: [
+      { id: 'maxbet', name: 'MaxBet' },
+      { id: 'meridian', name: 'Meridian' },
+      { id: 'mozzart', name: 'Mozzart' },
+    ],
   },
   {
     id: 'match-3',
@@ -44,6 +61,11 @@ export const mockMatches: Match[] = [
     away_team: 'Crvena Zvezda',
     start_time: hours(5),
     status: 'upcoming',
+    available_bookmakers: [
+      { id: 'maxbet', name: 'MaxBet' },
+      { id: 'meridian', name: 'Meridian' },
+      { id: 'mozzart', name: 'Mozzart' },
+    ],
   },
   {
     id: 'match-4',
@@ -53,6 +75,10 @@ export const mockMatches: Match[] = [
     away_team: 'Budućnost',
     start_time: hours(1),
     status: 'upcoming',
+    available_bookmakers: [
+      { id: 'maxbet', name: 'MaxBet' },
+      { id: 'mozzart', name: 'Mozzart' },
+    ],
   },
   {
     id: 'match-5',
@@ -62,6 +88,11 @@ export const mockMatches: Match[] = [
     away_team: 'Cedevita Olimpija',
     start_time: hours(4),
     status: 'upcoming',
+    available_bookmakers: [
+      { id: 'maxbet', name: 'MaxBet' },
+      { id: 'meridian', name: 'Meridian' },
+      { id: 'mozzart', name: 'Mozzart' },
+    ],
   },
   {
     id: 'match-6',
@@ -71,6 +102,11 @@ export const mockMatches: Match[] = [
     away_team: 'Vojvodina',
     start_time: hours(1.5),
     status: 'upcoming',
+    available_bookmakers: [
+      { id: 'maxbet', name: 'MaxBet' },
+      { id: 'meridian', name: 'Meridian' },
+      { id: 'mozzart', name: 'Mozzart' },
+    ],
   },
 ];
 

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import type { Discrepancy } from '../api/types';
 import { formatDateTime } from '../utils/format';
 import DiscrepancyCard from './DiscrepancyCard';
@@ -19,6 +19,7 @@ export default function MatchAccordion({
   startTime,
   discrepancies,
 }: MatchAccordionProps) {
+  const location = useLocation();
   const [isOpen, setIsOpen] = useState(true);
 
   return (
@@ -34,7 +35,11 @@ export default function MatchAccordion({
             ▶
           </span>
           <div>
-            <Link to={`/matches/${matchId}`} onClick={(e) => e.stopPropagation()} className="text-sm font-semibold text-text transition hover:text-accent">
+            <Link
+              to={{ pathname: `/matches/${matchId}`, search: location.search }}
+              onClick={(e) => e.stopPropagation()}
+              className="text-sm font-semibold text-text transition hover:text-accent"
+            >
               {homeTeam} vs {awayTeam}
             </Link>
             <div className="mt-0.5 text-xs text-text-muted">

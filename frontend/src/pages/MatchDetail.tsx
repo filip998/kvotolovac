@@ -6,6 +6,8 @@ import OddsTable from '../components/OddsTable';
 import LoadingSpinner from '../components/LoadingSpinner';
 import PageShell from '../components/PageShell';
 import type { OddsOffer } from '../api/types';
+import BookmakerFilterDeck from '../components/BookmakerFilterDeck';
+import { useBookmakerFilter } from '../hooks/useBookmakerFilter';
 
 interface MarketGroup {
   key: string;
@@ -15,9 +17,19 @@ interface MarketGroup {
 
 export default function MatchDetail() {
   const { id } = useParams<{ id: string }>();
+  const {
+    selectedBookmakerIds,
+    updateSelectedBookmakerIds,
+    search,
+  } = useBookmakerFilter();
   const { data: match, isLoading: matchLoading } = useMatch(id!);
   const { data: odds, isLoading: oddsLoading } = useMatchOdds(id!);
   const { data: discrepancies } = useDiscrepancies();
+
+  const filteredOdds =
+    selectedBookmakerIds.length === 0
+      ? odds || []
+      : (odds || []).filter((offer) => selectedBookmakerIds.includes(offer.bookmaker_id));
 
   if (matchLoading || oddsLoading) return <LoadingSpinner />;
 
@@ -25,7 +37,7 @@ export default function MatchDetail() {
     return (
       <div className="py-16 text-center">
         <h2 className="mb-2 text-base font-semibold text-text-secondary">Match not found</h2>
-        <Link to="/" className="text-sm text-text-muted hover:text-accent">
+        <Link to={`/${search}`} className="text-sm text-text-muted hover:text-accent">
           ← Back to Dashboard
         </Link>
       </div>
@@ -35,7 +47,7 @@ export default function MatchDetail() {
   const marketGroups: MarketGroup[] = [];
   const marketMap = new Map<string, OddsOffer[]>();
 
-  for (const offer of odds || []) {
+  for (const offer of filteredOdds) {
     const key = `${offer.market_type}|${offer.player_name || ''}`;
     if (!marketMap.has(key)) marketMap.set(key, []);
     marketMap.get(key)!.push(offer);
@@ -51,16 +63,32 @@ export default function MatchDetail() {
   const trackedPlayers = Array.from(
     new Set(
       (odds || [])
+        .filter((offer) =>
+          selectedBookmakerIds.length === 0
+            ? true
+            : selectedBookmakerIds.includes(offer.bookmaker_id)
+        )
         .map((offer) => offer.player_name)
         .filter((playerName): playerName is string => Boolean(playerName))
     )
   ).sort((a, b) => a.localeCompare(b));
 
-  const matchDiscrepancies = discrepancies?.filter((d) => d.match_id === id) || [];
+  const matchDiscrepancies =
+    discrepancies?.filter((d) => {
+      if (d.match_id !== id) return false;
+      if (selectedBookmakerIds.length === 0) return true;
+      return (
+        selectedBookmakerIds.includes(d.bookmaker_a_id) ||
+        selectedBookmakerIds.includes(d.bookmaker_b_id)
+      );
+    }) || [];
 
   return (
     <div className="space-y-6">
-      <Link to="/" className="inline-flex items-center text-sm text-text-muted transition hover:text-accent">
+      <Link
+        to={`/${search}`}
+        className="inline-flex items-center text-sm text-text-muted transition hover:text-accent"
+      >
         ← Back to Dashboard
       </Link>
 
@@ -76,14 +104,21 @@ export default function MatchDetail() {
             <span className="text-xs text-text-muted">discrepancies</span>
           </div>
           <div className="flex items-baseline gap-1.5">
-            <span className="font-mono text-lg font-semibold text-text">{(odds || []).length}</span>
-            <span className="text-xs text-text-muted">offers</span>
+            <span className="font-mono text-lg font-semibold text-text">{filteredOdds.length}</span>
+            <span className="text-xs text-text-muted">
+              {selectedBookmakerIds.length ? 'visible offers' : 'offers'}
+            </span>
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="font-mono text-lg font-semibold text-text">{trackedPlayers.length}</span>
             <span className="text-xs text-text-muted">players</span>
           </div>
         </div>
+
+        <BookmakerFilterDeck
+          selectedBookmakerIds={selectedBookmakerIds}
+          onChange={updateSelectedBookmakerIds}
+        />
 
         {trackedPlayers.length > 0 && (
           <section>
@@ -105,7 +140,11 @@ export default function MatchDetail() {
 
         {marketGroups.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center">
-            <p className="text-sm text-text-muted">No odds data available for this match yet.</p>
+            <p className="text-sm text-text-muted">
+              {selectedBookmakerIds.length
+                ? 'No odds from the selected bookmakers for this match right now.'
+                : 'No odds data available for this match yet.'}
+            </p>
           </div>
         ) : (
           <section className="space-y-4">

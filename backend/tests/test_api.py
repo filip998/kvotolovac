@@ -116,6 +116,8 @@ async def test_list_matches_after_scrape(client: AsyncClient):
     assert resp.status_code == 200
     matches = resp.json()
     assert len(matches) >= 4
+    assert "available_bookmakers" in matches[0]
+    assert len(matches[0]["available_bookmakers"]) > 0
 
 
 @pytest.mark.asyncio
@@ -169,8 +171,10 @@ async def test_list_discrepancies(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_discrepancy_filters(client: AsyncClient):
     await client.post("/api/v1/scrape/trigger")
-    resp = await client.get("/api/v1/discrepancies?market_type=player_points&min_gap=1.0")
+    resp = await client.get("/api/v1/discrepancies?market_type=player_points&min_gap=1.0&bookmaker_ids=meridian")
     assert resp.status_code == 200
+    for row in resp.json():
+        assert "meridian" in {row["bookmaker_a_id"], row["bookmaker_b_id"]}
 
 
 @pytest.mark.asyncio
@@ -232,10 +236,21 @@ async def test_list_unresolved_odds(client: AsyncClient):
     )
     await odds_store.set_current_snapshot(batch_scraped_at)
 
-    resp = await client.get("/api/v1/unresolved-odds")
+    resp = await client.get("/api/v1/unresolved-odds?bookmaker_ids=admiralbet")
 
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
     assert data[0]["bookmaker_name"] == "AdmiralBet"
     assert data[0]["reason_code"] == "no_canonical_matchup_for_team_at_slot"
+
+
+@pytest.mark.asyncio
+async def test_list_matches_can_filter_by_bookmaker(client: AsyncClient):
+    await client.post("/api/v1/scrape/trigger")
+
+    resp = await client.get("/api/v1/matches?bookmaker_ids=meridian")
+
+    assert resp.status_code == 200
+    for match in resp.json():
+        assert any(book["id"] == "meridian" for book in match["available_bookmakers"])
