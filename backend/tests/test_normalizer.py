@@ -1112,3 +1112,75 @@ def test_normalize_odds_resolves_reversed_name_order():
     # Both should resolve to the same name
     assert len(set(names)) == 1
     assert names[0] in ("VJ Edgecombe", "Edgecombe VJ")
+
+
+def test_normalize_odds_does_not_merge_different_players_with_swapped_tokens():
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="James Jordan",
+            threshold=10.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="Jordan James",
+            threshold=10.5,
+            over_odds=1.7,
+            under_odds=2.0,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert [offer.player_name for offer in normalized] == [
+        "James Jordan",
+        "Jordan James",
+    ]
+
+
+def test_normalize_odds_does_not_merge_three_letter_swapped_names():
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="Leo Grant",
+            threshold=8.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="Grant Leo",
+            threshold=8.5,
+            over_odds=1.7,
+            under_odds=2.0,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert [offer.player_name for offer in normalized] == [
+        "Leo Grant",
+        "Grant Leo",
+    ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from collections import Counter, defaultdict
 from functools import lru_cache
 
@@ -327,15 +328,6 @@ def _strip_trailing_suffixes(tokens: list[str]) -> list[str]:
     return tokens
 
 
-def _sorted_compact_person_name(name: str) -> str | None:
-    """Compact form with tokens sorted — order-independent identity."""
-    tokens = _normalize_person_tokens(name)
-    tokens = _strip_trailing_suffixes(tokens)
-    if len(tokens) < 2:
-        return None
-    return "".join(sorted(t.replace("-", "") for t in tokens))
-
-
 def _player_name_parts(name: str) -> tuple[list[str], str] | None:
     tokens = _normalize_person_tokens(name)
     tokens = _strip_trailing_suffixes(tokens)
@@ -368,6 +360,22 @@ def _name_surface_richness(name: str) -> tuple[int, int, int]:
         stripped.count("-"),
         len(stripped),
     )
+
+
+def _surface_person_tokens(name: str) -> list[str]:
+    tokens = [
+        re.sub(r"[^A-Za-zÀ-ž-]+", "", part)
+        for part in name.split()
+    ]
+    tokens = [token for token in tokens if token]
+    while tokens and normalize_identity_text(tokens[-1]) in _NAME_SUFFIXES:
+        tokens.pop()
+    return tokens
+
+
+def _is_abbreviated_surface_token(token: str) -> bool:
+    compact = token.replace("-", "")
+    return bool(compact) and len(compact) <= 3 and compact.isupper()
 
 
 def _check_first_name_match(
@@ -404,16 +412,33 @@ def _is_contextual_player_match(raw_name: str, candidate_name: str) -> bool:
 
     raw_first_tokens, raw_last_name = raw_parts
     candidate_first_tokens, candidate_last_name = candidate_parts
+    raw_surface_tokens = _surface_person_tokens(raw_name)
+    candidate_surface_tokens = _surface_person_tokens(candidate_name)
 
     # Normal order match
     if _check_first_name_match(raw_first_tokens, candidate_first_tokens, raw_last_name, candidate_last_name):
         return True
 
-    # Reversed order: treat raw as "LastName FirstName" → swap and retry
-    if len(raw_first_tokens) == 1:
+    # Reversed order is only safe when the swapped token looks like an
+    # abbreviated first name (e.g. "VJ", "J", "AJ"), not a full given name.
+    if (
+        len(raw_first_tokens) == 1
+        and raw_surface_tokens
+        and _is_abbreviated_surface_token(raw_surface_tokens[-1])
+    ):
         reversed_first = [raw_last_name]
         reversed_last = raw_first_tokens[0]
         if _check_first_name_match(reversed_first, candidate_first_tokens, reversed_last, candidate_last_name):
+            return True
+
+    if (
+        len(candidate_first_tokens) == 1
+        and candidate_surface_tokens
+        and _is_abbreviated_surface_token(candidate_surface_tokens[-1])
+    ):
+        reversed_first = [candidate_last_name]
+        reversed_last = candidate_first_tokens[0]
+        if _check_first_name_match(raw_first_tokens, reversed_first, raw_last_name, reversed_last):
             return True
 
     return False
@@ -442,31 +467,6 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
         for compact_key, variants in by_compact.items():
             if not compact_key:
                 continue
-            if len(variants) <= 1:
-                continue
-            best = max(
-                variants,
-                key=lambda v: (
-                    name_counts[v],
-                    _name_surface_richness(v),
-                    v,
-                ),
-            )
-            merged_count = sum(name_counts[v] for v in variants)
-            compact_canonical_names.add((match_id, best))
-            for v in variants:
-                if v != best:
-                    case_replacements[(match_id, v)] = best
-                    name_counts[best] = merged_count
-                    del name_counts[v]
-
-        # Also merge reversed name order (e.g., "Edgecombe VJ" vs "VJ Edgecombe")
-        by_sorted: dict[str, list[str]] = defaultdict(list)
-        for name in name_counts:
-            sorted_key = _sorted_compact_person_name(name)
-            if sorted_key:
-                by_sorted[sorted_key].append(name)
-        for sorted_key, variants in by_sorted.items():
             if len(variants) <= 1:
                 continue
             best = max(
