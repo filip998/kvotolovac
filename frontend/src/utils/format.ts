@@ -45,12 +45,19 @@ export function formatUnits(value: number): string {
   return UNITS_FORMATTER.format(value);
 }
 
+export function roundUnitsDisplayValue(value: number): number {
+  if (!Number.isFinite(value)) return value;
+  const normalized = Math.abs(value) < 1e-9 ? 0 : value;
+  const rounded = Number(normalized.toFixed(2));
+  return Math.abs(rounded) < 1e-9 ? 0 : rounded;
+}
+
 export function formatSignedUnits(value: number): string {
   if (!Number.isFinite(value)) return '—';
-  const normalized = Math.abs(value) < 1e-9 ? 0 : value;
-  const roundedAbs = Number(Math.abs(normalized).toFixed(2));
+  const roundedValue = roundUnitsDisplayValue(value);
+  const roundedAbs = Math.abs(roundedValue);
   if (roundedAbs === 0) return '0';
-  const sign = normalized > 0 ? '+' : '-';
+  const sign = roundedValue > 0 ? '+' : '-';
   return `${sign}${UNITS_FORMATTER.format(roundedAbs)}`;
 }
 

@@ -11,6 +11,7 @@ import {
   formatUnits,
   profitBgColor,
   profitColor,
+  roundUnitsDisplayValue,
 } from '../utils/format';
 import { MARKET_TYPE_LABELS } from '../utils/constants';
 import {
@@ -56,8 +57,9 @@ interface MetricTileProps {
 }
 
 function resultValueClass(value: number) {
-  if (value > 0.01) return 'text-accent';
-  if (value < -0.01) return 'text-danger';
+  const roundedValue = roundUnitsDisplayValue(value);
+  if (roundedValue > 0) return 'text-accent';
+  if (roundedValue < 0) return 'text-danger';
   return 'text-text-secondary';
 }
 
