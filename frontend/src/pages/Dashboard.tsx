@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { useDiscrepancies, useMatches, useSystemStatus, useUnresolvedOdds } from '../api/hooks';
 import type { Discrepancy, DiscrepancyFilters } from '../api/types';
 import BookmakerFilterDeck from '../components/BookmakerFilterDeck';
-import DiscrepancyCard from '../components/DiscrepancyCard';
+import BookmakerBadge from '../components/BookmakerBadge';
 import EmptyState from '../components/EmptyState';
 import FilterBar from '../components/FilterBar';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -16,6 +17,15 @@ import {
   formatDashboardStakeUnitsInput,
   useDashboardStakeUnits,
 } from '../hooks/useDashboardStakeUnits';
+import { MARKET_TYPE_LABELS } from '../utils/constants';
+import {
+  formatGap,
+  formatOdds,
+  formatPercentage,
+  formatRelativeTime,
+  formatThreshold,
+  profitColor,
+} from '../utils/format';
 import { useBookmakerFilter } from '../hooks/useBookmakerFilter';
 
 interface MatchGroup {
@@ -36,7 +46,11 @@ type ViewMode = 'by-match' | 'flat';
 
 export default function Dashboard() {
   const queryClient = useQueryClient();
-  const { selectedBookmakerIds, updateSelectedBookmakerIds } = useBookmakerFilter();
+  const {
+    selectedBookmakerIds,
+    updateSelectedBookmakerIds,
+    search: sharedSearch,
+  } = useBookmakerFilter();
   const { units: stakeUnits, updateUnits: updateStakeUnits, minUnits } = useDashboardStakeUnits();
   const [filters, setFilters] = useState<DiscrepancyFilters>({
     sort_by: 'profit_margin',
@@ -374,16 +388,96 @@ export default function Dashboard() {
               message="Scraping may still be working normally. Switch to tracked odds to inspect upcoming matches and player markets."
             />
           ) : viewMode === 'flat' ? (
-            <div className="space-y-3">
-              {discrepancies.map((d, index) => (
-                <DiscrepancyCard
-                  key={d.id}
-                  discrepancy={d}
-                  totalUnits={stakeUnits}
-                  context="flat"
-                  rank={index + 1}
-                />
-              ))}
+            <div className="overflow-hidden rounded-lg border border-border bg-surface">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-[11px] font-medium uppercase tracking-wider text-text-muted">
+                      <th className="px-4 py-2.5 text-left">Player / Market</th>
+                      <th className="px-4 py-2.5 text-left">Match</th>
+                      <th className="px-4 py-2.5 text-right">Edge</th>
+                      <th className="hidden px-4 py-2.5 text-right md:table-cell">Middle</th>
+                      <th className="hidden px-4 py-2.5 text-left sm:table-cell">Over</th>
+                      <th className="hidden px-4 py-2.5 text-left sm:table-cell">Under</th>
+                      <th className="px-4 py-2.5 text-right">Gap</th>
+                      <th className="hidden px-4 py-2.5 text-right lg:table-cell">Time</th>
+                      <th className="px-4 py-2.5"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {discrepancies.map((d) => {
+                      const marketLabel = MARKET_TYPE_LABELS[d.market_type] || d.market_type;
+
+                      return (
+                        <tr
+                          key={d.id}
+                          className="border-t border-border transition hover:bg-surface-raised"
+                        >
+                          <td className="px-4 py-2.5">
+                            <div className="font-medium text-text">
+                              {d.player_name || marketLabel}
+                            </div>
+                            {d.player_name && (
+                              <div className="text-[11px] text-text-muted">{marketLabel}</div>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <div className="text-text-secondary">
+                              {d.home_team} vs {d.away_team}
+                            </div>
+                            <div className="text-[11px] text-text-muted">{d.league_name}</div>
+                          </td>
+                          <td
+                            className={`px-4 py-2.5 text-right font-mono font-bold ${profitColor(d.profit_margin)}`}
+                          >
+                            {formatPercentage(d.profit_margin)}
+                          </td>
+                          <td className="hidden px-4 py-2.5 text-right md:table-cell">
+                            {d.middle_profit_margin != null && d.gap > 0 ? (
+                              <span className={`font-mono font-bold ${profitColor(d.middle_profit_margin)}`}>
+                                {formatPercentage(d.middle_profit_margin)}
+                              </span>
+                            ) : (
+                              <span className="text-text-muted">—</span>
+                            )}
+                          </td>
+                          <td className="hidden px-4 py-2.5 sm:table-cell">
+                            <div className="flex items-center gap-1.5">
+                              <BookmakerBadge name={d.bookmaker_a_name} compact />
+                              <span className="font-mono text-text-secondary">
+                                {formatThreshold(d.threshold_a)} @ {formatOdds(d.odds_a)}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="hidden px-4 py-2.5 sm:table-cell">
+                            <div className="flex items-center gap-1.5">
+                              <BookmakerBadge name={d.bookmaker_b_name} compact />
+                              <span className="font-mono text-text-secondary">
+                                {formatThreshold(d.threshold_b)} @ {formatOdds(d.odds_b)}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-mono text-text-secondary">
+                            {formatGap(d.gap)}
+                          </td>
+                          <td className="hidden px-4 py-2.5 text-right text-text-muted lg:table-cell">
+                            {formatRelativeTime(d.detected_at)}
+                          </td>
+                          <td className="px-4 py-2.5 text-right">
+                            <Link
+                              to={`/matches/${d.match_id}${sharedSearch}`}
+                              aria-label={`View ${d.player_name || marketLabel} for ${d.home_team} vs ${d.away_team}`}
+                              className="text-xs font-medium text-text-muted transition hover:text-accent"
+                            >
+                              →
+                            </Link>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           ) : (
             <div className="space-y-8">
