@@ -32,6 +32,8 @@ def test_normalize_team_alias():
     assert normalize_team_name("Fenerbahce Istanbul", "euroleague") == "Fenerbahce"
     assert normalize_team_name("ASVEL Lyon-Villeurbanne", "euroleague") == "Asvel"
     assert normalize_team_name("Lyon-Villeurb.", "euroleague") == "Asvel"
+    assert normalize_team_name("UU-Korihait", "korisliiga") == "Korihait Uusikaupunki"
+    assert normalize_team_name("Salon Vilpas Vikings", "korisliiga") == "Salon Vilpas"
 
 
 def test_normalize_team_nba_aliases_are_league_scoped():
@@ -582,6 +584,12 @@ def test_normalize_league_id_alias():
     assert normalize_league_id("AdmiralBet ABA liga - plej of") == "aba_liga"
     assert normalize_league_id("italija_1") == "italy"
     assert normalize_league_id("Germany BBL") == "germany"
+    assert normalize_league_id("Finska 1") == "korisliiga"
+    assert normalize_league_id("Finska 1 plej of") == "korisliiga"
+    assert normalize_league_id("Finnish League") == "korisliiga"
+    assert normalize_league_id("Finland Play Offs") == "korisliiga"
+    assert normalize_league_id("Finland Korisliiga") == "korisliiga"
+    assert normalize_league_id("balkanbet_tournament_486") == "korisliiga"
     assert normalize_league_id("euroleague") == "euroleague"
 
 
@@ -681,6 +689,79 @@ def test_normalize_odds_resolves_shared_platform_matchups_and_aliases():
     assert {offer.home_team for offer in normalized} == {"Houston Rockets"}
     assert {offer.away_team for offer in normalized} == {"Minnesota Timberwolves"}
     assert {offer.player_name for offer in normalized} == {"Kevin Durant"}
+
+
+def test_normalize_odds_merges_korihait_vilpas_bookmaker_variants():
+    raw = [
+        RawOddsData(
+            bookmaker_id="admiralbet",
+            league_id="finska 1",
+            home_team="UU Korihait Uusikaupunki",
+            away_team="Salon Vilpas",
+            market_type="game_total_ot",
+            player_name=None,
+            threshold=163.5,
+            over_odds=1.8,
+            under_odds=1.9,
+            start_time="2026-04-15T15:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="finnish league",
+            home_team="Korihait Uusikaupunki",
+            away_team="Salon Vilpas Vikings",
+            market_type="game_total_ot",
+            player_name=None,
+            threshold=164.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-15T15:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="finland play offs",
+            home_team="Korihait U.",
+            away_team="Salon Vilpas",
+            market_type="game_total_ot",
+            player_name=None,
+            threshold=165.5,
+            over_odds=1.9,
+            under_odds=1.8,
+            start_time="2026-04-15T15:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="balkanbet_tournament_486",
+            home_team="Korihait Uusikaupunki",
+            away_team="Salon Vilpas Vikings",
+            market_type="game_total_ot",
+            player_name=None,
+            threshold=162.5,
+            over_odds=1.87,
+            under_odds=1.87,
+            start_time="2026-04-15T15:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="merkurxtip",
+            league_id="korisliiga",
+            home_team="UU-Korihait",
+            away_team="Salon Vilpas",
+            market_type="game_total_ot",
+            player_name=None,
+            threshold=164.0,
+            over_odds=1.86,
+            under_odds=1.86,
+            start_time="2026-04-15T15:30:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert len(normalized) == 5
+    assert len({offer.match_id for offer in normalized}) == 1
+    assert {offer.league_id for offer in normalized} == {"korisliiga"}
+    assert {offer.home_team for offer in normalized} == {"Korihait Uusikaupunki"}
+    assert {offer.away_team for offer in normalized} == {"Salon Vilpas"}
 
 
 def test_normalize_odds_drops_unresolved_shared_platform_rows():
