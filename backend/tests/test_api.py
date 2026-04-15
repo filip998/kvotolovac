@@ -7,11 +7,13 @@ from httpx import ASGITransport, AsyncClient
 
 from app.database import init_db, close_db
 from app.main import app
-from app.models.schemas import RawOddsData, UnresolvedOddsDiagnostic
+from app.models.schemas import MatchingReviewDiagnostic, NormalizedOdds, RawOddsData, UnresolvedOddsDiagnostic
 from app.scrapers.base import BaseScraper
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
+from app.services.league_registry import resolve_league
 from app.services.scheduler import scheduler
+from app.services.normalizer import normalize_odds_with_diagnostics
 from app.store import odds_store
 
 
@@ -254,3 +256,244 @@ async def test_list_matches_can_filter_by_bookmaker(client: AsyncClient):
     assert resp.status_code == 200
     for match in resp.json():
         assert any(book["id"] == "meridian" for book in match["available_bookmakers"])
+
+
+@pytest.mark.asyncio
+async def test_matching_review_summary_and_cases(client: AsyncClient, league_registry_file):
+    batch_scraped_at = "2026-04-16T17:00:00+00:00"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_league("bulgaria_nbl", "Bulgaria NBL", "basketball", "Bulgaria")
+    await odds_store.upsert_match(
+        "match-bulgaria",
+        "bulgaria_nbl",
+        "Rilski Sportist",
+        "Levski Sofia",
+        start_time=batch_scraped_at,
+    )
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="match-bulgaria",
+            bookmaker_id="mozzart",
+            league_id="bulgaria_nbl",
+            home_team="Rilski Sportist",
+            away_team="Levski Sofia",
+            market_type="game_total",
+            threshold=161.5,
+            over_odds=1.85,
+            under_odds=1.95,
+            start_time=batch_scraped_at,
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.insert_matching_review_case(
+        MatchingReviewDiagnostic(
+            bookmaker_id="meridian",
+            raw_league_id="NBL",
+            normalized_raw_league_id="nbl",
+            suggested_league_id="bulgaria_nbl",
+            match_id="match-bulgaria",
+            home_team="Rilski Sportist",
+            away_team="Levski Sofia",
+            start_time=batch_scraped_at,
+            reason_code="league_inferred_from_event_context",
+            confidence="high",
+            evidence=["League votes: Bulgaria NBL x1, NBL x1"],
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    summary_resp = await client.get("/api/v1/matching-review/summary")
+    cases_resp = await client.get("/api/v1/matching-review/cases")
+
+    assert summary_resp.status_code == 200
+    assert summary_resp.json()["pending_reviews"] == 1
+    assert any(
+        row["league_id"] == "bulgaria_nbl"
+        for row in summary_resp.json()["leagues"]
+    )
+
+    assert cases_resp.status_code == 200
+    assert len(cases_resp.json()) == 1
+    assert cases_resp.json()[0]["suggested_league_name"] == "Bulgaria NBL"
+
+
+@pytest.mark.asyncio
+async def test_approve_matching_review_case_saves_bookmaker_alias(
+    client: AsyncClient,
+    league_registry_file,
+):
+    batch_scraped_at = "2026-04-16T17:00:00+00:00"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_league("bulgaria_nbl", "Bulgaria NBL", "basketball", "Bulgaria")
+    case_id = await odds_store.insert_matching_review_case(
+        MatchingReviewDiagnostic(
+            bookmaker_id="meridian",
+            raw_league_id="NBL",
+            normalized_raw_league_id="nbl",
+            suggested_league_id="bulgaria_nbl",
+            match_id="match-bulgaria",
+            home_team="Rilski Sportist",
+            away_team="Levski Sofia",
+            start_time=batch_scraped_at,
+            reason_code="league_inferred_from_event_context",
+            confidence="high",
+            evidence=["League votes: Bulgaria NBL x1, NBL x1"],
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    approve_resp = await client.post(f"/api/v1/matching-review/cases/{case_id}/approve")
+    cases_resp = await client.get("/api/v1/matching-review/cases?status=approved")
+
+    assert approve_resp.status_code == 200
+    assert approve_resp.json()["saved_league_id"] == "bulgaria_nbl"
+    assert resolve_league("NBL", bookmaker_id="meridian").league_id == "bulgaria_nbl"
+    assert cases_resp.status_code == 200
+    assert cases_resp.json()[0]["status"] == "approved"
+
+    normalized, unresolved, reviews = normalize_odds_with_diagnostics(
+        [
+            RawOddsData(
+                bookmaker_id="mozzart",
+                league_id="Bulgarian NBL",
+                home_team="Rilski Sportist",
+                away_team="Levski Sofia",
+                market_type="game_total",
+                threshold=161.5,
+                over_odds=1.85,
+                under_odds=1.95,
+                start_time=batch_scraped_at,
+            ),
+            RawOddsData(
+                bookmaker_id="meridian",
+                league_id="NBL",
+                home_team="Rilski Sportist",
+                away_team="Levski Sofia",
+                market_type="game_total",
+                threshold=162.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time=batch_scraped_at,
+            ),
+        ]
+    )
+
+    assert unresolved == []
+    assert len({offer.match_id for offer in normalized}) == 1
+    assert reviews == []
+
+
+@pytest.mark.asyncio
+async def test_approve_matching_review_case_marks_sibling_cases_approved(
+    client: AsyncClient,
+    league_registry_file,
+):
+    batch_scraped_at = "2026-04-16T18:00:00+00:00"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_league("bulgaria_nbl", "Bulgaria NBL", "basketball", "Bulgaria")
+
+    first_case_id = await odds_store.insert_matching_review_case(
+        MatchingReviewDiagnostic(
+            bookmaker_id="meridian",
+            raw_league_id="NBL",
+            normalized_raw_league_id="nbl",
+            suggested_league_id="bulgaria_nbl",
+            match_id="match-bulgaria-1",
+            home_team="Rilski Sportist",
+            away_team="Levski Sofia",
+            start_time=batch_scraped_at,
+            reason_code="league_inferred_from_event_context",
+            confidence="high",
+            evidence=["League votes: Bulgaria NBL x2"],
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.insert_matching_review_case(
+        MatchingReviewDiagnostic(
+            bookmaker_id="meridian",
+            raw_league_id="NBL",
+            normalized_raw_league_id="nbl",
+            suggested_league_id="bulgaria_nbl",
+            match_id="match-bulgaria-2",
+            home_team="Beroe",
+            away_team="Shumen",
+            start_time=batch_scraped_at,
+            reason_code="league_inferred_from_event_context",
+            confidence="high",
+            evidence=["League votes: Bulgaria NBL x2"],
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    approve_resp = await client.post(
+        f"/api/v1/matching-review/cases/{first_case_id}/approve"
+    )
+    approved_resp = await client.get("/api/v1/matching-review/cases?status=approved")
+    pending_resp = await client.get("/api/v1/matching-review/cases?status=pending")
+
+    assert approve_resp.status_code == 200
+    assert approved_resp.status_code == 200
+    assert len(approved_resp.json()) == 2
+    assert {case["status"] for case in approved_resp.json()} == {"approved"}
+    assert pending_resp.status_code == 200
+    assert pending_resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_matching_review_summary_falls_back_to_latest_review_snapshot(
+    client: AsyncClient,
+):
+    batch_scraped_at = "2026-04-16T19:00:00+00:00"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_league("bulgaria_nbl", "Bulgaria NBL", "basketball", "Bulgaria")
+    await odds_store.upsert_match(
+        "match-bulgaria",
+        "bulgaria_nbl",
+        "Rilski Sportist",
+        "Levski Sofia",
+        batch_scraped_at,
+    )
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="match-bulgaria",
+            bookmaker_id="meridian",
+            league_id="bulgaria_nbl",
+            home_team="Rilski Sportist",
+            away_team="Levski Sofia",
+            market_type="game_total",
+            threshold=161.5,
+            over_odds=1.85,
+            under_odds=1.95,
+            start_time=batch_scraped_at,
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.insert_matching_review_case(
+        MatchingReviewDiagnostic(
+            bookmaker_id="meridian",
+            raw_league_id="NBL",
+            normalized_raw_league_id="nbl",
+            suggested_league_id="bulgaria_nbl",
+            match_id="match-bulgaria",
+            home_team="Rilski Sportist",
+            away_team="Levski Sofia",
+            start_time=batch_scraped_at,
+            reason_code="league_inferred_from_event_context",
+            confidence="high",
+            evidence=["League votes: Bulgaria NBL x2"],
+        ),
+        scraped_at=batch_scraped_at,
+    )
+
+    summary_resp = await client.get("/api/v1/matching-review/summary")
+    cases_resp = await client.get("/api/v1/matching-review/cases")
+
+    assert summary_resp.status_code == 200
+    assert summary_resp.json()["total_matches"] == 1
+    assert summary_resp.json()["pending_reviews"] == 1
+    assert cases_resp.status_code == 200
+    assert len(cases_resp.json()) == 1

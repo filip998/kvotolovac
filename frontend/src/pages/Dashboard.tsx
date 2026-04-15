@@ -1,9 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { useDiscrepancies, useMatches, useSystemStatus, useUnresolvedOdds } from '../api/hooks';
-import type { DiscrepancyFilters, Discrepancy } from '../api/types';
-import { formatOdds, formatThreshold, formatPercentage, formatGap, formatRelativeTime, profitColor } from '../utils/format';
+import {
+  useApproveMatchingReviewCase,
+  useDiscrepancies,
+  useMatchingReviewCases,
+  useMatchingReviewSummary,
+  useMatches,
+  useSystemStatus,
+} from '../api/hooks';
+import type { Discrepancy, DiscrepancyFilters } from '../api/types';
+import {
+  formatGap,
+  formatOdds,
+  formatPercentage,
+  formatRelativeTime,
+  formatThreshold,
+  profitColor,
+} from '../utils/format';
 import { MARKET_TYPE_LABELS } from '../utils/constants';
 import FilterBar from '../components/FilterBar';
 import BookmakerFilterDeck from '../components/BookmakerFilterDeck';
@@ -13,8 +27,8 @@ import BookmakerBadge from '../components/BookmakerBadge';
 import LoadingSpinner from '../components/LoadingSpinner';
 import EmptyState from '../components/EmptyState';
 import PageShell from '../components/PageShell';
+import LeagueMatchingPanel from '../components/LeagueMatchingPanel';
 import TrackedMatchesPanel from '../components/TrackedMatchesPanel';
-import UnresolvedOddsPanel from '../components/UnresolvedOddsPanel';
 import { useBookmakerFilter } from '../hooks/useBookmakerFilter';
 
 interface MatchGroup {
@@ -30,7 +44,7 @@ interface LeagueGroup {
   matches: MatchGroup[];
 }
 
-type DashboardTab = 'discrepancies' | 'tracked' | 'warnings';
+type DashboardTab = 'discrepancies' | 'tracked' | 'matching';
 type ViewMode = 'by-match' | 'flat';
 
 export default function Dashboard() {
@@ -47,6 +61,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<DashboardTab>('discrepancies');
   const [viewMode, setViewMode] = useState<ViewMode>('flat');
   const [collapsedLeagues, setCollapsedLeagues] = useState<Set<string>>(new Set());
+  const [reviewMessage, setReviewMessage] = useState<string | null>(null);
   const previousScanInProgressRef = useRef(false);
 
   const toggleLeague = (league: string) => {
@@ -90,20 +105,33 @@ export default function Dashboard() {
     { enabled: activeTab === 'tracked' }
   );
   const {
-    data: unresolvedOdds,
-    isLoading: unresolvedLoading,
-    isError: unresolvedError,
-    error: unresolvedLoadError,
-    refetch: refetchUnresolvedOdds,
-  } = useUnresolvedOdds(
+    data: matchingReviewSummary,
+    isLoading: matchingSummaryLoading,
+    isError: matchingSummaryError,
+    error: matchingSummaryLoadError,
+    refetch: refetchMatchingReviewSummary,
+  } = useMatchingReviewSummary(
+    {
+      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
+    },
+    { enabled: activeTab === 'matching' }
+  );
+  const {
+    data: matchingReviewCases,
+    isLoading: matchingCasesLoading,
+    isError: matchingCasesError,
+    error: matchingCasesLoadError,
+    refetch: refetchMatchingReviewCases,
+  } = useMatchingReviewCases(
     {
       limit: 200,
       loadAll: true,
       bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
     },
-    { enabled: activeTab === 'warnings' }
+    { enabled: activeTab === 'matching' }
   );
   const { data: status } = useSystemStatus();
+  const approveMatchingReviewCase = useApproveMatchingReviewCase();
 
   const isInitialScanInProgress =
     activeTab === 'discrepancies' &&
@@ -121,13 +149,22 @@ export default function Dashboard() {
       void queryClient.invalidateQueries({ queryKey: ['discrepancies'] });
       void refetchDiscrepancies();
     }
-    if (scanJustFinished && activeTab === 'warnings') {
-      void queryClient.invalidateQueries({ queryKey: ['unresolvedOdds'] });
-      void refetchUnresolvedOdds();
+    if (scanJustFinished && activeTab === 'matching') {
+      void queryClient.invalidateQueries({ queryKey: ['matchingReviewSummary'] });
+      void queryClient.invalidateQueries({ queryKey: ['matchingReviewCases'] });
+      void refetchMatchingReviewSummary();
+      void refetchMatchingReviewCases();
     }
 
     previousScanInProgressRef.current = scanInProgress;
-  }, [activeTab, queryClient, refetchDiscrepancies, refetchUnresolvedOdds, status?.scan.in_progress]);
+  }, [
+    activeTab,
+    queryClient,
+    refetchDiscrepancies,
+    refetchMatchingReviewCases,
+    refetchMatchingReviewSummary,
+    status?.scan.in_progress,
+  ]);
 
   // Group discrepancies by league, then by match
   const grouped = useMemo<LeagueGroup[]>(() => {
@@ -163,7 +200,42 @@ export default function Dashboard() {
   }, [discrepancies]);
 
   const discrepancyCount = discrepancies?.length ?? 0;
-  const unresolvedCount = unresolvedOdds?.length ?? 0;
+  const matchingReviewCount =
+    matchingReviewSummary?.pending_reviews ??
+    matchingReviewCases?.filter((row) => row.status === 'pending').length ??
+    0;
+  const matchingErrorMessage =
+    matchingSummaryError || matchingCasesError
+      ? (matchingSummaryLoadError as Error | undefined)?.message ||
+        (matchingCasesLoadError as Error | undefined)?.message ||
+        'Unknown error'
+      : null;
+  const matchingIsLoading = matchingSummaryLoading || matchingCasesLoading;
+  const approvingCaseId =
+    approveMatchingReviewCase.isPending ? approveMatchingReviewCase.variables?.caseId ?? null : null;
+
+  const handleApproveMatchingCase = (caseId: number, leagueId: string) => {
+    setReviewMessage(null);
+    approveMatchingReviewCase.mutate(
+      { caseId, leagueId },
+      {
+        onSuccess: (result) => {
+          setReviewMessage(
+            `Saved "${result.saved_alias}" -> ${
+              result.saved_league_name ?? result.saved_league_id
+            }. Run the next scrape to apply it.`
+          );
+          void queryClient.invalidateQueries({ queryKey: ['matchingReviewSummary'] });
+          void queryClient.invalidateQueries({ queryKey: ['matchingReviewCases'] });
+          void refetchMatchingReviewSummary();
+          void refetchMatchingReviewCases();
+        },
+        onError: (mutationError) => {
+          setReviewMessage(`Failed to save alias: ${mutationError.message}`);
+        },
+      }
+    );
+  };
 
   return (
     <PageShell
@@ -173,14 +245,14 @@ export default function Dashboard() {
           ? 'Find exploitable line gaps before the market closes.'
           : activeTab === 'tracked'
             ? 'Inspect the stored board even when no gap is flashing.'
-            : 'Review dropped player props before they disappear from the board.'
+            : 'Review league matching health before duplicate events fragment the board.'
       }
       description={
         activeTab === 'discrepancies'
           ? 'Snapshot grouped by league and matchup. Work downward from the highest-margin thresholds.'
           : activeTab === 'tracked'
             ? 'Open tracked matches to review player markets, bookmaker prices, and discrepancy-linked lines.'
-            : 'Internal warnings for shared-platform props that failed matchup resolution in the current scrape snapshot.'
+            : 'Approve league suggestions, inspect inferred matches, and track where raw bookmaker competitions still need a saved alias.'
       }
     >
       <div className="space-y-6">
@@ -216,16 +288,18 @@ export default function Dashboard() {
                 Tracked odds
               </button>
               <button
-                onClick={() => setActiveTab('warnings')}
+                onClick={() => setActiveTab('matching')}
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                  activeTab === 'warnings'
+                  activeTab === 'matching'
                     ? 'bg-surface-raised text-text'
                     : 'text-text-muted hover:text-text'
                 }`}
               >
-                Warnings
-                {activeTab === 'warnings' && unresolvedCount > 0 && (
-                  <span className="ml-1.5 font-mono text-xs text-warning">{unresolvedCount}</span>
+                League matching
+                {activeTab === 'matching' && matchingReviewCount > 0 && (
+                  <span className="ml-1.5 font-mono text-xs text-warning">
+                    {matchingReviewCount}
+                  </span>
                 )}
               </button>
             </div>
@@ -450,10 +524,14 @@ export default function Dashboard() {
             errorMessage={matchesError ? (matchesLoadError as Error)?.message || 'Unknown error' : null}
           />
         ) : (
-          <UnresolvedOddsPanel
-            rows={unresolvedOdds || []}
-            isLoading={unresolvedLoading}
-            errorMessage={unresolvedError ? (unresolvedLoadError as Error)?.message || 'Unknown error' : null}
+          <LeagueMatchingPanel
+            summary={matchingReviewSummary}
+            cases={matchingReviewCases || []}
+            isLoading={matchingIsLoading}
+            errorMessage={matchingErrorMessage}
+            onApprove={handleApproveMatchingCase}
+            approvingCaseId={approvingCaseId}
+            approvalMessage={reviewMessage}
           />
         )}
       </div>

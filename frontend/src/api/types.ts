@@ -102,6 +102,50 @@ export interface UnresolvedOdds {
   scraped_at: string | null;
 }
 
+export interface LeagueMatchingHealth {
+  league_id: string;
+  league_name: string;
+  matched_events: number;
+  pending_reviews: number;
+  approved_reviews: number;
+}
+
+export interface MatchingReviewCase {
+  id: number;
+  bookmaker_id: string;
+  bookmaker_name: string | null;
+  raw_league_id: string;
+  normalized_raw_league_id: string;
+  suggested_league_id: string;
+  suggested_league_name: string | null;
+  match_id: string;
+  home_team: string;
+  away_team: string;
+  start_time: string | null;
+  reason_code: string;
+  confidence: string;
+  evidence: string[];
+  status: 'pending' | 'approved';
+  scraped_at: string | null;
+}
+
+export interface MatchingReviewSummary {
+  total_matches: number;
+  leagues_with_matches: number;
+  pending_reviews: number;
+  approved_reviews: number;
+  inferred_events: number;
+  leagues: LeagueMatchingHealth[];
+}
+
+export interface MatchingReviewApproval {
+  case_id: number;
+  status: 'approved';
+  saved_alias: string;
+  saved_league_id: string;
+  saved_league_name: string | null;
+}
+
 export interface BookmakerStatus {
   id: string;
   name: string;
@@ -152,6 +196,16 @@ export interface UnresolvedOddsFilters {
   reason_code?: string;
   market_type?: string;
   league_id?: string;
+  limit?: number;
+  offset?: number;
+  loadAll?: boolean;
+}
+
+export interface MatchingReviewFilters {
+  bookmaker_id?: string;
+  bookmaker_ids?: string[];
+  league_id?: string;
+  status?: 'pending' | 'approved';
   limit?: number;
   offset?: number;
   loadAll?: boolean;

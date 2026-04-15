@@ -81,8 +81,8 @@ export default function BookmakerFilterDeck({
               Shape the board around the books you actually care about.
             </h3>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-text-secondary">
-              Shared across discrepancies, tracked matches, warnings, and match detail. The
-              selection lives in the URL, so your lens survives every click-through.
+              Shared across discrepancies, tracked matches, league matching review, and match
+              detail. The selection lives in the URL, so your lens survives every click-through.
             </p>
           </div>
 

@@ -1,0 +1,86 @@
+{
+  "canonical_leagues": {
+    "nba": {
+      "name": "NBA",
+      "country": "USA"
+    },
+    "euroleague": {
+      "name": "EuroLeague",
+      "country": null
+    },
+    "aba_liga": {
+      "name": "ABA League",
+      "country": null
+    },
+    "kls": {
+      "name": "KLS",
+      "country": "Serbia"
+    },
+    "bulgaria_nbl": {
+      "name": "Bulgaria NBL",
+      "country": "Bulgaria"
+    },
+    "italy": {
+      "name": "Italy Lega A",
+      "country": "Italy"
+    },
+    "korisliiga": {
+      "name": "Korisliiga",
+      "country": "Finland"
+    },
+    "germany": {
+      "name": "Germany BBL",
+      "country": "Germany"
+    },
+    "poland": {
+      "name": "Poland PLK",
+      "country": "Poland"
+    },
+    "argentina_1": {
+      "name": "Argentina Liga Nacional",
+      "country": "Argentina"
+    },
+    "turkey": {
+      "name": "Turkey Super League",
+      "country": "Turkey"
+    },
+    "portoriko_1": {
+      "name": "Puerto Rico BSN",
+      "country": "Puerto Rico"
+    }
+  },
+  "aliases": {
+    "usa nba": "nba",
+    "nba play offs": "nba",
+    "nba promotion play offs": "nba",
+    "aba liga": "aba_liga",
+    "aba league": "aba_liga",
+    "aba liga winners stage": "aba_liga",
+    "aba liga losers stage": "aba_liga",
+    "aba liga plej of": "aba_liga",
+    "admiralbet aba liga": "aba_liga",
+    "admiralbet aba liga plej of": "aba_liga",
+    "italija 1": "italy",
+    "italy lega a": "italy",
+    "finska 1": "korisliiga",
+    "finska 1 plej of": "korisliiga",
+    "finnish league": "korisliiga",
+    "finland play offs": "korisliiga",
+    "finland korisliiga": "korisliiga",
+    "balkanbet tournament 486": "korisliiga",
+    "nemacka 1": "germany",
+    "germany bbl": "germany",
+    "poljska 1": "poland",
+    "argentina": "argentina_1",
+    "argentina 1": "argentina_1",
+    "turska 1": "turkey",
+    "turkey super league": "turkey",
+    "puerto rico": "portoriko_1",
+    "puerto rico 1": "portoriko_1",
+    "portoriko 1": "portoriko_1",
+    "bulgarian nbl": "bulgaria_nbl",
+    "bugarska 1": "bulgaria_nbl",
+    "bulgaria": "bulgaria_nbl"
+  },
+  "bookmaker_aliases": {}
+}
