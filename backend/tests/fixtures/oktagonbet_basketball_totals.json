@@ -1,0 +1,90 @@
+{
+  "list": {
+    "esMatches": [
+      {
+        "id": 42182971,
+        "home": "Obras Sanitarias",
+        "away": "Instituto de Cordoba",
+        "leagueName": "Argentina ~ Liga A",
+        "kickOffTime": 1776121200000,
+        "params": {
+          "overUnderMBTOT1": "157.5",
+          "overUnderOvertime": "157.5"
+        },
+        "odds": {
+          "50444": 1.85,
+          "50445": 1.85,
+          "51036": 2.9,
+          "51038": 3.7,
+          "51039": 2.9,
+          "51041": 3.7
+        }
+      },
+      {
+        "id": 42182972,
+        "home": "Ignored Home",
+        "away": "Ignored Away",
+        "leagueName": "Argentina ~ Liga A",
+        "kickOffTime": 1776121200000,
+        "params": {
+          "overUnderMBTOT1": "160.5"
+        },
+        "odds": {
+          "51036": 3.1,
+          "51038": 3.5,
+          "51039": 3.0,
+          "51041": 3.6
+        }
+      }
+    ]
+  },
+  "detail": {
+    "id": 42182971,
+    "home": "Obras Sanitarias",
+    "away": "Instituto de Cordoba",
+    "leagueName": "Argentina ~ Liga A",
+    "kickOffTime": 1776121200000,
+    "params": {
+      "overUnderMBTOT1": "157.5",
+      "overUnderOvertime": "157.5",
+      "overUnderOvertime2": "156.5",
+      "overUnderOvertime3": "158.5",
+      "overUnderOvertime4": "155.5",
+      "overUnderOvertime5": "159.5",
+      "overUnderOvertime6": "154.5",
+      "overUnderOvertime7": "160.5",
+      "overUnderOvertime8": "153.5",
+      "overUnderOvertime9": "161.5",
+      "homeOverUnderOvertime": "79.5",
+      "awayOverUnderOvertime": "78.5"
+    },
+    "odds": {
+      "50444": 1.85,
+      "50445": 1.85,
+      "50446": 1.95,
+      "50447": 1.75,
+      "50448": 1.77,
+      "50449": 1.93,
+      "50450": 2.0,
+      "50451": 1.7,
+      "50452": 1.7,
+      "50453": 2.0,
+      "50454": 2.1,
+      "50455": 1.62,
+      "50456": 1.6,
+      "50457": 2.15,
+      "51636": 2.25,
+      "51637": 1.55,
+      "51638": 1.53,
+      "51639": 2.3,
+      "50466": 1.82,
+      "50467": 1.88,
+      "50478": 1.8,
+      "50479": 1.9,
+      "51036": 2.9,
+      "51038": 3.7,
+      "51039": 2.9,
+      "51041": 3.7
+    }
+  }
+}

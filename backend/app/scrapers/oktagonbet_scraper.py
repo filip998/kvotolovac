@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from .base import BaseScraper
@@ -11,7 +12,8 @@ from ..models.schemas import RawOddsData
 
 logger = logging.getLogger(__name__)
 
-_LIST_URL = "https://www.oktagonbet.com/restapi/offer/sr/sport/SK/mob"
+_PLAYER_LIST_URL = "https://www.oktagonbet.com/restapi/offer/sr/sport/SK/mob"
+_TOTALS_LIST_URL = "https://www.oktagonbet.com/restapi/offer/sr/sport/B/mob"
 _MATCH_URL = "https://www.oktagonbet.com/restapi/offer/sr/match/{match_id}"
 
 _DEFAULT_PARAMS = {
@@ -81,6 +83,22 @@ _FIXED_POINT_LADDERS = [
     ("57454", 59.5),
 ]
 
+_GAME_TOTAL_OT_LINES = [
+    ("50445", "50444", "overUnderOvertime"),
+    ("50447", "50446", "overUnderOvertime2"),
+    ("50449", "50448", "overUnderOvertime3"),
+    ("50451", "50450", "overUnderOvertime4"),
+    ("50453", "50452", "overUnderOvertime5"),
+    ("50455", "50454", "overUnderOvertime6"),
+    ("50457", "50456", "overUnderOvertime7"),
+    ("51637", "51636", "overUnderOvertime8"),
+    ("51639", "51638", "overUnderOvertime9"),
+    ("51641", "51640", "overUnderOvertime10"),
+    ("51643", "51642", "overUnderOvertime11"),
+    ("51645", "51644", "overUnderOvertime12"),
+    ("51647", "51646", "overUnderOvertime13"),
+]
+
 _LEAGUE_PREFIX = "igrači ~"
 _UNLIMITED_DETAIL_CONCURRENCY = 10
 
@@ -96,6 +114,11 @@ _CANONICAL_LEAGUES = {
     "aba liga plej of": "aba_liga",
     "admiralbet aba liga": "aba_liga",
     "admiralbet aba liga plej of": "aba_liga",
+    "argentina liga a": "argentina_1",
+    "new zealand nbl": "new_zealand",
+    "puerto rico bsn": "portoriko_1",
+    "south korea kbl": "south_korea_play_offs",
+    "uruguay liga uruguaya": "uruguay_winners_stage",
 }
 
 
@@ -137,8 +160,10 @@ def _extract_league_id(league_name: str) -> str:
     else:
         raw = lower.strip()
 
-    normalized = " ".join(raw.replace("_", " ").replace("-", " ").split())
-    return _CANONICAL_LEAGUES.get(normalized, raw) or "basketball"
+    normalized = " ".join(raw.replace("_", " ").replace("-", " ").replace("~", " ").split())
+    if not normalized:
+        return "basketball"
+    return _CANONICAL_LEAGUES.get(normalized, normalized.replace(" ", "_"))
 
 
 def _build_raw_odds(
@@ -161,6 +186,33 @@ def _build_raw_odds(
         away_team=player_name,
         market_type=market_type,
         player_name=player_name,
+        threshold=threshold,
+        over_odds=over_odds,
+        under_odds=under_odds,
+        start_time=start_time,
+    )
+
+
+def _build_game_total_raw_odds(
+    match: dict,
+    *,
+    market_type: str,
+    threshold: float,
+    over_odds: float | None,
+    under_odds: float | None,
+) -> RawOddsData:
+    home_team = match.get("home", "").strip()
+    away_team = match.get("away", "").strip()
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    league_id = _extract_league_id(match.get("leagueName", ""))
+
+    return RawOddsData(
+        bookmaker_id="oktagonbet",
+        league_id=league_id,
+        home_team=home_team,
+        away_team=away_team,
+        market_type=market_type,
+        player_name=None,
         threshold=threshold,
         over_odds=over_odds,
         under_odds=under_odds,
@@ -191,6 +243,42 @@ def _parse_match(match: dict) -> list[RawOddsData]:
             _build_raw_odds(
                 match,
                 market_type=market_type,
+                threshold=threshold,
+                over_odds=over_odds,
+                under_odds=under_odds,
+            )
+        )
+
+    return results
+
+
+def _parse_game_total_ot_match(match: dict) -> list[RawOddsData]:
+    if _is_player_market(match):
+        return []
+
+    home_team = match.get("home", "").strip()
+    away_team = match.get("away", "").strip()
+    if not home_team or not away_team:
+        return []
+
+    params = match.get("params", {})
+    odds = match.get("odds", {})
+
+    results: list[RawOddsData] = []
+    for over_code, under_code, param_key in _GAME_TOTAL_OT_LINES:
+        threshold = _parse_threshold(params.get(param_key))
+        if threshold is None:
+            continue
+
+        over_odds = odds.get(over_code)
+        under_odds = odds.get(under_code)
+        if over_odds is None and under_odds is None:
+            continue
+
+        results.append(
+            _build_game_total_raw_odds(
+                match,
+                market_type="game_total_ot",
                 threshold=threshold,
                 over_odds=over_odds,
                 under_odds=under_odds,
@@ -233,6 +321,17 @@ def _get_player_match_ids(matches: list[dict]) -> list[int]:
     ]
 
 
+def _get_total_match_ids(matches: list[dict]) -> list[int]:
+    ids: list[int] = []
+    for match in matches:
+        if not _parse_game_total_ot_match(match):
+            continue
+        match_id = match.get("id")
+        if match_id:
+            ids.append(match_id)
+    return ids
+
+
 def _get_detail_fetch_concurrency(http_client: HttpClient, match_count: int) -> int:
     """Derive safe detail-fetch concurrency from the client's configured rate limit."""
     if match_count <= 0:
@@ -263,13 +362,19 @@ class OktagonBetScraper(BaseScraper):
     def get_supported_leagues(self) -> list[str]:
         return ["basketball"]
 
-    async def _fetch_detail_markets(self, match_ids: list[int]) -> list[RawOddsData]:
+    async def _fetch_detail_markets(
+        self,
+        match_ids: list[int],
+        parser: Callable[[dict], list[RawOddsData]],
+        semaphore: asyncio.Semaphore | None = None,
+    ) -> list[RawOddsData]:
         if not match_ids:
             return []
 
-        semaphore = asyncio.Semaphore(
-            _get_detail_fetch_concurrency(self._http, len(match_ids))
-        )
+        if semaphore is None:
+            semaphore = asyncio.Semaphore(
+                _get_detail_fetch_concurrency(self._http, len(match_ids))
+            )
 
         async def fetch(match_id: int) -> list[RawOddsData]:
             async with semaphore:
@@ -282,40 +387,97 @@ class OktagonBetScraper(BaseScraper):
                 except Exception:
                     logger.warning("OktagonBet: failed to fetch detail for match %s", match_id)
                     return []
-                return _parse_match_detail(detail)
+                return parser(detail)
 
         detail_results = await asyncio.gather(*(fetch(match_id) for match_id in match_ids))
         return [item for result in detail_results for item in result]
+
+    async def _fetch_list(self, url: str, label: str) -> dict:
+        try:
+            return await self._http.get_json(
+                url,
+                params=_DEFAULT_PARAMS,
+                headers=_DEFAULT_HEADERS,
+            )
+        except Exception:
+            logger.warning("OktagonBet: failed to fetch %s list", label, exc_info=True)
+            return {}
+
+    @staticmethod
+    def _dedupe_raw_odds(rows: list[RawOddsData]) -> list[RawOddsData]:
+        deduped: dict[tuple, RawOddsData] = {}
+        order: list[tuple] = []
+        for row in rows:
+            key = (
+                row.bookmaker_id,
+                row.league_id,
+                row.home_team,
+                row.away_team,
+                row.player_name,
+                row.market_type,
+                row.threshold,
+            )
+            if key not in deduped:
+                order.append(key)
+            deduped[key] = row
+        return [deduped[key] for key in order]
 
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         if league_id != "basketball":
             return []
 
-        try:
-            data = await self._http.get_json(
-                _LIST_URL,
-                params=_DEFAULT_PARAMS,
-                headers=_DEFAULT_HEADERS,
+        player_data, totals_data = await asyncio.gather(
+            self._fetch_list(_PLAYER_LIST_URL, "player"),
+            self._fetch_list(_TOTALS_LIST_URL, "basketball"),
+        )
+
+        player_matches = player_data.get("esMatches", [])
+        total_matches = totals_data.get("esMatches", [])
+
+        player_results: list[RawOddsData] = []
+        for match in player_matches:
+            player_results.extend(_parse_match(match))
+
+        total_results: list[RawOddsData] = []
+        for match in total_matches:
+            total_results.extend(_parse_game_total_ot_match(match))
+
+        player_match_ids = _get_player_match_ids(player_matches)
+        total_match_ids = _get_total_match_ids(total_matches)
+        detail_count = len(player_match_ids) + len(total_match_ids)
+        detail_semaphore = None
+        if detail_count:
+            detail_semaphore = asyncio.Semaphore(
+                _get_detail_fetch_concurrency(self._http, detail_count)
             )
-        except Exception:
-            logger.exception("OktagonBet list scrape failed")
-            return []
 
-        matches = data.get("esMatches", [])
-        if not matches:
-            logger.warning("OktagonBet returned 0 matches")
-            return []
+        player_detail_results, total_detail_results = await asyncio.gather(
+            self._fetch_detail_markets(
+                player_match_ids,
+                _parse_match_detail,
+                semaphore=detail_semaphore,
+            ),
+            self._fetch_detail_markets(
+                total_match_ids,
+                _parse_game_total_ot_match,
+                semaphore=detail_semaphore,
+            ),
+        )
+        player_results.extend(player_detail_results)
+        total_results.extend(total_detail_results)
 
-        results: list[RawOddsData] = []
-        for match in matches:
-            results.extend(_parse_match(match))
-
-        match_ids = _get_player_match_ids(matches)
-        results.extend(await self._fetch_detail_markets(match_ids))
+        player_results = self._dedupe_raw_odds(player_results)
+        total_results = self._dedupe_raw_odds(total_results)
+        results = [*player_results, *total_results]
 
         logger.info(
-            "OktagonBet scraped %d player odds from %d matches",
-            len(results),
-            len(matches),
+            (
+                "OktagonBet scraped %d player odds from %d player matches "
+                "and %d OT total odds from %d basketball matches"
+            ),
+            len(player_results),
+            len(player_matches),
+            len(total_results),
+            len(total_matches),
         )
         return results

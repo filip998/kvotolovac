@@ -12,7 +12,9 @@ from app.scrapers.oktagonbet_scraper import (
     OktagonBetScraper,
     _get_detail_fetch_concurrency,
     _get_player_match_ids,
+    _get_total_match_ids,
     _parse_match,
+    _parse_game_total_ot_match,
     _parse_match_detail,
     _parse_start_time,
     _is_player_market,
@@ -21,11 +23,18 @@ from app.scrapers.oktagonbet_scraper import (
 from app.models.schemas import RawOddsData
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "oktagonbet_specials.json"
+TOTALS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "oktagonbet_basketball_totals.json"
 
 
 @pytest.fixture
 def fixture_data() -> dict:
     with open(FIXTURE_PATH) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def totals_fixture_data() -> dict:
+    with open(TOTALS_FIXTURE_PATH) as f:
         return json.load(f)
 
 
@@ -89,6 +98,14 @@ def test_extract_league_id_aba():
     assert _extract_league_id("Igrači ~ AdmiralBet ABA liga - plej of") == "aba_liga"
 
 
+def test_extract_league_id_live_basketball_variants():
+    assert _extract_league_id("Argentina ~ Liga A") == "argentina_1"
+    assert _extract_league_id("Puerto Rico ~ BSN") == "portoriko_1"
+    assert _extract_league_id("New Zealand ~ NBL") == "new_zealand"
+    assert _extract_league_id("South Korea ~ KBL") == "south_korea_play_offs"
+    assert _extract_league_id("Uruguay ~ Liga Uruguaya") == "uruguay_winners_stage"
+
+
 def test_extract_league_id_empty():
     assert _extract_league_id("") == "basketball"
 
@@ -99,6 +116,11 @@ def test_extract_league_id_empty():
 def test_get_player_match_ids(fixture_data, player_matches):
     ids = _get_player_match_ids(fixture_data["esMatches"])
     assert ids == [match["id"] for match in player_matches]
+
+
+def test_get_total_match_ids(totals_fixture_data):
+    ids = _get_total_match_ids(totals_fixture_data["list"]["esMatches"])
+    assert ids == [42182971]
 
 
 def test_parse_match_returns_data(player_matches):
@@ -319,6 +341,41 @@ def test_parse_match_partial_odds():
     assert results[0].under_odds is None
 
 
+def test_parse_game_total_ot_match_from_list_fixture(totals_fixture_data):
+    results = _parse_game_total_ot_match(totals_fixture_data["list"]["esMatches"][0])
+
+    assert len(results) == 1
+    assert results[0].market_type == "game_total_ot"
+    assert results[0].league_id == "argentina_1"
+    assert (results[0].threshold, results[0].over_odds, results[0].under_odds) == (
+        157.5,
+        1.85,
+        1.85,
+    )
+
+
+def test_parse_game_total_ot_match_from_detail_fixture(totals_fixture_data):
+    results = _parse_game_total_ot_match(totals_fixture_data["detail"])
+
+    assert len(results) == 9
+    assert all(r.market_type == "game_total_ot" for r in results)
+    assert sorted((r.threshold, r.over_odds, r.under_odds) for r in results) == [
+        (153.5, 1.55, 2.25),
+        (154.5, 1.62, 2.1),
+        (155.5, 1.7, 2.0),
+        (156.5, 1.75, 1.95),
+        (157.5, 1.85, 1.85),
+        (158.5, 1.93, 1.77),
+        (159.5, 2.0, 1.7),
+        (160.5, 2.15, 1.6),
+        (161.5, 2.3, 1.53),
+    ]
+
+
+def test_parse_game_total_ot_match_excludes_combo_only_match(totals_fixture_data):
+    assert _parse_game_total_ot_match(totals_fixture_data["list"]["esMatches"][1]) == []
+
+
 def test_parse_match_detail_fixed_thresholds():
     match = {
         "home": "Player1",
@@ -360,6 +417,69 @@ async def test_scraper_returns_data(fixture_data):
 
 
 @pytest.mark.asyncio
+async def test_scraper_fetches_ot_detail_ladder(totals_fixture_data):
+    scraper = OktagonBetScraper()
+    list_data = json.loads(json.dumps(totals_fixture_data["list"]))
+    list_data["esMatches"][0]["odds"]["50444"] = 1.83
+    list_data["esMatches"][0]["odds"]["50445"] = 1.87
+
+    async def mock_get(url, **kwargs):
+        if "/sport/SK/mob" in url:
+            return {"esMatches": []}
+        if "/sport/B/mob" in url:
+            return list_data
+        if "/match/42182971" in url:
+            return totals_fixture_data["detail"]
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert len(results) == 9
+    assert {r.market_type for r in results} == {"game_total_ot"}
+    assert sorted(r.threshold for r in results) == [
+        153.5,
+        154.5,
+        155.5,
+        156.5,
+        157.5,
+        158.5,
+        159.5,
+        160.5,
+        161.5,
+    ]
+    base_line = next(result for result in results if result.threshold == 157.5)
+    assert (base_line.over_odds, base_line.under_odds) == (1.85, 1.85)
+
+
+@pytest.mark.asyncio
+async def test_scraper_detail_replaces_list_when_kickoff_time_changes(totals_fixture_data):
+    scraper = OktagonBetScraper()
+    list_data = json.loads(json.dumps(totals_fixture_data["list"]))
+    detail_data = json.loads(json.dumps(totals_fixture_data["detail"]))
+    list_data["esMatches"][0]["odds"]["50444"] = 1.83
+    list_data["esMatches"][0]["odds"]["50445"] = 1.87
+    detail_data["kickOffTime"] = list_data["esMatches"][0]["kickOffTime"] + 300000
+
+    async def mock_get(url, **kwargs):
+        if "/sport/SK/mob" in url:
+            return {"esMatches": []}
+        if "/sport/B/mob" in url:
+            return list_data
+        if "/match/42182971" in url:
+            return detail_data
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert len(results) == 9
+    base_line = next(result for result in results if result.threshold == 157.5)
+    assert (base_line.over_odds, base_line.under_odds) == (1.85, 1.85)
+    assert base_line.start_time == "2026-04-13T23:05:00+00:00"
+
+
+@pytest.mark.asyncio
 async def test_scraper_fetches_detail_ladders(player_matches):
     scraper = OktagonBetScraper()
     detail_matches = {
@@ -373,6 +493,8 @@ async def test_scraper_fetches_detail_ladders(player_matches):
     async def mock_get(url, **kwargs):
         if "/sport/SK/mob" in url:
             return {"esMatches": player_matches}
+        if "/sport/B/mob" in url:
+            return {"esMatches": []}
         for match_id, detail in detail_matches.items():
             if f"/match/{match_id}" in url:
                 return detail
@@ -422,6 +544,8 @@ async def test_scraper_limits_detail_fetch_concurrency():
         nonlocal peak_active, active
         if "/sport/SK/mob" in url:
             return {"esMatches": matches}
+        if "/sport/B/mob" in url:
+            return {"esMatches": []}
 
         active += 1
         peak_active = max(peak_active, active)
