@@ -12,7 +12,9 @@ from app.scrapers.meridian_scraper import (
     _build_basic_auth,
     _build_event_context,
     _get_detail_fetch_concurrency,
+    _is_game_total_ot_group,
     _is_player_market,
+    _parse_game_total_ot_events,
     _parse_player_name,
     _parse_markets,
     _parse_start_time,
@@ -34,6 +36,105 @@ def events_data() -> dict:
 def markets_data() -> dict:
     with open(MARKETS_FIXTURE) as f:
         return json.load(f)
+
+
+@pytest.fixture
+def offer_leagues_data() -> dict:
+    return {
+        "payload": {
+            "leagues": [
+                {
+                    "leagueId": 77,
+                    "leagueName": "NBA",
+                    "leagueSlug": "usa-nba",
+                    "events": [
+                        {
+                            "header": {
+                                "eventId": 18722964,
+                                "state": "ACTIVE",
+                                "startTime": 4_102_444_800_000,
+                                "rivals": ["Philadelphia 76ers", "Orlando Magic"],
+                                "league": {
+                                    "leagueId": 77,
+                                    "name": "NBA",
+                                    "slug": "usa-nba",
+                                },
+                            },
+                            "positions": [
+                                {
+                                    "index": 0,
+                                    "groups": [
+                                        {
+                                            "name": "Pobednik (uklj.OT )",
+                                            "overUnder": None,
+                                            "selections": [
+                                                {"name": "1", "price": 1.79},
+                                                {"name": "2", "price": 2.04},
+                                            ],
+                                        }
+                                    ],
+                                },
+                                {
+                                    "index": 1,
+                                    "groups": [
+                                        {
+                                            "name": "Ukupno (uklj.OT) ",
+                                            "overUnder": 222.5,
+                                            "selections": [
+                                                {"name": "Manje", "price": 1.91},
+                                                {"name": "Više", "price": 1.9},
+                                            ],
+                                        }
+                                    ],
+                                },
+                                {
+                                    "index": 2,
+                                    "groups": [
+                                        {
+                                            "name": "Ukupno Poena",
+                                            "overUnder": 219.5,
+                                            "selections": [
+                                                {"name": "Manje", "price": 1.86},
+                                                {"name": "Više", "price": 1.94},
+                                            ],
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                        {
+                            "header": {
+                                "eventId": 18723322,
+                                "state": "ACTIVE",
+                                "startTime": 4_102_448_400_000,
+                                "rivals": ["LA Clippers", "Golden State Warriors"],
+                                "league": {
+                                    "leagueId": 77,
+                                    "name": "NBA",
+                                    "slug": "usa-nba",
+                                },
+                            },
+                            "positions": [
+                                {
+                                    "index": 0,
+                                    "groups": [
+                                        {
+                                            "name": "Ukupno (uklj.OT) ",
+                                            "overUnder": 221.5,
+                                            "selections": [
+                                                {"name": "Manje", "price": 1.92},
+                                                {"name": "Više", "price": 1.89},
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
+                    ],
+                }
+            ]
+        }
+    }
 
 
 # ── Unit tests for helpers ────────────────────────────────
@@ -177,6 +278,26 @@ def test_parse_markets_empty():
     assert _parse_markets([], 123, "A", "B", "x", None, "player_points") == []
 
 
+def test_is_game_total_ot_group():
+    assert _is_game_total_ot_group("Ukupno (uklj.OT) ")
+    assert not _is_game_total_ot_group("Ukupno Poena")
+
+
+def test_parse_game_total_ot_events_returns_only_ot_totals(offer_leagues_data):
+    results = _parse_game_total_ot_events(
+        offer_leagues_data["payload"]["leagues"],
+        now_epoch_ms=0,
+    )
+
+    assert len(results) == 2
+    assert {result.market_type for result in results} == {"game_total_ot"}
+    assert {result.player_name for result in results} == {None}
+    assert {(result.home_team, result.away_team, result.threshold, result.over_odds, result.under_odds) for result in results} == {
+        ("Philadelphia 76ers", "Orlando Magic", 222.5, 1.9, 1.91),
+        ("LA Clippers", "Golden State Warriors", 221.5, 1.89, 1.92),
+    }
+
+
 def test_parse_markets_skips_null_threshold():
     """Markets with overUnder=null (milestone-style) are skipped."""
     payload = [{
@@ -269,7 +390,7 @@ def test_parse_markets_active_with_odds():
 
 
 @pytest.mark.asyncio
-async def test_scraper_returns_data(events_data, markets_data):
+async def test_scraper_returns_data(events_data, markets_data, offer_leagues_data):
     scraper = MeridianScraper()
     future_events = copy.deepcopy(events_data)
     for event in future_events["payload"]["events"]:
@@ -283,6 +404,8 @@ async def test_scraper_returns_data(events_data, markets_data):
         if "/sport/55/events" in url:
             page = int(kwargs["params"]["page"])
             return future_events if page == 0 else {"payload": {"events": []}}
+        if "/offer/sport/55/league" in url:
+            return offer_leagues_data
         return markets_payload
 
     with patch.object(scraper._http, "post_json", side_effect=mock_post), \
@@ -291,6 +414,7 @@ async def test_scraper_returns_data(events_data, markets_data):
 
     assert len(results) > 0
     assert all(isinstance(r, RawOddsData) for r in results)
+    assert any(result.market_type == "game_total_ot" for result in results)
 
 
 @pytest.mark.asyncio
@@ -392,6 +516,8 @@ async def test_scraper_filters_events_before_market_fetch():
         if "/sport/55/events" in url:
             page = int(kwargs["params"]["page"])
             return events_payload if page == 0 else {"payload": {"events": []}}
+        if "/offer/sport/55/league" in url:
+            return {"payload": {"leagues": []}}
         market_calls.append((int(url.split("/events/")[1].split("/")[0]), kwargs["params"]["gameGroupId"]))
         return {"payload": []}
 
@@ -482,6 +608,8 @@ async def test_scraper_fetches_secondary_groups_only_for_point_hits():
         if "/sport/55/events" in url:
             page = int(kwargs["params"]["page"])
             return events_payload if page == 0 else {"payload": {"events": []}}
+        if "/offer/sport/55/league" in url:
+            return {"payload": {"leagues": []}}
         game_group = kwargs["params"]["gameGroupId"]
         market_calls.append(game_group)
         if game_group == "1ace0bb3-759d-41a1-8964-7dc8aac38cfe":
@@ -506,3 +634,49 @@ async def test_scraper_fetches_secondary_groups_only_for_point_hits():
         "ce657e80-2e15-47b9-bbcb-871f6e597a22",
         "1d5c0101-d012-42dc-8d21-b3da1dfd1fd1",
     ]
+
+
+@pytest.mark.asyncio
+async def test_scraper_fetches_game_total_ot_from_offer_endpoint(markets_data, offer_leagues_data):
+    scraper = MeridianScraper()
+    events_payload = {
+        "payload": {
+            "events": [
+                {
+                    "header": {
+                        "eventId": 101,
+                        "state": "ACTIVE",
+                        "rivals": ["Philadelphia 76ers", "Orlando Magic"],
+                        "startTime": 4_102_444_800_000,
+                        "league": {"leagueId": 77, "slug": "usa-nba"},
+                    }
+                }
+            ]
+        }
+    }
+    markets_payload = markets_data["markets"]
+    requested_leagues: list[str] = []
+
+    async def mock_post(url, **kwargs):
+        return {"access_token": "test-token", "expires_at": 9999999999000}
+
+    async def mock_get(url, **kwargs):
+        if "/sport/55/events" in url:
+            page = int(kwargs["params"]["page"])
+            return events_payload if page == 0 else {"payload": {"events": []}}
+        if "/offer/sport/55/league" in url:
+            requested_leagues.append(kwargs["params"]["leagues"])
+            return offer_leagues_data
+        return markets_payload
+
+    with patch.object(scraper._http, "post_json", side_effect=mock_post), patch.object(
+        scraper._http, "get_json", side_effect=mock_get
+    ):
+        results = await scraper.scrape_odds("basketball")
+
+    totals = [result for result in results if result.market_type == "game_total_ot"]
+    assert requested_leagues == ["77"]
+    assert {(result.home_team, result.away_team, result.threshold, result.over_odds, result.under_odds) for result in totals} == {
+        ("Philadelphia 76ers", "Orlando Magic", 222.5, 1.9, 1.91),
+        ("LA Clippers", "Golden State Warriors", 221.5, 1.89, 1.92),
+    }

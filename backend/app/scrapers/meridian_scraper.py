@@ -17,6 +17,7 @@ _AUTH_URL = "https://auth.meridianbet.com/oauth/token"
 _API_BASE = "https://online.meridianbet.com/betshop"
 _EVENTS_URL = f"{_API_BASE}/api/v1/standard/sport/55/events"
 _MARKETS_URL = f"{_API_BASE}/api/v2/events/{{event_id}}/markets"
+_OFFER_LEAGUE_URL = f"{_API_BASE}/api/v1/offer/sport/55/league"
 
 _CLIENT_NAME = "web-serbia"
 _CLIENT_ID = "zF9zVU3LsdjvpHv"
@@ -44,6 +45,7 @@ _TOKEN_REFRESH_MARGIN_S = 60
 _MAX_PAGES = 10
 _MAX_DETAIL_CONCURRENCY = 8
 _MIN_DETAIL_CONCURRENCY = 2
+_MAX_OFFER_LEAGUE_IDS_PER_REQUEST = 20
 
 
 def _build_basic_auth() -> str:
@@ -66,6 +68,23 @@ def _parse_player_name(raw_name: str) -> str:
     return raw_name.strip()
 
 
+def _extract_over_under_odds(selections: list[dict]) -> tuple[float | None, float | None]:
+    over_odds: float | None = None
+    under_odds: float | None = None
+
+    for selection in selections:
+        selection_name = str(selection.get("name", "")).lower()
+        price = selection.get("price")
+        if price is None:
+            continue
+        if "više" in selection_name or "vise" in selection_name:
+            over_odds = price
+        elif "manje" in selection_name:
+            under_odds = price
+
+    return over_odds, under_odds
+
+
 def _parse_start_time(epoch_ms: int | None) -> str | None:
     if not epoch_ms:
         return None
@@ -75,6 +94,15 @@ def _parse_start_time(epoch_ms: int | None) -> str | None:
 def _is_player_market(name: str) -> bool:
     """Return True if the market name looks like a player ('LastName, FirstName')."""
     return "," in name
+
+
+def _is_game_total_ot_group(name: str) -> bool:
+    normalized = "".join(name.casefold().split())
+    return normalized.startswith("ukupno(uklj.ot)")
+
+
+def _chunked(values: list[int], size: int) -> list[list[int]]:
+    return [values[index:index + size] for index in range(0, len(values), size)]
 
 
 def _get_detail_fetch_concurrency(http_client: HttpClient, event_count: int) -> int:
@@ -127,6 +155,7 @@ def _build_event_context(event: dict, *, now_epoch_ms: int) -> dict[str, object]
         "away_team": rivals[1],
         "start_time": _parse_start_time(start_epoch_ms),
         "league_id": league_info.get("slug", "basketball"),
+        "league_numeric_id": league_info.get("leagueId"),
     }
 
 
@@ -161,16 +190,7 @@ def _parse_markets(
             if not player_name or not _is_player_market(player_name):
                 continue
 
-            over_odds: float | None = None
-            under_odds: float | None = None
-
-            for sel in market.get("selections", []):
-                sel_name = sel.get("name", "").lower()
-                price = sel.get("price")
-                if "više" in sel_name or "vise" in sel_name:
-                    over_odds = price
-                elif "manje" in sel_name:
-                    under_odds = price
+            over_odds, under_odds = _extract_over_under_odds(market.get("selections", []))
 
             if over_odds is None and under_odds is None:
                 continue
@@ -189,6 +209,49 @@ def _parse_markets(
                     start_time=start_time,
                 )
             )
+
+    return results
+
+
+def _parse_game_total_ot_events(
+    leagues_payload: list[dict],
+    *,
+    now_epoch_ms: int,
+) -> list[RawOddsData]:
+    results: list[RawOddsData] = []
+
+    for league in leagues_payload:
+        for event in league.get("events", []):
+            event_context = _build_event_context(event, now_epoch_ms=now_epoch_ms)
+            if event_context is None:
+                continue
+
+            for position in event.get("positions", []):
+                for group in position.get("groups", []):
+                    if not _is_game_total_ot_group(str(group.get("name", ""))):
+                        continue
+
+                    threshold = group.get("overUnder")
+                    if threshold is None:
+                        continue
+
+                    over_odds, under_odds = _extract_over_under_odds(group.get("selections", []))
+                    if over_odds is None and under_odds is None:
+                        continue
+
+                    results.append(
+                        RawOddsData(
+                            bookmaker_id="meridian",
+                            league_id=str(event_context["league_id"]),
+                            home_team=str(event_context["home_team"]),
+                            away_team=str(event_context["away_team"]),
+                            market_type="game_total_ot",
+                            threshold=threshold,
+                            over_odds=over_odds,
+                            under_odds=under_odds,
+                            start_time=event_context["start_time"],
+                        )
+                    )
 
     return results
 
@@ -345,6 +408,55 @@ class MeridianScraper(BaseScraper):
             results.extend(batch)
         return results
 
+    async def _fetch_game_total_ot_odds(
+        self,
+        token: str,
+        league_ids: list[int],
+        *,
+        now_epoch_ms: int,
+    ) -> list[RawOddsData]:
+        if not league_ids:
+            return []
+
+        results: list[RawOddsData] = []
+
+        for league_batch in _chunked(league_ids, _MAX_OFFER_LEAGUE_IDS_PER_REQUEST):
+            try:
+                data = await self._http.get_json(
+                    _OFFER_LEAGUE_URL,
+                    params={
+                        "page": "0",
+                        "time": "ONE_DAY",
+                        "leagues": ",".join(str(league_id) for league_id in league_batch),
+                    },
+                    headers=self._auth_headers(token),
+                )
+            except Exception:
+                logger.warning(
+                    "Meridian: failed to fetch OT total offer batch for %d leagues",
+                    len(league_batch),
+                )
+                continue
+
+            results.extend(
+                _parse_game_total_ot_events(
+                    data.get("payload", {}).get("leagues", []),
+                    now_epoch_ms=now_epoch_ms,
+                )
+            )
+
+        deduped: dict[tuple[str, str, str, float], RawOddsData] = {}
+        for result in results:
+            deduped[
+                (
+                    result.league_id,
+                    result.home_team,
+                    result.away_team,
+                    result.threshold,
+                )
+            ] = result
+        return list(deduped.values())
+
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         if league_id != "basketball":
             return []
@@ -372,16 +484,31 @@ class MeridianScraper(BaseScraper):
             logger.warning("Meridian: 0 candidate events after filtering %d listed events", len(events))
             return []
 
+        offer_league_ids = sorted(
+            {
+                int(event_context["league_numeric_id"])
+                for event_context in event_contexts
+                if event_context.get("league_numeric_id") is not None
+            }
+        )
+        game_total_ot_results = await self._fetch_game_total_ot_odds(
+            token,
+            offer_league_ids,
+            now_epoch_ms=now_epoch_ms,
+        )
+
         concurrency = _get_detail_fetch_concurrency(self._http, len(event_contexts))
         semaphore = asyncio.Semaphore(concurrency)
         event_results = await asyncio.gather(
             *(self._fetch_event_markets(token, event_context, semaphore) for event_context in event_contexts)
         )
         results = [item for batch in event_results for item in batch]
+        results.extend(game_total_ot_results)
 
         logger.info(
-            "Meridian scraped %d player odds from %d listed events (%d candidates, detail concurrency=%d)",
+            "Meridian scraped %d odds (%d OT totals) from %d listed events (%d candidates, detail concurrency=%d)",
             len(results),
+            len(game_total_ot_results),
             len(events),
             len(event_contexts),
             concurrency,
