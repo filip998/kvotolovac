@@ -171,6 +171,7 @@ export interface TeamReviewApproval {
   status: 'approved';
   saved_alias: string;
   saved_team_name: string;
+  resolved_team_name: string | null;
 }
 
 export interface TeamReviewAction {

@@ -44,7 +44,7 @@ async def approve_team_review_case(case_id: int) -> TeamReviewApprovalOut:
             detail="Team review case needs a resolved competition scope before approval",
         )
 
-    await asyncio.to_thread(
+    resolution = await asyncio.to_thread(
         remember_team_alias,
         bookmaker_id=case.bookmaker_id,
         raw_team_name=case.raw_team_name,
@@ -57,6 +57,11 @@ async def approve_team_review_case(case_id: int) -> TeamReviewApprovalOut:
         status="approved",
         saved_alias=case.raw_team_name,
         saved_team_name=case.suggested_team_name,
+        resolved_team_name=(
+            resolution.team_name
+            if resolution.team_name != case.suggested_team_name
+            else None
+        ),
     )
 
 

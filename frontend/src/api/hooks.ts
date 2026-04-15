@@ -411,6 +411,7 @@ export function useApproveTeamReviewCase() {
           status: 'approved',
           saved_alias: caseItem.raw_team_name,
           saved_team_name: caseItem.suggested_team_name,
+          resolved_team_name: null,
         };
       }
 

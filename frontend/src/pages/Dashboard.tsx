@@ -366,14 +366,16 @@ export default function Dashboard() {
   const handleApproveTeamCase = (caseId: number) => {
     setTeamReviewMessage(null);
     approveTeamReviewCase.mutate(
-      { caseId },
-      {
-        onSuccess: (result) => {
-          setTeamReviewMessage(
-            `Saved "${result.saved_alias}" -> ${result.saved_team_name}. Run the next scrape to apply it.`
-          );
-          void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
-          void refetchTeamReviewCases();
+        { caseId },
+        {
+          onSuccess: (result) => {
+            setTeamReviewMessage(
+              result.resolved_team_name
+                ? `Saved "${result.saved_alias}" -> ${result.saved_team_name}. Current canonical: ${result.resolved_team_name}. Run the next scrape to apply it.`
+                : `Saved "${result.saved_alias}" -> ${result.saved_team_name}. Run the next scrape to apply it.`
+            );
+            void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
+            void refetchTeamReviewCases();
         },
         onError: (mutationError) => {
           setTeamReviewMessage(`Failed to save team alias: ${mutationError.message}`);

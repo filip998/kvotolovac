@@ -7,6 +7,7 @@ dist/
 .venv/
 venv/
 *.db
+*.db-*
 
 # Node
 node_modules/
@@ -21,6 +22,7 @@ frontend/dist/
 # Env
 .env
 .env.local
+backend/team_registry_review_*.json.lock
 
 # OS
 .DS_Store

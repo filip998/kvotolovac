@@ -141,6 +141,7 @@ class TeamReviewApprovalOut(BaseModel):
     status: str
     saved_alias: str
     saved_team_name: str
+    resolved_team_name: Optional[str] = None
 
 
 class TeamReviewActionOut(BaseModel):

@@ -135,31 +135,49 @@ def resolve_team_alias(
     registry = load_team_registry()
     bookmaker_key = normalize_identity_text(bookmaker_id) if bookmaker_id else ""
     competition_key = _normalize_competition_key(competition_id)
+    current_key = raw_key
+    current_team_name = str(raw_team_name).strip()
+    source: str | None = None
+    seen_keys: set[str] = set()
 
-    if bookmaker_key and competition_key:
-        bookmaker_competition = registry.bookmaker_competition_aliases.get(bookmaker_key, {})
-        if raw_key in bookmaker_competition.get(competition_key, {}):
-            return TeamAliasResolution(
-                team_name=bookmaker_competition[competition_key][raw_key],
-                source="bookmaker_competition_alias",
-            )
+    while current_key and current_key not in seen_keys:
+        seen_keys.add(current_key)
+        next_team_name: str | None = None
+        next_source: str | None = None
 
-    if competition_key and raw_key in registry.competition_aliases.get(competition_key, {}):
-        return TeamAliasResolution(
-            team_name=registry.competition_aliases[competition_key][raw_key],
-            source="competition_alias",
-        )
+        if bookmaker_key and competition_key:
+            bookmaker_competition = registry.bookmaker_competition_aliases.get(bookmaker_key, {})
+            if current_key in bookmaker_competition.get(competition_key, {}):
+                next_team_name = bookmaker_competition[competition_key][current_key]
+                next_source = "bookmaker_competition_alias"
 
-    if bookmaker_key and raw_key in registry.bookmaker_aliases.get(bookmaker_key, {}):
-        return TeamAliasResolution(
-            team_name=registry.bookmaker_aliases[bookmaker_key][raw_key],
-            source="bookmaker_alias",
-        )
+        if next_team_name is None and competition_key:
+            competition_aliases = registry.competition_aliases.get(competition_key, {})
+            if current_key in competition_aliases:
+                next_team_name = competition_aliases[current_key]
+                next_source = "competition_alias"
 
-    if raw_key in registry.aliases:
-        return TeamAliasResolution(team_name=registry.aliases[raw_key], source="alias")
+        if next_team_name is None and bookmaker_key:
+            bookmaker_aliases = registry.bookmaker_aliases.get(bookmaker_key, {})
+            if current_key in bookmaker_aliases:
+                next_team_name = bookmaker_aliases[current_key]
+                next_source = "bookmaker_alias"
 
-    return None
+        if next_team_name is None and current_key in registry.aliases:
+            next_team_name = registry.aliases[current_key]
+            next_source = "alias"
+
+        if next_team_name is None:
+            break
+
+        source = source or next_source
+        current_team_name = next_team_name
+        current_key = normalize_identity_text(next_team_name)
+
+    if source is None:
+        return None
+
+    return TeamAliasResolution(team_name=current_team_name, source=source)
 
 
 def remember_team_alias(
@@ -174,6 +192,13 @@ def remember_team_alias(
     bookmaker_key = normalize_identity_text(bookmaker_id)
     raw_key = normalize_identity_text(raw_team_name)
     competition_key = _normalize_competition_key(competition_id)
+    target_team_name = team_name.strip()
+
+    if not raw_key or raw_key == normalize_identity_text(target_team_name):
+        return TeamAliasResolution(
+            team_name=target_team_name,
+            source="bookmaker_competition_alias" if competition_key else "bookmaker_alias",
+        )
 
     with _registry_lock(path):
         clear_team_registry_cache()
@@ -185,10 +210,10 @@ def remember_team_alias(
             )
             bookmaker_competition_aliases.setdefault(bookmaker_key, {}).setdefault(
                 competition_key, {}
-            )[raw_key] = team_name
+            )[raw_key] = target_team_name
         else:
             bookmaker_aliases = payload.setdefault("bookmaker_aliases", {})
-            bookmaker_aliases.setdefault(bookmaker_key, {})[raw_key] = team_name
+            bookmaker_aliases.setdefault(bookmaker_key, {})[raw_key] = target_team_name
 
         with NamedTemporaryFile(
             "w",

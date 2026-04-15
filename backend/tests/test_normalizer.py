@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from app.services.normalizer import (
@@ -11,6 +14,7 @@ from app.services.normalizer import (
     normalize_player_name,
     normalize_team_name,
 )
+from app.services.team_registry import remember_team_alias
 from app.models.schemas import RawOddsData
 
 
@@ -48,6 +52,47 @@ def test_normalize_team_fuzzy():
 
 def test_normalize_team_fuzzy_does_not_merge_opponents_with_shared_city_tokens():
     assert normalize_team_name("Hapoel Tel-Aviv", "euroleague") == "Hapoel Tel-Aviv"
+
+
+def test_normalize_team_alias_chains_collapse_to_final_target(team_registry_file):
+    remember_team_alias(
+        bookmaker_id="meridian",
+        raw_team_name="Uniao Corinthians",
+        team_name="EC Uniao Corinthians",
+        competition_id="brazil_nbb",
+    )
+    remember_team_alias(
+        bookmaker_id="meridian",
+        raw_team_name="U.Corinthians",
+        team_name="Uniao Corinthians",
+        competition_id="brazil_nbb",
+    )
+
+    assert normalize_team_name("Uniao Corinthians", "brazil_nbb", "meridian") == "EC Uniao Corinthians"
+    assert normalize_team_name("U.Corinthians", "brazil_nbb", "meridian") == "EC Uniao Corinthians"
+
+
+def test_remember_team_alias_preserves_reviewed_target_before_chain_resolution(team_registry_file):
+    remember_team_alias(
+        bookmaker_id="meridian",
+        raw_team_name="Uniao Corinthians",
+        team_name="EC Uniao Corinthians",
+        competition_id="brazil_nbb",
+    )
+
+    resolution = remember_team_alias(
+        bookmaker_id="meridian",
+        raw_team_name="U.Corinthians",
+        team_name="Uniao Corinthians",
+        competition_id="brazil_nbb",
+    )
+    payload = json.loads(Path(team_registry_file).read_text(encoding="utf-8"))
+
+    assert (
+        payload["bookmaker_competition_aliases"]["meridian"]["brazil_nbb"]["u corinthians"]
+        == "Uniao Corinthians"
+    )
+    assert resolution.team_name == "EC Uniao Corinthians"
 
 
 def test_normalize_player_full_name():

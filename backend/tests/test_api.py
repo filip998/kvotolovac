@@ -20,6 +20,7 @@ from app.scrapers.registry import registry
 from app.services.league_registry import resolve_league
 from app.services.scheduler import scheduler
 from app.services.normalizer import normalize_odds_with_diagnostics, normalize_team_name
+from app.services.team_registry import remember_team_alias
 from app.store import odds_store
 
 
@@ -544,9 +545,55 @@ async def test_team_review_cases_and_approval(
     assert len(cases_resp.json()) == 1
     assert approve_resp.status_code == 200
     assert approve_resp.json()["saved_team_name"] == "Rilski Sportist"
+    assert approve_resp.json()["resolved_team_name"] is None
     assert normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian") == "Rilski Sportist"
     assert approved_resp.status_code == 200
     assert approved_resp.json()[0]["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_team_review_approval_flattens_to_final_canonical_team(
+    client: AsyncClient,
+    team_registry_file,
+):
+    batch_scraped_at = "2026-04-16T20:30:00+00:00"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_league("brazil_nbb", "Brazil NBB", "basketball", "Brazil")
+    remember_team_alias(
+        bookmaker_id="meridian",
+        raw_team_name="Uniao Corinthians",
+        team_name="EC Uniao Corinthians",
+        competition_id="brazil_nbb",
+    )
+    case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic.model_validate(
+            {
+                "bookmaker_id": "meridian",
+                "raw_league_id": "Brazil NBB",
+                "normalized_raw_league_id": "brazil nbb",
+                "scope_league_id": "brazil_nbb",
+                "raw_team_name": "U.Corinthians",
+                "normalized_raw_team_name": "U.Corinthians",
+                "suggested_team_name": "Uniao Corinthians",
+                "start_time": batch_scraped_at,
+                "reason_code": "candidate_team_match_same_start_time",
+                "confidence": "high",
+                "similarity_score": 93,
+                "evidence": ["Exact start time: 2026-04-16T20:30:00+00:00"],
+                "status": "pending",
+            }
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    approve_resp = await client.post(f"/api/v1/team-review/cases/{case_id}/approve")
+
+    assert approve_resp.status_code == 200
+    assert approve_resp.json()["saved_team_name"] == "Uniao Corinthians"
+    assert approve_resp.json()["resolved_team_name"] == "EC Uniao Corinthians"
+    assert normalize_team_name("Uniao Corinthians", "brazil_nbb", "meridian") == "EC Uniao Corinthians"
+    assert normalize_team_name("U.Corinthians", "brazil_nbb", "meridian") == "EC Uniao Corinthians"
 
 
 @pytest.mark.asyncio
