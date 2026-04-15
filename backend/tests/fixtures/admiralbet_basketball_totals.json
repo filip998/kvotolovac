@@ -1,0 +1,104 @@
+[
+  {
+    "id": 6205001,
+    "name": "PAOK - Aris",
+    "competitionId": 361,
+    "regionId": 154,
+    "sportId": 2,
+    "isPlayable": true,
+    "dateTime": "2026-04-16T20:15:00",
+    "competitionName": "Grčka 1",
+    "bets": [
+      {
+        "id": 561800001,
+        "eventId": 6205001,
+        "competitionId": 361,
+        "regionId": 154,
+        "sportId": 2,
+        "betTypeId": 213,
+        "sBV": "167.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "Manje", "odd": 1.94, "isPlayable": true},
+          {"name": "Vise", "odd": 1.87, "isPlayable": true}
+        ],
+        "betTypeName": "Ukupno (+OT)"
+      },
+      {
+        "id": 561800002,
+        "eventId": 6205001,
+        "competitionId": 361,
+        "regionId": 154,
+        "sportId": 2,
+        "betTypeId": 213,
+        "sBV": "168.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "Manje", "odd": 1.84075, "isPlayable": true},
+          {"name": "Vise", "odd": 1.9502, "isPlayable": true}
+        ],
+        "betTypeName": "Ukupno (+OT)"
+      },
+      {
+        "id": 561800003,
+        "eventId": 6205001,
+        "competitionId": 361,
+        "regionId": 154,
+        "sportId": 2,
+        "betTypeId": 213,
+        "sBV": "169.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "Manje", "odd": 1.7523, "isPlayable": true},
+          {"name": "Vise", "odd": 2.0394, "isPlayable": true}
+        ],
+        "betTypeName": "Ukupno (+OT)"
+      },
+      {
+        "id": 561800004,
+        "eventId": 6205001,
+        "competitionId": 361,
+        "regionId": 154,
+        "sportId": 2,
+        "betTypeId": 213,
+        "sBV": "170.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "Manje", "odd": 1.6745, "isPlayable": true},
+          {"name": "Vise", "odd": 2.1276, "isPlayable": true}
+        ],
+        "betTypeName": "Ukupno (+OT)"
+      },
+      {
+        "id": 561800005,
+        "eventId": 6205001,
+        "competitionId": 361,
+        "regionId": 154,
+        "sportId": 2,
+        "betTypeId": 728,
+        "sBV": "85.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "Manje", "odd": 1.88, "isPlayable": true},
+          {"name": "Vise", "odd": 1.83, "isPlayable": true}
+        ],
+        "betTypeName": "Domacin ukupno (+OT)"
+      },
+      {
+        "id": 561800006,
+        "eventId": 6205001,
+        "competitionId": 361,
+        "regionId": 154,
+        "sportId": 2,
+        "betTypeId": 191,
+        "sBV": "3.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {"name": "1", "odd": 1.9, "isPlayable": true},
+          {"name": "2", "odd": 1.81, "isPlayable": true}
+        ],
+        "betTypeName": "Hendikep (+OT)"
+      }
+    ]
+  }
+]

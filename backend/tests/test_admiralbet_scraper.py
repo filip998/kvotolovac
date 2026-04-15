@@ -13,16 +13,25 @@ from app.scrapers.admiralbet_scraper import (
     _parse_start_time,
     _parse_over_under_bets,
     _parse_milestone_bets,
+    _parse_game_total_ot_bets,
+    _parse_game_total_ot_event,
     _extract_league_id,
 )
 from app.models.schemas import RawOddsData
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "admiralbet_specials.json"
+TOTALS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "admiralbet_basketball_totals.json"
 
 
 @pytest.fixture
 def fixture_data() -> list[dict]:
     with open(FIXTURE_PATH) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def totals_fixture_data() -> list[dict]:
+    with open(TOTALS_FIXTURE_PATH) as f:
         return json.load(f)
 
 
@@ -177,6 +186,87 @@ def test_parse_over_under_partial_odds():
     assert results[0].under_odds is None
 
 
+# ── Game total (+OT) parsing ──────────────────────────────
+
+
+def test_parse_game_total_ot_bets_multiple_thresholds():
+    event = {
+        "bets": [
+            {
+                "betTypeId": 213,
+                "betTypeName": "Ukupno (+OT)",
+                "sBV": "167.5",
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "Manje", "odd": 1.94, "isPlayable": True},
+                    {"name": "Vise", "odd": 1.87, "isPlayable": True},
+                ],
+            },
+            {
+                "betTypeId": 213,
+                "betTypeName": "Ukupno (+OT)",
+                "sBV": "168.5",
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "Manje", "odd": 1.84, "isPlayable": True},
+                    {"name": "Vise", "odd": 1.95, "isPlayable": True},
+                ],
+            },
+        ]
+    }
+
+    results = _parse_game_total_ot_bets(event, "PAOK", "Aris", None, "grčka 1")
+
+    assert sorted((r.threshold, r.over_odds, r.under_odds) for r in results) == [
+        (167.5, 1.87, 1.94),
+        (168.5, 1.95, 1.84),
+    ]
+    assert all(r.market_type == "game_total_ot" for r in results)
+    assert all(r.player_name is None for r in results)
+
+
+def test_parse_game_total_ot_bets_ignores_team_totals_and_handicaps():
+    event = {
+        "bets": [
+            {
+                "betTypeId": 728,
+                "betTypeName": "Domacin ukupno (+OT)",
+                "sBV": "85.5",
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "Manje", "odd": 1.88, "isPlayable": True},
+                    {"name": "Vise", "odd": 1.83, "isPlayable": True},
+                ],
+            },
+            {
+                "betTypeId": 191,
+                "betTypeName": "Hendikep (+OT)",
+                "sBV": "3.5",
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.9, "isPlayable": True},
+                    {"name": "2", "odd": 1.81, "isPlayable": True},
+                ],
+            },
+            {
+                "betTypeId": 213,
+                "betTypeName": "Ukupno (+OT)",
+                "sBV": "168.5",
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "Manje", "odd": 1.84, "isPlayable": True},
+                    {"name": "Vise", "odd": 1.95, "isPlayable": True},
+                ],
+            },
+        ]
+    }
+
+    results = _parse_game_total_ot_bets(event, "PAOK", "Aris", None, "grčka 1")
+
+    assert len(results) == 1
+    assert results[0].threshold == 168.5
+
+
 # ── Milestone parsing ────────────────────────────────────
 
 
@@ -278,6 +368,16 @@ def test_parse_event_shared_platform_format():
     assert results[0].player_name == "Kevin Durant"
 
 
+def test_parse_game_total_ot_event_fixture(totals_fixture_data):
+    results = _parse_game_total_ot_event(totals_fixture_data[0])
+
+    assert len(results) == 4
+    assert {r.market_type for r in results} == {"game_total_ot"}
+    assert {r.home_team for r in results} == {"PAOK"}
+    assert {r.away_team for r in results} == {"Aris"}
+    assert sorted(r.threshold for r in results) == [167.5, 168.5, 169.5, 170.5]
+
+
 # ── Fixture integration ──────────────────────────────────
 
 
@@ -335,6 +435,29 @@ async def test_scraper_returns_data(fixture_data):
     assert len(results) > 0
     assert all(isinstance(r, RawOddsData) for r in results)
     assert all(r.bookmaker_id == "admiralbet" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_scraper_returns_player_props_and_ot_totals(fixture_data, totals_fixture_data):
+    scraper = AdmiralBetScraper()
+
+    async def mock_get(url, **kwargs):
+        params = kwargs.get("params", {})
+        if params.get("sportId") == "123":
+            return fixture_data
+        if params.get("sportId") == "2":
+            return totals_fixture_data
+        raise AssertionError(f"Unexpected params: {params}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert len(results) > 0
+    assert {"player_points", "player_points_milestones", "game_total_ot"} <= {
+        result.market_type for result in results
+    }
+    game_totals = [result for result in results if result.market_type == "game_total_ot"]
+    assert sorted(result.threshold for result in game_totals) == [167.5, 168.5, 169.5, 170.5]
 
 
 @pytest.mark.asyncio
