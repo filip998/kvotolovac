@@ -1,86 +1,140 @@
 {
-  "canonical_leagues": {
-    "nba": {
-      "name": "NBA",
-      "country": "USA"
-    },
-    "euroleague": {
-      "name": "EuroLeague",
-      "country": null
-    },
-    "aba_liga": {
-      "name": "ABA League",
-      "country": null
-    },
-    "kls": {
-      "name": "KLS",
-      "country": "Serbia"
-    },
-    "bulgaria_nbl": {
-      "name": "Bulgaria NBL",
-      "country": "Bulgaria"
-    },
-    "italy": {
-      "name": "Italy Lega A",
-      "country": "Italy"
-    },
-    "korisliiga": {
-      "name": "Korisliiga",
-      "country": "Finland"
-    },
-    "germany": {
-      "name": "Germany BBL",
-      "country": "Germany"
-    },
-    "poland": {
-      "name": "Poland PLK",
-      "country": "Poland"
-    },
-    "argentina_1": {
-      "name": "Argentina Liga Nacional",
-      "country": "Argentina"
-    },
-    "turkey": {
-      "name": "Turkey Super League",
-      "country": "Turkey"
-    },
-    "portoriko_1": {
-      "name": "Puerto Rico BSN",
-      "country": "Puerto Rico"
-    }
-  },
   "aliases": {
-    "usa nba": "nba",
-    "nba play offs": "nba",
-    "nba promotion play offs": "nba",
-    "aba liga": "aba_liga",
     "aba league": "aba_liga",
-    "aba liga winners stage": "aba_liga",
+    "aba liga": "aba_liga",
     "aba liga losers stage": "aba_liga",
     "aba liga plej of": "aba_liga",
+    "aba liga winners stage": "aba_liga",
     "admiralbet aba liga": "aba_liga",
     "admiralbet aba liga plej of": "aba_liga",
-    "italija 1": "italy",
-    "italy lega a": "italy",
-    "finska 1": "korisliiga",
-    "finska 1 plej of": "korisliiga",
-    "finnish league": "korisliiga",
-    "finland play offs": "korisliiga",
-    "finland korisliiga": "korisliiga",
-    "balkanbet tournament 486": "korisliiga",
-    "nemacka 1": "germany",
-    "germany bbl": "germany",
-    "poljska 1": "poland",
     "argentina": "argentina_1",
     "argentina 1": "argentina_1",
-    "turska 1": "turkey",
-    "turkey super league": "turkey",
+    "balkanbet tournament 486": "korisliiga",
+    "bugarska 1": "bulgaria_nbl",
+    "bulgaria": "bulgaria_nbl",
+    "bulgarian nbl": "bulgaria_nbl",
+    "finland korisliiga": "korisliiga",
+    "finland play offs": "korisliiga",
+    "finnish league": "korisliiga",
+    "finska 1": "korisliiga",
+    "finska 1 plej of": "korisliiga",
+    "germany bbl": "germany",
+    "italija 1": "italy",
+    "italy lega a": "italy",
+    "nba play offs": "nba",
+    "nba promotion play offs": "nba",
+    "nemacka 1": "germany",
+    "poljska 1": "poland",
+    "portoriko 1": "portoriko_1",
     "puerto rico": "portoriko_1",
     "puerto rico 1": "portoriko_1",
-    "portoriko 1": "portoriko_1",
-    "bulgarian nbl": "bulgaria_nbl",
-    "bugarska 1": "bulgaria_nbl",
-    "bulgaria": "bulgaria_nbl"
+    "turkey super league": "turkey",
+    "turska 1": "turkey",
+    "usa nba": "nba"
   },
-  "bookmaker_aliases": {}
+  "bookmaker_aliases": {
+    "admiralbet": {
+      "brazil 1": "brazil",
+      "liga sampiona": "champions_league"
+    },
+    "maxbet": {
+      "ch league play offs": "champions_league",
+      "france": "francuska_1",
+      "venezuela": "venecuela_1"
+    },
+    "meridian": {
+      "italian lega serie b": "serie_b"
+    },
+    "merkurxtip": {
+      "bbl": "germany"
+    },
+    "mozzart": {
+      "liga sampiona": "champions_league"
+    },
+    "oktagonbet": {
+      "brazil nbb": "brazil",
+      "europe bnxt league": "bnxt_liga",
+      "europe champions league": "champions_league",
+      "france lnb": "francuska_1",
+      "france pro a": "francuska_1"
+    },
+    "pinnbet": {
+      "brazil 1": "brazil",
+      "liga sampiona plej of": "champions_league"
+    }
+  },
+  "canonical_leagues": {
+    "aba_liga": {
+      "country": null,
+      "name": "ABA League"
+    },
+    "argentina_1": {
+      "country": "Argentina",
+      "name": "Argentina Liga Nacional"
+    },
+    "bnxt_liga": {
+      "country": null,
+      "name": "BNXT LIGA"
+    },
+    "brazil": {
+      "country": null,
+      "name": "Brazil"
+    },
+    "bulgaria_nbl": {
+      "country": "Bulgaria",
+      "name": "Bulgaria NBL"
+    },
+    "champions_league": {
+      "country": null,
+      "name": "Champions League"
+    },
+    "euroleague": {
+      "country": null,
+      "name": "EuroLeague"
+    },
+    "francuska_1": {
+      "country": null,
+      "name": "Francuska 1"
+    },
+    "germany": {
+      "country": "Germany",
+      "name": "Germany BBL"
+    },
+    "italy": {
+      "country": "Italy",
+      "name": "Italy Lega A"
+    },
+    "kls": {
+      "country": "Serbia",
+      "name": "KLS"
+    },
+    "korisliiga": {
+      "country": "Finland",
+      "name": "Korisliiga"
+    },
+    "nba": {
+      "country": "USA",
+      "name": "NBA"
+    },
+    "poland": {
+      "country": "Poland",
+      "name": "Poland PLK"
+    },
+    "portoriko_1": {
+      "country": "Puerto Rico",
+      "name": "Puerto Rico BSN"
+    },
+    "serie_b": {
+      "country": null,
+      "name": "Serie B"
+    },
+    "turkey": {
+      "country": "Turkey",
+      "name": "Turkey Super League"
+    },
+    "venecuela_1": {
+      "country": null,
+      "name": "Venecuela 1"
+    }
+  }
 }
