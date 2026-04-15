@@ -1,0 +1,64 @@
+{
+  "list": {
+    "esMatches": [
+      {
+        "id": 132948727,
+        "home": "Philadelphia",
+        "away": "Orlando",
+        "kickOffTime": 1776295800000,
+        "leagueName": "NBA",
+        "params": {
+          "overUnderOvertime": "222.5",
+          "handicapOvertime": "-2.5",
+          "homeOverUnderOvertime": "111.5",
+          "awayOverUnderOvertime": "110.5"
+        },
+        "odds": {
+          "50291": 1.77,
+          "50293": 2.0,
+          "50444": 1.9,
+          "50445": 1.9
+        }
+      }
+    ]
+  },
+  "detail": {
+    "id": 132948727,
+    "home": "Philadelphia",
+    "away": "Orlando",
+    "kickOffTime": 1776295800000,
+    "leagueName": "NBA",
+    "params": {
+      "overUnderOvertime3": "220.5",
+      "overUnderOvertime4": "221.5",
+      "overUnderOvertime2": "219.5",
+      "overUnderOvertime7": "225.5",
+      "overUnderOvertime10": "218.5",
+      "overUnderOvertime5": "223.5",
+      "overUnderOvertime11": "226.5",
+      "overUnderOvertime6": "224.5",
+      "overUnderMBTOT1": "222.5",
+      "overUnderOvertime": "222.5"
+    },
+    "odds": {
+      "50444": 1.9,
+      "50445": 1.9,
+      "50446": 2.18,
+      "50447": 1.7,
+      "50448": 2.1,
+      "50449": 1.75,
+      "50450": 2.0,
+      "50451": 1.8,
+      "50452": 1.8,
+      "50453": 2.0,
+      "50454": 1.75,
+      "50455": 2.1,
+      "50456": 1.67,
+      "50457": 2.2,
+      "51640": 2.28,
+      "51641": 1.6,
+      "51642": 1.6,
+      "51643": 2.28
+    }
+  }
+}

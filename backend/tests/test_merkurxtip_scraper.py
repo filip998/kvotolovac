@@ -10,7 +10,9 @@ import pytest
 from app.scrapers.merkurxtip_scraper import (
     MerkurXTipScraper,
     _parse_match_detail,
+    _parse_game_total_ot_match,
     _get_player_match_ids,
+    _get_total_match_ids,
     _parse_start_time,
     _extract_league_id,
 )
@@ -18,6 +20,7 @@ from app.models.schemas import RawOddsData
 
 LEAGUE_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "merkurxtip_league.json"
 MATCH_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "merkurxtip_match.json"
+TOTALS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "merkurxtip_game_total_ot.json"
 
 
 @pytest.fixture
@@ -29,6 +32,12 @@ def league_data() -> dict:
 @pytest.fixture
 def match_data() -> dict:
     with open(MATCH_FIXTURE_PATH) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def totals_data() -> dict:
+    with open(TOTALS_FIXTURE_PATH) as f:
         return json.load(f)
 
 
@@ -155,6 +164,10 @@ def test_get_player_match_ids_skips_no_odds_params(league_data):
     """Match 132935923 has ouPlPoints but empty odds — still has param, so included."""
     ids = _get_player_match_ids(league_data["esMatches"])
     assert 132935923 in ids
+
+
+def test_get_total_match_ids(totals_data):
+    assert _get_total_match_ids(totals_data["list"]["esMatches"]) == [132948727]
 
 
 # ── _parse_match_detail ───────────────────────────────────
@@ -354,6 +367,50 @@ def test_parse_match_detail_malformed_threshold():
     assert _parse_match_detail(match) == []
 
 
+def test_parse_game_total_ot_match_from_list_fixture(totals_data):
+    results = _parse_game_total_ot_match(totals_data["list"]["esMatches"][0])
+
+    assert len(results) == 1
+    assert results[0].market_type == "game_total_ot"
+    assert results[0].league_id == "nba"
+    assert results[0].player_name is None
+    assert (results[0].threshold, results[0].over_odds, results[0].under_odds) == (
+        222.5,
+        1.9,
+        1.9,
+    )
+
+
+def test_parse_game_total_ot_match_from_detail_fixture(totals_data):
+    results = _parse_game_total_ot_match(totals_data["detail"])
+
+    assert len(results) == 9
+    assert all(r.market_type == "game_total_ot" for r in results)
+    assert sorted((r.threshold, r.over_odds, r.under_odds) for r in results) == [
+        (218.5, 1.6, 2.28),
+        (219.5, 1.7, 2.18),
+        (220.5, 1.75, 2.1),
+        (221.5, 1.8, 2.0),
+        (222.5, 1.9, 1.9),
+        (223.5, 2.0, 1.8),
+        (224.5, 2.1, 1.75),
+        (225.5, 2.2, 1.67),
+        (226.5, 2.28, 1.6),
+    ]
+
+
+def test_parse_game_total_ot_match_skips_player_market():
+    match = {
+        "id": 1,
+        "home": "Jokic N.",
+        "away": "Denver",
+        "leagueName": "NBA Igrači",
+        "params": {"overUnderOvertime": "222.5"},
+        "odds": {"50444": 1.9, "50445": 1.9},
+    }
+    assert _parse_game_total_ot_match(match) == []
+
+
 # ── Integration: MerkurXTipScraper with mocked HTTP ──────
 
 
@@ -364,6 +421,8 @@ async def test_scraper_returns_data_from_bulk_listing(match_data, league_data):
     async def mock_get(url, **kwargs):
         if url.endswith("/sport/SK/mob"):
             return league_data
+        if url.endswith("/sport/B/mob"):
+            return {"esMatches": []}
         if "/league/" in url:
             pytest.fail("legacy league fallback should not run when bulk listing has player matches")
         return match_data
@@ -434,6 +493,8 @@ async def test_scraper_falls_back_to_legacy_leagues_when_bulk_listing_empty():
         calls.append(url)
         if url.endswith("/sport/SK/mob"):
             return {"esMatches": []}
+        if url.endswith("/sport/B/mob"):
+            return {"esMatches": []}
         if "/league/" in url:
             return {"esMatches": league_matches}
         return detail_match
@@ -492,6 +553,8 @@ async def test_scraper_fetches_details_concurrently_and_skips_failures():
         async def get_json(self, url: str, **kwargs):
             if url.endswith("/sport/SK/mob"):
                 return {"esMatches": league_matches}
+            if url.endswith("/sport/B/mob"):
+                return {"esMatches": []}
 
             match_id = int(url.rsplit("/", 1)[-1])
             self.active_details += 1
@@ -530,6 +593,8 @@ async def test_scraper_detail_failure_does_not_crash():
     async def mock_get(url, **kwargs):
         if url.endswith("/sport/SK/mob"):
             return {"esMatches": league_matches}
+        if url.endswith("/sport/B/mob"):
+            return {"esMatches": []}
         raise Exception("detail failed")
 
     scraper = MerkurXTipScraper()
@@ -537,3 +602,65 @@ async def test_scraper_detail_failure_does_not_crash():
         results = await scraper.scrape_odds("basketball")
 
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_scraper_returns_ot_totals(totals_data):
+    scraper = MerkurXTipScraper()
+
+    async def mock_get(url, **kwargs):
+        if url.endswith("/sport/SK/mob"):
+            return {"esMatches": []}
+        if url.endswith("/sport/B/mob"):
+            return totals_data["list"]
+        if "/league/" in url:
+            return {"esMatches": []}
+        if "/match/132948727" in url:
+            return totals_data["detail"]
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert len(results) == 9
+    assert {r.market_type for r in results} == {"game_total_ot"}
+    assert sorted(r.threshold for r in results) == [
+        218.5,
+        219.5,
+        220.5,
+        221.5,
+        222.5,
+        223.5,
+        224.5,
+        225.5,
+        226.5,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scraper_detail_replaces_list_total_line_when_same_threshold(totals_data):
+    scraper = MerkurXTipScraper()
+    list_data = json.loads(json.dumps(totals_data["list"]))
+    detail_data = json.loads(json.dumps(totals_data["detail"]))
+    list_data["esMatches"][0]["odds"]["50444"] = 1.83
+    list_data["esMatches"][0]["odds"]["50445"] = 1.87
+    detail_data["kickOffTime"] = list_data["esMatches"][0]["kickOffTime"] + 300000
+
+    async def mock_get(url, **kwargs):
+        if url.endswith("/sport/SK/mob"):
+            return {"esMatches": []}
+        if url.endswith("/sport/B/mob"):
+            return list_data
+        if "/league/" in url:
+            return {"esMatches": []}
+        if "/match/132948727" in url:
+            return detail_data
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert len(results) == 9
+    base_line = next(result for result in results if result.threshold == 222.5)
+    assert (base_line.over_odds, base_line.under_odds) == (1.9, 1.9)
+    assert base_line.start_time == "2026-04-15T23:35:00+00:00"
