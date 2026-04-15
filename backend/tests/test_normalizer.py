@@ -95,7 +95,7 @@ def test_normalize_odds_does_not_overresolve_double_initial_players():
     ]
 
 
-def test_normalize_odds_keeps_ambiguous_single_initial_players():
+def test_normalize_odds_resolves_unambiguous_single_initial_players():
     raw = [
         RawOddsData(
             bookmaker_id="meridian",
@@ -125,9 +125,10 @@ def test_normalize_odds_keeps_ambiguous_single_initial_players():
 
     normalized = normalize_odds(raw)
 
+    # Only one Williams in the match → unambiguous, should resolve
     assert [offer.player_name for offer in normalized] == [
         "Jalen Williams",
-        "J. Williams",
+        "Jalen Williams",
     ]
 
 
@@ -925,3 +926,108 @@ def test_normalize_preserves_thresholds():
     normalized = normalize_odds(raw)
     assert normalized[0].threshold == 16.5
     assert normalized[0].over_odds == 1.85
+
+
+def test_normalize_odds_resolves_suffix_jr():
+    """W.Carter and Wendell Carter Jr should match."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="Wendell Carter Jr",
+            threshold=12.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="W.Carter",
+            threshold=12.5,
+            over_odds=1.7,
+            under_odds=2.0,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    assert [offer.player_name for offer in normalized] == [
+        "Wendell Carter Jr",
+        "Wendell Carter Jr",
+    ]
+
+
+def test_normalize_odds_resolves_suffix_kelly_oubre_jr():
+    """K.Oubre and Kelly Oubre Jr should match."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="Kelly Oubre Jr",
+            threshold=15.5,
+            over_odds=1.80,
+            under_odds=1.90,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="K.Oubre",
+            threshold=15.5,
+            over_odds=1.75,
+            under_odds=1.95,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    assert [offer.player_name for offer in normalized] == [
+        "Kelly Oubre Jr",
+        "Kelly Oubre Jr",
+    ]
+
+
+def test_normalize_odds_resolves_reversed_name_order():
+    """Edgecombe VJ and VJ Edgecombe should match."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="VJ Edgecombe",
+            threshold=10.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="Edgecombe VJ",
+            threshold=10.5,
+            over_odds=1.7,
+            under_odds=2.0,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = [offer.player_name for offer in normalized]
+    # Both should resolve to the same name
+    assert len(set(names)) == 1
+    assert names[0] in ("VJ Edgecombe", "Edgecombe VJ")

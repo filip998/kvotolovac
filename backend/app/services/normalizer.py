@@ -301,8 +301,28 @@ def _compact_person_name(name: str) -> str:
     return compact_identity_text(name)
 
 
+_NAME_SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv", "v"})
+
+
+def _strip_trailing_suffixes(tokens: list[str]) -> list[str]:
+    """Remove name suffixes (Jr, Sr, II, etc.) only from the end."""
+    while tokens and tokens[-1] in _NAME_SUFFIXES:
+        tokens = tokens[:-1]
+    return tokens
+
+
+def _sorted_compact_person_name(name: str) -> str | None:
+    """Compact form with tokens sorted — order-independent identity."""
+    tokens = _normalize_person_tokens(name)
+    tokens = _strip_trailing_suffixes(tokens)
+    if len(tokens) < 2:
+        return None
+    return "".join(sorted(t.replace("-", "") for t in tokens))
+
+
 def _player_name_parts(name: str) -> tuple[list[str], str] | None:
     tokens = _normalize_person_tokens(name)
+    tokens = _strip_trailing_suffixes(tokens)
     if len(tokens) < 2:
         return None
     return tokens[:-1], tokens[-1]
@@ -334,14 +354,12 @@ def _name_surface_richness(name: str) -> tuple[int, int, int]:
     )
 
 
-def _is_contextual_player_match(raw_name: str, candidate_name: str) -> bool:
-    raw_parts = _player_name_parts(raw_name)
-    candidate_parts = _player_name_parts(candidate_name)
-    if not raw_parts or not candidate_parts:
-        return False
-
-    raw_first_tokens, raw_last_name = raw_parts
-    candidate_first_tokens, candidate_last_name = candidate_parts
+def _check_first_name_match(
+    raw_first_tokens: list[str],
+    candidate_first_tokens: list[str],
+    raw_last_name: str,
+    candidate_last_name: str,
+) -> bool:
     if (
         not raw_first_tokens
         or not candidate_first_tokens
@@ -360,6 +378,29 @@ def _is_contextual_player_match(raw_name: str, candidate_name: str) -> bool:
     if candidate_first.startswith(raw_first) or raw_first.startswith(candidate_first):
         return True
     return raw_first[0] == candidate_first[0] and fuzz.ratio(raw_first, candidate_first) >= 80
+
+
+def _is_contextual_player_match(raw_name: str, candidate_name: str) -> bool:
+    raw_parts = _player_name_parts(raw_name)
+    candidate_parts = _player_name_parts(candidate_name)
+    if not raw_parts or not candidate_parts:
+        return False
+
+    raw_first_tokens, raw_last_name = raw_parts
+    candidate_first_tokens, candidate_last_name = candidate_parts
+
+    # Normal order match
+    if _check_first_name_match(raw_first_tokens, candidate_first_tokens, raw_last_name, candidate_last_name):
+        return True
+
+    # Reversed order: treat raw as "LastName FirstName" → swap and retry
+    if len(raw_first_tokens) == 1:
+        reversed_first = [raw_last_name]
+        reversed_last = raw_first_tokens[0]
+        if _check_first_name_match(reversed_first, candidate_first_tokens, reversed_last, candidate_last_name):
+            return True
+
+    return False
 
 
 def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOddsData]:
@@ -385,6 +426,31 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
         for compact_key, variants in by_compact.items():
             if not compact_key:
                 continue
+            if len(variants) <= 1:
+                continue
+            best = max(
+                variants,
+                key=lambda v: (
+                    name_counts[v],
+                    _name_surface_richness(v),
+                    v,
+                ),
+            )
+            merged_count = sum(name_counts[v] for v in variants)
+            compact_canonical_names.add((match_id, best))
+            for v in variants:
+                if v != best:
+                    case_replacements[(match_id, v)] = best
+                    name_counts[best] = merged_count
+                    del name_counts[v]
+
+        # Also merge reversed name order (e.g., "Edgecombe VJ" vs "VJ Edgecombe")
+        by_sorted: dict[str, list[str]] = defaultdict(list)
+        for name in name_counts:
+            sorted_key = _sorted_compact_person_name(name)
+            if sorted_key:
+                by_sorted[sorted_key].append(name)
+        for sorted_key, variants in by_sorted.items():
             if len(variants) <= 1:
                 continue
             best = max(
@@ -445,8 +511,6 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
             best_completeness = _player_name_completeness(best_parts[0])
             raw_has_compact_alias_support = (match_id, raw_name) in compact_canonical_names
             if best_completeness < raw_completeness:
-                continue
-            if raw_is_single_initial and not raw_has_compact_alias_support and name_counts[best_candidate] <= name_counts[raw_name]:
                 continue
             if best_completeness == raw_completeness and name_counts[best_candidate] <= name_counts[raw_name]:
                 continue
