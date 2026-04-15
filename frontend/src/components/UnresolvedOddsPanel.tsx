@@ -1,8 +1,11 @@
+import { useMemo } from 'react';
 import BookmakerBadge from './BookmakerBadge';
 import EmptyState from './EmptyState';
 import LoadingSpinner from './LoadingSpinner';
 import type { UnresolvedOdds } from '../api/types';
 import { MARKET_TYPE_LABELS } from '../utils/constants';
+import { filterItemsBySearch, normalizeSearchText } from '../utils/search';
+import OfferSearchStrip from './OfferSearchStrip';
 import {
   formatDateTime,
   formatOdds,
@@ -24,38 +27,92 @@ export default function UnresolvedOddsPanel({
   rows,
   isLoading,
   errorMessage,
+  searchQuery,
+  onSearchChange,
 }: {
   rows: UnresolvedOdds[];
   isLoading: boolean;
   errorMessage: string | null;
+  searchQuery: string;
+  onSearchChange: (value: string) => void;
 }) {
+  const filteredRows = useMemo(
+    () =>
+      filterItemsBySearch(rows, searchQuery, (row) => [
+        row.player_name,
+        row.raw_team_name,
+        row.normalized_team_name,
+      ]),
+    [rows, searchQuery]
+  );
+  const hasSearchQuery = normalizeSearchText(searchQuery).length > 0;
+  const activeSearchLabel = searchQuery.trim();
+  const searchStrip = (
+    <OfferSearchStrip
+      value={searchQuery}
+      onChange={onSearchChange}
+      scopeLabel="Warnings"
+      placeholder="Search dropped team or player names, e.g. PAOK or Sloukas"
+      resultCount={filteredRows.length}
+      totalCount={rows.length}
+      tone="warning"
+    />
+  );
+
   if (isLoading) {
-    return <LoadingSpinner />;
+    return (
+      <div className="space-y-4">
+        {searchStrip}
+        <LoadingSpinner />
+      </div>
+    );
   }
 
   if (errorMessage) {
     return (
-      <div className="rounded-lg border border-danger/30 bg-danger/10 p-6 text-center">
-        <p className="text-sm text-danger">Failed to load warnings: {errorMessage}</p>
+      <div className="space-y-4">
+        {searchStrip}
+        <div className="rounded-lg border border-danger/30 bg-danger/10 p-6 text-center">
+          <p className="text-sm text-danger">Failed to load warnings: {errorMessage}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (hasSearchQuery && filteredRows.length === 0 && rows.length > 0) {
+    return (
+      <div className="space-y-4">
+        {searchStrip}
+        <EmptyState
+          title={`No warnings match "${activeSearchLabel}"`}
+          message="Warnings search checks team and player names in the dropped-prop snapshot. Try a broader name or clear the query."
+        />
       </div>
     );
   }
 
   if (rows.length === 0) {
     return (
-      <EmptyState
-        title="No unresolved odds in the current snapshot"
-        message="All shared-platform player props were assigned to tracked matches in this scrape."
-      />
+      <div className="space-y-4">
+        {searchStrip}
+        <EmptyState
+          title="No unresolved odds in the current snapshot"
+          message="All shared-platform player props were assigned to tracked matches in this scrape."
+        />
+      </div>
     );
   }
 
   return (
     <div className="space-y-4">
+      {searchStrip}
+
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-surface p-4 text-sm text-text-secondary">
-        <span className="font-medium text-text">{rows.length} dropped rows</span>
+        <span className="font-medium text-text">
+          {hasSearchQuery ? `${filteredRows.length} of ${rows.length}` : filteredRows.length} dropped rows
+        </span>
         <span>
-          {new Set(rows.map((row) => row.bookmaker_id)).size} bookmakers
+          {new Set(filteredRows.map((row) => row.bookmaker_id)).size} bookmakers
         </span>
         <span>Current snapshot only</span>
       </div>
@@ -74,7 +131,7 @@ export default function UnresolvedOddsPanel({
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => {
+              {filteredRows.map((row) => {
                 const marketLabel =
                   MARKET_TYPE_LABELS[row.market_type as keyof typeof MARKET_TYPE_LABELS] ??
                   row.market_type;

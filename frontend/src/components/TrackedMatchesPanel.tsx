@@ -2,13 +2,18 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import type { Match } from '../api/types';
 import { formatDateTime } from '../utils/format';
+import { filterItemsBySearch, normalizeSearchText } from '../utils/search';
 import BookmakerBadge from './BookmakerBadge';
+import EmptyState from './EmptyState';
+import OfferSearchStrip from './OfferSearchStrip';
 
 interface TrackedMatchesPanelProps {
   matches: Match[];
   selectedBookmakerIds: string[];
   isLoading?: boolean;
   errorMessage?: string | null;
+  searchQuery: string;
+  onSearchChange: (value: string) => void;
 }
 
 export default function TrackedMatchesPanel({
@@ -16,6 +21,8 @@ export default function TrackedMatchesPanel({
   selectedBookmakerIds,
   isLoading = false,
   errorMessage = null,
+  searchQuery,
+  onSearchChange,
 }: TrackedMatchesPanelProps) {
   const location = useLocation();
   const [referenceTimeMs, setReferenceTimeMs] = useState(() => Date.now());
@@ -29,29 +36,51 @@ export default function TrackedMatchesPanel({
     return () => window.clearInterval(intervalId);
   }, []);
 
-  const upcomingMatches = matches.filter((match) => {
-    if (!match.start_time) {
-      return true;
-    }
+  const upcomingMatches = useMemo(
+    () =>
+      matches.filter((match) => {
+        if (!match.start_time) {
+          return true;
+        }
 
-    const startAt = Date.parse(match.start_time);
-    if (Number.isNaN(startAt)) {
-      return true;
-    }
-    return startAt >= referenceTimeMs;
-  });
-  const sortedMatches = [...upcomingMatches].sort((a, b) => {
-    if (a.start_time && b.start_time) {
-      return a.start_time.localeCompare(b.start_time);
-    }
-    if (a.start_time) return -1;
-    if (b.start_time) return 1;
-    return a.home_team.localeCompare(b.home_team) || a.away_team.localeCompare(b.away_team);
-  });
+        const startAt = Date.parse(match.start_time);
+        if (Number.isNaN(startAt)) {
+          return true;
+        }
+        return startAt >= referenceTimeMs;
+      }),
+    [matches, referenceTimeMs]
+  );
+
+  const filteredMatches = useMemo(
+    () =>
+      filterItemsBySearch(upcomingMatches, searchQuery, (match) => [
+        match.home_team,
+        match.away_team,
+        `${match.home_team} ${match.away_team}`,
+      ]),
+    [upcomingMatches, searchQuery]
+  );
+
+  const sortedMatches = useMemo(
+    () =>
+      [...filteredMatches].sort((a, b) => {
+        if (a.start_time && b.start_time) {
+          return a.start_time.localeCompare(b.start_time);
+        }
+        if (a.start_time) return -1;
+        if (b.start_time) return 1;
+        return a.home_team.localeCompare(b.home_team) || a.away_team.localeCompare(b.away_team);
+      }),
+    [filteredMatches]
+  );
+
+  const hasSearchQuery = normalizeSearchText(searchQuery).length > 0;
+  const activeSearchLabel = searchQuery.trim();
 
   return (
-    <section>
-      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h3 className="text-lg font-semibold text-text">Tracked matches</h3>
           <p className="mt-1 text-sm text-text-secondary">
@@ -59,9 +88,19 @@ export default function TrackedMatchesPanel({
           </p>
         </div>
         <span className="font-mono text-xs text-text-muted">
-          {sortedMatches.length} tracked
+          {hasSearchQuery ? `${sortedMatches.length} of ${upcomingMatches.length}` : sortedMatches.length}{' '}
+          tracked
         </span>
       </div>
+
+      <OfferSearchStrip
+        value={searchQuery}
+        onChange={onSearchChange}
+        scopeLabel="Tracked"
+        placeholder="Search matchup or team names, e.g. PAOK or Panathinaikos"
+        resultCount={sortedMatches.length}
+        totalCount={upcomingMatches.length}
+      />
 
       {isLoading ? (
         <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-text-muted">
@@ -71,10 +110,16 @@ export default function TrackedMatchesPanel({
         <div className="rounded-lg border border-danger/30 bg-danger/10 px-4 py-8 text-center text-sm text-danger">
           Failed to load: {errorMessage}
         </div>
+      ) : hasSearchQuery && sortedMatches.length === 0 && upcomingMatches.length > 0 ? (
+        <EmptyState
+          title={`No tracked matchups match "${activeSearchLabel}"`}
+          message="Tracked odds search checks team and matchup names only. Try a broader club name or clear the query."
+        />
       ) : sortedMatches.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-text-muted">
-          No upcoming fetched matches stored right now.
-        </div>
+        <EmptyState
+          title="No upcoming fetched matches stored right now"
+          message="Tracked odds only lists matches that are still upcoming in the current stored board."
+        />
       ) : (
         <div className="grid gap-2">
           {sortedMatches.map((match) => (

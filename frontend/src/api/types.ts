@@ -144,6 +144,7 @@ export interface DiscrepancyFilters {
   sort_order?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
+  loadAll?: boolean;
 }
 
 export interface UnresolvedOddsFilters {

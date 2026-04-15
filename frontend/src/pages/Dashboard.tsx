@@ -15,7 +15,9 @@ import EmptyState from '../components/EmptyState';
 import PageShell from '../components/PageShell';
 import TrackedMatchesPanel from '../components/TrackedMatchesPanel';
 import UnresolvedOddsPanel from '../components/UnresolvedOddsPanel';
+import OfferSearchStrip from '../components/OfferSearchStrip';
 import { useBookmakerFilter } from '../hooks/useBookmakerFilter';
+import { filterItemsBySearch, normalizeSearchText } from '../utils/search';
 
 interface MatchGroup {
   matchId: string;
@@ -46,8 +48,16 @@ export default function Dashboard() {
   });
   const [activeTab, setActiveTab] = useState<DashboardTab>('discrepancies');
   const [viewMode, setViewMode] = useState<ViewMode>('flat');
+  const [searchQuery, setSearchQuery] = useState('');
   const [collapsedLeagues, setCollapsedLeagues] = useState<Set<string>>(new Set());
   const previousScanInProgressRef = useRef(false);
+
+  const switchTab = (nextTab: DashboardTab) => {
+    if (nextTab !== activeTab) {
+      setSearchQuery('');
+    }
+    setActiveTab(nextTab);
+  };
 
   const toggleLeague = (league: string) => {
     setCollapsedLeagues((prev) => {
@@ -64,6 +74,7 @@ export default function Dashboard() {
   const discrepancyFilters = useMemo(
     () => ({
       ...filters,
+      loadAll: true,
       bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
     }),
     [filters, selectedBookmakerIds]
@@ -129,13 +140,26 @@ export default function Dashboard() {
     previousScanInProgressRef.current = scanInProgress;
   }, [activeTab, queryClient, refetchDiscrepancies, refetchUnresolvedOdds, status?.scan.in_progress]);
 
+  const filteredDiscrepancies = useMemo(
+    () =>
+      filterItemsBySearch(discrepancies ?? [], searchQuery, (discrepancy) => [
+        discrepancy.home_team,
+        discrepancy.away_team,
+        `${discrepancy.home_team} ${discrepancy.away_team}`,
+        discrepancy.player_name,
+      ]),
+    [discrepancies, searchQuery]
+  );
+  const hasSearchQuery = normalizeSearchText(searchQuery).length > 0;
+  const activeSearchLabel = searchQuery.trim();
+
   // Group discrepancies by league, then by match
   const grouped = useMemo<LeagueGroup[]>(() => {
-    if (!discrepancies) return [];
+    if (!filteredDiscrepancies) return [];
 
     const leagueMap = new Map<string, Map<string, MatchGroup>>();
 
-    for (const d of discrepancies) {
+    for (const d of filteredDiscrepancies) {
       if (!leagueMap.has(d.league_name)) {
         leagueMap.set(d.league_name, new Map());
       }
@@ -160,9 +184,10 @@ export default function Dashboard() {
       });
     }
     return result;
-  }, [discrepancies]);
+  }, [filteredDiscrepancies]);
 
   const discrepancyCount = discrepancies?.length ?? 0;
+  const filteredDiscrepancyCount = filteredDiscrepancies.length;
   const unresolvedCount = unresolvedOdds?.length ?? 0;
 
   return (
@@ -193,7 +218,7 @@ export default function Dashboard() {
           <div className="flex flex-wrap items-center gap-4">
             <div className="flex gap-1">
               <button
-                onClick={() => setActiveTab('discrepancies')}
+                onClick={() => switchTab('discrepancies')}
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                   activeTab === 'discrepancies'
                     ? 'bg-surface-raised text-text'
@@ -206,7 +231,7 @@ export default function Dashboard() {
                 )}
               </button>
               <button
-                onClick={() => setActiveTab('tracked')}
+                onClick={() => switchTab('tracked')}
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                   activeTab === 'tracked'
                     ? 'bg-surface-raised text-text'
@@ -216,7 +241,7 @@ export default function Dashboard() {
                 Tracked odds
               </button>
               <button
-                onClick={() => setActiveTab('warnings')}
+                onClick={() => switchTab('warnings')}
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                   activeTab === 'warnings'
                     ? 'bg-surface-raised text-text'
@@ -271,9 +296,19 @@ export default function Dashboard() {
             )}
           </div>
           {activeTab === 'discrepancies' && (
-            <div className="rounded-lg border border-border bg-surface p-4">
-              <FilterBar filters={filters} onChange={setFilters} />
-            </div>
+            <>
+              <div className="rounded-lg border border-border bg-surface p-4">
+                <FilterBar filters={filters} onChange={setFilters} />
+              </div>
+              <OfferSearchStrip
+                value={searchQuery}
+                onChange={setSearchQuery}
+                scopeLabel="Discrepancies"
+                placeholder="Search team or player names, e.g. PAOK or Nunn"
+                resultCount={filteredDiscrepancyCount}
+                totalCount={discrepancyCount}
+              />
+            </>
           )}
         </section>
 
@@ -314,6 +349,11 @@ export default function Dashboard() {
               title="No discrepancies right now"
               message="Scraping may still be working normally. Switch to tracked odds to inspect upcoming matches and player markets."
             />
+          ) : hasSearchQuery && filteredDiscrepancyCount === 0 ? (
+            <EmptyState
+              title={`No discrepancy rows match "${activeSearchLabel}"`}
+              message="Search checks matchup and player names after your current bookmaker, market, and gap filters."
+            />
           ) : viewMode === 'flat' ? (
             /* ── Flat ranked list ── */
             <div className="overflow-hidden rounded-lg border border-border bg-surface">
@@ -333,7 +373,7 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {discrepancies.map((d) => {
+                    {filteredDiscrepancies.map((d) => {
                       const marketLabel = MARKET_TYPE_LABELS[d.market_type] || d.market_type;
                       return (
                         <tr
@@ -448,12 +488,16 @@ export default function Dashboard() {
             selectedBookmakerIds={selectedBookmakerIds}
             isLoading={matchesLoading}
             errorMessage={matchesError ? (matchesLoadError as Error)?.message || 'Unknown error' : null}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
           />
         ) : (
           <UnresolvedOddsPanel
             rows={unresolvedOdds || []}
             isLoading={unresolvedLoading}
             errorMessage={unresolvedError ? (unresolvedLoadError as Error)?.message || 'Unknown error' : null}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
           />
         )}
       </div>

@@ -70,13 +70,34 @@ export function useDiscrepancies(
 
         return results;
       }
-      const { data } = await client.get<Discrepancy[]>('/discrepancies', {
-        params: {
-          ...filters,
-          bookmaker_ids: serializeArrayParam(filters.bookmaker_ids),
-        },
-      });
-      return data;
+
+      const { loadAll, ...requestFilters } = filters;
+      const serializedFilters = {
+        ...requestFilters,
+        bookmaker_ids: serializeArrayParam(requestFilters.bookmaker_ids),
+      };
+      if (!loadAll) {
+        const { data } = await client.get<Discrepancy[]>('/discrepancies', {
+          params: serializedFilters,
+        });
+        return data;
+      }
+
+      const pageSize = requestFilters.limit ?? 200;
+      const initialOffset = requestFilters.offset ?? 0;
+      const allDiscrepancies: Discrepancy[] = [];
+
+      for (let offset = initialOffset; ; offset += pageSize) {
+        const { data } = await client.get<Discrepancy[]>('/discrepancies', {
+          params: { ...serializedFilters, limit: pageSize, offset },
+        });
+        allDiscrepancies.push(...data);
+        if (data.length < pageSize) {
+          break;
+        }
+      }
+
+      return allDiscrepancies;
     },
     enabled: options.enabled ?? true,
     refetchInterval: options.enabled === false ? false : 30000,
