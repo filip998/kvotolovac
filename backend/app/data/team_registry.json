@@ -1,6 +1,30 @@
 {
   "aliases": {},
   "bookmaker_aliases": {},
-  "competition_aliases": {},
-  "bookmaker_competition_aliases": {}
+  "bookmaker_competition_aliases": {
+    "meridian": {
+      "brazil": {
+        "sao jose dos campos": "Sao Jose"
+      }
+    },
+    "merkurxtip": {
+      "brazil": {
+        "sao jos": "Sao Jose"
+      }
+    },
+    "oktagonbet": {
+      "brazil": {
+        "mogi das cruzes": "Mogi"
+      }
+    },
+    "pinnbet": {
+      "brazil": {
+        "mogi das cruzes": "Mogi"
+      },
+      "venecuela_1": {
+        "gaiteros del zulia": "Gaiteros"
+      }
+    }
+  },
+  "competition_aliases": {}
 }
