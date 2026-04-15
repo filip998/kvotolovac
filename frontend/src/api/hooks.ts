@@ -6,6 +6,10 @@ import type {
   Match,
   OddsOffer,
   Discrepancy,
+  MatchingReviewApproval,
+  MatchingReviewCase,
+  MatchingReviewFilters,
+  MatchingReviewSummary,
   SystemStatus,
   DiscrepancyFilters,
   UnresolvedOdds,
@@ -17,6 +21,8 @@ import {
   mockMatches,
   mockOddsOffers,
   mockDiscrepancies,
+  mockMatchingReviewCases,
+  mockMatchingReviewSummary,
   mockUnresolvedOdds,
   mockSystemStatus,
 } from './mockData';
@@ -29,6 +35,23 @@ function delay(ms = 300): Promise<void> {
 
 function serializeArrayParam(values?: string[]): string | undefined {
   return values && values.length > 0 ? values.join(',') : undefined;
+}
+
+function updateMockMatchingReviewSummaryForApproval(caseItem: MatchingReviewCase) {
+  const league = mockMatchingReviewSummary.leagues.find(
+    (leagueRow) => leagueRow.league_id === caseItem.suggested_league_id
+  );
+  if (league && caseItem.status !== 'approved') {
+    league.pending_reviews = Math.max(0, league.pending_reviews - 1);
+    league.approved_reviews += 1;
+  }
+  if (caseItem.status !== 'approved') {
+    mockMatchingReviewSummary.pending_reviews = Math.max(
+      0,
+      mockMatchingReviewSummary.pending_reviews - 1
+    );
+    mockMatchingReviewSummary.approved_reviews += 1;
+  }
 }
 
 // --- Discrepancies ---
@@ -187,6 +210,123 @@ export function useUnresolvedOdds(
     },
     enabled: options.enabled ?? true,
     refetchInterval: options.enabled === false ? false : 30000,
+  });
+}
+
+// --- Matching review ---
+
+export function useMatchingReviewSummary(
+  filters: Pick<MatchingReviewFilters, 'bookmaker_ids'> = {},
+  options: { enabled?: boolean } = {}
+) {
+  return useQuery<MatchingReviewSummary>({
+    queryKey: ['matchingReviewSummary', filters],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        return mockMatchingReviewSummary;
+      }
+      const { data } = await client.get<MatchingReviewSummary>('/matching-review/summary', {
+        params: {
+          bookmaker_ids: serializeArrayParam(filters.bookmaker_ids),
+        },
+      });
+      return data;
+    },
+    enabled: options.enabled ?? true,
+    refetchInterval: options.enabled === false ? false : 30000,
+  });
+}
+
+export function useMatchingReviewCases(
+  filters: MatchingReviewFilters = {},
+  options: { enabled?: boolean } = {}
+) {
+  return useQuery<MatchingReviewCase[]>({
+    queryKey: ['matchingReviewCases', filters],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        let results = [...mockMatchingReviewCases];
+        if (filters.bookmaker_id) {
+          results = results.filter((row) => row.bookmaker_id === filters.bookmaker_id);
+        }
+        if (filters.bookmaker_ids?.length) {
+          const selected = new Set(filters.bookmaker_ids);
+          results = results.filter((row) => selected.has(row.bookmaker_id));
+        }
+        if (filters.league_id) {
+          results = results.filter((row) => row.suggested_league_id === filters.league_id);
+        }
+        if (filters.status) {
+          results = results.filter((row) => row.status === filters.status);
+        }
+        return results;
+      }
+
+      const { loadAll, ...requestFilters } = filters;
+      const serializedFilters = {
+        ...requestFilters,
+        bookmaker_ids: serializeArrayParam(requestFilters.bookmaker_ids),
+      };
+      if (!loadAll) {
+        const { data } = await client.get<MatchingReviewCase[]>('/matching-review/cases', {
+          params: serializedFilters,
+        });
+        return data;
+      }
+
+      const pageSize = requestFilters.limit ?? 200;
+      const initialOffset = requestFilters.offset ?? 0;
+      const allRows: MatchingReviewCase[] = [];
+
+      for (let offset = initialOffset; ; offset += pageSize) {
+        const { data } = await client.get<MatchingReviewCase[]>('/matching-review/cases', {
+          params: { ...serializedFilters, limit: pageSize, offset },
+        });
+        allRows.push(...data);
+        if (data.length < pageSize) {
+          break;
+        }
+      }
+
+      return allRows;
+    },
+    enabled: options.enabled ?? true,
+    refetchInterval: options.enabled === false ? false : 30000,
+  });
+}
+
+export function useApproveMatchingReviewCase() {
+  return useMutation<
+    MatchingReviewApproval,
+    Error,
+    { caseId: number; leagueId?: string }
+  >({
+    mutationFn: async ({ caseId, leagueId }) => {
+      if (USE_MOCK) {
+        await delay();
+        const caseItem = mockMatchingReviewCases.find((item) => item.id === caseId);
+        if (!caseItem) {
+          throw new Error('Matching review case not found');
+        }
+        updateMockMatchingReviewSummaryForApproval(caseItem);
+        caseItem.status = 'approved';
+        return {
+          case_id: caseId,
+          status: 'approved',
+          saved_alias: caseItem.raw_league_id,
+          saved_league_id: leagueId ?? caseItem.suggested_league_id,
+          saved_league_name: caseItem.suggested_league_name,
+        };
+      }
+
+      const { data } = await client.post<MatchingReviewApproval>(
+        `/matching-review/cases/${caseId}/approve`,
+        leagueId ? { league_id: leagueId } : {}
+      );
+      return data;
+    },
   });
 }
 

@@ -79,6 +79,57 @@ class UnresolvedOddsOut(UnresolvedOddsDiagnostic):
     scraped_at: Optional[str] = None
 
 
+class MatchingReviewDiagnostic(BaseModel):
+    bookmaker_id: str
+    raw_league_id: str
+    normalized_raw_league_id: str
+    suggested_league_id: str
+    match_id: str
+    home_team: str
+    away_team: str
+    start_time: Optional[str] = None
+    reason_code: str
+    confidence: str = "medium"
+    evidence: list[str] = Field(default_factory=list)
+    status: str = "pending"
+
+
+class MatchingReviewOut(MatchingReviewDiagnostic):
+    id: int
+    bookmaker_name: Optional[str] = None
+    suggested_league_name: Optional[str] = None
+    scraped_at: Optional[str] = None
+
+
+class MatchingReviewApprovalIn(BaseModel):
+    league_id: Optional[str] = None
+
+
+class MatchingReviewApprovalOut(BaseModel):
+    case_id: int
+    status: str
+    saved_alias: str
+    saved_league_id: str
+    saved_league_name: Optional[str] = None
+
+
+class LeagueMatchingHealthOut(BaseModel):
+    league_id: str
+    league_name: str
+    matched_events: int = 0
+    pending_reviews: int = 0
+    approved_reviews: int = 0
+
+
+class MatchingReviewSummaryOut(BaseModel):
+    total_matches: int = 0
+    leagues_with_matches: int = 0
+    pending_reviews: int = 0
+    approved_reviews: int = 0
+    inferred_events: int = 0
+    leagues: list[LeagueMatchingHealthOut] = Field(default_factory=list)
+
+
 # ── Raw odds from scrapers ─────────────────────────────────
 class RawOddsData(BaseModel):
     bookmaker_id: str

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
 
 
@@ -14,6 +16,9 @@ class Settings(BaseSettings):
     proxy_list: str = ""
     rate_limit_per_second: float = 1.0
     meridian_rate_limit_per_second: float = 2.0
+    league_registry_path: str = str(
+        Path(__file__).resolve().parent / "data" / "league_registry.json"
+    )
 
     @property
     def bookmaker_list(self) -> list[str]:

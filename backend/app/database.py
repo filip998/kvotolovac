@@ -74,6 +74,24 @@ CREATE TABLE IF NOT EXISTS unresolved_odds (
     scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS matching_review_cases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bookmaker_id TEXT REFERENCES bookmakers(id),
+    raw_league_id TEXT NOT NULL,
+    normalized_raw_league_id TEXT NOT NULL,
+    suggested_league_id TEXT NOT NULL,
+    match_id TEXT NOT NULL,
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    start_time TIMESTAMP,
+    reason_code TEXT NOT NULL,
+    confidence TEXT NOT NULL DEFAULT 'medium',
+    evidence TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'pending',
+    scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    approved_at TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS discrepancies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     match_id TEXT REFERENCES matches(id),
