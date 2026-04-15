@@ -696,48 +696,49 @@ export default function Dashboard() {
           </div>
           {activeTab === 'discrepancies' && (
             <>
-              <div className="rounded-[28px] border border-border/80 bg-[radial-gradient(circle_at_top_left,_rgba(250,208,122,0.18),_transparent_42%),linear-gradient(135deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01))] p-4 shadow-[0_24px_80px_-44px_rgba(0,0,0,0.88)]">
-                <div className="flex flex-wrap items-center gap-4">
-                  <div className="min-w-0 flex-1">
-                    <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-bg/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] text-text-muted">
-                      Stake planner
-                      <span className="h-1 w-1 rounded-full bg-accent" />
-                      <span className="tracking-[0.18em] text-text-secondary">Browser saved</span>
+              <div className="rounded-lg border border-border bg-surface p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium uppercase tracking-[0.2em] text-text-muted">
+                      Total stake
                     </div>
-                    <h3 className="mt-3 text-sm font-semibold text-text sm:text-base">
-                      Set one total stake and every discrepancy card sizes itself inline.
-                    </h3>
-                    <p className="mt-1 max-w-2xl text-xs leading-5 text-text-secondary sm:text-sm">
-                      The amount persists locally for future visits, so the board always opens with
-                      your last units ready to compare.
+                    <p
+                      id="dashboard-stake-units-note"
+                      className="mt-1 text-sm text-text-secondary"
+                    >
+                      Shared across inline calculators and saved in this browser.
                     </p>
                   </div>
 
-                  <label
-                    htmlFor="dashboard-stake-units"
-                    className="flex min-w-[180px] items-center gap-3 rounded-2xl border border-border/70 bg-bg/80 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
-                  >
-                    <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-text-muted">
+                  <div className="flex items-center gap-3 self-start sm:self-auto">
+                    <label
+                      htmlFor="dashboard-stake-units"
+                      className="text-[11px] font-medium uppercase tracking-[0.2em] text-text-muted"
+                    >
                       Units
-                    </span>
-                    <input
-                      id="dashboard-stake-units"
-                      name="dashboardStakeUnits"
-                      type="number"
-                      inputMode="decimal"
-                      min={minUnits}
-                      step="0.1"
-                      value={stakeUnitsInput}
-                      onChange={(e) => setStakeUnitsInput(e.target.value)}
-                      onBlur={commitStakeUnits}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.currentTarget.blur();
-                        }
-                      }}
-                      className="w-full bg-transparent text-right font-mono text-2xl font-semibold text-text outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                    />
-                  </label>
+                    </label>
+                    <div className="flex items-center gap-2 rounded-md border border-border bg-bg px-3 py-2">
+                      <input
+                        id="dashboard-stake-units"
+                        name="dashboardStakeUnits"
+                        type="number"
+                        inputMode="decimal"
+                        min={minUnits}
+                        step="0.1"
+                        aria-describedby="dashboard-stake-units-note"
+                        value={stakeUnitsInput}
+                        onChange={(e) => setStakeUnitsInput(e.target.value)}
+                        onBlur={commitStakeUnits}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.currentTarget.blur();
+                          }
+                        }}
+                        className="w-20 bg-transparent text-right font-mono text-base font-semibold text-text outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                      />
+                      <span className="text-xs font-medium text-text-muted">u</span>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div className="rounded-lg border border-border bg-surface p-4">

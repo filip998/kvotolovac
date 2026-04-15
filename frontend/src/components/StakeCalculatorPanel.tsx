@@ -27,11 +27,9 @@ const MODE_LABELS: Record<StakeCalculatorMode, string> = {
 };
 
 const MODE_DESCRIPTIONS: Record<StakeCalculatorMode, string> = {
-  balanced: 'Balances the outside outcomes so both edge scenarios land on the same floor.',
-  'aggressive-middle':
-    'Shifts 5% of total exposure to the higher-odds side for more middle upside.',
-  'conservative-rounded':
-    'Rounds to 0.1-unit sizing and favors the safer post-rounding outcome.',
+  balanced: 'Keeps both outside outcomes on the same floor.',
+  'aggressive-middle': 'Leans 5% toward the better price for more middle upside.',
+  'conservative-rounded': 'Rounds to 0.1u and protects the safer outcome after rounding.',
 };
 
 const LABEL_TONE_CLASSES: Record<StakeCalculatorLabel['tone'], string> = {
@@ -40,7 +38,13 @@ const LABEL_TONE_CLASSES: Record<StakeCalculatorLabel['tone'], string> = {
   muted: 'border-border bg-surface-raised text-text-secondary',
 };
 
-interface MetricTileProps {
+interface StakeSplitRowProps {
+  bookmaker: string;
+  detail: string;
+  value: string;
+}
+
+interface SummaryPillProps {
   label: string;
   value: string;
   detail: string;
@@ -54,18 +58,30 @@ function resultValueClass(value: number) {
   return 'text-text-secondary';
 }
 
-function MetricTile({
+function StakeSplitRow({ bookmaker, detail, value }: StakeSplitRowProps) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-2.5">
+      <div className="min-w-0">
+        <div className="truncate text-sm font-medium text-text">{bookmaker}</div>
+        <div className="text-[11px] leading-5 text-text-secondary">{detail}</div>
+      </div>
+      <div className="shrink-0 font-mono text-sm font-semibold text-text">{value}</div>
+    </div>
+  );
+}
+
+function SummaryPill({
   label,
   value,
   detail,
   valueClassName = 'text-text',
-}: MetricTileProps) {
+}: SummaryPillProps) {
   return (
-    <div className="rounded-2xl border border-border/70 bg-bg/65 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">
+    <div className="rounded-md border border-border/70 bg-bg/70 px-3 py-2">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-text-muted">
         {label}
       </div>
-      <div className={`mt-2 font-mono text-lg font-semibold ${valueClassName}`}>{value}</div>
+      <div className={`mt-1 font-mono text-sm font-semibold ${valueClassName}`}>{value}</div>
       <div className="mt-1 text-[11px] leading-5 text-text-secondary">{detail}</div>
     </div>
   );
@@ -88,15 +104,19 @@ export default function StakeCalculatorPanel({
     plan.middleProfit !== null ? resultValueClass(plan.middleProfit) : 'text-text-secondary';
 
   return (
-    <div className="rounded-[22px] border border-border/70 bg-[linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015))] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
+    <div className="rounded-lg border border-border/70 bg-bg/45 p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-text-muted">
-            Inline stake calculator
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-text-muted">
+            <span>Inline sizing</span>
+            <span className="h-1 w-1 rounded-full bg-border" />
+            <span className="font-mono tracking-normal text-text-secondary">
+              {formatUnits(totalUnits)}u total
+            </span>
           </div>
-          <div className="mt-1 text-sm font-medium text-text">
-            Using {formatUnits(totalUnits)}u across both books
-          </div>
+          <p className="mt-1 text-[11px] leading-5 text-text-secondary">
+            {MODE_DESCRIPTIONS[activeMode]}
+          </p>
         </div>
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="Stake calculator mode">
           {availableModes.map((mode) => (
@@ -105,10 +125,10 @@ export default function StakeCalculatorPanel({
               type="button"
               onClick={() => setSelectedMode(mode)}
               aria-pressed={activeMode === mode}
-              className={`rounded-full border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] transition ${
+              className={`rounded-md border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] transition ${
                 activeMode === mode
                   ? 'border-accent/40 bg-accent/[0.14] text-accent'
-                  : 'border-border bg-surface-raised text-text-muted hover:border-border-hover hover:text-text-secondary'
+                  : 'border-border/70 bg-bg text-text-muted hover:border-border-hover hover:text-text-secondary'
               }`}
             >
               {MODE_LABELS[mode]}
@@ -117,28 +137,21 @@ export default function StakeCalculatorPanel({
         </div>
       </div>
 
-      <p className="mt-2 text-[11px] leading-5 text-text-secondary">{MODE_DESCRIPTIONS[activeMode]}</p>
-
-      <div className="mt-3 grid gap-2 sm:grid-cols-3">
-        <MetricTile
-          label="Stake A"
+      <div className="mt-3 divide-y divide-border/70 rounded-md border border-border/70 bg-bg/70 px-3">
+        <StakeSplitRow
+          bookmaker={d.bookmaker_a_name}
+          detail={`Over ${formatThreshold(d.threshold_a)} @ ${formatOdds(d.odds_a)}`}
           value={`${formatUnits(plan.stakeA)}u`}
-          detail={`${d.bookmaker_a_name} · Over ${formatThreshold(d.threshold_a)} @ ${formatOdds(d.odds_a)}`}
         />
-        <MetricTile
-          label="Stake B"
+        <StakeSplitRow
+          bookmaker={d.bookmaker_b_name}
+          detail={`Under ${formatThreshold(d.threshold_b)} @ ${formatOdds(d.odds_b)}`}
           value={`${formatUnits(plan.stakeB)}u`}
-          detail={`${d.bookmaker_b_name} · Under ${formatThreshold(d.threshold_b)} @ ${formatOdds(d.odds_b)}`}
-        />
-        <MetricTile
-          label="Total stake"
-          value={`${formatUnits(plan.totalStake)}u`}
-          detail={plan.isGuaranteed ? 'Protected outside the middle' : 'Exposure across both bets'}
         />
       </div>
 
       <div className="mt-2 grid gap-2 sm:grid-cols-2">
-        <MetricTile
+        <SummaryPill
           label="Worst-case P/L"
           value={`${formatSignedUnits(plan.worstCaseProfit)}u`}
           detail={
@@ -148,7 +161,7 @@ export default function StakeCalculatorPanel({
           }
           valueClassName={resultValueClass(plan.worstCaseProfit)}
         />
-        <MetricTile
+        <SummaryPill
           label="Middle profit"
           value={plan.middleProfit !== null ? `${formatSignedUnits(plan.middleProfit)}u` : '—'}
           detail={
@@ -161,7 +174,7 @@ export default function StakeCalculatorPanel({
       </div>
 
       {plan.labels.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-1.5">
+        <div className="mt-2 flex flex-wrap gap-1.5">
           {plan.labels.map((labelItem) => (
             <span
               key={labelItem.text}
