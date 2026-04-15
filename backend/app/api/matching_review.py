@@ -57,7 +57,7 @@ async def list_matching_review_cases(
 @router.post("/cases/{case_id}/approve", response_model=MatchingReviewApprovalOut)
 async def approve_matching_review_case(
     case_id: int,
-    payload: MatchingReviewApprovalIn | None = None,
+    payload: Optional[MatchingReviewApprovalIn] = None,
 ) -> MatchingReviewApprovalOut:
     case = await odds_store.get_matching_review_case(case_id)
     if case is None:
