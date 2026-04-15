@@ -10,6 +10,7 @@ interface MatchAccordionProps {
   awayTeam: string;
   startTime: string | null;
   discrepancies: Discrepancy[];
+  totalUnits: number;
 }
 
 export default function MatchAccordion({
@@ -18,6 +19,7 @@ export default function MatchAccordion({
   awayTeam,
   startTime,
   discrepancies,
+  totalUnits,
 }: MatchAccordionProps) {
   const location = useLocation();
   const [isOpen, setIsOpen] = useState(true);
@@ -42,20 +44,16 @@ export default function MatchAccordion({
             >
               {homeTeam} vs {awayTeam}
             </Link>
-            <div className="mt-0.5 text-xs text-text-muted">
-              {formatDateTime(startTime)}
-            </div>
+            <div className="mt-0.5 text-xs text-text-muted">{formatDateTime(startTime)}</div>
           </div>
         </div>
-        <span className="font-mono text-xs text-text-secondary">
-          {discrepancies.length}
-        </span>
+        <span className="font-mono text-xs text-text-secondary">{discrepancies.length}</span>
       </button>
 
       {isOpen && (
         <div className="space-y-3 border-t border-border px-4 pb-4 pt-3">
           {discrepancies.map((d) => (
-            <DiscrepancyCard key={d.id} discrepancy={d} />
+            <DiscrepancyCard key={d.id} discrepancy={d} totalUnits={totalUnits} />
           ))}
         </div>
       )}

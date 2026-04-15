@@ -1,20 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
 import { useDiscrepancies, useMatches, useSystemStatus, useUnresolvedOdds } from '../api/hooks';
-import type { DiscrepancyFilters, Discrepancy } from '../api/types';
-import { formatOdds, formatThreshold, formatPercentage, formatGap, formatRelativeTime, profitColor } from '../utils/format';
-import { MARKET_TYPE_LABELS } from '../utils/constants';
-import FilterBar from '../components/FilterBar';
+import type { Discrepancy, DiscrepancyFilters } from '../api/types';
 import BookmakerFilterDeck from '../components/BookmakerFilterDeck';
-import SortControls from '../components/SortControls';
-import MatchAccordion from '../components/MatchAccordion';
-import BookmakerBadge from '../components/BookmakerBadge';
-import LoadingSpinner from '../components/LoadingSpinner';
+import DiscrepancyCard from '../components/DiscrepancyCard';
 import EmptyState from '../components/EmptyState';
+import FilterBar from '../components/FilterBar';
+import LoadingSpinner from '../components/LoadingSpinner';
+import MatchAccordion from '../components/MatchAccordion';
 import PageShell from '../components/PageShell';
+import SortControls from '../components/SortControls';
 import TrackedMatchesPanel from '../components/TrackedMatchesPanel';
 import UnresolvedOddsPanel from '../components/UnresolvedOddsPanel';
+import {
+  formatDashboardStakeUnitsInput,
+  useDashboardStakeUnits,
+} from '../hooks/useDashboardStakeUnits';
 import { useBookmakerFilter } from '../hooks/useBookmakerFilter';
 
 interface MatchGroup {
@@ -35,11 +36,8 @@ type ViewMode = 'by-match' | 'flat';
 
 export default function Dashboard() {
   const queryClient = useQueryClient();
-  const {
-    selectedBookmakerIds,
-    updateSelectedBookmakerIds,
-    search: sharedSearch,
-  } = useBookmakerFilter();
+  const { selectedBookmakerIds, updateSelectedBookmakerIds } = useBookmakerFilter();
+  const { units: stakeUnits, updateUnits: updateStakeUnits, minUnits } = useDashboardStakeUnits();
   const [filters, setFilters] = useState<DiscrepancyFilters>({
     sort_by: 'profit_margin',
     sort_order: 'desc',
@@ -47,7 +45,14 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<DashboardTab>('discrepancies');
   const [viewMode, setViewMode] = useState<ViewMode>('flat');
   const [collapsedLeagues, setCollapsedLeagues] = useState<Set<string>>(new Set());
+  const [stakeUnitsInput, setStakeUnitsInput] = useState(() =>
+    formatDashboardStakeUnitsInput(stakeUnits)
+  );
   const previousScanInProgressRef = useRef(false);
+
+  useEffect(() => {
+    setStakeUnitsInput(formatDashboardStakeUnitsInput(stakeUnits));
+  }, [stakeUnits]);
 
   const toggleLeague = (league: string) => {
     setCollapsedLeagues((prev) => {
@@ -59,6 +64,18 @@ export default function Dashboard() {
       }
       return next;
     });
+  };
+
+  const commitStakeUnits = () => {
+    const parsed = Number(stakeUnitsInput.replace(',', '.'));
+
+    if (!Number.isFinite(parsed) || parsed < minUnits) {
+      setStakeUnitsInput(formatDashboardStakeUnitsInput(stakeUnits));
+      return;
+    }
+
+    const normalized = updateStakeUnits(parsed);
+    setStakeUnitsInput(formatDashboardStakeUnitsInput(normalized));
   };
 
   const discrepancyFilters = useMemo(
@@ -106,9 +123,7 @@ export default function Dashboard() {
   const { data: status } = useSystemStatus();
 
   const isInitialScanInProgress =
-    activeTab === 'discrepancies' &&
-    !!status?.scan.in_progress &&
-    !status.last_scrape_at;
+    activeTab === 'discrepancies' && !!status?.scan.in_progress && !status.last_scrape_at;
   const isTimeoutError =
     typeof (error as Error | undefined)?.message === 'string' &&
     (error as Error).message.toLowerCase().includes('timeout');
@@ -129,7 +144,6 @@ export default function Dashboard() {
     previousScanInProgressRef.current = scanInProgress;
   }, [activeTab, queryClient, refetchDiscrepancies, refetchUnresolvedOdds, status?.scan.in_progress]);
 
-  // Group discrepancies by league, then by match
   const grouped = useMemo<LeagueGroup[]>(() => {
     if (!discrepancies) return [];
 
@@ -184,7 +198,6 @@ export default function Dashboard() {
       }
     >
       <div className="space-y-6">
-        {/* Tabs + Filters */}
         <section className="space-y-4">
           <BookmakerFilterDeck
             selectedBookmakerIds={selectedBookmakerIds}
@@ -271,9 +284,55 @@ export default function Dashboard() {
             )}
           </div>
           {activeTab === 'discrepancies' && (
-            <div className="rounded-lg border border-border bg-surface p-4">
-              <FilterBar filters={filters} onChange={setFilters} />
-            </div>
+            <>
+              <div className="rounded-[28px] border border-border/80 bg-[radial-gradient(circle_at_top_left,_rgba(250,208,122,0.18),_transparent_42%),linear-gradient(135deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01))] p-4 shadow-[0_24px_80px_-44px_rgba(0,0,0,0.88)]">
+                <div className="flex flex-wrap items-center gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-bg/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] text-text-muted">
+                      Stake planner
+                      <span className="h-1 w-1 rounded-full bg-accent" />
+                      <span className="tracking-[0.18em] text-text-secondary">Browser saved</span>
+                    </div>
+                    <h3 className="mt-3 text-sm font-semibold text-text sm:text-base">
+                      Set one total stake and every discrepancy card sizes itself inline.
+                    </h3>
+                    <p className="mt-1 max-w-2xl text-xs leading-5 text-text-secondary sm:text-sm">
+                      The amount persists locally for future visits, so the board always opens with
+                      your last units ready to compare.
+                    </p>
+                  </div>
+
+                  <label
+                    htmlFor="dashboard-stake-units"
+                    className="flex min-w-[180px] items-center gap-3 rounded-2xl border border-border/70 bg-bg/80 px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
+                  >
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-text-muted">
+                      Units
+                    </span>
+                     <input
+                       id="dashboard-stake-units"
+                       name="dashboardStakeUnits"
+                       type="number"
+                       inputMode="decimal"
+                       min={minUnits}
+                      step="0.1"
+                      value={stakeUnitsInput}
+                      onChange={(e) => setStakeUnitsInput(e.target.value)}
+                      onBlur={commitStakeUnits}
+                       onKeyDown={(e) => {
+                         if (e.key === 'Enter') {
+                           e.currentTarget.blur();
+                         }
+                       }}
+                       className="w-full bg-transparent text-right font-mono text-2xl font-semibold text-text outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                     />
+                  </label>
+                </div>
+              </div>
+              <div className="rounded-lg border border-border bg-surface p-4">
+                <FilterBar filters={filters} onChange={setFilters} />
+              </div>
+            </>
           )}
         </section>
 
@@ -315,94 +374,16 @@ export default function Dashboard() {
               message="Scraping may still be working normally. Switch to tracked odds to inspect upcoming matches and player markets."
             />
           ) : viewMode === 'flat' ? (
-            /* ── Flat ranked list ── */
-            <div className="overflow-hidden rounded-lg border border-border bg-surface">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border text-[11px] font-medium uppercase tracking-wider text-text-muted">
-                      <th className="px-4 py-2.5 text-left">Player / Market</th>
-                      <th className="px-4 py-2.5 text-left">Match</th>
-                      <th className="px-4 py-2.5 text-right">Edge</th>
-                      <th className="hidden px-4 py-2.5 text-right md:table-cell">Middle</th>
-                      <th className="hidden px-4 py-2.5 text-left sm:table-cell">Over</th>
-                      <th className="hidden px-4 py-2.5 text-left sm:table-cell">Under</th>
-                      <th className="px-4 py-2.5 text-right">Gap</th>
-                      <th className="hidden px-4 py-2.5 text-right lg:table-cell">Time</th>
-                      <th className="px-4 py-2.5"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {discrepancies.map((d) => {
-                      const marketLabel = MARKET_TYPE_LABELS[d.market_type] || d.market_type;
-                      return (
-                        <tr
-                          key={d.id}
-                          className="border-t border-border transition hover:bg-surface-raised"
-                        >
-                          <td className="px-4 py-2.5">
-                            <div className="font-medium text-text">
-                              {d.player_name || marketLabel}
-                            </div>
-                            {d.player_name && (
-                              <div className="text-[11px] text-text-muted">{marketLabel}</div>
-                            )}
-                          </td>
-                          <td className="px-4 py-2.5">
-                            <div className="text-text-secondary">
-                              {d.home_team} vs {d.away_team}
-                            </div>
-                            <div className="text-[11px] text-text-muted">{d.league_name}</div>
-                          </td>
-                          <td className={`px-4 py-2.5 text-right font-mono font-bold ${profitColor(d.profit_margin)}`}>
-                            {formatPercentage(d.profit_margin)}
-                          </td>
-                          <td className="hidden px-4 py-2.5 text-right md:table-cell">
-                            {d.middle_profit_margin != null && d.gap > 0 ? (
-                              <span className={`font-mono font-bold ${profitColor(d.middle_profit_margin)}`}>
-                                {formatPercentage(d.middle_profit_margin)}
-                              </span>
-                            ) : (
-                              <span className="text-text-muted">—</span>
-                            )}
-                          </td>
-                          <td className="hidden px-4 py-2.5 sm:table-cell">
-                            <div className="flex items-center gap-1.5">
-                              <BookmakerBadge name={d.bookmaker_a_name} compact />
-                              <span className="font-mono text-text-secondary">
-                                {formatThreshold(d.threshold_a)} @ {formatOdds(d.odds_a)}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="hidden px-4 py-2.5 sm:table-cell">
-                            <div className="flex items-center gap-1.5">
-                              <BookmakerBadge name={d.bookmaker_b_name} compact />
-                              <span className="font-mono text-text-secondary">
-                                {formatThreshold(d.threshold_b)} @ {formatOdds(d.odds_b)}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-4 py-2.5 text-right font-mono text-text-secondary">
-                            {formatGap(d.gap)}
-                          </td>
-                          <td className="hidden px-4 py-2.5 text-right text-text-muted lg:table-cell">
-                            {formatRelativeTime(d.detected_at)}
-                          </td>
-                          <td className="px-4 py-2.5 text-right">
-                            <Link
-                              to={`/matches/${d.match_id}${sharedSearch}`}
-                              aria-label={`View ${d.player_name || marketLabel} for ${d.home_team} vs ${d.away_team}`}
-                              className="text-xs font-medium text-text-muted transition hover:text-accent"
-                            >
-                              →
-                            </Link>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+            <div className="space-y-3">
+              {discrepancies.map((d, index) => (
+                <DiscrepancyCard
+                  key={d.id}
+                  discrepancy={d}
+                  totalUnits={stakeUnits}
+                  context="flat"
+                  rank={index + 1}
+                />
+              ))}
             </div>
           ) : (
             <div className="space-y-8">
@@ -421,7 +402,7 @@ export default function Dashboard() {
                     </span>
                     <h3 className="text-sm font-semibold uppercase tracking-wide text-accent">{lg.league}</h3>
                     <span className="font-mono text-xs text-text-muted">
-                      {lg.matches.reduce((sum, m) => sum + m.discrepancies.length, 0)}
+                      {lg.matches.reduce((sum, matchGroup) => sum + matchGroup.discrepancies.length, 0)}
                     </span>
                   </button>
                   {!collapsedLeagues.has(lg.league) && (
@@ -434,6 +415,7 @@ export default function Dashboard() {
                           awayTeam={mg.awayTeam}
                           startTime={mg.startTime}
                           discrepancies={mg.discrepancies}
+                          totalUnits={stakeUnits}
                         />
                       ))}
                     </div>

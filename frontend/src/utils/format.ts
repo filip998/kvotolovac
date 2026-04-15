@@ -6,6 +6,10 @@ const MATCH_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-GB', {
   minute: '2-digit',
   timeZone: MATCH_TIMEZONE,
 });
+const UNITS_FORMATTER = new Intl.NumberFormat('en-GB', {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
 
 function parseAppDate(isoString: string | null | undefined): Date | null {
   if (!isoString) return null;
@@ -24,7 +28,7 @@ export function formatOdds(value: number | null): string {
 }
 
 export function formatPercentage(value: number): string {
-    const sign = value >= 0 ? '+' : '';
+  const sign = value >= 0 ? '+' : '';
   return `${sign}${(value * 100).toFixed(1)}%`;
 }
 
@@ -34,6 +38,20 @@ export function formatGap(value: number): string {
 
 export function formatThreshold(value: number): string {
   return value.toFixed(1);
+}
+
+export function formatUnits(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  return UNITS_FORMATTER.format(value);
+}
+
+export function formatSignedUnits(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  const normalized = Math.abs(value) < 1e-9 ? 0 : value;
+  const roundedAbs = Number(Math.abs(normalized).toFixed(2));
+  if (roundedAbs === 0) return '0';
+  const sign = normalized > 0 ? '+' : '-';
+  return `${sign}${UNITS_FORMATTER.format(roundedAbs)}`;
 }
 
 export function formatDateTime(isoString: string | null | undefined): string {
