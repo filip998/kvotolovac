@@ -32,6 +32,8 @@ def test_normalize_team_alias():
     assert normalize_team_name("Fenerbahce Istanbul", "euroleague") == "Fenerbahce"
     assert normalize_team_name("ASVEL Lyon-Villeurbanne", "euroleague") == "Asvel"
     assert normalize_team_name("Lyon-Villeurb.", "euroleague") == "Asvel"
+    assert normalize_team_name("UU-Korihait", "korisliiga") == "Korihait Uusikaupunki"
+    assert normalize_team_name("Salon Vilpas Vikings", "korisliiga") == "Salon Vilpas"
 
 
 def test_normalize_team_nba_aliases_are_league_scoped():
@@ -95,7 +97,7 @@ def test_normalize_odds_does_not_overresolve_double_initial_players():
     ]
 
 
-def test_normalize_odds_keeps_ambiguous_single_initial_players():
+def test_normalize_odds_resolves_unambiguous_single_initial_players():
     raw = [
         RawOddsData(
             bookmaker_id="meridian",
@@ -125,9 +127,10 @@ def test_normalize_odds_keeps_ambiguous_single_initial_players():
 
     normalized = normalize_odds(raw)
 
+    # Only one Williams in the match → unambiguous, should resolve
     assert [offer.player_name for offer in normalized] == [
         "Jalen Williams",
-        "J. Williams",
+        "Jalen Williams",
     ]
 
 
@@ -581,6 +584,12 @@ def test_normalize_league_id_alias():
     assert normalize_league_id("AdmiralBet ABA liga - plej of") == "aba_liga"
     assert normalize_league_id("italija_1") == "italy"
     assert normalize_league_id("Germany BBL") == "germany"
+    assert normalize_league_id("Finska 1") == "korisliiga"
+    assert normalize_league_id("Finska 1 plej of") == "korisliiga"
+    assert normalize_league_id("Finnish League") == "korisliiga"
+    assert normalize_league_id("Finland Play Offs") == "korisliiga"
+    assert normalize_league_id("Finland Korisliiga") == "korisliiga"
+    assert normalize_league_id("balkanbet_tournament_486") == "korisliiga"
     assert normalize_league_id("euroleague") == "euroleague"
 
 
@@ -680,6 +689,79 @@ def test_normalize_odds_resolves_shared_platform_matchups_and_aliases():
     assert {offer.home_team for offer in normalized} == {"Houston Rockets"}
     assert {offer.away_team for offer in normalized} == {"Minnesota Timberwolves"}
     assert {offer.player_name for offer in normalized} == {"Kevin Durant"}
+
+
+def test_normalize_odds_merges_korihait_vilpas_bookmaker_variants():
+    raw = [
+        RawOddsData(
+            bookmaker_id="admiralbet",
+            league_id="finska 1",
+            home_team="UU Korihait Uusikaupunki",
+            away_team="Salon Vilpas",
+            market_type="game_total_ot",
+            player_name=None,
+            threshold=163.5,
+            over_odds=1.8,
+            under_odds=1.9,
+            start_time="2026-04-15T15:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="finnish league",
+            home_team="Korihait Uusikaupunki",
+            away_team="Salon Vilpas Vikings",
+            market_type="game_total_ot",
+            player_name=None,
+            threshold=164.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-15T15:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="finland play offs",
+            home_team="Korihait U.",
+            away_team="Salon Vilpas",
+            market_type="game_total_ot",
+            player_name=None,
+            threshold=165.5,
+            over_odds=1.9,
+            under_odds=1.8,
+            start_time="2026-04-15T15:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="balkanbet_tournament_486",
+            home_team="Korihait Uusikaupunki",
+            away_team="Salon Vilpas Vikings",
+            market_type="game_total_ot",
+            player_name=None,
+            threshold=162.5,
+            over_odds=1.87,
+            under_odds=1.87,
+            start_time="2026-04-15T15:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="merkurxtip",
+            league_id="korisliiga",
+            home_team="UU-Korihait",
+            away_team="Salon Vilpas",
+            market_type="game_total_ot",
+            player_name=None,
+            threshold=164.0,
+            over_odds=1.86,
+            under_odds=1.86,
+            start_time="2026-04-15T15:30:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert len(normalized) == 5
+    assert len({offer.match_id for offer in normalized}) == 1
+    assert {offer.league_id for offer in normalized} == {"korisliiga"}
+    assert {offer.home_team for offer in normalized} == {"Korihait Uusikaupunki"}
+    assert {offer.away_team for offer in normalized} == {"Salon Vilpas"}
 
 
 def test_normalize_odds_drops_unresolved_shared_platform_rows():
@@ -925,3 +1007,108 @@ def test_normalize_preserves_thresholds():
     normalized = normalize_odds(raw)
     assert normalized[0].threshold == 16.5
     assert normalized[0].over_odds == 1.85
+
+
+def test_normalize_odds_resolves_suffix_jr():
+    """W.Carter and Wendell Carter Jr should match."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="Wendell Carter Jr",
+            threshold=12.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="W.Carter",
+            threshold=12.5,
+            over_odds=1.7,
+            under_odds=2.0,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    assert [offer.player_name for offer in normalized] == [
+        "Wendell Carter Jr",
+        "Wendell Carter Jr",
+    ]
+
+
+def test_normalize_odds_resolves_suffix_kelly_oubre_jr():
+    """K.Oubre and Kelly Oubre Jr should match."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="Kelly Oubre Jr",
+            threshold=15.5,
+            over_odds=1.80,
+            under_odds=1.90,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="K.Oubre",
+            threshold=15.5,
+            over_odds=1.75,
+            under_odds=1.95,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    assert [offer.player_name for offer in normalized] == [
+        "Kelly Oubre Jr",
+        "Kelly Oubre Jr",
+    ]
+
+
+def test_normalize_odds_resolves_reversed_name_order():
+    """Edgecombe VJ and VJ Edgecombe should match."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="VJ Edgecombe",
+            threshold=10.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="Edgecombe VJ",
+            threshold=10.5,
+            over_odds=1.7,
+            under_odds=2.0,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = [offer.player_name for offer in normalized]
+    # Both should resolve to the same name
+    assert len(set(names)) == 1
+    assert names[0] in ("VJ Edgecombe", "Edgecombe VJ")

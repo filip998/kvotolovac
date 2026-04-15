@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 from .base import BaseScraper
 from .http_client import HttpClient
@@ -91,9 +90,6 @@ _MILESTONE_THRESHOLDS: dict[str, float] = {
     "50+": 49.5,
 }
 
-_BELGRADE_TZ = ZoneInfo("Europe/Belgrade")
-
-
 def _parse_event_name(name: str) -> tuple[str, str]:
     """Parse 'Player Name - Team Name' into (player, team)."""
     if " - " in name:
@@ -103,13 +99,19 @@ def _parse_event_name(name: str) -> tuple[str, str]:
 
 
 def _parse_start_time(dt_str: str | None) -> str | None:
-    """Parse a naive Belgrade-local datetime string to UTC ISO format."""
+    """Parse AdmiralBet datetimes to the canonical ``+00:00`` format.
+
+    AdmiralBet returns naive values such as ``2026-04-15T15:30:00`` for
+    basketball events. In practice those values already line up with the UTC
+    timestamps from the other bookmakers we merge against, so treat them as UTC
+    instead of shifting them by the local Belgrade offset.
+    """
     if not dt_str:
         return None
     try:
         dt = datetime.fromisoformat(dt_str)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_BELGRADE_TZ)
+            dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc).isoformat()
     except (ValueError, TypeError):
         return None

@@ -57,10 +57,11 @@ def test_parse_event_name_multiple_dashes():
 
 
 def test_parse_start_time_valid():
-    # AdmiralBet returns Belgrade time (CEST = UTC+2 in April)
+    # AdmiralBet's naive dateTime already aligns with the other bookmakers'
+    # UTC timestamps for the same event, so keep the wall clock intact.
     result = _parse_start_time("2026-04-11T16:00:00")
     assert result is not None
-    assert "2026-04-11T14:00:00" in result  # 16:00 Belgrade → 14:00 UTC
+    assert "2026-04-11T16:00:00" in result
 
 
 def test_parse_start_time_none():
