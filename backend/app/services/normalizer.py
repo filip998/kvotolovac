@@ -363,19 +363,15 @@ def _name_surface_richness(name: str) -> tuple[int, int, int]:
 
 
 def _surface_person_tokens(name: str) -> list[str]:
-    tokens = [
-        re.sub(r"[^A-Za-zÀ-ž-]+", "", part)
-        for part in name.split()
-    ]
-    tokens = [token for token in tokens if token]
+    tokens = [part.strip() for part in name.split() if part.strip()]
     while tokens and normalize_identity_text(tokens[-1]) in _NAME_SUFFIXES:
         tokens.pop()
     return tokens
 
 
 def _is_abbreviated_surface_token(token: str) -> bool:
-    compact = token.replace("-", "")
-    return bool(compact) and len(compact) <= 3 and compact.isupper()
+    compact = re.sub(r"[^A-Za-zÀ-ž]+", "", token)
+    return bool(compact) and ("." in token or (len(compact) <= 2 and compact.isupper()))
 
 
 def _check_first_name_match(

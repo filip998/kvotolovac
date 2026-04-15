@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import type { Match } from '../api/types';
 import { formatDateTime } from '../utils/format';
-import { filterItemsBySearch, normalizeSearchText } from '../utils/search';
+import { buildSearchIndex, filterSearchIndex, normalizeSearchText } from '../utils/search';
 import BookmakerBadge from './BookmakerBadge';
 import EmptyState from './EmptyState';
 import OfferSearchStrip from './OfferSearchStrip';
@@ -26,6 +26,7 @@ export default function TrackedMatchesPanel({
 }: TrackedMatchesPanelProps) {
   const location = useLocation();
   const [referenceTimeMs, setReferenceTimeMs] = useState(() => Date.now());
+  const appliedSearchQuery = useDeferredValue(searchQuery);
   const selectedSet = useMemo(() => new Set(selectedBookmakerIds), [selectedBookmakerIds]);
 
   useEffect(() => {
@@ -52,14 +53,19 @@ export default function TrackedMatchesPanel({
     [matches, referenceTimeMs]
   );
 
-  const filteredMatches = useMemo(
+  const searchableMatches = useMemo(
     () =>
-      filterItemsBySearch(upcomingMatches, searchQuery, (match) => [
+      buildSearchIndex(upcomingMatches, (match) => [
         match.home_team,
         match.away_team,
         `${match.home_team} ${match.away_team}`,
       ]),
-    [upcomingMatches, searchQuery]
+    [upcomingMatches]
+  );
+
+  const filteredMatches = useMemo(
+    () => filterSearchIndex(searchableMatches, appliedSearchQuery),
+    [searchableMatches, appliedSearchQuery]
   );
 
   const sortedMatches = useMemo(
@@ -75,8 +81,109 @@ export default function TrackedMatchesPanel({
     [filteredMatches]
   );
 
-  const hasSearchQuery = normalizeSearchText(searchQuery).length > 0;
-  const activeSearchLabel = searchQuery.trim();
+  const hasSearchQuery = normalizeSearchText(appliedSearchQuery).length > 0;
+  const activeSearchLabel = appliedSearchQuery.trim();
+
+  const resultsContent = useMemo(() => {
+    if (isLoading) {
+      return (
+        <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-text-muted">
+          Loading tracked matches…
+        </div>
+      );
+    }
+
+    if (errorMessage) {
+      return (
+        <div className="rounded-lg border border-danger/30 bg-danger/10 px-4 py-8 text-center text-sm text-danger">
+          Failed to load: {errorMessage}
+        </div>
+      );
+    }
+
+    if (hasSearchQuery && sortedMatches.length === 0 && upcomingMatches.length > 0) {
+      return (
+        <EmptyState
+          title={`No tracked matchups match "${activeSearchLabel}"`}
+          message="Tracked odds search checks team and matchup names only. Try a broader club name or clear the query."
+        />
+      );
+    }
+
+    if (sortedMatches.length === 0) {
+      return (
+        <EmptyState
+          title="No upcoming fetched matches stored right now"
+          message="Tracked odds only lists matches that are still upcoming in the current stored board."
+        />
+      );
+    }
+
+    return (
+      <div className="grid gap-2">
+        {sortedMatches.map((match) => (
+          <Link
+            key={match.id}
+            to={{ pathname: `/matches/${match.id}`, search: location.search }}
+            className="group flex flex-wrap items-center justify-between gap-4 rounded-lg border border-border bg-surface px-4 py-3 transition hover:border-border-hover"
+          >
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-medium uppercase tracking-wider text-accent">
+                  {match.league_name}
+                </span>
+                <span
+                  className={`text-[11px] font-medium ${
+                    match.status === 'live' ? 'text-danger' : 'text-text-muted'
+                  }`}
+                >
+                  {match.status}
+                </span>
+              </div>
+              <div className="mt-1 text-sm font-semibold text-text">
+                {match.home_team} vs {match.away_team}
+              </div>
+              <div className="mt-0.5 text-xs text-text-muted">{formatDateTime(match.start_time)}</div>
+              {match.available_bookmakers.length > 0 && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {match.available_bookmakers.map((bookmaker) => {
+                    const highlighted =
+                      selectedSet.size > 0 && selectedSet.has(bookmaker.id);
+
+                    return (
+                      <span
+                        key={`${match.id}-${bookmaker.id}`}
+                        className={`inline-flex items-center rounded-full border px-1.5 py-1 transition ${
+                          highlighted
+                            ? 'border-accent/60 bg-accent/[0.12] shadow-[0_0_0_1px_rgba(250,208,122,0.18)]'
+                            : 'border-border/70 bg-bg/60'
+                        }`}
+                        title={bookmaker.name}
+                      >
+                        <BookmakerBadge name={bookmaker.name} compact />
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <span className="text-xs font-medium text-text-muted transition group-hover:text-accent">
+              View →
+            </span>
+          </Link>
+        ))}
+      </div>
+    );
+  }, [
+    activeSearchLabel,
+    errorMessage,
+    hasSearchQuery,
+    isLoading,
+    location.search,
+    selectedSet,
+    sortedMatches,
+    upcomingMatches.length,
+  ]);
 
   return (
     <section className="space-y-4">
@@ -102,79 +209,7 @@ export default function TrackedMatchesPanel({
         totalCount={upcomingMatches.length}
       />
 
-      {isLoading ? (
-        <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-text-muted">
-          Loading tracked matches…
-        </div>
-      ) : errorMessage ? (
-        <div className="rounded-lg border border-danger/30 bg-danger/10 px-4 py-8 text-center text-sm text-danger">
-          Failed to load: {errorMessage}
-        </div>
-      ) : hasSearchQuery && sortedMatches.length === 0 && upcomingMatches.length > 0 ? (
-        <EmptyState
-          title={`No tracked matchups match "${activeSearchLabel}"`}
-          message="Tracked odds search checks team and matchup names only. Try a broader club name or clear the query."
-        />
-      ) : sortedMatches.length === 0 ? (
-        <EmptyState
-          title="No upcoming fetched matches stored right now"
-          message="Tracked odds only lists matches that are still upcoming in the current stored board."
-        />
-      ) : (
-        <div className="grid gap-2">
-          {sortedMatches.map((match) => (
-            <Link
-              key={match.id}
-              to={{ pathname: `/matches/${match.id}`, search: location.search }}
-              className="group flex flex-wrap items-center justify-between gap-4 rounded-lg border border-border bg-surface px-4 py-3 transition hover:border-border-hover"
-            >
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-medium uppercase tracking-wider text-accent">
-                    {match.league_name}
-                  </span>
-                  <span
-                    className={`text-[11px] font-medium ${
-                      match.status === 'live' ? 'text-danger' : 'text-text-muted'
-                    }`}
-                  >
-                    {match.status}
-                  </span>
-                </div>
-                <div className="mt-1 text-sm font-semibold text-text">
-                  {match.home_team} vs {match.away_team}
-                </div>
-                <div className="mt-0.5 text-xs text-text-muted">{formatDateTime(match.start_time)}</div>
-                {match.available_bookmakers.length > 0 && (
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    {match.available_bookmakers.map((bookmaker) => {
-                      const highlighted =
-                        selectedSet.size > 0 && selectedSet.has(bookmaker.id);
-
-                      return (
-                        <span
-                          key={`${match.id}-${bookmaker.id}`}
-                          className={`inline-flex items-center rounded-full border px-1.5 py-1 transition ${
-                            highlighted
-                              ? 'border-accent/60 bg-accent/[0.12] shadow-[0_0_0_1px_rgba(250,208,122,0.18)]'
-                              : 'border-border/70 bg-bg/60'
-                          }`}
-                          title={bookmaker.name}
-                        >
-                          <BookmakerBadge name={bookmaker.name} compact />
-                        </span>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-              <span className="text-xs font-medium text-text-muted transition group-hover:text-accent">
-                View →
-              </span>
-            </Link>
-          ))}
-        </div>
-      )}
+      {resultsContent}
     </section>
   );
 }

@@ -1184,3 +1184,39 @@ def test_normalize_odds_does_not_merge_three_letter_swapped_names():
         "Leo Grant",
         "Grant Leo",
     ]
+
+
+def test_normalize_odds_does_not_merge_uppercase_three_letter_swapped_names():
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="LEO GRANT",
+            threshold=7.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="GRANT LEO",
+            threshold=7.5,
+            over_odds=1.7,
+            under_odds=2.0,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert [offer.player_name for offer in normalized] == [
+        "LEO GRANT",
+        "GRANT LEO",
+    ]

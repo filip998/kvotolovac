@@ -37,6 +37,8 @@ export function useDiscrepancies(
   filters: DiscrepancyFilters = {},
   options: { enabled?: boolean } = {}
 ) {
+  const shouldLoadAll = !!filters.loadAll;
+
   return useQuery<Discrepancy[]>({
     queryKey: ['discrepancies', filters],
     queryFn: async () => {
@@ -100,7 +102,9 @@ export function useDiscrepancies(
       return allDiscrepancies;
     },
     enabled: options.enabled ?? true,
-    refetchInterval: options.enabled === false ? false : 30000,
+    placeholderData: (previousData) => previousData,
+    staleTime: 30000,
+    refetchInterval: options.enabled === false ? false : shouldLoadAll ? false : 30000,
   });
 }
 

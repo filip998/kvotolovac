@@ -1,10 +1,10 @@
-import { useMemo } from 'react';
+import { useDeferredValue, useMemo } from 'react';
 import BookmakerBadge from './BookmakerBadge';
 import EmptyState from './EmptyState';
 import LoadingSpinner from './LoadingSpinner';
 import type { UnresolvedOdds } from '../api/types';
 import { MARKET_TYPE_LABELS } from '../utils/constants';
-import { filterItemsBySearch, normalizeSearchText } from '../utils/search';
+import { buildSearchIndex, filterSearchIndex, normalizeSearchText } from '../utils/search';
 import OfferSearchStrip from './OfferSearchStrip';
 import {
   formatDateTime,
@@ -36,17 +36,23 @@ export default function UnresolvedOddsPanel({
   searchQuery: string;
   onSearchChange: (value: string) => void;
 }) {
-  const filteredRows = useMemo(
+  const appliedSearchQuery = useDeferredValue(searchQuery);
+  const searchableRows = useMemo(
     () =>
-      filterItemsBySearch(rows, searchQuery, (row) => [
+      buildSearchIndex(rows, (row) => [
         row.player_name,
         row.raw_team_name,
         row.normalized_team_name,
       ]),
-    [rows, searchQuery]
+    [rows]
   );
-  const hasSearchQuery = normalizeSearchText(searchQuery).length > 0;
-  const activeSearchLabel = searchQuery.trim();
+
+  const filteredRows = useMemo(
+    () => filterSearchIndex(searchableRows, appliedSearchQuery),
+    [appliedSearchQuery, searchableRows]
+  );
+  const hasSearchQuery = normalizeSearchText(appliedSearchQuery).length > 0;
+  const activeSearchLabel = appliedSearchQuery.trim();
   const searchStrip = (
     <OfferSearchStrip
       value={searchQuery}

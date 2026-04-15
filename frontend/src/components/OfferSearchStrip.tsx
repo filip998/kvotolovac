@@ -1,5 +1,3 @@
-import { normalizeSearchText } from '../utils/search';
-
 interface OfferSearchStripProps {
   value: string;
   onChange: (value: string) => void;
@@ -19,9 +17,8 @@ export default function OfferSearchStrip({
   totalCount,
   tone = 'accent',
 }: OfferSearchStripProps) {
-  const normalizedQuery = normalizeSearchText(value);
-  const hasActiveQuery = normalizedQuery.length > 0;
-  const hasRawValue = value.length > 0;
+  const hasActiveQuery = value.trim().length > 0;
+  const hasRawValue = value.trim().length > 0;
   const inputId = `offer-search-${scopeLabel.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
 
   const toneStyles =

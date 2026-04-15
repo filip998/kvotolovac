@@ -1,4 +1,9 @@
-type SearchableValue = string | null | undefined;
+export type SearchableValue = string | null | undefined;
+
+export interface SearchIndexEntry<T> {
+  item: T;
+  normalizedSearchText: string;
+}
 
 export function normalizeSearchText(value: SearchableValue): string {
   if (!value) {
@@ -14,17 +19,35 @@ export function normalizeSearchText(value: SearchableValue): string {
     .replace(/\s+/g, ' ');
 }
 
-export function filterItemsBySearch<T>(
-  items: T[],
-  query: string,
+function joinSearchFields(fields: SearchableValue[]): string {
+  return fields.filter((field): field is string => Boolean(field)).join(' ');
+}
+
+export function buildSearchIndex<T>(
+  items: readonly T[],
   getSearchFields: (item: T) => SearchableValue[]
+): SearchIndexEntry<T>[] {
+  return items.map((item) => ({
+    item,
+    normalizedSearchText: normalizeSearchText(joinSearchFields(getSearchFields(item))),
+  }));
+}
+
+export function filterSearchIndex<T>(
+  searchIndex: readonly SearchIndexEntry<T>[],
+  query: string
 ): T[] {
   const normalizedQuery = normalizeSearchText(query);
   if (!normalizedQuery) {
-    return items;
+    return searchIndex.map(({ item }) => item);
   }
 
-  return items.filter((item) =>
-    getSearchFields(item).some((field) => normalizeSearchText(field).includes(normalizedQuery))
-  );
+  const matches: T[] = [];
+  for (const entry of searchIndex) {
+    if (entry.normalizedSearchText.includes(normalizedQuery)) {
+      matches.push(entry.item);
+    }
+  }
+
+  return matches;
 }
