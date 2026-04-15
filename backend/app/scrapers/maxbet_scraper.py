@@ -80,9 +80,13 @@ _GAME_TOTAL_LINES = [
 
 # OT-inclusive full-game totals confirmed from the live basketball list feed.
 _GAME_TOTAL_OT_LINES = [
-    ("50444", "50445", "overUnderOvertime"),
-    ("50448", "50449", "overUnderOvertime2"),
-    ("50979", "50980", "overUnderOvertime7"),
+    ("50445", "50444", "overUnderOvertime"),
+    ("50447", "50446", "overUnderOvertime2"),
+    ("50449", "50448", "overUnderOvertime3"),
+    ("50451", "50450", "overUnderOvertime4"),
+    ("50453", "50452", "overUnderOvertime5"),
+    ("50455", "50454", "overUnderOvertime6"),
+    ("50457", "50456", "overUnderOvertime7"),
 ]
 
 _LIST_MATCH_PARAM_KEYS = {

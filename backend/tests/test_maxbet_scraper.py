@@ -104,13 +104,14 @@ def test_parse_game_total_match_ignores_overtime_only_lines(basketball_fixture_d
 def test_parse_game_total_ot_match_returns_ot_lines(basketball_fixture_data):
     results = _parse_game_total_ot_match(basketball_fixture_data["esMatches"][0])
 
-    assert len(results) == 3
+    assert len(results) == 4
     assert all(isinstance(r, RawOddsData) for r in results)
     assert {r.market_type for r in results} == {"game_total_ot"}
     assert {(r.threshold, r.over_odds, r.under_odds) for r in results} == {
-        (157.5, 1.9, 1.85),
-        (156.5, 1.8, 1.93),
-        (160.5, 1.85, 1.85),
+        (156.5, 1.8, 2.0),
+        (157.5, 1.85, 1.9),
+        (158.5, 1.93, 1.8),
+        (160.5, 2.05, 1.85),
     }
 
 
@@ -122,8 +123,36 @@ def test_parse_game_total_ot_match_returns_ot_only_lines(basketball_fixture_data
     assert results[0].league_id == "portoriko_1"
     assert (results[0].threshold, results[0].over_odds, results[0].under_odds) == (
         184.5,
-        1.92,
         1.83,
+        1.92,
+    )
+
+
+def test_parse_game_total_ot_match_ignores_first_half_total_codes():
+    match = {
+        "home": "Lyon-Villeurb.",
+        "away": "Fenerbahce",
+        "leagueName": "Košarka EUROLEAGUE",
+        "kickOffTime": 1776362400000,
+        "params": {
+            "overUnderOvertime7": "169.5",
+            "overUnderP": "83.5",
+        },
+        "odds": {
+            "50456": 1.6,
+            "50457": 2.25,
+            "50979": 1.88,
+            "50980": 1.88,
+        },
+    }
+
+    results = _parse_game_total_ot_match(match)
+
+    assert len(results) == 1
+    assert (results[0].threshold, results[0].over_odds, results[0].under_odds) == (
+        169.5,
+        2.25,
+        1.6,
     )
 
 
@@ -434,6 +463,7 @@ async def test_scraper_returns_totals_when_player_list_fails(basketball_fixture_
         ("game_total", 157.5),
         ("game_total_ot", 156.5),
         ("game_total_ot", 157.5),
+        ("game_total_ot", 158.5),
         ("game_total_ot", 160.5),
         ("game_total_ot", 184.5),
     }
