@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useDiscrepancies, useMatches, useSystemStatus, useUnresolvedOdds } from '../api/hooks';
@@ -11,6 +11,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import MatchAccordion from '../components/MatchAccordion';
 import PageShell from '../components/PageShell';
 import SortControls from '../components/SortControls';
+import StakeCalculatorPanel from '../components/StakeCalculatorPanel';
 import TrackedMatchesPanel from '../components/TrackedMatchesPanel';
 import UnresolvedOddsPanel from '../components/UnresolvedOddsPanel';
 import {
@@ -59,6 +60,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<DashboardTab>('discrepancies');
   const [viewMode, setViewMode] = useState<ViewMode>('flat');
   const [collapsedLeagues, setCollapsedLeagues] = useState<Set<string>>(new Set());
+  const [expandedFlatCalculatorIds, setExpandedFlatCalculatorIds] = useState<Set<number>>(new Set());
   const [stakeUnitsInput, setStakeUnitsInput] = useState(() =>
     formatDashboardStakeUnitsInput(stakeUnits)
   );
@@ -75,6 +77,18 @@ export default function Dashboard() {
         next.delete(league);
       } else {
         next.add(league);
+      }
+      return next;
+    });
+  };
+
+  const toggleFlatCalculator = (discrepancyId: number) => {
+    setExpandedFlatCalculatorIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(discrepancyId)) {
+        next.delete(discrepancyId);
+      } else {
+        next.add(discrepancyId);
       }
       return next;
     });
@@ -407,72 +421,94 @@ export default function Dashboard() {
                   <tbody>
                     {discrepancies.map((d) => {
                       const marketLabel = MARKET_TYPE_LABELS[d.market_type] || d.market_type;
+                      const calculatorPanelId = `flat-calculator-${d.id}`;
+                      const isCalculatorExpanded = expandedFlatCalculatorIds.has(d.id);
 
                       return (
-                        <tr
-                          key={d.id}
-                          className="border-t border-border transition hover:bg-surface-raised"
-                        >
-                          <td className="px-4 py-2.5">
-                            <div className="font-medium text-text">
-                              {d.player_name || marketLabel}
-                            </div>
-                            {d.player_name && (
-                              <div className="text-[11px] text-text-muted">{marketLabel}</div>
-                            )}
-                          </td>
-                          <td className="px-4 py-2.5">
-                            <div className="text-text-secondary">
-                              {d.home_team} vs {d.away_team}
-                            </div>
-                            <div className="text-[11px] text-text-muted">{d.league_name}</div>
-                          </td>
-                          <td
-                            className={`px-4 py-2.5 text-right font-mono font-bold ${profitColor(d.profit_margin)}`}
-                          >
-                            {formatPercentage(d.profit_margin)}
-                          </td>
-                          <td className="hidden px-4 py-2.5 text-right md:table-cell">
-                            {d.middle_profit_margin != null && d.gap > 0 ? (
-                              <span className={`font-mono font-bold ${profitColor(d.middle_profit_margin)}`}>
-                                {formatPercentage(d.middle_profit_margin)}
-                              </span>
-                            ) : (
-                              <span className="text-text-muted">—</span>
-                            )}
-                          </td>
-                          <td className="hidden px-4 py-2.5 sm:table-cell">
-                            <div className="flex items-center gap-1.5">
-                              <BookmakerBadge name={d.bookmaker_a_name} compact />
-                              <span className="font-mono text-text-secondary">
-                                {formatThreshold(d.threshold_a)} @ {formatOdds(d.odds_a)}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="hidden px-4 py-2.5 sm:table-cell">
-                            <div className="flex items-center gap-1.5">
-                              <BookmakerBadge name={d.bookmaker_b_name} compact />
-                              <span className="font-mono text-text-secondary">
-                                {formatThreshold(d.threshold_b)} @ {formatOdds(d.odds_b)}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="px-4 py-2.5 text-right font-mono text-text-secondary">
-                            {formatGap(d.gap)}
-                          </td>
-                          <td className="hidden px-4 py-2.5 text-right text-text-muted lg:table-cell">
-                            {formatRelativeTime(d.detected_at)}
-                          </td>
-                          <td className="px-4 py-2.5 text-right">
-                            <Link
-                              to={`/matches/${d.match_id}${sharedSearch}`}
-                              aria-label={`View ${d.player_name || marketLabel} for ${d.home_team} vs ${d.away_team}`}
-                              className="text-xs font-medium text-text-muted transition hover:text-accent"
+                        <Fragment key={d.id}>
+                          <tr className="border-t border-border transition hover:bg-surface-raised">
+                            <td className="px-4 py-2.5">
+                              <div className="font-medium text-text">
+                                {d.player_name || marketLabel}
+                              </div>
+                              {d.player_name && (
+                                <div className="text-[11px] text-text-muted">{marketLabel}</div>
+                              )}
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <div className="text-text-secondary">
+                                {d.home_team} vs {d.away_team}
+                              </div>
+                              <div className="text-[11px] text-text-muted">{d.league_name}</div>
+                            </td>
+                            <td
+                              className={`px-4 py-2.5 text-right font-mono font-bold ${profitColor(d.profit_margin)}`}
                             >
-                              →
-                            </Link>
-                          </td>
-                        </tr>
+                              {formatPercentage(d.profit_margin)}
+                            </td>
+                            <td className="hidden px-4 py-2.5 text-right md:table-cell">
+                              {d.middle_profit_margin != null && d.gap > 0 ? (
+                                <span className={`font-mono font-bold ${profitColor(d.middle_profit_margin)}`}>
+                                  {formatPercentage(d.middle_profit_margin)}
+                                </span>
+                              ) : (
+                                <span className="text-text-muted">—</span>
+                              )}
+                            </td>
+                            <td className="hidden px-4 py-2.5 sm:table-cell">
+                              <div className="flex items-center gap-1.5">
+                                <BookmakerBadge name={d.bookmaker_a_name} compact />
+                                <span className="font-mono text-text-secondary">
+                                  {formatThreshold(d.threshold_a)} @ {formatOdds(d.odds_a)}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="hidden px-4 py-2.5 sm:table-cell">
+                              <div className="flex items-center gap-1.5">
+                                <BookmakerBadge name={d.bookmaker_b_name} compact />
+                                <span className="font-mono text-text-secondary">
+                                  {formatThreshold(d.threshold_b)} @ {formatOdds(d.odds_b)}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-2.5 text-right font-mono text-text-secondary">
+                              {formatGap(d.gap)}
+                            </td>
+                            <td className="hidden px-4 py-2.5 text-right text-text-muted lg:table-cell">
+                              {formatRelativeTime(d.detected_at)}
+                            </td>
+                            <td className="px-4 py-2.5 text-right">
+                              <div className="flex items-center justify-end gap-3">
+                                <button
+                                  type="button"
+                                  aria-expanded={isCalculatorExpanded}
+                                  aria-controls={calculatorPanelId}
+                                  aria-label={`${isCalculatorExpanded ? 'Hide' : 'View'} stake calculator for ${d.player_name || marketLabel} in ${d.home_team} vs ${d.away_team}`}
+                                  onClick={() => toggleFlatCalculator(d.id)}
+                                  className="text-[11px] font-medium text-text-muted transition hover:text-text"
+                                >
+                                  {isCalculatorExpanded ? 'Hide' : 'View'}
+                                </button>
+                                <Link
+                                  to={`/matches/${d.match_id}${sharedSearch}`}
+                                  aria-label={`View ${d.player_name || marketLabel} for ${d.home_team} vs ${d.away_team}`}
+                                  className="text-xs font-medium text-text-muted transition hover:text-accent"
+                                >
+                                  →
+                                </Link>
+                              </div>
+                            </td>
+                          </tr>
+                          {isCalculatorExpanded && (
+                            <tr className="border-t border-border bg-bg/20">
+                              <td colSpan={9} className="px-4 py-3">
+                                <div id={calculatorPanelId}>
+                                  <StakeCalculatorPanel discrepancy={d} totalUnits={stakeUnits} />
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
                       );
                     })}
                   </tbody>
