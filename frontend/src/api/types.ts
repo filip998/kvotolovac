@@ -146,6 +146,38 @@ export interface MatchingReviewApproval {
   saved_league_name: string | null;
 }
 
+export interface TeamReviewCase {
+  id: number;
+  bookmaker_id: string;
+  bookmaker_name: string | null;
+  raw_league_id: string;
+  normalized_raw_league_id: string;
+  scope_league_id: string | null;
+  scope_league_name: string | null;
+  raw_team_name: string;
+  normalized_raw_team_name: string;
+  suggested_team_name: string;
+  start_time: string | null;
+  reason_code: string;
+  confidence: string;
+  similarity_score: number | null;
+  evidence: string[];
+  status: 'pending' | 'approved' | 'declined';
+  scraped_at: string | null;
+}
+
+export interface TeamReviewApproval {
+  case_id: number;
+  status: 'approved';
+  saved_alias: string;
+  saved_team_name: string;
+}
+
+export interface TeamReviewAction {
+  case_id: number;
+  status: 'declined';
+}
+
 export interface BookmakerStatus {
   id: string;
   name: string;
@@ -207,6 +239,15 @@ export interface MatchingReviewFilters {
   bookmaker_ids?: string[];
   league_id?: string;
   status?: 'pending' | 'approved';
+  limit?: number;
+  offset?: number;
+  loadAll?: boolean;
+}
+
+export interface TeamReviewFilters {
+  bookmaker_id?: string;
+  bookmaker_ids?: string[];
+  status?: 'pending' | 'approved' | 'declined';
   limit?: number;
   offset?: number;
   loadAll?: boolean;

@@ -233,7 +233,7 @@ def test_normalize_odds_infers_shared_platform_game_beside_other_tipoff_match():
 
 
 def test_normalize_odds_infers_league_from_event_context(league_registry_file):
-    normalized, unresolved, reviews = normalize_odds_with_diagnostics(
+    normalized, unresolved, reviews, team_reviews = normalize_odds_with_diagnostics(
         [
             RawOddsData(
                 bookmaker_id="mozzart",
@@ -268,3 +268,76 @@ def test_normalize_odds_infers_league_from_event_context(league_registry_file):
     assert reviews[0].raw_league_id == "NBL"
     assert reviews[0].suggested_league_id == "bulgaria_nbl"
     assert reviews[0].reason_code == "league_inferred_from_event_context"
+    assert team_reviews == []
+
+
+def test_normalize_odds_creates_team_review_candidates_for_same_tipoff(team_registry_file):
+    normalized, unresolved, reviews, team_reviews = normalize_odds_with_diagnostics(
+        [
+            RawOddsData(
+                bookmaker_id="mozzart",
+                league_id="Bulgarian NBL",
+                home_team="Rilski Sportist",
+                away_team="Levski Sofia",
+                market_type="game_total",
+                threshold=161.5,
+                over_odds=1.85,
+                under_odds=1.95,
+                start_time="2026-04-16T17:00:00+00:00",
+            ),
+            RawOddsData(
+                bookmaker_id="meridian",
+                league_id="NBL",
+                home_team="Rilski Sport.",
+                away_team="Levski Sofia",
+                market_type="game_total",
+                threshold=162.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-16T17:00:00+00:00",
+            ),
+        ]
+    )
+
+    assert unresolved == []
+    assert len(normalized) == 2
+    assert reviews == []
+    assert len(team_reviews) == 1
+    assert team_reviews[0].raw_team_name == "Rilski Sport."
+    assert team_reviews[0].suggested_team_name == "Rilski Sportist"
+    assert team_reviews[0].scope_league_id == "bulgaria_nbl"
+    assert team_reviews[0].reason_code == "candidate_team_match_same_start_time"
+
+
+def test_team_review_candidates_require_same_event_context(team_registry_file):
+    normalized, unresolved, reviews, team_reviews = normalize_odds_with_diagnostics(
+        [
+            RawOddsData(
+                bookmaker_id="mozzart",
+                league_id="Bulgarian NBL",
+                home_team="Rilski Sportist",
+                away_team="Levski Sofia",
+                market_type="game_total",
+                threshold=161.5,
+                over_odds=1.85,
+                under_odds=1.95,
+                start_time="2026-04-16T17:00:00+00:00",
+            ),
+            RawOddsData(
+                bookmaker_id="meridian",
+                league_id="Italy Lega A",
+                home_team="Rilski Sport.",
+                away_team="Virtus Bologna",
+                market_type="game_total",
+                threshold=162.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-16T17:00:00+00:00",
+            ),
+        ]
+    )
+
+    assert unresolved == []
+    assert len(normalized) == 2
+    assert reviews == []
+    assert team_reviews == []

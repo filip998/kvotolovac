@@ -2,12 +2,15 @@ import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, us
 import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
+  useApproveTeamReviewCase,
   useApproveMatchingReviewCase,
+  useDeclineTeamReviewCase,
   useDiscrepancies,
   useMatchingReviewCases,
   useMatchingReviewSummary,
   useMatches,
   useSystemStatus,
+  useTeamReviewCases,
   useUnresolvedOdds,
 } from '../api/hooks';
 import type { Discrepancy, DiscrepancyFilters } from '../api/types';
@@ -30,6 +33,7 @@ import PageShell from '../components/PageShell';
 import SortControls from '../components/SortControls';
 import LeagueMatchingPanel from '../components/LeagueMatchingPanel';
 import StakeCalculatorPanel from '../components/StakeCalculatorPanel';
+import TeamReviewPanel from '../components/TeamReviewPanel';
 import TrackedMatchesPanel from '../components/TrackedMatchesPanel';
 import UnresolvedOddsPanel from '../components/UnresolvedOddsPanel';
 import OfferSearchStrip from '../components/OfferSearchStrip';
@@ -53,7 +57,7 @@ interface LeagueGroup {
   matches: MatchGroup[];
 }
 
-type DashboardTab = 'discrepancies' | 'tracked' | 'matching' | 'warnings';
+type DashboardTab = 'discrepancies' | 'tracked' | 'matching' | 'teams' | 'warnings';
 type ViewMode = 'by-match' | 'flat';
 
 export default function Dashboard() {
@@ -75,6 +79,7 @@ export default function Dashboard() {
   const [collapsedLeagues, setCollapsedLeagues] = useState<Set<string>>(new Set());
   const [expandedFlatCalculatorIds, setExpandedFlatCalculatorIds] = useState<Set<number>>(new Set());
   const [reviewMessage, setReviewMessage] = useState<string | null>(null);
+  const [teamReviewMessage, setTeamReviewMessage] = useState<string | null>(null);
   const [stakeUnitsInput, setStakeUnitsInput] = useState(() =>
     formatDashboardStakeUnitsInput(stakeUnits)
   );
@@ -204,8 +209,24 @@ export default function Dashboard() {
     },
     { enabled: activeTab === 'matching' }
   );
+  const {
+    data: teamReviewCases,
+    isLoading: teamReviewLoading,
+    isError: teamReviewError,
+    error: teamReviewLoadError,
+    refetch: refetchTeamReviewCases,
+  } = useTeamReviewCases(
+    {
+      limit: 200,
+      loadAll: true,
+      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
+    },
+    { enabled: activeTab === 'teams' }
+  );
   const { data: status } = useSystemStatus();
   const approveMatchingReviewCase = useApproveMatchingReviewCase();
+  const approveTeamReviewCase = useApproveTeamReviewCase();
+  const declineTeamReviewCase = useDeclineTeamReviewCase();
 
   const isInitialScanInProgress =
     activeTab === 'discrepancies' && !!status?.scan.in_progress && !status.last_scrape_at;
@@ -231,6 +252,10 @@ export default function Dashboard() {
       void queryClient.invalidateQueries({ queryKey: ['unresolvedOdds'] });
       void refetchUnresolvedOdds();
     }
+    if (scanJustFinished && activeTab === 'teams') {
+      void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
+      void refetchTeamReviewCases();
+    }
 
     previousScanInProgressRef.current = scanInProgress;
   }, [
@@ -239,6 +264,7 @@ export default function Dashboard() {
     refetchDiscrepancies,
     refetchMatchingReviewCases,
     refetchMatchingReviewSummary,
+    refetchTeamReviewCases,
     refetchUnresolvedOdds,
     status?.scan.in_progress,
   ]);
@@ -299,6 +325,7 @@ export default function Dashboard() {
     matchingReviewSummary?.pending_reviews ??
     matchingReviewCases?.filter((row) => row.status === 'pending').length ??
     0;
+  const teamReviewCount = teamReviewCases?.filter((row) => row.status === 'pending').length ?? 0;
   const matchingErrorMessage =
     matchingSummaryError || matchingCasesError
       ? (matchingSummaryLoadError as Error | undefined)?.message ||
@@ -308,6 +335,10 @@ export default function Dashboard() {
   const matchingIsLoading = matchingSummaryLoading || matchingCasesLoading;
   const approvingCaseId =
     approveMatchingReviewCase.isPending ? approveMatchingReviewCase.variables?.caseId ?? null : null;
+  const teamApproveCaseId =
+    approveTeamReviewCase.isPending ? approveTeamReviewCase.variables?.caseId ?? null : null;
+  const teamDeclineCaseId =
+    declineTeamReviewCase.isPending ? declineTeamReviewCase.variables?.caseId ?? null : null;
 
   const handleApproveMatchingCase = (caseId: number, leagueId: string) => {
     setReviewMessage(null);
@@ -327,6 +358,42 @@ export default function Dashboard() {
         },
         onError: (mutationError) => {
           setReviewMessage(`Failed to save alias: ${mutationError.message}`);
+        },
+      }
+    );
+  };
+
+  const handleApproveTeamCase = (caseId: number) => {
+    setTeamReviewMessage(null);
+    approveTeamReviewCase.mutate(
+      { caseId },
+      {
+        onSuccess: (result) => {
+          setTeamReviewMessage(
+            `Saved "${result.saved_alias}" -> ${result.saved_team_name}. Run the next scrape to apply it.`
+          );
+          void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
+          void refetchTeamReviewCases();
+        },
+        onError: (mutationError) => {
+          setTeamReviewMessage(`Failed to save team alias: ${mutationError.message}`);
+        },
+      }
+    );
+  };
+
+  const handleDeclineTeamCase = (caseId: number) => {
+    setTeamReviewMessage(null);
+    declineTeamReviewCase.mutate(
+      { caseId },
+      {
+        onSuccess: () => {
+          setTeamReviewMessage('Declined for this snapshot. No alias was saved.');
+          void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
+          void refetchTeamReviewCases();
+        },
+        onError: (mutationError) => {
+          setTeamReviewMessage(`Failed to decline team alias: ${mutationError.message}`);
         },
       }
     );
@@ -574,24 +641,28 @@ export default function Dashboard() {
   return (
     <PageShell
       eyebrow="Live board"
-      title={
-        activeTab === 'discrepancies'
-          ? 'Find exploitable line gaps before the market closes.'
-          : activeTab === 'tracked'
-            ? 'Inspect the stored board even when no gap is flashing.'
-            : activeTab === 'matching'
-              ? 'Resolve league aliases before one game splits into multiple events.'
-              : 'Inspect odds that still need manual review.'
-      }
-      description={
-        activeTab === 'discrepancies'
-          ? 'Snapshot grouped by league and matchup. Work downward from the highest-margin thresholds.'
-          : activeTab === 'tracked'
-            ? 'Open tracked matches to review player markets, bookmaker prices, and discrepancy-linked lines.'
-            : activeTab === 'matching'
-              ? 'Approve the suggested league, save the alias, and keep the board grouped under a single event.'
-              : 'Review unresolved odds rows that could not be placed confidently on the board.'
-      }
+        title={
+          activeTab === 'discrepancies'
+            ? 'Find exploitable line gaps before the market closes.'
+            : activeTab === 'tracked'
+              ? 'Inspect the stored board even when no gap is flashing.'
+              : activeTab === 'matching'
+                ? 'Resolve league aliases before one game splits into multiple events.'
+                : activeTab === 'teams'
+                  ? 'Save team aliases before one game appears under two club names.'
+                  : 'Inspect odds that still need manual review.'
+        }
+        description={
+          activeTab === 'discrepancies'
+            ? 'Snapshot grouped by league and matchup. Work downward from the highest-margin thresholds.'
+            : activeTab === 'tracked'
+              ? 'Open tracked matches to review player markets, bookmaker prices, and discrepancy-linked lines.'
+              : activeTab === 'matching'
+                ? 'Approve the suggested league, save the alias, and keep the board grouped under a single event.'
+                : activeTab === 'teams'
+                  ? 'Approve raw team labels into the canonical club on the left, or decline and leave them unresolved.'
+                  : 'Review unresolved odds rows that could not be placed confidently on the board.'
+        }
     >
       <div className="space-y-6">
         <section className="space-y-4">
@@ -637,6 +708,19 @@ export default function Dashboard() {
                   <span className="ml-1.5 font-mono text-xs text-warning">
                     {matchingReviewCount}
                   </span>
+                )}
+              </button>
+              <button
+                onClick={() => switchTab('teams')}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                  activeTab === 'teams'
+                    ? 'bg-surface-raised text-text'
+                    : 'text-text-muted hover:text-text'
+                }`}
+              >
+                Team review
+                {activeTab === 'teams' && teamReviewCount > 0 && (
+                  <span className="ml-1.5 font-mono text-xs text-warning">{teamReviewCount}</span>
                 )}
               </button>
               <button
@@ -776,6 +860,19 @@ export default function Dashboard() {
             onApprove={handleApproveMatchingCase}
             approvingCaseId={approvingCaseId}
             approvalMessage={reviewMessage}
+          />
+        ) : activeTab === 'teams' ? (
+          <TeamReviewPanel
+            rows={teamReviewCases || []}
+            isLoading={teamReviewLoading}
+            errorMessage={teamReviewError ? (teamReviewLoadError as Error)?.message || 'Unknown error' : null}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            onApprove={handleApproveTeamCase}
+            onDecline={handleDeclineTeamCase}
+            approvingCaseId={teamApproveCaseId}
+            decliningCaseId={teamDeclineCaseId}
+            actionMessage={teamReviewMessage}
           />
         ) : (
           <UnresolvedOddsPanel

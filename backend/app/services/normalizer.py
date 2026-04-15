@@ -13,9 +13,11 @@ from ..models.schemas import (
     MatchingReviewDiagnostic,
     NormalizedOdds,
     RawOddsData,
+    TeamReviewDiagnostic,
     UnresolvedOddsDiagnostic,
 )
 from .league_registry import resolve_league
+from .team_registry import resolve_team_alias
 from .text_normalizer import (
     compact_identity_text,
     normalize_identity_text,
@@ -168,6 +170,8 @@ _CANONICAL_PLAYERS: dict[str, str] = {
 }
 
 FUZZY_THRESHOLD = 75
+TEAM_REVIEW_CANDIDATE_THRESHOLD = 76
+TEAM_REVIEW_MAX_CANDIDATES = 4
 
 _MARKET_TYPE_MAPPING: dict[str, str] = {
     "player_points": "player_points",
@@ -231,6 +235,14 @@ def _normalize_team_key(raw_name: str) -> str:
     return normalize_identity_text(raw_name)
 
 
+@dataclass(frozen=True)
+class TeamNameResolution:
+    team_name: str
+    source: str
+    confidence: str
+    score: float | None = None
+
+
 @lru_cache(maxsize=None)
 def _team_mapping_for_league(league_id: str | None) -> tuple[tuple[str, str], ...]:
     mapping = {
@@ -249,12 +261,32 @@ def _team_mapping_for_league(league_id: str | None) -> tuple[tuple[str, str], ..
     return tuple(mapping.items())
 
 
-def normalize_team_name(raw_name: str, league_id: str | None = None) -> str:
+def resolve_team_name(
+    raw_name: str,
+    league_id: str | None = None,
+    bookmaker_id: str | None = None,
+) -> TeamNameResolution:
     key = _normalize_team_key(raw_name)
+    alias_resolution = resolve_team_alias(
+        raw_name,
+        bookmaker_id=bookmaker_id,
+        competition_id=league_id,
+    )
+    if alias_resolution is not None:
+        return TeamNameResolution(
+            team_name=alias_resolution.team_name,
+            source=alias_resolution.source,
+            confidence="high",
+        )
+
     team_mapping = dict(_team_mapping_for_league(league_id))
 
     if key in team_mapping:
-        return team_mapping[key]
+        return TeamNameResolution(
+            team_name=team_mapping[key],
+            source="canonical",
+            confidence="high",
+        )
     # Fuzzy match against known names
     best_score = 0
     best_match = raw_name.strip()
@@ -263,7 +295,27 @@ def normalize_team_name(raw_name: str, league_id: str | None = None) -> str:
         if score > best_score and score >= FUZZY_THRESHOLD:
             best_score = score
             best_match = canon_val
-    return best_match
+    if best_score >= FUZZY_THRESHOLD:
+        return TeamNameResolution(
+            team_name=best_match,
+            source="fuzzy",
+            confidence="medium",
+            score=float(best_score),
+        )
+    return TeamNameResolution(
+        team_name=raw_name.strip(),
+        source="raw",
+        confidence="low",
+        score=float(best_score) if best_score else None,
+    )
+
+
+def normalize_team_name(
+    raw_name: str,
+    league_id: str | None = None,
+    bookmaker_id: str | None = None,
+) -> str:
+    return resolve_team_name(raw_name, league_id=league_id, bookmaker_id=bookmaker_id).team_name
 
 
 def normalize_player_name(raw_name: str | None) -> str | None:
@@ -426,8 +478,8 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
             continue
 
         league_id = normalize_league_id(raw.league_id, raw.bookmaker_id)
-        home_team = normalize_team_name(raw.home_team, league_id)
-        away_team = normalize_team_name(raw.away_team, league_id)
+        home_team = normalize_team_name(raw.home_team, league_id, raw.bookmaker_id)
+        away_team = normalize_team_name(raw.away_team, league_id, raw.bookmaker_id)
         match_id = generate_match_id(home_team, away_team, raw.start_time, league_id)
         names_by_match[match_id][raw.player_name.strip()] += 1
 
@@ -528,8 +580,8 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
             continue
 
         league_id = normalize_league_id(raw.league_id, raw.bookmaker_id)
-        home_team = normalize_team_name(raw.home_team, league_id)
-        away_team = normalize_team_name(raw.away_team, league_id)
+        home_team = normalize_team_name(raw.home_team, league_id, raw.bookmaker_id)
+        away_team = normalize_team_name(raw.away_team, league_id, raw.bookmaker_id)
         match_id = generate_match_id(home_team, away_team, raw.start_time, league_id)
         replacement = replacements.get((match_id, raw.player_name.strip()))
         seen_replacements: set[str] = set()
@@ -596,7 +648,22 @@ class _EventSlotResolution:
     away_team: str
     league_id: str
     confidence: str
+    has_known_league: bool
     evidence: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _TeamReviewCandidate:
+    team_name: str
+    score: float
+
+
+@dataclass(frozen=True)
+class _TeamReviewSlotCandidate:
+    team_name: str
+    counterpart_team: str
+    scope_league_id: str
+    matchup: tuple[str, str]
 
 
 def _event_slot_key(
@@ -632,8 +699,16 @@ def _build_event_slot_resolutions(
 
     for raw in raw_list:
         direct_league = resolve_league(raw.league_id, raw.bookmaker_id)
-        home_team = normalize_team_name(raw.home_team, direct_league.league_id)
-        away_team = normalize_team_name(raw.away_team, direct_league.league_id)
+        home_team = normalize_team_name(
+            raw.home_team,
+            direct_league.league_id,
+            raw.bookmaker_id,
+        )
+        away_team = normalize_team_name(
+            raw.away_team,
+            direct_league.league_id,
+            raw.bookmaker_id,
+        )
         if not home_team or not away_team or home_team == away_team:
             continue
 
@@ -671,6 +746,7 @@ def _build_event_slot_resolutions(
             away_team=chosen_away,
             league_id=chosen_league,
             confidence=confidence,
+            has_known_league=bool(slot_known_counts),
             evidence=(
                 f"Event slot: {chosen_home} vs {chosen_away}",
                 f"Exact start time: {_display_event_slot_time(slot[0])}",
@@ -678,6 +754,191 @@ def _build_event_slot_resolutions(
             ),
         )
     return resolutions
+
+
+def _team_candidate_score(raw_team_name: str, candidate_team_name: str) -> float:
+    raw_key = _normalize_team_key(raw_team_name)
+    candidate_key = _normalize_team_key(candidate_team_name)
+    if not raw_key or not candidate_key:
+        return 0.0
+    return float(
+        max(
+            fuzz.token_set_ratio(raw_key, candidate_key),
+            fuzz.partial_ratio(raw_key, candidate_key),
+        )
+    )
+
+
+def _rank_team_review_candidates(
+    raw_team_name: str,
+    candidate_teams: list[str],
+) -> list[_TeamReviewCandidate]:
+    raw_key = _normalize_team_key(raw_team_name)
+    ranked: list[_TeamReviewCandidate] = []
+    seen_candidate_keys: set[str] = set()
+
+    for candidate_team in candidate_teams:
+        candidate_key = _normalize_team_key(candidate_team)
+        if (
+            not candidate_key
+            or candidate_key == raw_key
+            or candidate_key in seen_candidate_keys
+        ):
+            continue
+        seen_candidate_keys.add(candidate_key)
+        score = _team_candidate_score(raw_team_name, candidate_team)
+        if score < TEAM_REVIEW_CANDIDATE_THRESHOLD:
+            continue
+        ranked.append(_TeamReviewCandidate(candidate_team, score))
+
+    return sorted(ranked, key=lambda item: (-item.score, item.team_name))[
+        :TEAM_REVIEW_MAX_CANDIDATES
+    ]
+
+
+def _collapse_team_review_pool(candidate_teams: list[str]) -> list[str]:
+    collapsed: list[str] = []
+    collapsed_keys: list[str] = []
+
+    for candidate_team in sorted(
+        {team.strip() for team in candidate_teams if team.strip()},
+        key=lambda team: (-len(_normalize_team_key(team)), -len(team), team),
+    ):
+        candidate_key = _normalize_team_key(candidate_team)
+        if any(
+            (candidate_key in existing_key or existing_key in candidate_key)
+            and _team_candidate_score(candidate_team, existing_team) >= 92
+            for existing_team, existing_key in zip(collapsed, collapsed_keys)
+        ):
+            continue
+        collapsed.append(candidate_team)
+        collapsed_keys.append(candidate_key)
+
+    return collapsed
+
+
+def _team_review_slot_candidates(
+    slot_resolutions: list[_EventSlotResolution],
+    *,
+    counterpart_team: str,
+    raw_team_name: str,
+) -> dict[str, _TeamReviewSlotCandidate]:
+    candidates: dict[str, _TeamReviewSlotCandidate] = {}
+    raw_key = _normalize_team_key(raw_team_name)
+
+    for resolution in slot_resolutions:
+        if not resolution.has_known_league:
+            continue
+        matchup = (resolution.home_team, resolution.away_team)
+        if counterpart_team not in matchup:
+            continue
+
+        candidate_team = (
+            resolution.away_team
+            if resolution.home_team == counterpart_team
+            else resolution.home_team
+        )
+        candidate_key = _normalize_team_key(candidate_team)
+        if not candidate_key or candidate_key == raw_key:
+            continue
+        candidates.setdefault(
+            candidate_key,
+            _TeamReviewSlotCandidate(
+                team_name=candidate_team,
+                counterpart_team=counterpart_team,
+                scope_league_id=resolution.league_id,
+                matchup=matchup,
+            ),
+        )
+
+    return candidates
+
+
+def _build_team_review_cases(
+    raw_list: list[RawOddsData],
+    slot_resolutions: dict[tuple[str, tuple[str, str]], _EventSlotResolution],
+) -> list[TeamReviewDiagnostic]:
+    slots_by_start_time: dict[str, list[_EventSlotResolution]] = defaultdict(list)
+    for (slot_time, _), resolution in slot_resolutions.items():
+        if slot_time.startswith(_MISSING_START_TIME_PREFIX):
+            continue
+        slots_by_start_time[slot_time].append(resolution)
+
+    review_cases: dict[tuple[str, str, str, str, str], TeamReviewDiagnostic] = {}
+
+    for raw in raw_list:
+        direct_league = resolve_league(raw.league_id, raw.bookmaker_id)
+        if raw.start_time is None:
+            continue
+
+        candidate_slots = slots_by_start_time.get(raw.start_time, [])
+        if not candidate_slots:
+            continue
+
+        team_inputs = (raw.home_team, raw.away_team)
+        team_resolutions = [
+            resolve_team_name(team_name, direct_league.league_id, raw.bookmaker_id)
+            for team_name in team_inputs
+        ]
+
+        for team_index, raw_team_name in enumerate(team_inputs):
+            team_resolution = team_resolutions[team_index]
+            if team_resolution.team_name != raw_team_name.strip():
+                continue
+
+            counterpart_resolution = team_resolutions[1 - team_index]
+            slot_candidates = _team_review_slot_candidates(
+                candidate_slots,
+                counterpart_team=counterpart_resolution.team_name,
+                raw_team_name=raw_team_name,
+            )
+            if not slot_candidates:
+                continue
+
+            candidates = _rank_team_review_candidates(
+                raw_team_name,
+                _collapse_team_review_pool(
+                    [candidate.team_name for candidate in slot_candidates.values()]
+                ),
+            )
+            if not candidates:
+                continue
+
+            for candidate in candidates:
+                candidate_meta = slot_candidates.get(_normalize_team_key(candidate.team_name))
+                if candidate_meta is None:
+                    continue
+                review_key = (
+                    raw.bookmaker_id,
+                    normalize_identity_text(raw_team_name),
+                    candidate.team_name,
+                    raw.start_time,
+                    candidate_meta.scope_league_id,
+                )
+                if review_key in review_cases:
+                    continue
+                review_cases[review_key] = TeamReviewDiagnostic(
+                    bookmaker_id=raw.bookmaker_id,
+                    raw_league_id=raw.league_id,
+                    normalized_raw_league_id=normalize_identity_text(raw.league_id),
+                    scope_league_id=candidate_meta.scope_league_id,
+                    raw_team_name=raw_team_name,
+                    normalized_raw_team_name=team_resolution.team_name,
+                    suggested_team_name=candidate.team_name,
+                    start_time=raw.start_time,
+                    reason_code="candidate_team_match_same_start_time",
+                    confidence="high" if candidate.score >= 90 else "medium",
+                    similarity_score=candidate.score,
+                    evidence=[
+                        f"Exact start time: {raw.start_time}",
+                        f"Matched other team: {candidate_meta.counterpart_team}",
+                        f"Candidate team: {candidate.team_name}",
+                        f"Candidate event: {candidate_meta.matchup[0]} vs {candidate_meta.matchup[1]}",
+                        f"Similarity score: {candidate.score:.0f}",
+                    ],
+                )
+
+    return list(review_cases.values())
 
 
 def normalize_market_type(raw_type: str) -> str:
@@ -704,8 +965,8 @@ def _build_canonical_matchups(
             continue
 
         league_id = normalize_league_id(raw.league_id, raw.bookmaker_id)
-        home_team = normalize_team_name(raw.home_team, league_id)
-        away_team = normalize_team_name(raw.away_team, league_id)
+        home_team = normalize_team_name(raw.home_team, league_id, raw.bookmaker_id)
+        away_team = normalize_team_name(raw.away_team, league_id, raw.bookmaker_id)
         if not home_team or not away_team or home_team == away_team:
             continue
 
@@ -736,7 +997,7 @@ def _build_inferred_shared_platform_matchups(
             continue
 
         league_id = normalize_league_id(raw.league_id, raw.bookmaker_id)
-        normalized_team = normalize_team_name(raw.home_team, league_id)
+        normalized_team = normalize_team_name(raw.home_team, league_id, raw.bookmaker_id)
         if not normalized_team:
             continue
         slot = _event_identity_slot(raw.start_time, league_id)
@@ -775,8 +1036,8 @@ def _resolve_shared_platform_matchups(
         league_id = normalize_league_id(raw.league_id, raw.bookmaker_id)
 
         if not _is_unresolved_shared_platform_prop(raw):
-            home_team = normalize_team_name(raw.home_team, league_id)
-            away_team = normalize_team_name(raw.away_team, league_id)
+            home_team = normalize_team_name(raw.home_team, league_id, raw.bookmaker_id)
+            away_team = normalize_team_name(raw.away_team, league_id, raw.bookmaker_id)
             canonical = canonical_matchups.get(
                 _event_slot_key(home_team, away_team, raw.start_time, league_id)
             )
@@ -796,7 +1057,7 @@ def _resolve_shared_platform_matchups(
                 )
             continue
 
-        known_team = normalize_team_name(raw.home_team, league_id)
+        known_team = normalize_team_name(raw.home_team, league_id, raw.bookmaker_id)
         slot = _event_identity_slot(raw.start_time, league_id)
         candidates = [
             matchup
@@ -866,6 +1127,7 @@ def normalize_odds_with_diagnostics(
     list[NormalizedOdds],
     list[UnresolvedOddsDiagnostic],
     list[MatchingReviewDiagnostic],
+    list[TeamReviewDiagnostic],
 ]:
     results: list[NormalizedOdds] = []
     resolved_shared_platform, unresolved = _resolve_shared_platform_matchups(raw_list)
@@ -878,8 +1140,16 @@ def normalize_odds_with_diagnostics(
 
     for raw in resolved_raw_list:
         direct_league = resolve_league(raw.league_id, raw.bookmaker_id)
-        slot_home = normalize_team_name(raw.home_team, direct_league.league_id)
-        slot_away = normalize_team_name(raw.away_team, direct_league.league_id)
+        slot_home = normalize_team_name(
+            raw.home_team,
+            direct_league.league_id,
+            raw.bookmaker_id,
+        )
+        slot_away = normalize_team_name(
+            raw.away_team,
+            direct_league.league_id,
+            raw.bookmaker_id,
+        )
         slot = _event_slot_key(slot_home, slot_away, raw.start_time, direct_league.league_id)
         slot_resolution = slot_resolutions.get(slot)
         if slot_resolution is None:
@@ -945,13 +1215,14 @@ def normalize_odds_with_diagnostics(
             confidence=confidence,
             evidence=list(evidence),
         )
-    return results, unresolved, list(review_cases.values())
+    team_review_cases = _build_team_review_cases(resolved_raw_list, slot_resolutions)
+    return results, unresolved, list(review_cases.values()), team_review_cases
 
 
 def normalize_odds_with_issues(
     raw_list: list[RawOddsData],
 ) -> tuple[list[NormalizedOdds], list[UnresolvedOddsDiagnostic]]:
-    normalized, unresolved, _ = normalize_odds_with_diagnostics(raw_list)
+    normalized, unresolved, _, _ = normalize_odds_with_diagnostics(raw_list)
     return normalized, unresolved
 
 

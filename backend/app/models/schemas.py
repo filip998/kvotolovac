@@ -113,6 +113,41 @@ class MatchingReviewApprovalOut(BaseModel):
     saved_league_name: Optional[str] = None
 
 
+class TeamReviewDiagnostic(BaseModel):
+    bookmaker_id: str
+    raw_league_id: str
+    normalized_raw_league_id: str
+    scope_league_id: Optional[str] = None
+    raw_team_name: str
+    normalized_raw_team_name: str
+    suggested_team_name: str
+    start_time: Optional[str] = None
+    reason_code: str
+    confidence: str = "medium"
+    similarity_score: Optional[float] = None
+    evidence: list[str] = Field(default_factory=list)
+    status: str = "pending"
+
+
+class TeamReviewOut(TeamReviewDiagnostic):
+    id: int
+    bookmaker_name: Optional[str] = None
+    scope_league_name: Optional[str] = None
+    scraped_at: Optional[str] = None
+
+
+class TeamReviewApprovalOut(BaseModel):
+    case_id: int
+    status: str
+    saved_alias: str
+    saved_team_name: str
+
+
+class TeamReviewActionOut(BaseModel):
+    case_id: int
+    status: str
+
+
 class LeagueMatchingHealthOut(BaseModel):
     league_id: str
     league_name: str

@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     league_registry_path: str = str(
         Path(__file__).resolve().parent / "data" / "league_registry.json"
     )
+    team_registry_path: str = str(
+        Path(__file__).resolve().parent / "data" / "team_registry.json"
+    )
 
     @property
     def bookmaker_list(self) -> list[str]:

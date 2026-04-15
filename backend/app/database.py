@@ -92,6 +92,26 @@ CREATE TABLE IF NOT EXISTS matching_review_cases (
     approved_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS team_review_cases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bookmaker_id TEXT REFERENCES bookmakers(id),
+    raw_league_id TEXT NOT NULL,
+    normalized_raw_league_id TEXT NOT NULL,
+    scope_league_id TEXT,
+    raw_team_name TEXT NOT NULL,
+    normalized_raw_team_name TEXT NOT NULL,
+    suggested_team_name TEXT NOT NULL,
+    start_time TIMESTAMP,
+    reason_code TEXT NOT NULL,
+    confidence TEXT NOT NULL DEFAULT 'medium',
+    similarity_score REAL,
+    evidence TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'pending',
+    scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    approved_at TIMESTAMP,
+    declined_at TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS discrepancies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     match_id TEXT REFERENCES matches(id),
@@ -135,6 +155,13 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
     existing = {row[1] for row in columns}
     if "middle_profit_margin" not in existing:
         await conn.execute("ALTER TABLE discrepancies ADD COLUMN middle_profit_margin REAL")
+
+    team_review_columns = await conn.execute_fetchall("PRAGMA table_info(team_review_cases)")
+    existing_team_review = {row[1] for row in team_review_columns}
+    if team_review_columns and "similarity_score" not in existing_team_review:
+        await conn.execute("ALTER TABLE team_review_cases ADD COLUMN similarity_score REAL")
+    if team_review_columns and "declined_at" not in existing_team_review:
+        await conn.execute("ALTER TABLE team_review_cases ADD COLUMN declined_at TIMESTAMP")
 
 
 async def get_db() -> aiosqlite.Connection:

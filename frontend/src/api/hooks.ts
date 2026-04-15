@@ -12,6 +12,10 @@ import type {
   MatchingReviewSummary,
   SystemStatus,
   DiscrepancyFilters,
+  TeamReviewAction,
+  TeamReviewApproval,
+  TeamReviewCase,
+  TeamReviewFilters,
   UnresolvedOdds,
   UnresolvedOddsFilters,
 } from './types';
@@ -25,6 +29,7 @@ import {
   mockMatchingReviewSummary,
   mockUnresolvedOdds,
   mockSystemStatus,
+  mockTeamReviewCases,
 } from './mockData';
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false';
@@ -52,6 +57,15 @@ function updateMockMatchingReviewSummaryForApproval(caseItem: MatchingReviewCase
     );
     mockMatchingReviewSummary.approved_reviews += 1;
   }
+}
+
+function updateMockTeamReviewCaseStatus(caseId: number, status: TeamReviewCase['status']): TeamReviewCase {
+  const caseItem = mockTeamReviewCases.find((item) => item.id === caseId);
+  if (!caseItem) {
+    throw new Error('Team review case not found');
+  }
+  caseItem.status = status;
+  return caseItem;
 }
 
 // --- Discrepancies ---
@@ -324,6 +338,104 @@ export function useApproveMatchingReviewCase() {
       const { data } = await client.post<MatchingReviewApproval>(
         `/matching-review/cases/${caseId}/approve`,
         leagueId ? { league_id: leagueId } : {}
+      );
+      return data;
+    },
+  });
+}
+
+export function useTeamReviewCases(
+  filters: TeamReviewFilters = {},
+  options: { enabled?: boolean } = {}
+) {
+  return useQuery<TeamReviewCase[]>({
+    queryKey: ['teamReviewCases', filters],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        let results = [...mockTeamReviewCases];
+        if (filters.bookmaker_id) {
+          results = results.filter((row) => row.bookmaker_id === filters.bookmaker_id);
+        }
+        if (filters.bookmaker_ids?.length) {
+          const selected = new Set(filters.bookmaker_ids);
+          results = results.filter((row) => selected.has(row.bookmaker_id));
+        }
+        if (filters.status) {
+          results = results.filter((row) => row.status === filters.status);
+        }
+        return results;
+      }
+
+      const { loadAll, ...requestFilters } = filters;
+      const serializedFilters = {
+        ...requestFilters,
+        bookmaker_ids: serializeArrayParam(requestFilters.bookmaker_ids),
+      };
+      if (!loadAll) {
+        const { data } = await client.get<TeamReviewCase[]>('/team-review/cases', {
+          params: serializedFilters,
+        });
+        return data;
+      }
+
+      const pageSize = requestFilters.limit ?? 200;
+      const initialOffset = requestFilters.offset ?? 0;
+      const allRows: TeamReviewCase[] = [];
+
+      for (let offset = initialOffset; ; offset += pageSize) {
+        const { data } = await client.get<TeamReviewCase[]>('/team-review/cases', {
+          params: { ...serializedFilters, limit: pageSize, offset },
+        });
+        allRows.push(...data);
+        if (data.length < pageSize) {
+          break;
+        }
+      }
+
+      return allRows;
+    },
+    enabled: options.enabled ?? true,
+    refetchInterval: options.enabled === false ? false : 30000,
+  });
+}
+
+export function useApproveTeamReviewCase() {
+  return useMutation<TeamReviewApproval, Error, { caseId: number }>({
+    mutationFn: async ({ caseId }) => {
+      if (USE_MOCK) {
+        await delay();
+        const caseItem = updateMockTeamReviewCaseStatus(caseId, 'approved');
+        return {
+          case_id: caseId,
+          status: 'approved',
+          saved_alias: caseItem.raw_team_name,
+          saved_team_name: caseItem.suggested_team_name,
+        };
+      }
+
+      const { data } = await client.post<TeamReviewApproval>(
+        `/team-review/cases/${caseId}/approve`
+      );
+      return data;
+    },
+  });
+}
+
+export function useDeclineTeamReviewCase() {
+  return useMutation<TeamReviewAction, Error, { caseId: number }>({
+    mutationFn: async ({ caseId }) => {
+      if (USE_MOCK) {
+        await delay();
+        updateMockTeamReviewCaseStatus(caseId, 'declined');
+        return {
+          case_id: caseId,
+          status: 'declined',
+        };
+      }
+
+      const { data } = await client.post<TeamReviewAction>(
+        `/team-review/cases/${caseId}/decline`
       );
       return data;
     },

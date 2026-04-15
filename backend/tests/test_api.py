@@ -5,15 +5,21 @@ import asyncio
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.database import init_db, close_db
+from app.database import close_db, get_db, init_db
 from app.main import app
-from app.models.schemas import MatchingReviewDiagnostic, NormalizedOdds, RawOddsData, UnresolvedOddsDiagnostic
+from app.models.schemas import (
+    MatchingReviewDiagnostic,
+    NormalizedOdds,
+    RawOddsData,
+    TeamReviewDiagnostic,
+    UnresolvedOddsDiagnostic,
+)
 from app.scrapers.base import BaseScraper
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
 from app.services.league_registry import resolve_league
 from app.services.scheduler import scheduler
-from app.services.normalizer import normalize_odds_with_diagnostics
+from app.services.normalizer import normalize_odds_with_diagnostics, normalize_team_name
 from app.store import odds_store
 
 
@@ -354,7 +360,7 @@ async def test_approve_matching_review_case_saves_bookmaker_alias(
     assert cases_resp.status_code == 200
     assert cases_resp.json()[0]["status"] == "approved"
 
-    normalized, unresolved, reviews = normalize_odds_with_diagnostics(
+    normalized, unresolved, reviews, team_reviews = normalize_odds_with_diagnostics(
         [
             RawOddsData(
                 bookmaker_id="mozzart",
@@ -384,6 +390,7 @@ async def test_approve_matching_review_case_saves_bookmaker_alias(
     assert unresolved == []
     assert len({offer.match_id for offer in normalized}) == 1
     assert reviews == []
+    assert team_reviews == []
 
 
 @pytest.mark.asyncio
@@ -497,3 +504,215 @@ async def test_matching_review_summary_falls_back_to_latest_review_snapshot(
     assert summary_resp.json()["pending_reviews"] == 1
     assert cases_resp.status_code == 200
     assert len(cases_resp.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_team_review_cases_and_approval(
+    client: AsyncClient,
+    team_registry_file,
+):
+    batch_scraped_at = "2026-04-16T20:00:00+00:00"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_league("bulgaria_nbl", "Bulgaria NBL", "basketball", "Bulgaria")
+    case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic.model_validate(
+            {
+                "bookmaker_id": "meridian",
+                "raw_league_id": "NBL",
+                "normalized_raw_league_id": "nbl",
+                "scope_league_id": "bulgaria_nbl",
+                "raw_team_name": "Rilski Sport.",
+                "normalized_raw_team_name": "Rilski Sport.",
+                "suggested_team_name": "Rilski Sportist",
+                "start_time": batch_scraped_at,
+                "reason_code": "candidate_team_match_same_start_time",
+                "confidence": "high",
+                "similarity_score": 92,
+                "evidence": ["Exact start time: 2026-04-16T20:00:00+00:00"],
+                "status": "pending",
+            }
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    cases_resp = await client.get("/api/v1/team-review/cases")
+    approve_resp = await client.post(f"/api/v1/team-review/cases/{case_id}/approve")
+    approved_resp = await client.get("/api/v1/team-review/cases?status=approved")
+
+    assert cases_resp.status_code == 200
+    assert len(cases_resp.json()) == 1
+    assert approve_resp.status_code == 200
+    assert approve_resp.json()["saved_team_name"] == "Rilski Sportist"
+    assert normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian") == "Rilski Sportist"
+    assert approved_resp.status_code == 200
+    assert approved_resp.json()[0]["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_team_review_case_can_be_declined(client: AsyncClient):
+    batch_scraped_at = "2026-04-16T21:00:00+00:00"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic.model_validate(
+            {
+                "bookmaker_id": "meridian",
+                "raw_league_id": "NBL",
+                "normalized_raw_league_id": "nbl",
+                "scope_league_id": None,
+                "raw_team_name": "Rilski Sport.",
+                "normalized_raw_team_name": "Rilski Sport.",
+                "suggested_team_name": "Rilski Sportist",
+                "start_time": batch_scraped_at,
+                "reason_code": "candidate_team_match_same_start_time",
+                "confidence": "medium",
+                "similarity_score": 82,
+                "evidence": ["Candidate team: Rilski Sportist"],
+                "status": "pending",
+            }
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    decline_resp = await client.post(f"/api/v1/team-review/cases/{case_id}/decline")
+    pending_resp = await client.get("/api/v1/team-review/cases?status=pending")
+
+    assert decline_resp.status_code == 200
+    assert decline_resp.json()["status"] == "declined"
+    assert pending_resp.status_code == 200
+    assert pending_resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_team_review_approval_rejects_unscoped_alias(
+    client: AsyncClient,
+    team_registry_file,
+):
+    batch_scraped_at = "2026-04-16T21:30:00+00:00"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic.model_validate(
+            {
+                "bookmaker_id": "meridian",
+                "raw_league_id": "NBL",
+                "normalized_raw_league_id": "nbl",
+                "scope_league_id": None,
+                "raw_team_name": "Rilski Sport.",
+                "normalized_raw_team_name": "Rilski Sport.",
+                "suggested_team_name": "Rilski Sportist",
+                "start_time": batch_scraped_at,
+                "reason_code": "candidate_team_match_same_start_time",
+                "confidence": "medium",
+                "similarity_score": 82,
+                "evidence": ["Candidate team: Rilski Sportist"],
+                "status": "pending",
+            }
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    approve_resp = await client.post(f"/api/v1/team-review/cases/{case_id}/approve")
+    pending_resp = await client.get("/api/v1/team-review/cases?status=pending")
+
+    assert approve_resp.status_code == 409
+    assert "resolved competition scope" in approve_resp.json()["detail"]
+    assert normalize_team_name("Rilski Sport.", None, "meridian") == "Rilski Sport."
+    assert pending_resp.status_code == 200
+    assert [row["id"] for row in pending_resp.json()] == [case_id]
+
+
+@pytest.mark.asyncio
+async def test_team_review_approval_only_updates_clicked_case(
+    client: AsyncClient,
+    team_registry_file,
+):
+    batch_scraped_at = "2026-04-16T22:00:00+00:00"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_league("bulgaria_nbl", "Bulgaria NBL", "basketball", "Bulgaria")
+
+    shared_payload = {
+        "bookmaker_id": "meridian",
+        "raw_league_id": "NBL",
+        "normalized_raw_league_id": "nbl",
+        "scope_league_id": "bulgaria_nbl",
+        "raw_team_name": "Rilski Sport.",
+        "normalized_raw_team_name": "Rilski Sport.",
+        "suggested_team_name": "Rilski Sportist",
+        "reason_code": "candidate_team_match_same_start_time",
+        "confidence": "high",
+        "similarity_score": 92,
+        "evidence": ["Exact start time: 2026-04-16T22:00:00+00:00"],
+        "status": "pending",
+    }
+    first_case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic.model_validate(
+            {
+                **shared_payload,
+                "start_time": "2026-04-16T22:00:00+00:00",
+            }
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    second_case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic.model_validate(
+            {
+                **shared_payload,
+                "start_time": "2026-04-16T23:00:00+00:00",
+            }
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    approve_resp = await client.post(f"/api/v1/team-review/cases/{first_case_id}/approve")
+    approved_resp = await client.get("/api/v1/team-review/cases?status=approved")
+    pending_resp = await client.get("/api/v1/team-review/cases?status=pending")
+
+    assert approve_resp.status_code == 200
+    assert approved_resp.status_code == 200
+    assert [row["id"] for row in approved_resp.json()] == [first_case_id]
+    assert pending_resp.status_code == 200
+    assert [row["id"] for row in pending_resp.json()] == [second_case_id]
+
+
+@pytest.mark.asyncio
+async def test_team_review_approval_handles_null_scraped_at(
+    client: AsyncClient,
+    team_registry_file,
+):
+    batch_scraped_at = "2026-04-16T23:30:00+00:00"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_league("bulgaria_nbl", "Bulgaria NBL", "basketball", "Bulgaria")
+    case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic.model_validate(
+            {
+                "bookmaker_id": "meridian",
+                "raw_league_id": "NBL",
+                "normalized_raw_league_id": "nbl",
+                "scope_league_id": "bulgaria_nbl",
+                "raw_team_name": "Rilski Sport.",
+                "normalized_raw_team_name": "Rilski Sport.",
+                "suggested_team_name": "Rilski Sportist",
+                "start_time": batch_scraped_at,
+                "reason_code": "candidate_team_match_same_start_time",
+                "confidence": "high",
+                "similarity_score": 92,
+                "evidence": ["Exact start time: 2026-04-16T23:30:00+00:00"],
+                "status": "pending",
+            }
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    db = await get_db()
+    await db.execute("UPDATE team_review_cases SET scraped_at = NULL WHERE id = ?", (case_id,))
+    await db.commit()
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    approve_resp = await client.post(f"/api/v1/team-review/cases/{case_id}/approve")
+    approved_case = await odds_store.get_team_review_case(case_id)
+
+    assert approve_resp.status_code == 200
+    assert approved_case is not None
+    assert approved_case.status == "approved"

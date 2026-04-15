@@ -46,6 +46,10 @@ def test_normalize_team_fuzzy():
     assert normalize_team_name("Olympiakos") == "Olympiacos"
 
 
+def test_normalize_team_fuzzy_does_not_merge_opponents_with_shared_city_tokens():
+    assert normalize_team_name("Hapoel Tel-Aviv", "euroleague") == "Hapoel Tel-Aviv"
+
+
 def test_normalize_player_full_name():
     assert normalize_player_name("Sasha Vezenkov") == "Sasha Vezenkov"
 

@@ -180,7 +180,12 @@ class Scheduler:
                 )
 
             self._scan_phase = "normalizing"
-            normalized, unresolved_odds, matching_review_cases = normalize_odds_with_diagnostics(all_raw)
+            (
+                normalized,
+                unresolved_odds,
+                matching_review_cases,
+                team_review_cases,
+            ) = normalize_odds_with_diagnostics(all_raw)
 
             self._scan_phase = "storing"
             cycle_scraped_at = datetime.utcnow().isoformat()
@@ -209,6 +214,10 @@ class Scheduler:
             for review_case in matching_review_cases:
                 await odds_store.insert_matching_review_case(
                     review_case, scraped_at=cycle_scraped_at
+                )
+            for team_review_case in team_review_cases:
+                await odds_store.insert_team_review_case(
+                    team_review_case, scraped_at=cycle_scraped_at
                 )
             await odds_store.set_current_snapshot(cycle_scraped_at)
 
