@@ -2,24 +2,108 @@
   "aliases": {},
   "bookmaker_aliases": {},
   "bookmaker_competition_aliases": {
+    "admiralbet": {
+      "argentina_1": {
+        "independiente de oliva": "Independiente"
+      },
+      "bnxt_liga": {
+        "den helder suns": "Den Helder"
+      },
+      "brazil": {
+        "rio claro basquete": "Rio Claro"
+      },
+      "euroleague": {
+        "armani milano": "Olimpia Milano",
+        "baskonia": "Baskonia Vitoria-Gasteiz"
+      }
+    },
+    "balkanbet": {
+      "argentina_1": {
+        "independiente de oliva": "Independiente"
+      },
+      "euroleague": {
+        "baskonia": "Baskonia Vitoria-Gasteiz",
+        "milano": "Olimpia Milano"
+      },
+      "nba": {
+        "la clippers": "Los Angeles Clippers"
+      }
+    },
+    "maxbet": {
+      "brazil": {
+        "rio claro": "Rio Claro Basquete"
+      },
+      "euroleague": {
+        "baskonia": "Baskonia Vitoria-Gasteiz"
+      }
+    },
     "meridian": {
+      "argentina_1": {
+        "independiente de oliva": "Independiente"
+      },
+      "bnxt_liga": {
+        "den helder suns": "Den Helder",
+        "heroes den bosch": "Den Bosch"
+      },
       "brazil": {
         "sao jose dos campos": "Sao Jose"
+      },
+      "euroleague": {
+        "baskonia": "Baskonia Vitoria-Gasteiz"
       }
     },
     "merkurxtip": {
+      "bnxt_liga": {
+        "heroes den bosch": "Den Bosch"
+      },
       "brazil": {
+        "itabom bauru": "Bauru",
         "sao jos": "Sao Jose"
+      },
+      "euroleague": {
+        "baskonia": "Baskonia Vitoria-Gasteiz",
+        "virtus": "Virtus Bologna"
+      }
+    },
+    "mozzart": {
+      "bnxt_liga": {
+        "den helder suns": "Den Helder"
+      },
+      "brazil": {
+        "rio claro": "Rio Claro Basquete"
+      },
+      "euroleague": {
+        "baskonia": "Baskonia Vitoria-Gasteiz",
+        "milano": "Olimpia Milano"
       }
     },
     "oktagonbet": {
+      "argentina_1": {
+        "independiente de oliva": "Independiente"
+      },
+      "bnxt_liga": {
+        "leuven bears": "Leuven"
+      },
       "brazil": {
-        "mogi das cruzes": "Mogi"
+        "mogi das cruzes": "Mogi",
+        "rio claro": "Rio Claro Basquete"
+      },
+      "euroleague": {
+        "baskonia": "Baskonia Vitoria-Gasteiz"
       }
     },
     "pinnbet": {
+      "argentina_1": {
+        "independiente de oliva": "Independiente"
+      },
+      "bnxt_liga": {
+        "leuven bears": "Leuven"
+      },
       "brazil": {
         "mogi das cruzes": "Mogi"
+      },
+      "euroleague": {
+        "baskonia": "Baskonia Vitoria-Gasteiz"
       },
       "venecuela_1": {
         "gaiteros del zulia": "Gaiteros"

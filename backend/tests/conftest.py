@@ -38,16 +38,12 @@ def league_registry_file(tmp_path, monkeypatch):
 
 @pytest.fixture
 def team_registry_file(tmp_path, monkeypatch):
-    source_path = Path(settings.team_registry_path)
     target_path = tmp_path / "team_registry.json"
-    if source_path.exists():
-        target_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
-    else:
-        target_path.write_text(
-            '{"aliases": {}, "bookmaker_aliases": {}, "competition_aliases": {}, "bookmaker_competition_aliases": {}}\n',
-            encoding="utf-8",
-        )
+    target_path.write_text(
+        '{"aliases": {}, "bookmaker_aliases": {}, "competition_aliases": {}, "bookmaker_competition_aliases": {}}\n',
+        encoding="utf-8",
+    )
     monkeypatch.setattr(settings, "team_registry_path", str(target_path))
     clear_team_registry_cache()
-    yield target_path
+    yield str(target_path)
     clear_team_registry_cache()
