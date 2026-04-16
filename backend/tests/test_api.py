@@ -20,7 +20,7 @@ from app.scrapers.registry import registry
 from app.services.league_registry import resolve_league
 from app.services.scheduler import scheduler
 from app.services.normalizer import normalize_odds_with_diagnostics, normalize_team_name
-from app.services.team_registry import remember_team_alias
+from app.services.team_registry import CircularAliasError, remember_team_alias
 from app.store import odds_store
 
 
@@ -668,6 +668,48 @@ async def test_team_review_approval_rejects_unscoped_alias(
     assert normalize_team_name("Rilski Sport.", None, "meridian") == "Rilski Sport."
     assert pending_resp.status_code == 200
     assert [row["id"] for row in pending_resp.json()] == [case_id]
+
+
+@pytest.mark.asyncio
+async def test_team_review_approval_rejects_circular_alias(
+    client: AsyncClient,
+    team_registry_file,
+):
+    batch_scraped_at = "2026-04-16T21:45:00+00:00"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball", "Europe")
+    remember_team_alias(
+        bookmaker_id="meridian",
+        raw_team_name="Baskonia Gatez",
+        team_name="Baskonia",
+        competition_id="euroleague",
+    )
+    case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic.model_validate(
+            {
+                "bookmaker_id": "meridian",
+                "raw_league_id": "Euroleague",
+                "normalized_raw_league_id": "euroleague",
+                "scope_league_id": "euroleague",
+                "raw_team_name": "Baskonia",
+                "normalized_raw_team_name": "Baskonia",
+                "suggested_team_name": "Baskonia Gatez",
+                "start_time": batch_scraped_at,
+                "reason_code": "candidate_team_match_same_start_time",
+                "confidence": "high",
+                "similarity_score": 91,
+                "evidence": ["Exact start time: 2026-04-16T21:45:00+00:00"],
+                "status": "pending",
+            }
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    approve_resp = await client.post(f"/api/v1/team-review/cases/{case_id}/approve")
+
+    assert approve_resp.status_code == 409
+    assert "Circular alias" in approve_resp.json()["detail"]
 
 
 @pytest.mark.asyncio

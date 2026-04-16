@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from ._params import parse_csv_query_values
 from ..models.schemas import TeamReviewActionOut, TeamReviewApprovalOut, TeamReviewOut
-from ..services.team_registry import remember_team_alias
+from ..services.team_registry import CircularAliasError, remember_team_alias
 from ..store import odds_store
 
 router = APIRouter(prefix="/team-review", tags=["team-review"])
@@ -44,13 +44,16 @@ async def approve_team_review_case(case_id: int) -> TeamReviewApprovalOut:
             detail="Team review case needs a resolved competition scope before approval",
         )
 
-    resolution = await asyncio.to_thread(
-        remember_team_alias,
-        bookmaker_id=case.bookmaker_id,
-        raw_team_name=case.raw_team_name,
-        team_name=case.suggested_team_name,
-        competition_id=case.scope_league_id,
-    )
+    try:
+        resolution = await asyncio.to_thread(
+            remember_team_alias,
+            bookmaker_id=case.bookmaker_id,
+            raw_team_name=case.raw_team_name,
+            team_name=case.suggested_team_name,
+            competition_id=case.scope_league_id,
+        )
+    except CircularAliasError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     await odds_store.mark_team_review_case_approved(case_id)
     return TeamReviewApprovalOut(
         case_id=case_id,

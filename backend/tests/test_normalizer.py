@@ -14,7 +14,7 @@ from app.services.normalizer import (
     normalize_player_name,
     normalize_team_name,
 )
-from app.services.team_registry import remember_team_alias
+from app.services.team_registry import CircularAliasError, remember_team_alias
 from app.models.schemas import RawOddsData
 
 
@@ -93,6 +93,23 @@ def test_remember_team_alias_preserves_reviewed_target_before_chain_resolution(t
         == "Uniao Corinthians"
     )
     assert resolution.team_name == "EC Uniao Corinthians"
+
+
+def test_remember_team_alias_rejects_circular_alias(team_registry_file):
+    remember_team_alias(
+        bookmaker_id="meridian",
+        raw_team_name="Baskonia Gatez",
+        team_name="Baskonia",
+        competition_id="euroleague",
+    )
+
+    with pytest.raises(CircularAliasError, match="Circular alias"):
+        remember_team_alias(
+            bookmaker_id="meridian",
+            raw_team_name="Baskonia",
+            team_name="Baskonia Gatez",
+            competition_id="euroleague",
+        )
 
 
 def test_normalize_player_full_name():

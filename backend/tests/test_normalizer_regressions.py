@@ -341,3 +341,49 @@ def test_team_review_candidates_require_same_event_context(team_registry_file):
     assert len(normalized) == 2
     assert reviews == []
     assert team_reviews == []
+
+
+def test_team_review_skips_candidates_that_already_resolve_back(team_registry_file):
+    """If Baskonia Gatez -> Baskonia is already approved, don't suggest Baskonia -> Baskonia Gatez."""
+    from app.services.team_registry import remember_team_alias
+
+    remember_team_alias(
+        bookmaker_id="meridian",
+        raw_team_name="Baskonia Gatez",
+        team_name="Baskonia",
+        competition_id="euroleague",
+    )
+
+    normalized, unresolved, reviews, team_reviews = normalize_odds_with_diagnostics(
+        [
+            RawOddsData(
+                bookmaker_id="mozzart",
+                league_id="Euroleague",
+                home_team="Baskonia",
+                away_team="Real Madrid",
+                market_type="game_total",
+                threshold=160.5,
+                over_odds=1.85,
+                under_odds=1.95,
+                start_time="2026-04-16T20:00:00+00:00",
+            ),
+            RawOddsData(
+                bookmaker_id="meridian",
+                league_id="Euroleague",
+                home_team="Baskonia Gatez",
+                away_team="Real Madrid",
+                market_type="game_total",
+                threshold=161.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-16T20:00:00+00:00",
+            ),
+        ]
+    )
+
+    # The alias already resolves Baskonia Gatez -> Baskonia, so no review case needed
+    reverse_cases = [
+        c for c in team_reviews
+        if c.raw_team_name == "Baskonia" and c.suggested_team_name == "Baskonia Gatez"
+    ]
+    assert reverse_cases == [], f"Should not suggest reverse alias: {reverse_cases}"

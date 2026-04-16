@@ -908,6 +908,17 @@ def _build_team_review_cases(
                 candidate_meta = slot_candidates.get(_normalize_team_key(candidate.team_name))
                 if candidate_meta is None:
                     continue
+                # Skip if the candidate already resolves to the raw name
+                # (or vice versa) — approving would create a circular alias
+                candidate_alias = resolve_team_alias(
+                    candidate.team_name,
+                    bookmaker_id=raw.bookmaker_id,
+                    competition_id=candidate_meta.scope_league_id,
+                )
+                if candidate_alias is not None:
+                    resolved_key = normalize_identity_text(candidate_alias.team_name)
+                    if resolved_key == normalize_identity_text(raw_team_name):
+                        continue
                 review_key = (
                     raw.bookmaker_id,
                     normalize_identity_text(raw_team_name),

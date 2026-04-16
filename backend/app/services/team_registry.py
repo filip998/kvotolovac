@@ -13,6 +13,10 @@ from ..config import settings
 from .text_normalizer import normalize_identity_text
 
 
+class CircularAliasError(Exception):
+    """Raised when saving an alias would create a cycle."""
+
+
 @dataclass(frozen=True)
 class TeamAliasResolution:
     team_name: str
@@ -202,6 +206,21 @@ def remember_team_alias(
 
     with _registry_lock(path):
         clear_team_registry_cache()
+
+        # Check for circular aliases inside the lock with fresh registry state
+        existing_resolution = resolve_team_alias(
+            team_name,
+            bookmaker_id=bookmaker_id,
+            competition_id=competition_id,
+        )
+        if existing_resolution is not None:
+            resolved_key = normalize_identity_text(existing_resolution.team_name)
+            if resolved_key == raw_key:
+                raise CircularAliasError(
+                    f"Circular alias: '{team_name}' already resolves to "
+                    f"'{existing_resolution.team_name}' which matches '{raw_team_name}'"
+                )
+
         payload = _read_registry_payload(path)
 
         if competition_key:
