@@ -18,6 +18,7 @@ const REASON_LABELS: Record<string, string> = {
 const REVIEW_KIND_LABELS: Record<string, string> = {
   alias_suggestion: 'One-click suggestion',
   candidate_search: 'Manual pick required',
+  auto_alias_suggestion: 'Auto-approved',
 };
 
 const TEAM_REVIEW_SORT_OPTIONS: { value: TeamReviewSortKey; label: string }[] = [
@@ -33,6 +34,26 @@ function reasonLabel(reasonCode: string) {
 
 function reviewKindLabel(reviewKind: string) {
   return REVIEW_KIND_LABELS[reviewKind] ?? reviewKind.replace(/_/g, ' ');
+}
+
+function isAutoApprovedReview(reviewKind: string) {
+  return reviewKind === 'auto_alias_suggestion';
+}
+
+function approvedBadgeClass(reviewKind: string) {
+  if (isAutoApprovedReview(reviewKind)) {
+    return 'border-accent/40 bg-accent/15 text-accent';
+  }
+
+  return 'border-accent/30 bg-accent/10 text-accent';
+}
+
+function canonicalEventLabel(row: TeamReviewCase) {
+  if (!row.canonical_home_team && !row.canonical_away_team) {
+    return null;
+  }
+
+  return `${row.canonical_home_team ?? 'Unknown'} vs ${row.canonical_away_team ?? 'Unknown'}`;
 }
 
 function confidenceRank(confidence: string) {
@@ -594,9 +615,18 @@ export default function TeamReviewPanel({
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <BookmakerBadge name={row.bookmaker_name ?? row.bookmaker_id} />
-                    <span className="rounded-full border border-accent/30 bg-accent/10 px-2 py-1 text-[11px] font-medium text-accent">
-                      Approved
+                    <span
+                      className={`rounded-full border px-2 py-1 text-[11px] font-medium ${approvedBadgeClass(
+                        row.review_kind
+                      )}`}
+                    >
+                      {isAutoApprovedReview(row.review_kind) ? 'Auto-approved' : 'Approved'}
                     </span>
+                    {isAutoApprovedReview(row.review_kind) && (
+                      <span className="rounded-full border border-border bg-bg px-2 py-1 text-[11px] font-medium text-text-secondary">
+                        {reasonLabel(row.reason_code)}
+                      </span>
+                    )}
                   </div>
                   <div className="mt-2 text-sm text-text">
                     {row.raw_team_name} <span className="text-text-muted">{'->'}</span>{' '}
@@ -605,6 +635,14 @@ export default function TeamReviewPanel({
                   <div className="mt-1 text-xs text-text-muted">
                     {row.scope_league_name ?? row.raw_league_id}
                   </div>
+                  {isAutoApprovedReview(row.review_kind) && (
+                    <div className="mt-1 space-y-1 text-xs text-text-secondary">
+                      {canonicalEventLabel(row) && (
+                        <div>Canonical event: {canonicalEventLabel(row)}</div>
+                      )}
+                      {row.evidence[0] && <div>Why: {row.evidence[0]}</div>}
+                    </div>
+                  )}
                 </div>
 
                 <div className="text-xs text-text-muted md:text-right">
