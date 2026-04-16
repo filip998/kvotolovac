@@ -7,6 +7,9 @@ import type { TeamReviewCase } from '../api/types';
 import { formatDateTime, formatRelativeTime } from '../utils/format';
 import { buildSearchIndex, filterSearchIndex, normalizeSearchText } from '../utils/search';
 
+type TeamReviewSortKey = 'confidence' | 'start_time' | 'bookmaker' | 'raw_team_name';
+type TeamReviewSortOrder = 'asc' | 'desc';
+
 const REASON_LABELS: Record<string, string> = {
   candidate_team_match_same_start_time: 'Same kickoff with usable event context',
   candidate_team_search: 'Top fuzzy matches in this sport',
@@ -17,12 +20,30 @@ const REVIEW_KIND_LABELS: Record<string, string> = {
   candidate_search: 'Manual pick required',
 };
 
+const TEAM_REVIEW_SORT_OPTIONS: { value: TeamReviewSortKey; label: string }[] = [
+  { value: 'confidence', label: 'Confidence' },
+  { value: 'start_time', label: 'Kickoff' },
+  { value: 'bookmaker', label: 'Bookmaker' },
+  { value: 'raw_team_name', label: 'Raw label' },
+];
+
 function reasonLabel(reasonCode: string) {
   return REASON_LABELS[reasonCode] ?? reasonCode.replace(/_/g, ' ');
 }
 
 function reviewKindLabel(reviewKind: string) {
   return REVIEW_KIND_LABELS[reviewKind] ?? reviewKind.replace(/_/g, ' ');
+}
+
+function confidenceRank(confidence: string) {
+  switch (confidence) {
+    case 'high':
+      return 3;
+    case 'low':
+      return 1;
+    default:
+      return 2;
+  }
 }
 
 function confidenceBadgeClass(confidence: string) {
@@ -34,6 +55,88 @@ function confidenceBadgeClass(confidence: string) {
     default:
       return 'border-border bg-bg text-text-secondary';
   }
+}
+
+function compareNullableNumbers(
+  left: number | null | undefined,
+  right: number | null | undefined,
+  order: TeamReviewSortOrder
+) {
+  if (left == null && right == null) {
+    return 0;
+  }
+  if (left == null) {
+    return 1;
+  }
+  if (right == null) {
+    return -1;
+  }
+  return order === 'desc' ? right - left : left - right;
+}
+
+function compareNullableDates(
+  left: string | null | undefined,
+  right: string | null | undefined,
+  order: TeamReviewSortOrder
+) {
+  const leftTime = left ? Date.parse(left) : Number.NaN;
+  const rightTime = right ? Date.parse(right) : Number.NaN;
+  const normalizedLeft = Number.isNaN(leftTime) ? null : leftTime;
+  const normalizedRight = Number.isNaN(rightTime) ? null : rightTime;
+
+  return compareNullableNumbers(normalizedLeft, normalizedRight, order);
+}
+
+function compareText(
+  left: string | null | undefined,
+  right: string | null | undefined,
+  order: TeamReviewSortOrder
+) {
+  const comparison = (left ?? '').localeCompare(right ?? '', undefined, { sensitivity: 'base' });
+  return order === 'desc' ? -comparison : comparison;
+}
+
+function teamReviewFallbackComparison(left: TeamReviewCase, right: TeamReviewCase) {
+  return (
+    compareNullableNumbers(confidenceRank(left.confidence), confidenceRank(right.confidence), 'desc') ||
+    compareNullableNumbers(left.similarity_score, right.similarity_score, 'desc') ||
+    compareNullableDates(left.start_time, right.start_time, 'asc') ||
+    compareText(left.bookmaker_name ?? left.bookmaker_id, right.bookmaker_name ?? right.bookmaker_id, 'asc') ||
+    compareText(left.raw_team_name, right.raw_team_name, 'asc') ||
+    left.id - right.id
+  );
+}
+
+function compareTeamReviewRows(
+  left: TeamReviewCase,
+  right: TeamReviewCase,
+  sortBy: TeamReviewSortKey,
+  sortOrder: TeamReviewSortOrder
+) {
+  let primary = 0;
+
+  switch (sortBy) {
+    case 'confidence':
+      primary =
+        compareNullableNumbers(confidenceRank(left.confidence), confidenceRank(right.confidence), sortOrder) ||
+        compareNullableNumbers(left.similarity_score, right.similarity_score, 'desc');
+      break;
+    case 'start_time':
+      primary = compareNullableDates(left.start_time, right.start_time, sortOrder);
+      break;
+    case 'bookmaker':
+      primary = compareText(
+        left.bookmaker_name ?? left.bookmaker_id,
+        right.bookmaker_name ?? right.bookmaker_id,
+        sortOrder
+      );
+      break;
+    case 'raw_team_name':
+      primary = compareText(left.raw_team_name, right.raw_team_name, sortOrder);
+      break;
+  }
+
+  return primary || teamReviewFallbackComparison(left, right);
 }
 
 export default function TeamReviewPanel({
@@ -63,6 +166,8 @@ export default function TeamReviewPanel({
   actionMessage: string | null;
 }) {
   const [createTeamNames, setCreateTeamNames] = useState<Record<number, string>>({});
+  const [sortBy, setSortBy] = useState<TeamReviewSortKey>('confidence');
+  const [sortOrder, setSortOrder] = useState<TeamReviewSortOrder>('desc');
   const appliedSearchQuery = useDeferredValue(searchQuery);
   const searchableRows = useMemo(
     () =>
@@ -84,15 +189,29 @@ export default function TeamReviewPanel({
     () => filterSearchIndex(searchableRows, appliedSearchQuery),
     [appliedSearchQuery, searchableRows]
   );
+  const sortedRows = useMemo(
+    () => [...filteredRows].sort((left, right) => compareTeamReviewRows(left, right, sortBy, sortOrder)),
+    [filteredRows, sortBy, sortOrder]
+  );
   const hasSearchQuery = normalizeSearchText(appliedSearchQuery).length > 0;
   const activeSearchLabel = appliedSearchQuery.trim();
-  const pendingRows = filteredRows.filter((row) => row.status === 'pending');
-  const approvedRows = filteredRows.filter((row) => row.status === 'approved');
+  const pendingRows = sortedRows.filter((row) => row.status === 'pending');
+  const approvedRows = sortedRows.filter((row) => row.status === 'approved');
   const uniqueSuggestedTeams = new Set(
     rows
       .map((row) => row.suggested_team_name)
       .filter((value): value is string => Boolean(value))
   ).size;
+
+  const handleSortChange = (nextSortBy: TeamReviewSortKey) => {
+    if (sortBy === nextSortBy) {
+      setSortOrder((currentOrder) => (currentOrder === 'desc' ? 'asc' : 'desc'));
+      return;
+    }
+
+    setSortBy(nextSortBy);
+    setSortOrder(nextSortBy === 'start_time' ? 'asc' : 'desc');
+  };
 
   const searchStrip = (
     <OfferSearchStrip
@@ -200,6 +319,31 @@ export default function TeamReviewPanel({
             <div className="mt-2 font-mono text-2xl font-semibold text-text-secondary">
               {uniqueSuggestedTeams}
             </div>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
+            Sort review rows
+          </span>
+          <div className="flex flex-wrap gap-1">
+            {TEAM_REVIEW_SORT_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => handleSortChange(option.value)}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
+                  sortBy === option.value
+                    ? 'bg-accent/15 text-accent'
+                    : 'text-text-muted hover:text-text-secondary'
+                }`}
+              >
+                {option.label}
+                {sortBy === option.value && (
+                  <span className="ml-1">{sortOrder === 'desc' ? '↓' : '↑'}</span>
+                )}
+              </button>
+            ))}
           </div>
         </div>
       </section>
