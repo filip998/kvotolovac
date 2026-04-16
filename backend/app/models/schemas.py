@@ -33,6 +33,7 @@ class MatchOut(BaseModel):
     id: str
     league_id: Optional[str] = None
     league_name: Optional[str] = None
+    sport: str = "basketball"
     home_team: str
     away_team: str
     start_time: Optional[str] = None
@@ -58,6 +59,7 @@ class UnresolvedOddsDiagnostic(BaseModel):
     bookmaker_id: str
     raw_league_id: str
     league_id: str
+    sport: str = "basketball"
     market_type: str
     player_name: Optional[str] = None
     raw_team_name: str
@@ -79,52 +81,25 @@ class UnresolvedOddsOut(UnresolvedOddsDiagnostic):
     scraped_at: Optional[str] = None
 
 
-class MatchingReviewDiagnostic(BaseModel):
-    bookmaker_id: str
-    raw_league_id: str
-    normalized_raw_league_id: str
-    suggested_league_id: str
-    match_id: str
-    home_team: str
-    away_team: str
-    start_time: Optional[str] = None
-    reason_code: str
-    confidence: str = "medium"
-    evidence: list[str] = Field(default_factory=list)
-    status: str = "pending"
-
-
-class MatchingReviewOut(MatchingReviewDiagnostic):
-    id: int
-    bookmaker_name: Optional[str] = None
-    suggested_league_name: Optional[str] = None
-    scraped_at: Optional[str] = None
-
-
-class MatchingReviewApprovalIn(BaseModel):
-    league_id: Optional[str] = None
-
-
-class MatchingReviewApprovalOut(BaseModel):
-    case_id: int
-    status: str
-    saved_alias: str
-    saved_league_id: str
-    saved_league_name: Optional[str] = None
-
-
 class TeamReviewDiagnostic(BaseModel):
     bookmaker_id: str
     raw_league_id: str
     normalized_raw_league_id: str
+    sport: str = "basketball"
     scope_league_id: Optional[str] = None
     raw_team_name: str
     normalized_raw_team_name: str
-    suggested_team_name: str
+    suggested_team_id: Optional[int] = None
+    suggested_team_name: Optional[str] = None
     start_time: Optional[str] = None
+    review_kind: str = "alias_suggestion"
     reason_code: str
     confidence: str = "medium"
     similarity_score: Optional[float] = None
+    candidate_teams: list["TeamReviewCandidate"] = Field(default_factory=list)
+    matched_counterpart_team: Optional[str] = None
+    canonical_home_team: Optional[str] = None
+    canonical_away_team: Optional[str] = None
     evidence: list[str] = Field(default_factory=list)
     status: str = "pending"
 
@@ -140,6 +115,7 @@ class TeamReviewApprovalOut(BaseModel):
     case_id: int
     status: str
     saved_alias: str
+    saved_team_id: int
     saved_team_name: str
     resolved_team_name: Optional[str] = None
 
@@ -149,27 +125,11 @@ class TeamReviewActionOut(BaseModel):
     status: str
 
 
-class LeagueMatchingHealthOut(BaseModel):
-    league_id: str
-    league_name: str
-    matched_events: int = 0
-    pending_reviews: int = 0
-    approved_reviews: int = 0
-
-
-class MatchingReviewSummaryOut(BaseModel):
-    total_matches: int = 0
-    leagues_with_matches: int = 0
-    pending_reviews: int = 0
-    approved_reviews: int = 0
-    inferred_events: int = 0
-    leagues: list[LeagueMatchingHealthOut] = Field(default_factory=list)
-
-
 # ── Raw odds from scrapers ─────────────────────────────────
 class RawOddsData(BaseModel):
     bookmaker_id: str
     league_id: str
+    sport: str = "basketball"
     home_team: str
     away_team: str
     market_type: str
@@ -185,6 +145,9 @@ class NormalizedOdds(BaseModel):
     match_id: str
     bookmaker_id: str
     league_id: str
+    sport: str = "basketball"
+    home_team_id: int = 0
+    away_team_id: int = 0
     home_team: str
     away_team: str
     market_type: str
@@ -258,6 +221,40 @@ class SystemStatus(BaseModel):
 # ── Scrape trigger response ────────────────────────────────
 class ScrapeResponse(BaseModel):
     message: str
+    matches_scraped: int = 0
+    odds_scraped: int = 0
+    discrepancies_found: int = 0
+
+
+class TeamReviewCandidate(BaseModel):
+    team_id: int
+    team_name: str
+    score: Optional[float] = None
+    matched_alias: Optional[str] = None
+
+
+class TeamReviewApprovalIn(BaseModel):
+    team_id: Optional[int] = None
+    create_team_name: Optional[str] = None
+
+
+class CanonicalTeamOut(BaseModel):
+    id: int
+    sport: str
+    display_name: str
+    aliases: list[str] = Field(default_factory=list)
+    alias_count: int = 0
+    merged_into_team_id: Optional[int] = None
+
+
+class CanonicalTeamMergeIn(BaseModel):
+    target_team_id: int
+
+
+class CanonicalTeamMergeOut(BaseModel):
+    source_team_id: int
+    target_team_id: int
+    merged_team_name: str
     matches_scraped: int = 0
     odds_scraped: int = 0
     discrepancies_found: int = 0

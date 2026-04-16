@@ -152,6 +152,7 @@ def _parse_over_under_bets(event: dict, player_name: str, team: str,
         results.append(RawOddsData(
             bookmaker_id="admiralbet",
             league_id=league_id,
+            sport="basketball",
             home_team=team,
             away_team=player_name,
             market_type="player_points",
@@ -190,6 +191,7 @@ def _parse_milestone_bets(event: dict, player_name: str, team: str,
             results.append(RawOddsData(
                 bookmaker_id="admiralbet",
                 league_id=league_id,
+                sport="basketball",
                 home_team=team,
                 away_team=player_name,
                 market_type="player_points_milestones",
@@ -247,6 +249,7 @@ def _parse_game_total_ot_bets(
             RawOddsData(
                 bookmaker_id="admiralbet",
                 league_id=league_id,
+                sport="basketball",
                 home_team=home_team,
                 away_team=away_team,
                 market_type="game_total_ot",

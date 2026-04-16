@@ -199,6 +199,7 @@ def _parse_markets(
                 RawOddsData(
                     bookmaker_id="meridian",
                     league_id=league_id,
+                    sport="basketball",
                     home_team=home_team,
                     away_team=away_team,
                     market_type=market_type,
@@ -243,6 +244,7 @@ def _parse_game_total_ot_events(
                         RawOddsData(
                             bookmaker_id="meridian",
                             league_id=str(event_context["league_id"]),
+                            sport="basketball",
                             home_team=str(event_context["home_team"]),
                             away_team=str(event_context["away_team"]),
                             market_type="game_total_ot",

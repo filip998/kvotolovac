@@ -134,6 +134,7 @@ class MockScraper(BaseScraper):
                 RawOddsData(
                     bookmaker_id=self._bookmaker_id,
                     league_id=league_id,
+                    sport="basketball",
                     home_team=game["home"],
                     away_team=game["away"],
                     market_type="player_points",

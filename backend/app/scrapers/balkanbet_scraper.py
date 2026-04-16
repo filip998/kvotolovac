@@ -202,6 +202,7 @@ def _parse_event_detail(data: dict, league_id: str | None = None) -> list[RawOdd
             RawOddsData(
                 bookmaker_id="balkanbet",
                 league_id=effective_league_id,
+                sport="basketball",
                 home_team=team or "",
                 away_team=player_name,
                 market_type="player_points",
@@ -261,6 +262,7 @@ def _parse_game_total_ot_list(data: dict) -> list[RawOddsData]:
                 RawOddsData(
                     bookmaker_id="balkanbet",
                     league_id=league_id,
+                    sport="basketball",
                     home_team=home_team,
                     away_team=away_team,
                     market_type="game_total_ot",

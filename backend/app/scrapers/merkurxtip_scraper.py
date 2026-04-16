@@ -193,6 +193,7 @@ def _parse_match_detail(match: dict) -> list[RawOddsData]:
         return RawOddsData(
             bookmaker_id="merkurxtip",
             league_id=league_id,
+            sport="basketball",
             home_team=team,
             away_team=player_name,
             market_type=market_type,
@@ -252,6 +253,7 @@ def _build_game_total_raw_odds(
     return RawOddsData(
         bookmaker_id="merkurxtip",
         league_id=_extract_league_id(match.get("leagueName", "")),
+        sport="basketball",
         home_team=match.get("home", "").strip(),
         away_team=match.get("away", "").strip(),
         market_type="game_total_ot",

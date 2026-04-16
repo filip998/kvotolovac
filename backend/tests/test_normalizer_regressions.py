@@ -9,7 +9,6 @@ from app.models.schemas import RawOddsData
 from app.services.normalizer import (
     generate_match_id,
     normalize_league_id,
-    normalize_odds,
     normalize_odds_with_diagnostics,
     normalize_odds_with_issues,
     normalize_team_name,
@@ -31,16 +30,16 @@ def test_normalize_league_id_keeps_competition_ids_stable():
 
 
 def test_normalize_team_name_scopes_issue31_aliases():
-    assert normalize_team_name("Obras", "argentina_1") == "Obras Sanitarias"
-    assert normalize_team_name("Instituto", "argentina_1") == "Instituto de Cordoba"
+    assert normalize_team_name("Obras", "argentina_1") == "Obras"
+    assert normalize_team_name("Instituto", "argentina_1") == "Instituto"
     assert normalize_team_name("Capitanes de A.", "portoriko_1") == "Capitanes de Arecibo"
 
     assert normalize_team_name("Obras") == "Obras"
     assert normalize_team_name("Instituto") == "Instituto"
-    assert normalize_team_name("Capitanes de A.") == "Capitanes de A."
+    assert normalize_team_name("Capitanes de A.") == "Capitanes de Arecibo"
 
 
-def test_normalize_odds_collapses_obras_instituto_fixture_variants():
+def test_normalize_odds_flags_obras_instituto_fixture_variants_for_review():
     mozzart_fixture = _load_fixture(MOZZART_MATCHES_FIXTURE_PATH)
     maxbet_fixture = _load_fixture(MAXBET_TOTALS_FIXTURE_PATH)
 
@@ -57,13 +56,20 @@ def test_normalize_odds_collapses_obras_instituto_fixture_variants():
         and offer.threshold == 156.5
     )
 
-    normalized = normalize_odds([mozzart_offer, maxbet_offer])
+    normalized, unresolved, team_reviews = normalize_odds_with_diagnostics(
+        [mozzart_offer, maxbet_offer]
+    )
 
-    assert len(normalized) == 2
-    assert len({offer.match_id for offer in normalized}) == 1
-    assert {offer.league_id for offer in normalized} == {"argentina_1"}
-    assert {offer.home_team for offer in normalized} == {"Obras Sanitarias"}
-    assert {offer.away_team for offer in normalized} == {"Instituto de Cordoba"}
+    assert normalized == []
+    assert unresolved == []
+    assert len(team_reviews) == 3
+    assert sum(case.raw_team_name == "Obras" for case in team_reviews) == 2
+    assert sum(case.raw_team_name == "Instituto" for case in team_reviews) == 1
+    assert {case.suggested_team_name for case in team_reviews} == {
+        "Obras Sanitarias",
+        "Instituto de Cordoba",
+    }
+    assert all(len(case.candidate_teams) <= 3 for case in team_reviews)
 
 
 def test_generate_match_id_distinguishes_exact_start_times():
@@ -81,8 +87,8 @@ def test_generate_match_id_distinguishes_exact_start_times():
     assert first_tip != rematch_tip
 
 
-def test_normalize_odds_keeps_missing_start_time_events_scoped_by_league():
-    normalized = normalize_odds(
+def test_normalize_odds_surfaces_missing_start_time_events():
+    normalized, unresolved = normalize_odds_with_issues(
         [
             RawOddsData(
                 bookmaker_id="mozzart",
@@ -109,9 +115,9 @@ def test_normalize_odds_keeps_missing_start_time_events_scoped_by_league():
         ]
     )
 
-    assert len(normalized) == 2
-    assert len({offer.match_id for offer in normalized}) == 2
-    assert {offer.league_id for offer in normalized} == {"nba", "aba_liga"}
+    assert normalized == []
+    assert len(unresolved) == 2
+    assert {row.reason_code for row in unresolved} == {"missing_start_time"}
 
 
 def test_normalize_odds_infers_multiple_shared_platform_games_at_same_tipoff():
@@ -168,16 +174,9 @@ def test_normalize_odds_infers_multiple_shared_platform_games_at_same_tipoff():
         ]
     )
 
-    assert unresolved == []
-    assert len(normalized) == 4
-    assert len({offer.match_id for offer in normalized}) == 2
-    assert {
-        (offer.home_team, offer.away_team)
-        for offer in normalized
-    } == {
-        ("Houston Rockets", "Minnesota Timberwolves"),
-        ("Ostrow Wielkopolski", "Zielona Gora"),
-    }
+    assert normalized == []
+    assert len(unresolved) == 4
+    assert {row.reason_code for row in unresolved} == {"no_canonical_matchup_for_team_at_slot"}
 
 
 def test_normalize_odds_infers_shared_platform_game_beside_other_tipoff_match():
@@ -233,7 +232,7 @@ def test_normalize_odds_infers_shared_platform_game_beside_other_tipoff_match():
 
 
 def test_normalize_odds_infers_league_from_event_context(league_registry_file):
-    normalized, unresolved, reviews, team_reviews = normalize_odds_with_diagnostics(
+    normalized, unresolved, team_reviews = normalize_odds_with_diagnostics(
         [
             RawOddsData(
                 bookmaker_id="mozzart",
@@ -263,16 +262,11 @@ def test_normalize_odds_infers_league_from_event_context(league_registry_file):
     assert unresolved == []
     assert len({offer.match_id for offer in normalized}) == 1
     assert {offer.league_id for offer in normalized} == {"bulgaria_nbl"}
-    assert len(reviews) == 1
-    assert reviews[0].bookmaker_id == "meridian"
-    assert reviews[0].raw_league_id == "NBL"
-    assert reviews[0].suggested_league_id == "bulgaria_nbl"
-    assert reviews[0].reason_code == "league_inferred_from_event_context"
     assert team_reviews == []
 
 
 def test_normalize_odds_creates_team_review_candidates_for_same_tipoff(team_registry_file):
-    normalized, unresolved, reviews, team_reviews = normalize_odds_with_diagnostics(
+    normalized, unresolved, team_reviews = normalize_odds_with_diagnostics(
         [
             RawOddsData(
                 bookmaker_id="mozzart",
@@ -300,17 +294,17 @@ def test_normalize_odds_creates_team_review_candidates_for_same_tipoff(team_regi
     )
 
     assert unresolved == []
-    assert len(normalized) == 2
-    assert reviews == []
+    assert len(normalized) == 1
     assert len(team_reviews) == 1
     assert team_reviews[0].raw_team_name == "Rilski Sport."
     assert team_reviews[0].suggested_team_name == "Rilski Sportist"
-    assert team_reviews[0].scope_league_id == "bulgaria_nbl"
+    assert team_reviews[0].review_kind == "alias_suggestion"
+    assert team_reviews[0].matched_counterpart_team == "Levski Sofia"
     assert team_reviews[0].reason_code == "candidate_team_match_same_start_time"
 
 
 def test_team_review_candidates_require_same_event_context(team_registry_file):
-    normalized, unresolved, reviews, team_reviews = normalize_odds_with_diagnostics(
+    normalized, unresolved, team_reviews = normalize_odds_with_diagnostics(
         [
             RawOddsData(
                 bookmaker_id="mozzart",
@@ -338,9 +332,14 @@ def test_team_review_candidates_require_same_event_context(team_registry_file):
     )
 
     assert unresolved == []
-    assert len(normalized) == 2
-    assert reviews == []
-    assert team_reviews == []
+    assert len(normalized) == 1
+    assert len(team_reviews) == 2
+    assert {case.review_kind for case in team_reviews} == {"candidate_search"}
+    assert {case.raw_team_name for case in team_reviews} == {"Rilski Sport.", "Virtus Bologna"}
+    assert {case.suggested_team_name for case in team_reviews} == {
+        "Rilski Sportist",
+        "Boston Celtics",
+    }
 
 
 def test_team_review_skips_candidates_that_already_resolve_back(team_registry_file):
@@ -354,7 +353,7 @@ def test_team_review_skips_candidates_that_already_resolve_back(team_registry_fi
         competition_id="euroleague",
     )
 
-    normalized, unresolved, reviews, team_reviews = normalize_odds_with_diagnostics(
+    normalized, unresolved, team_reviews = normalize_odds_with_diagnostics(
         [
             RawOddsData(
                 bookmaker_id="mozzart",

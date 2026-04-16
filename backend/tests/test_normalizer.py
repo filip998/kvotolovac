@@ -14,7 +14,11 @@ from app.services.normalizer import (
     normalize_player_name,
     normalize_team_name,
 )
-from app.services.team_registry import CircularAliasError, remember_team_alias
+from app.services.team_registry import (
+    CircularAliasError,
+    clear_team_registry_cache,
+    remember_team_alias,
+)
 from app.models.schemas import RawOddsData
 
 
@@ -40,9 +44,9 @@ def test_normalize_team_alias():
     assert normalize_team_name("Salon Vilpas Vikings", "korisliiga") == "Salon Vilpas"
 
 
-def test_normalize_team_nba_aliases_are_league_scoped():
-    assert normalize_team_name("Houston") == "Houston"
-    assert normalize_team_name("Houston", "euroleague") == "Houston"
+def test_normalize_team_nba_aliases_are_sport_scoped():
+    assert normalize_team_name("Houston") == "Houston Rockets"
+    assert normalize_team_name("Houston", "euroleague") == "Houston Rockets"
     assert normalize_team_name("Houston", "nba") == "Houston Rockets"
 
 
@@ -86,13 +90,8 @@ def test_remember_team_alias_preserves_reviewed_target_before_chain_resolution(t
         team_name="Uniao Corinthians",
         competition_id="brazil_nbb",
     )
-    payload = json.loads(Path(team_registry_file).read_text(encoding="utf-8"))
-
-    assert (
-        payload["bookmaker_competition_aliases"]["meridian"]["brazil_nbb"]["u corinthians"]
-        == "Uniao Corinthians"
-    )
     assert resolution.team_name == "EC Uniao Corinthians"
+    assert normalize_team_name("U.Corinthians", "brazil_nbb", "meridian") == "EC Uniao Corinthians"
 
 
 def test_remember_team_alias_rejects_circular_alias(team_registry_file):
@@ -110,6 +109,37 @@ def test_remember_team_alias_rejects_circular_alias(team_registry_file):
             team_name="Baskonia Gatez",
             competition_id="euroleague",
         )
+
+
+def test_legacy_competition_aliases_are_not_imported_globally(team_registry_file):
+    Path(team_registry_file).write_text(
+        json.dumps(
+            {
+                "aliases": {},
+                "bookmaker_aliases": {},
+                "competition_aliases": {
+                    "argentina_1": {
+                        "Legacy Scoped Alias": "Legacy Scoped Canonical",
+                    }
+                },
+                "bookmaker_competition_aliases": {
+                    "meridian": {
+                        "argentina_1": {
+                            "Legacy Scoped Bookmaker Alias": "Legacy Scoped Bookmaker Canonical",
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    clear_team_registry_cache()
+
+    assert normalize_team_name("Legacy Scoped Alias") == "Legacy Scoped Alias"
+    assert (
+        normalize_team_name("Legacy Scoped Bookmaker Alias", None, "meridian")
+        == "Legacy Scoped Bookmaker Alias"
+    )
 
 
 def test_normalize_player_full_name():
@@ -629,15 +659,36 @@ def test_normalize_market_type(raw_type, expected):
 
 
 def test_generate_match_id_deterministic():
-    id1 = generate_match_id("Partizan", "Crvena Zvezda", "euroleague")
-    id2 = generate_match_id("Partizan", "Crvena Zvezda", "euroleague")
+    start_time = "2026-04-16T20:00:00+00:00"
+    id1 = generate_match_id("Partizan", "Crvena Zvezda", start_time)
+    id2 = generate_match_id("Partizan", "Crvena Zvezda", start_time)
     assert id1 == id2
 
 
 def test_generate_match_id_unique():
-    id1 = generate_match_id("Partizan", "Crvena Zvezda", "euroleague")
-    id2 = generate_match_id("Partizan", "Real Madrid", "euroleague")
+    start_time = "2026-04-16T20:00:00+00:00"
+    id1 = generate_match_id("Partizan", "Crvena Zvezda", start_time)
+    id2 = generate_match_id("Partizan", "Real Madrid", start_time)
     assert id1 != id2
+
+
+def test_generate_match_id_includes_sport():
+    start_time = "2026-04-16T20:00:00+00:00"
+
+    basketball_id = generate_match_id(
+        "Partizan",
+        "Crvena Zvezda",
+        start_time,
+        sport="basketball",
+    )
+    football_id = generate_match_id(
+        "Partizan",
+        "Crvena Zvezda",
+        start_time,
+        sport="football",
+    )
+
+    assert basketball_id != football_id
 
 
 def test_normalize_league_id_alias():
@@ -671,6 +722,7 @@ def test_normalize_odds_full_pipeline():
             threshold=16.5,
             over_odds=1.85,
             under_odds=1.95,
+            start_time="2026-04-16T20:00:00+00:00",
         ),
         RawOddsData(
             bookmaker_id="meridian",
@@ -682,6 +734,7 @@ def test_normalize_odds_full_pipeline():
             threshold=18.5,
             over_odds=1.80,
             under_odds=2.00,
+            start_time="2026-04-16T20:00:00+00:00",
         ),
     ]
     normalized = normalize_odds(raw)
@@ -909,6 +962,7 @@ def test_normalize_odds_normalizes_new_market_types():
             threshold=26.5,
             over_odds=1.83,
             under_odds=1.97,
+            start_time="2026-04-16T19:00:00+00:00",
         ),
     ]
 
@@ -1068,6 +1122,7 @@ def test_normalize_preserves_thresholds():
             threshold=16.5,
             over_odds=1.85,
             under_odds=1.95,
+            start_time="2026-04-16T20:00:00+00:00",
         ),
     ]
     normalized = normalize_odds(raw)

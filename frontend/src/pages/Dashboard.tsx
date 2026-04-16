@@ -2,12 +2,11 @@ import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, us
 import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
+  useCanonicalTeams,
+  useMergeCanonicalTeam,
   useApproveTeamReviewCase,
-  useApproveMatchingReviewCase,
   useDeclineTeamReviewCase,
   useDiscrepancies,
-  useMatchingReviewCases,
-  useMatchingReviewSummary,
   useMatches,
   useSystemStatus,
   useTeamReviewCases,
@@ -31,7 +30,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import MatchAccordion from '../components/MatchAccordion';
 import PageShell from '../components/PageShell';
 import SortControls from '../components/SortControls';
-import LeagueMatchingPanel from '../components/LeagueMatchingPanel';
+import CanonicalTeamsPanel from '../components/CanonicalTeamsPanel';
 import StakeCalculatorPanel from '../components/StakeCalculatorPanel';
 import TeamReviewPanel from '../components/TeamReviewPanel';
 import TrackedMatchesPanel from '../components/TrackedMatchesPanel';
@@ -57,7 +56,7 @@ interface LeagueGroup {
   matches: MatchGroup[];
 }
 
-type DashboardTab = 'discrepancies' | 'tracked' | 'matching' | 'teams' | 'warnings';
+type DashboardTab = 'discrepancies' | 'tracked' | 'teams' | 'canonical' | 'warnings';
 type ViewMode = 'by-match' | 'flat';
 
 export default function Dashboard() {
@@ -78,8 +77,11 @@ export default function Dashboard() {
   const appliedSearchQuery = useDeferredValue(searchQuery);
   const [collapsedLeagues, setCollapsedLeagues] = useState<Set<string>>(new Set());
   const [expandedFlatCalculatorIds, setExpandedFlatCalculatorIds] = useState<Set<number>>(new Set());
-  const [reviewMessage, setReviewMessage] = useState<string | null>(null);
   const [teamReviewMessage, setTeamReviewMessage] = useState<string | null>(null);
+  const [canonicalTeamMessage, setCanonicalTeamMessage] = useState<string | null>(null);
+  const [selectedCanonicalMergeSourceId, setSelectedCanonicalMergeSourceId] = useState<number | null>(
+    null
+  );
   const [stakeUnitsInput, setStakeUnitsInput] = useState(() =>
     formatDashboardStakeUnitsInput(stakeUnits)
   );
@@ -184,32 +186,6 @@ export default function Dashboard() {
     { enabled: activeTab === 'warnings' }
   );
   const {
-    data: matchingReviewSummary,
-    isLoading: matchingSummaryLoading,
-    isError: matchingSummaryError,
-    error: matchingSummaryLoadError,
-    refetch: refetchMatchingReviewSummary,
-  } = useMatchingReviewSummary(
-    {
-      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
-    },
-    { enabled: activeTab === 'matching' }
-  );
-  const {
-    data: matchingReviewCases,
-    isLoading: matchingCasesLoading,
-    isError: matchingCasesError,
-    error: matchingCasesLoadError,
-    refetch: refetchMatchingReviewCases,
-  } = useMatchingReviewCases(
-    {
-      limit: 200,
-      loadAll: true,
-      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
-    },
-    { enabled: activeTab === 'matching' }
-  );
-  const {
     data: teamReviewCases,
     isLoading: teamReviewLoading,
     isError: teamReviewError,
@@ -223,10 +199,23 @@ export default function Dashboard() {
     },
     { enabled: activeTab === 'teams' }
   );
+  const {
+    data: canonicalTeams,
+    isLoading: canonicalTeamsLoading,
+    isError: canonicalTeamsError,
+    error: canonicalTeamsLoadError,
+    refetch: refetchCanonicalTeams,
+  } = useCanonicalTeams(
+    {
+      sport: 'basketball',
+      limit: 300,
+    },
+    { enabled: activeTab === 'canonical' }
+  );
   const { data: status } = useSystemStatus();
-  const approveMatchingReviewCase = useApproveMatchingReviewCase();
   const approveTeamReviewCase = useApproveTeamReviewCase();
   const declineTeamReviewCase = useDeclineTeamReviewCase();
+  const mergeCanonicalTeam = useMergeCanonicalTeam();
 
   const isInitialScanInProgress =
     activeTab === 'discrepancies' && !!status?.scan.in_progress && !status.last_scrape_at;
@@ -242,12 +231,6 @@ export default function Dashboard() {
       void queryClient.invalidateQueries({ queryKey: ['discrepancies'] });
       void refetchDiscrepancies();
     }
-    if (scanJustFinished && activeTab === 'matching') {
-      void queryClient.invalidateQueries({ queryKey: ['matchingReviewSummary'] });
-      void queryClient.invalidateQueries({ queryKey: ['matchingReviewCases'] });
-      void refetchMatchingReviewSummary();
-      void refetchMatchingReviewCases();
-    }
     if (scanJustFinished && activeTab === 'warnings') {
       void queryClient.invalidateQueries({ queryKey: ['unresolvedOdds'] });
       void refetchUnresolvedOdds();
@@ -256,14 +239,17 @@ export default function Dashboard() {
       void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
       void refetchTeamReviewCases();
     }
+    if (scanJustFinished && activeTab === 'canonical') {
+      void queryClient.invalidateQueries({ queryKey: ['canonicalTeams'] });
+      void refetchCanonicalTeams();
+    }
 
     previousScanInProgressRef.current = scanInProgress;
   }, [
     activeTab,
     queryClient,
     refetchDiscrepancies,
-    refetchMatchingReviewCases,
-    refetchMatchingReviewSummary,
+    refetchCanonicalTeams,
     refetchTeamReviewCases,
     refetchUnresolvedOdds,
     status?.scan.in_progress,
@@ -321,61 +307,39 @@ export default function Dashboard() {
   const discrepancyCount = discrepancies?.length ?? 0;
   const filteredDiscrepancyCount = filteredDiscrepancies.length;
   const unresolvedCount = unresolvedOdds?.length ?? 0;
-  const matchingReviewCount =
-    matchingReviewSummary?.pending_reviews ??
-    matchingReviewCases?.filter((row) => row.status === 'pending').length ??
-    0;
   const teamReviewCount = teamReviewCases?.filter((row) => row.status === 'pending').length ?? 0;
-  const matchingErrorMessage =
-    matchingSummaryError || matchingCasesError
-      ? (matchingSummaryLoadError as Error | undefined)?.message ||
-        (matchingCasesLoadError as Error | undefined)?.message ||
-        'Unknown error'
-      : null;
-  const matchingIsLoading = matchingSummaryLoading || matchingCasesLoading;
-  const approvingCaseId =
-    approveMatchingReviewCase.isPending ? approveMatchingReviewCase.variables?.caseId ?? null : null;
+  const canonicalTeamCount = canonicalTeams?.length ?? 0;
   const teamApproveCaseId =
     approveTeamReviewCase.isPending ? approveTeamReviewCase.variables?.caseId ?? null : null;
   const teamDeclineCaseId =
     declineTeamReviewCase.isPending ? declineTeamReviewCase.variables?.caseId ?? null : null;
+  const canonicalMergeSourceId =
+    mergeCanonicalTeam.isPending ? mergeCanonicalTeam.variables?.sourceTeamId ?? null : null;
+  const canonicalMergeTargetId =
+    mergeCanonicalTeam.isPending ? mergeCanonicalTeam.variables?.targetTeamId ?? null : null;
 
-  const handleApproveMatchingCase = (caseId: number, leagueId: string) => {
-    setReviewMessage(null);
-    approveMatchingReviewCase.mutate(
-      { caseId, leagueId },
-      {
-        onSuccess: (result) => {
-          setReviewMessage(
-            `Saved "${result.saved_alias}" -> ${
-              result.saved_league_name ?? result.saved_league_id
-            }. Run the next scrape to apply it.`
-          );
-          void queryClient.invalidateQueries({ queryKey: ['matchingReviewSummary'] });
-          void queryClient.invalidateQueries({ queryKey: ['matchingReviewCases'] });
-          void refetchMatchingReviewSummary();
-          void refetchMatchingReviewCases();
-        },
-        onError: (mutationError) => {
-          setReviewMessage(`Failed to save alias: ${mutationError.message}`);
-        },
-      }
-    );
-  };
-
-  const handleApproveTeamCase = (caseId: number) => {
+  const handleApproveTeamCase = (
+    caseId: number,
+    payload?: { teamId?: number; createTeamName?: string }
+  ) => {
     setTeamReviewMessage(null);
     approveTeamReviewCase.mutate(
-        { caseId },
-        {
-          onSuccess: (result) => {
-            setTeamReviewMessage(
-              result.resolved_team_name
-                ? `Saved "${result.saved_alias}" -> ${result.saved_team_name}. Current canonical: ${result.resolved_team_name}. Run the next scrape to apply it.`
-                : `Saved "${result.saved_alias}" -> ${result.saved_team_name}. Run the next scrape to apply it.`
-            );
-            void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
-            void refetchTeamReviewCases();
+      {
+        caseId,
+        team_id: payload?.teamId,
+        create_team_name: payload?.createTeamName,
+      },
+      {
+        onSuccess: (result) => {
+          setTeamReviewMessage(
+            result.resolved_team_name
+              ? `Saved "${result.saved_alias}" -> ${result.saved_team_name}. Current canonical: ${result.resolved_team_name}. Run the next scrape to apply it.`
+              : `Saved "${result.saved_alias}" -> ${result.saved_team_name}. Run the next scrape to apply it.`
+          );
+          void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
+          void queryClient.invalidateQueries({ queryKey: ['canonicalTeams'] });
+          void refetchTeamReviewCases();
+          void refetchCanonicalTeams();
         },
         onError: (mutationError) => {
           setTeamReviewMessage(`Failed to save team alias: ${mutationError.message}`);
@@ -396,6 +360,27 @@ export default function Dashboard() {
         },
         onError: (mutationError) => {
           setTeamReviewMessage(`Failed to decline team alias: ${mutationError.message}`);
+        },
+      }
+    );
+  };
+
+  const handleMergeCanonicalTeam = (sourceTeamId: number, targetTeamId: number) => {
+    setCanonicalTeamMessage(null);
+    mergeCanonicalTeam.mutate(
+      { sourceTeamId, targetTeamId },
+      {
+        onSuccess: (result) => {
+          setCanonicalTeamMessage(
+            `Merged team ${result.source_team_id} into ${result.merged_team_name}. Run the next scrape to apply the merged aliases everywhere.`
+          );
+          setSelectedCanonicalMergeSourceId(null);
+          void queryClient.invalidateQueries({ queryKey: ['canonicalTeams'] });
+          void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
+          void refetchCanonicalTeams();
+        },
+        onError: (mutationError) => {
+          setCanonicalTeamMessage(`Failed to merge canonical teams: ${mutationError.message}`);
         },
       }
     );
@@ -648,10 +633,10 @@ export default function Dashboard() {
             ? 'Find exploitable line gaps before the market closes.'
             : activeTab === 'tracked'
               ? 'Inspect the stored board even when no gap is flashing.'
-              : activeTab === 'matching'
-                ? 'Resolve league aliases before one game splits into multiple events.'
-                : activeTab === 'teams'
-                  ? 'Save team aliases before one game appears under two club names.'
+              : activeTab === 'teams'
+                ? 'Resolve team labels into the right canonical club.'
+                : activeTab === 'canonical'
+                  ? 'Merge duplicate canonical teams before they fragment the board.'
                   : 'Inspect odds that still need manual review.'
         }
         description={
@@ -659,10 +644,10 @@ export default function Dashboard() {
             ? 'Snapshot grouped by league and matchup. Work downward from the highest-margin thresholds.'
             : activeTab === 'tracked'
               ? 'Open tracked matches to review player markets, bookmaker prices, and discrepancy-linked lines.'
-              : activeTab === 'matching'
-                ? 'Approve the suggested league, save the alias, and keep the board grouped under a single event.'
-                : activeTab === 'teams'
-                  ? 'Approve raw team labels into the canonical club on the left, or decline and leave them unresolved.'
+              : activeTab === 'teams'
+                ? 'Approve the best candidate, choose another canonical team, or create a new one inline.'
+                : activeTab === 'canonical'
+                  ? 'Select the duplicate source team, merge it into the correct target, and keep aliases under one canonical identity.'
                   : 'Review unresolved odds rows that could not be placed confidently on the board.'
         }
     >
@@ -698,21 +683,6 @@ export default function Dashboard() {
                 Tracked odds
               </button>
               <button
-                onClick={() => switchTab('matching')}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                  activeTab === 'matching'
-                    ? 'bg-surface-raised text-text'
-                    : 'text-text-muted hover:text-text'
-                }`}
-              >
-                League matching
-                {activeTab === 'matching' && matchingReviewCount > 0 && (
-                  <span className="ml-1.5 font-mono text-xs text-warning">
-                    {matchingReviewCount}
-                  </span>
-                )}
-              </button>
-              <button
                 onClick={() => switchTab('teams')}
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
                   activeTab === 'teams'
@@ -723,6 +693,21 @@ export default function Dashboard() {
                 Team review
                 {activeTab === 'teams' && teamReviewCount > 0 && (
                   <span className="ml-1.5 font-mono text-xs text-warning">{teamReviewCount}</span>
+                )}
+              </button>
+              <button
+                onClick={() => switchTab('canonical')}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                  activeTab === 'canonical'
+                    ? 'bg-surface-raised text-text'
+                    : 'text-text-muted hover:text-text'
+                }`}
+              >
+                Canonical teams
+                {activeTab === 'canonical' && canonicalTeamCount > 0 && (
+                  <span className="ml-1.5 font-mono text-xs text-accent">
+                    {canonicalTeamCount}
+                  </span>
                 )}
               </button>
               <button
@@ -853,16 +838,6 @@ export default function Dashboard() {
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
           />
-        ) : activeTab === 'matching' ? (
-          <LeagueMatchingPanel
-            summary={matchingReviewSummary}
-            cases={matchingReviewCases || []}
-            isLoading={matchingIsLoading}
-            errorMessage={matchingErrorMessage}
-            onApprove={handleApproveMatchingCase}
-            approvingCaseId={approvingCaseId}
-            approvalMessage={reviewMessage}
-          />
         ) : activeTab === 'teams' ? (
           <TeamReviewPanel
             rows={teamReviewCases || []}
@@ -875,6 +850,22 @@ export default function Dashboard() {
             approvingCaseId={teamApproveCaseId}
             decliningCaseId={teamDeclineCaseId}
             actionMessage={teamReviewMessage}
+          />
+        ) : activeTab === 'canonical' ? (
+          <CanonicalTeamsPanel
+            teams={canonicalTeams || []}
+            isLoading={canonicalTeamsLoading}
+            errorMessage={
+              canonicalTeamsError ? (canonicalTeamsLoadError as Error)?.message || 'Unknown error' : null
+            }
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            selectedSourceTeamId={selectedCanonicalMergeSourceId}
+            onSelectSource={setSelectedCanonicalMergeSourceId}
+            onMerge={handleMergeCanonicalTeam}
+            mergingSourceTeamId={canonicalMergeSourceId}
+            mergingTargetTeamId={canonicalMergeTargetId}
+            actionMessage={canonicalTeamMessage}
           />
         ) : (
           <UnresolvedOddsPanel

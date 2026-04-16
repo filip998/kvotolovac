@@ -197,6 +197,7 @@ def _parse_items(items: list[dict]) -> list[RawOddsData]:
                 RawOddsData(
                     bookmaker_id="mozzart",
                     league_id=league_id,
+                    sport="basketball",
                     home_team=home,
                     away_team=visitor,
                     market_type=market_type,
@@ -248,6 +249,7 @@ def _parse_game_total_items(items: list[dict]) -> list[RawOddsData]:
                 RawOddsData(
                     bookmaker_id="mozzart",
                     league_id=league_id,
+                    sport="basketball",
                     home_team=home,
                     away_team=visitor,
                     market_type="game_total",

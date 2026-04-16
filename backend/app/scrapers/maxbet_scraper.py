@@ -190,6 +190,7 @@ def _parse_match_detail(match: dict) -> list[RawOddsData]:
         return RawOddsData(
             bookmaker_id="maxbet",
             league_id=league_id,
+            sport="basketball",
             home_team=team,
             away_team=player_name,
             market_type=market_type,
@@ -286,6 +287,7 @@ def _parse_game_total_lines(
             RawOddsData(
                 bookmaker_id="maxbet",
                 league_id=league_id,
+                sport="basketball",
                 home_team=home_team,
                 away_team=away_team,
                 market_type=market_type,

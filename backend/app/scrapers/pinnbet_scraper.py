@@ -289,6 +289,7 @@ def _parse_game_total_ot_event(
             RawOddsData(
                 bookmaker_id="pinnbet",
                 league_id=effective_league_id,
+                sport="basketball",
                 home_team=home_team,
                 away_team=away_team,
                 market_type="game_total_ot",
@@ -357,6 +358,7 @@ def _parse_event_detail(
             RawOddsData(
                 bookmaker_id="pinnbet",
                 league_id=effective_league_id,
+                sport="basketball",
                 home_team=home_team,
                 away_team=away_team,
                 market_type=market_type,

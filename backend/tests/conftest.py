@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
-import pytest_asyncio
 
 from app.config import settings
 from app.database import init_db, close_db
@@ -11,12 +11,18 @@ from app.services.league_registry import clear_league_registry_cache
 from app.services.team_registry import clear_team_registry_cache
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def db():
-    """Fresh in-memory database for every test."""
-    conn = await init_db(":memory:")
+@pytest.fixture(autouse=True)
+def db(tmp_path, monkeypatch):
+    """Fresh SQLite database file for every test."""
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{db_path}")
+    clear_league_registry_cache()
+    clear_team_registry_cache()
+    conn = asyncio.run(init_db(str(db_path)))
     yield conn
-    await close_db()
+    clear_league_registry_cache()
+    clear_team_registry_cache()
+    asyncio.run(close_db())
 
 
 @pytest.fixture

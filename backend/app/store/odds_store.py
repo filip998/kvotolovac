@@ -11,20 +11,18 @@ from ..config import settings
 from ..database import get_db
 from ..models.schemas import (
     BookmakerOut,
+    CanonicalTeamOut,
     DiscrepancyDetail,
     DiscrepancyOut,
     LeagueOut,
-    LeagueMatchingHealthOut,
     MatchBookmakerOut,
     MatchOut,
-    MatchingReviewDiagnostic,
-    MatchingReviewOut,
-    MatchingReviewSummaryOut,
     NormalizedOdds,
     NotificationOut,
     OddsOut,
     ScanProgressOut,
     SystemStatus,
+    TeamReviewCandidate,
     TeamReviewDiagnostic,
     TeamReviewOut,
     UnresolvedOddsDiagnostic,
@@ -48,16 +46,6 @@ def _row_to_unresolved_odds(row: aiosqlite.Row) -> UnresolvedOddsOut:
     return UnresolvedOddsOut(**data)
 
 
-def _row_to_matching_review(row: aiosqlite.Row) -> MatchingReviewOut:
-    data = _row_to_dict(row)
-    value = data.get("evidence")
-    if not value:
-        data["evidence"] = []
-    elif isinstance(value, str):
-        data["evidence"] = json.loads(value)
-    return MatchingReviewOut(**data)
-
-
 def _row_to_team_review(row: aiosqlite.Row) -> TeamReviewOut:
     data = _row_to_dict(row)
     value = data.get("evidence")
@@ -65,6 +53,13 @@ def _row_to_team_review(row: aiosqlite.Row) -> TeamReviewOut:
         data["evidence"] = []
     elif isinstance(value, str):
         data["evidence"] = json.loads(value)
+    candidate_value = data.get("candidate_teams")
+    if not candidate_value:
+        data["candidate_teams"] = []
+    elif isinstance(candidate_value, str):
+        data["candidate_teams"] = [
+            TeamReviewCandidate(**item) for item in json.loads(candidate_value)
+        ]
     return TeamReviewOut(**data)
 
 
@@ -158,20 +153,6 @@ async def _get_latest_unresolved_snapshot_at(db: aiosqlite.Connection) -> str | 
     return row[0][0]
 
 
-async def _get_latest_matching_review_snapshot_at(db: aiosqlite.Connection) -> str | None:
-    row = await db.execute_fetchall("SELECT MAX(scraped_at) AS t FROM matching_review_cases")
-    if not row or not row[0][0]:
-        return None
-    return row[0][0]
-
-
-async def _get_matching_review_snapshot_at(db: aiosqlite.Connection) -> str | None:
-    snapshot_at = await _get_current_snapshot_at(db)
-    if snapshot_at is not None:
-        return snapshot_at
-    return await _get_latest_matching_review_snapshot_at(db)
-
-
 async def _get_latest_team_review_snapshot_at(db: aiosqlite.Connection) -> str | None:
     row = await db.execute_fetchall("SELECT MAX(scraped_at) AS t FROM team_review_cases")
     if not row or not row[0][0]:
@@ -193,14 +174,39 @@ async def upsert_match(
     league_id: str,
     home_team: str,
     away_team: str,
+    sport: str = "basketball",
+    home_team_id: int | None = None,
+    away_team_id: int | None = None,
     start_time: str | None = None,
     status: str = "upcoming",
 ) -> None:
     db = await get_db()
+    normalized_home_team_id = home_team_id if home_team_id and home_team_id > 0 else None
+    normalized_away_team_id = away_team_id if away_team_id and away_team_id > 0 else None
     await db.execute(
-        """INSERT OR REPLACE INTO matches (id, league_id, home_team, away_team, start_time, status)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (id, league_id, home_team, away_team, start_time, status),
+        """INSERT OR REPLACE INTO matches (
+               id,
+               league_id,
+               sport,
+               home_team_id,
+               away_team_id,
+               home_team,
+               away_team,
+               start_time,
+               status
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            id,
+            league_id,
+            sport,
+            normalized_home_team_id,
+            normalized_away_team_id,
+            home_team,
+            away_team,
+            start_time,
+            status,
+        ),
     )
     await db.commit()
 
@@ -412,15 +418,16 @@ async def insert_unresolved_odds(
     db = await get_db()
     cursor = await db.execute(
         """INSERT INTO unresolved_odds
-           (bookmaker_id, raw_league_id, league_id, market_type, player_name,
+           (bookmaker_id, raw_league_id, league_id, sport, market_type, player_name,
             raw_team_name, normalized_team_name, start_time, threshold, over_odds,
             under_odds, reason_code, candidate_count, candidate_matchups,
             available_matchups_same_slot, scraped_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             unresolved.bookmaker_id,
             unresolved.raw_league_id,
             unresolved.league_id,
+            unresolved.sport,
             unresolved.market_type,
             unresolved.player_name,
             unresolved.raw_team_name,
@@ -485,209 +492,6 @@ async def get_unresolved_odds(
     return [_row_to_unresolved_odds(r) for r in rows]
 
 
-async def insert_matching_review_case(
-    case: MatchingReviewDiagnostic,
-    *,
-    scraped_at: str,
-) -> int:
-    db = await get_db()
-    cursor = await db.execute(
-        """INSERT INTO matching_review_cases
-           (bookmaker_id, raw_league_id, normalized_raw_league_id, suggested_league_id,
-            match_id, home_team, away_team, start_time, reason_code, confidence,
-            evidence, status, scraped_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            case.bookmaker_id,
-            case.raw_league_id,
-            case.normalized_raw_league_id,
-            case.suggested_league_id,
-            case.match_id,
-            case.home_team,
-            case.away_team,
-            case.start_time,
-            case.reason_code,
-            case.confidence,
-            json.dumps(case.evidence),
-            case.status,
-            scraped_at,
-        ),
-    )
-    await db.commit()
-    return cursor.lastrowid or 0
-
-
-async def get_matching_review_cases(
-    bookmaker_ids: list[str] | None = None,
-    status: str | None = None,
-    league_id: str | None = None,
-    limit: int = 100,
-    offset: int = 0,
-) -> list[MatchingReviewOut]:
-    db = await get_db()
-    snapshot_at = await _get_matching_review_snapshot_at(db)
-    if snapshot_at is None:
-        return []
-
-    q = """SELECT c.*, b.name AS bookmaker_name, l.name AS suggested_league_name
-           FROM matching_review_cases c
-           LEFT JOIN bookmakers b ON c.bookmaker_id = b.id
-           LEFT JOIN leagues l ON c.suggested_league_id = l.id"""
-    conditions = ["c.scraped_at = ?"]
-    params: list[object] = [snapshot_at]
-
-    if bookmaker_ids:
-        placeholders = _sql_placeholders(bookmaker_ids)
-        conditions.append(f"c.bookmaker_id IN ({placeholders})")
-        params.extend(bookmaker_ids)
-    if status:
-        conditions.append("c.status = ?")
-        params.append(status)
-    if league_id:
-        conditions.append("c.suggested_league_id = ?")
-        params.append(league_id)
-
-    q += " WHERE " + " AND ".join(conditions)
-    q += """ ORDER BY c.status ASC, c.start_time ASC, c.bookmaker_id ASC,
-                    c.raw_league_id ASC, c.home_team ASC
-             LIMIT ? OFFSET ?"""
-    params.extend([limit, offset])
-    rows = await db.execute_fetchall(q, params)
-    return [_row_to_matching_review(r) for r in rows]
-
-
-async def get_matching_review_case(case_id: int) -> MatchingReviewOut | None:
-    db = await get_db()
-    rows = await db.execute_fetchall(
-        """SELECT c.*, b.name AS bookmaker_name, l.name AS suggested_league_name
-           FROM matching_review_cases c
-           LEFT JOIN bookmakers b ON c.bookmaker_id = b.id
-           LEFT JOIN leagues l ON c.suggested_league_id = l.id
-           WHERE c.id = ?""",
-        (case_id,),
-    )
-    if not rows:
-        return None
-    return _row_to_matching_review(rows[0])
-
-
-async def mark_matching_review_case_approved(
-    case_id: int,
-    bookmaker_id: str | None = None,
-    normalized_raw_league_id: str | None = None,
-    suggested_league_id: str | None = None,
-    scraped_at: str | None = None,
-) -> None:
-    db = await get_db()
-    if bookmaker_id and normalized_raw_league_id and suggested_league_id and scraped_at:
-        await db.execute(
-            """UPDATE matching_review_cases
-               SET status = 'approved',
-                   approved_at = COALESCE(approved_at, CURRENT_TIMESTAMP)
-               WHERE bookmaker_id = ?
-                 AND normalized_raw_league_id = ?
-                 AND suggested_league_id = ?
-                 AND scraped_at = ?""",
-            (bookmaker_id, normalized_raw_league_id, suggested_league_id, scraped_at),
-        )
-    else:
-        await db.execute(
-            """UPDATE matching_review_cases
-               SET status = 'approved',
-                   approved_at = COALESCE(approved_at, CURRENT_TIMESTAMP)
-               WHERE id = ?""",
-            (case_id,),
-        )
-    await db.commit()
-
-
-async def get_matching_review_summary(
-    bookmaker_ids: list[str] | None = None,
-) -> MatchingReviewSummaryOut:
-    db = await get_db()
-    snapshot_at = await _get_matching_review_snapshot_at(db)
-    if snapshot_at is None:
-        return MatchingReviewSummaryOut()
-
-    match_params: list[object] = [snapshot_at]
-    match_q = """SELECT m.league_id, COALESCE(l.name, m.league_id) AS league_name,
-                        COUNT(DISTINCT m.id) AS matched_events
-                 FROM matches m
-                 JOIN odds o ON o.match_id = m.id
-                 LEFT JOIN leagues l ON m.league_id = l.id
-                 WHERE o.scraped_at = ?"""
-    if bookmaker_ids:
-        placeholders = _sql_placeholders(bookmaker_ids)
-        match_q += f" AND o.bookmaker_id IN ({placeholders})"
-        match_params.extend(bookmaker_ids)
-    match_q += " GROUP BY m.league_id, COALESCE(l.name, m.league_id)"
-    match_rows = await db.execute_fetchall(match_q, match_params)
-
-    health_by_league: dict[str, LeagueMatchingHealthOut] = {}
-    total_matches = 0
-    for row in match_rows:
-        matched_events = int(row["matched_events"])
-        total_matches += matched_events
-        league_id = row["league_id"] or ""
-        health_by_league[league_id] = LeagueMatchingHealthOut(
-            league_id=league_id,
-            league_name=row["league_name"] or league_id,
-            matched_events=matched_events,
-        )
-
-    review_params: list[object] = [snapshot_at]
-    review_q = """SELECT suggested_league_id, status, COUNT(*) AS review_count
-                  FROM matching_review_cases
-                  WHERE scraped_at = ?"""
-    if bookmaker_ids:
-        placeholders = _sql_placeholders(bookmaker_ids)
-        review_q += f" AND bookmaker_id IN ({placeholders})"
-        review_params.extend(bookmaker_ids)
-    review_q += " GROUP BY suggested_league_id, status"
-    review_rows = await db.execute_fetchall(review_q, review_params)
-
-    inferred_events_row = await db.execute_fetchall(
-        f"""SELECT COUNT(DISTINCT match_id) AS review_event_count
-            FROM matching_review_cases
-            WHERE scraped_at = ?
-            {"AND bookmaker_id IN (" + _sql_placeholders(bookmaker_ids) + ")" if bookmaker_ids else ""}""",
-        review_params,
-    )
-    inferred_events = int(inferred_events_row[0]["review_event_count"]) if inferred_events_row else 0
-
-    pending_reviews = 0
-    approved_reviews = 0
-    for row in review_rows:
-        league_id = row["suggested_league_id"]
-        health = health_by_league.setdefault(
-            league_id,
-            LeagueMatchingHealthOut(
-                league_id=league_id,
-                league_name=league_id,
-            ),
-        )
-        review_count = int(row["review_count"])
-        if row["status"] == "approved":
-            health.approved_reviews += review_count
-            approved_reviews += review_count
-        else:
-            health.pending_reviews += review_count
-            pending_reviews += review_count
-
-    leagues = sorted(
-        health_by_league.values(),
-        key=lambda item: (-item.pending_reviews, -item.matched_events, item.league_name),
-    )
-    return MatchingReviewSummaryOut(
-        total_matches=total_matches,
-        leagues_with_matches=len([league for league in leagues if league.matched_events > 0]),
-        pending_reviews=pending_reviews,
-        approved_reviews=approved_reviews,
-        inferred_events=inferred_events,
-        leagues=leagues,
-    )
-
-
 async def insert_team_review_case(
     case: TeamReviewDiagnostic,
     *,
@@ -696,22 +500,49 @@ async def insert_team_review_case(
     db = await get_db()
     cursor = await db.execute(
         """INSERT INTO team_review_cases
-           (bookmaker_id, raw_league_id, normalized_raw_league_id, scope_league_id,
-            raw_team_name, normalized_raw_team_name, suggested_team_name, start_time,
-            reason_code, confidence, similarity_score, evidence, status, scraped_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (
+               bookmaker_id,
+               raw_league_id,
+               normalized_raw_league_id,
+               sport,
+               scope_league_id,
+               raw_team_name,
+               normalized_raw_team_name,
+               suggested_team_id,
+               suggested_team_name,
+               start_time,
+               review_kind,
+               reason_code,
+               confidence,
+               similarity_score,
+               candidate_teams,
+               matched_counterpart_team,
+               canonical_home_team,
+               canonical_away_team,
+               evidence,
+               status,
+               scraped_at
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             case.bookmaker_id,
             case.raw_league_id,
             case.normalized_raw_league_id,
+            case.sport,
             case.scope_league_id,
             case.raw_team_name,
             case.normalized_raw_team_name,
+            case.suggested_team_id,
             case.suggested_team_name,
             case.start_time,
+            case.review_kind,
             case.reason_code,
             case.confidence,
             case.similarity_score,
+            json.dumps([candidate.model_dump() for candidate in case.candidate_teams]),
+            case.matched_counterpart_team,
+            case.canonical_home_team,
+            case.canonical_away_team,
             json.dumps(case.evidence),
             case.status,
             scraped_at,

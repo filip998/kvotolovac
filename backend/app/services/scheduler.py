@@ -183,7 +183,6 @@ class Scheduler:
             (
                 normalized,
                 unresolved_odds,
-                matching_review_cases,
                 team_review_cases,
             ) = normalize_odds_with_diagnostics(all_raw)
 
@@ -195,7 +194,7 @@ class Scheduler:
                     await odds_store.upsert_league(
                         id=o.league_id,
                         name=league_display_name(o.league_id),
-                        sport="basketball",
+                        sport=o.sport,
                         country=league_country(o.league_id),
                     )
                     await odds_store.upsert_match(
@@ -203,6 +202,9 @@ class Scheduler:
                         league_id=o.league_id,
                         home_team=o.home_team,
                         away_team=o.away_team,
+                        sport=o.sport,
+                        home_team_id=o.home_team_id,
+                        away_team_id=o.away_team_id,
                         start_time=o.start_time,
                     )
                     seen_matches.add(o.match_id)
@@ -210,10 +212,6 @@ class Scheduler:
             for unresolved in unresolved_odds:
                 await odds_store.insert_unresolved_odds(
                     unresolved, scraped_at=cycle_scraped_at
-                )
-            for review_case in matching_review_cases:
-                await odds_store.insert_matching_review_case(
-                    review_case, scraped_at=cycle_scraped_at
                 )
             for team_review_case in team_review_cases:
                 await odds_store.insert_team_review_case(

@@ -22,6 +22,7 @@ export interface Match {
   id: string;
   league_id: string;
   league_name: string;
+  sport: string;
   home_team: string;
   away_team: string;
   start_time: string | null;
@@ -87,6 +88,7 @@ export interface UnresolvedOdds {
   raw_league_id: string;
   league_id: string;
   league_name: string | null;
+  sport: string;
   market_type: string;
   player_name: string | null;
   raw_team_name: string;
@@ -102,74 +104,45 @@ export interface UnresolvedOdds {
   scraped_at: string | null;
 }
 
-export interface LeagueMatchingHealth {
-  league_id: string;
-  league_name: string;
-  matched_events: number;
-  pending_reviews: number;
-  approved_reviews: number;
-}
-
-export interface MatchingReviewCase {
-  id: number;
-  bookmaker_id: string;
-  bookmaker_name: string | null;
-  raw_league_id: string;
-  normalized_raw_league_id: string;
-  suggested_league_id: string;
-  suggested_league_name: string | null;
-  match_id: string;
-  home_team: string;
-  away_team: string;
-  start_time: string | null;
-  reason_code: string;
-  confidence: string;
-  evidence: string[];
-  status: 'pending' | 'approved';
-  scraped_at: string | null;
-}
-
-export interface MatchingReviewSummary {
-  total_matches: number;
-  leagues_with_matches: number;
-  pending_reviews: number;
-  approved_reviews: number;
-  inferred_events: number;
-  leagues: LeagueMatchingHealth[];
-}
-
-export interface MatchingReviewApproval {
-  case_id: number;
-  status: 'approved';
-  saved_alias: string;
-  saved_league_id: string;
-  saved_league_name: string | null;
-}
-
 export interface TeamReviewCase {
   id: number;
   bookmaker_id: string;
   bookmaker_name: string | null;
   raw_league_id: string;
   normalized_raw_league_id: string;
+  sport: string;
   scope_league_id: string | null;
   scope_league_name: string | null;
   raw_team_name: string;
   normalized_raw_team_name: string;
-  suggested_team_name: string;
+  suggested_team_id: number | null;
+  suggested_team_name: string | null;
   start_time: string | null;
+  review_kind: string;
   reason_code: string;
   confidence: string;
   similarity_score: number | null;
+  candidate_teams: TeamReviewCandidate[];
+  matched_counterpart_team: string | null;
+  canonical_home_team: string | null;
+  canonical_away_team: string | null;
   evidence: string[];
   status: 'pending' | 'approved' | 'declined';
   scraped_at: string | null;
+}
+
+export interface TeamReviewCandidate {
+  team_id: number;
+  team_name: string;
+  score: number | null;
+  matched_alias: string | null;
 }
 
 export interface TeamReviewApproval {
   case_id: number;
   status: 'approved';
   saved_alias: string;
+  saved_team_id: number;
   saved_team_name: string;
   resolved_team_name: string | null;
 }
@@ -235,16 +208,6 @@ export interface UnresolvedOddsFilters {
   loadAll?: boolean;
 }
 
-export interface MatchingReviewFilters {
-  bookmaker_id?: string;
-  bookmaker_ids?: string[];
-  league_id?: string;
-  status?: 'pending' | 'approved';
-  limit?: number;
-  offset?: number;
-  loadAll?: boolean;
-}
-
 export interface TeamReviewFilters {
   bookmaker_id?: string;
   bookmaker_ids?: string[];
@@ -252,4 +215,34 @@ export interface TeamReviewFilters {
   limit?: number;
   offset?: number;
   loadAll?: boolean;
+}
+
+export interface TeamReviewApprovalInput {
+  team_id?: number;
+  create_team_name?: string;
+}
+
+export interface CanonicalTeam {
+  id: number;
+  sport: string;
+  display_name: string;
+  aliases: string[];
+  alias_count: number;
+  merged_into_team_id: number | null;
+}
+
+export interface CanonicalTeamFilters {
+  sport?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface CanonicalTeamMerge {
+  source_team_id: number;
+  target_team_id: number;
+  merged_team_name: string;
+  matches_scraped: number;
+  odds_scraped: number;
+  discrepancies_found: number;
 }

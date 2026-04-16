@@ -2,18 +2,18 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import client from './client';
 import type {
   Bookmaker,
+  CanonicalTeam,
+  CanonicalTeamFilters,
+  CanonicalTeamMerge,
   League,
   Match,
   OddsOffer,
   Discrepancy,
-  MatchingReviewApproval,
-  MatchingReviewCase,
-  MatchingReviewFilters,
-  MatchingReviewSummary,
   SystemStatus,
   DiscrepancyFilters,
   TeamReviewAction,
   TeamReviewApproval,
+  TeamReviewApprovalInput,
   TeamReviewCase,
   TeamReviewFilters,
   UnresolvedOdds,
@@ -25,10 +25,9 @@ import {
   mockMatches,
   mockOddsOffers,
   mockDiscrepancies,
-  mockMatchingReviewCases,
-  mockMatchingReviewSummary,
   mockUnresolvedOdds,
   mockSystemStatus,
+  mockCanonicalTeams,
   mockTeamReviewCases,
 } from './mockData';
 
@@ -42,23 +41,6 @@ function serializeArrayParam(values?: string[]): string | undefined {
   return values && values.length > 0 ? values.join(',') : undefined;
 }
 
-function updateMockMatchingReviewSummaryForApproval(caseItem: MatchingReviewCase) {
-  const league = mockMatchingReviewSummary.leagues.find(
-    (leagueRow) => leagueRow.league_id === caseItem.suggested_league_id
-  );
-  if (league && caseItem.status !== 'approved') {
-    league.pending_reviews = Math.max(0, league.pending_reviews - 1);
-    league.approved_reviews += 1;
-  }
-  if (caseItem.status !== 'approved') {
-    mockMatchingReviewSummary.pending_reviews = Math.max(
-      0,
-      mockMatchingReviewSummary.pending_reviews - 1
-    );
-    mockMatchingReviewSummary.approved_reviews += 1;
-  }
-}
-
 function updateMockTeamReviewCaseStatus(caseId: number, status: TeamReviewCase['status']): TeamReviewCase {
   const caseItem = mockTeamReviewCases.find((item) => item.id === caseId);
   if (!caseItem) {
@@ -66,6 +48,100 @@ function updateMockTeamReviewCaseStatus(caseId: number, status: TeamReviewCase['
   }
   caseItem.status = status;
   return caseItem;
+}
+
+function appendMockCanonicalAlias(team: CanonicalTeam, alias: string) {
+  const normalizedAlias = alias.trim();
+  if (!normalizedAlias) {
+    return;
+  }
+  if (!team.aliases.includes(normalizedAlias)) {
+    team.aliases = [normalizedAlias, ...team.aliases];
+    team.alias_count = team.aliases.length;
+  }
+}
+
+function nextMockCanonicalTeamId() {
+  return Math.max(0, ...mockCanonicalTeams.map((team) => team.id)) + 1;
+}
+
+function resolveMockTeamReviewApproval(
+  caseItem: TeamReviewCase,
+  payload: TeamReviewApprovalInput
+): { savedTeamId: number; savedTeamName: string } {
+  const createTeamName = payload.create_team_name?.trim();
+  if (createTeamName) {
+    const existingTeam = mockCanonicalTeams.find((team) => team.display_name === createTeamName);
+    if (existingTeam) {
+      appendMockCanonicalAlias(existingTeam, caseItem.raw_team_name);
+      return {
+        savedTeamId: existingTeam.id,
+        savedTeamName: existingTeam.display_name,
+      };
+    }
+
+    const newTeam: CanonicalTeam = {
+      id: nextMockCanonicalTeamId(),
+      sport: caseItem.sport,
+      display_name: createTeamName,
+      aliases: [caseItem.raw_team_name, createTeamName],
+      alias_count: 2,
+      merged_into_team_id: null,
+    };
+    mockCanonicalTeams.unshift(newTeam);
+    return {
+      savedTeamId: newTeam.id,
+      savedTeamName: newTeam.display_name,
+    };
+  }
+
+  if (payload.team_id != null) {
+    const targetTeam = mockCanonicalTeams.find((team) => team.id === payload.team_id);
+    if (!targetTeam) {
+      throw new Error('Canonical team not found');
+    }
+    appendMockCanonicalAlias(targetTeam, caseItem.raw_team_name);
+    return {
+      savedTeamId: targetTeam.id,
+      savedTeamName: targetTeam.display_name,
+    };
+  }
+
+  const suggestedTeamId = caseItem.suggested_team_id ?? caseItem.candidate_teams[0]?.team_id ?? null;
+  const suggestedTeamName =
+    caseItem.suggested_team_name ?? caseItem.candidate_teams[0]?.team_name ?? null;
+
+  if (!suggestedTeamName) {
+    throw new Error('No suggested team available for this review case');
+  }
+
+  const existingTeam =
+    (suggestedTeamId != null
+      ? mockCanonicalTeams.find((team) => team.id === suggestedTeamId)
+      : undefined) ??
+    mockCanonicalTeams.find((team) => team.display_name === suggestedTeamName);
+
+  if (existingTeam) {
+    appendMockCanonicalAlias(existingTeam, caseItem.raw_team_name);
+    return {
+      savedTeamId: existingTeam.id,
+      savedTeamName: existingTeam.display_name,
+    };
+  }
+
+  const createdTeam: CanonicalTeam = {
+    id: suggestedTeamId ?? nextMockCanonicalTeamId(),
+    sport: caseItem.sport,
+    display_name: suggestedTeamName,
+    aliases: [caseItem.raw_team_name, suggestedTeamName],
+    alias_count: 2,
+    merged_into_team_id: null,
+  };
+  mockCanonicalTeams.unshift(createdTeam);
+  return {
+    savedTeamId: createdTeam.id,
+    savedTeamName: createdTeam.display_name,
+  };
 }
 
 // --- Discrepancies ---
@@ -227,123 +303,6 @@ export function useUnresolvedOdds(
   });
 }
 
-// --- Matching review ---
-
-export function useMatchingReviewSummary(
-  filters: Pick<MatchingReviewFilters, 'bookmaker_ids'> = {},
-  options: { enabled?: boolean } = {}
-) {
-  return useQuery<MatchingReviewSummary>({
-    queryKey: ['matchingReviewSummary', filters],
-    queryFn: async () => {
-      if (USE_MOCK) {
-        await delay();
-        return mockMatchingReviewSummary;
-      }
-      const { data } = await client.get<MatchingReviewSummary>('/matching-review/summary', {
-        params: {
-          bookmaker_ids: serializeArrayParam(filters.bookmaker_ids),
-        },
-      });
-      return data;
-    },
-    enabled: options.enabled ?? true,
-    refetchInterval: options.enabled === false ? false : 30000,
-  });
-}
-
-export function useMatchingReviewCases(
-  filters: MatchingReviewFilters = {},
-  options: { enabled?: boolean } = {}
-) {
-  return useQuery<MatchingReviewCase[]>({
-    queryKey: ['matchingReviewCases', filters],
-    queryFn: async () => {
-      if (USE_MOCK) {
-        await delay();
-        let results = [...mockMatchingReviewCases];
-        if (filters.bookmaker_id) {
-          results = results.filter((row) => row.bookmaker_id === filters.bookmaker_id);
-        }
-        if (filters.bookmaker_ids?.length) {
-          const selected = new Set(filters.bookmaker_ids);
-          results = results.filter((row) => selected.has(row.bookmaker_id));
-        }
-        if (filters.league_id) {
-          results = results.filter((row) => row.suggested_league_id === filters.league_id);
-        }
-        if (filters.status) {
-          results = results.filter((row) => row.status === filters.status);
-        }
-        return results;
-      }
-
-      const { loadAll, ...requestFilters } = filters;
-      const serializedFilters = {
-        ...requestFilters,
-        bookmaker_ids: serializeArrayParam(requestFilters.bookmaker_ids),
-      };
-      if (!loadAll) {
-        const { data } = await client.get<MatchingReviewCase[]>('/matching-review/cases', {
-          params: serializedFilters,
-        });
-        return data;
-      }
-
-      const pageSize = requestFilters.limit ?? 200;
-      const initialOffset = requestFilters.offset ?? 0;
-      const allRows: MatchingReviewCase[] = [];
-
-      for (let offset = initialOffset; ; offset += pageSize) {
-        const { data } = await client.get<MatchingReviewCase[]>('/matching-review/cases', {
-          params: { ...serializedFilters, limit: pageSize, offset },
-        });
-        allRows.push(...data);
-        if (data.length < pageSize) {
-          break;
-        }
-      }
-
-      return allRows;
-    },
-    enabled: options.enabled ?? true,
-    refetchInterval: options.enabled === false ? false : 30000,
-  });
-}
-
-export function useApproveMatchingReviewCase() {
-  return useMutation<
-    MatchingReviewApproval,
-    Error,
-    { caseId: number; leagueId?: string }
-  >({
-    mutationFn: async ({ caseId, leagueId }) => {
-      if (USE_MOCK) {
-        await delay();
-        const caseItem = mockMatchingReviewCases.find((item) => item.id === caseId);
-        if (!caseItem) {
-          throw new Error('Matching review case not found');
-        }
-        updateMockMatchingReviewSummaryForApproval(caseItem);
-        caseItem.status = 'approved';
-        return {
-          case_id: caseId,
-          status: 'approved',
-          saved_alias: caseItem.raw_league_id,
-          saved_league_id: leagueId ?? caseItem.suggested_league_id,
-          saved_league_name: caseItem.suggested_league_name,
-        };
-      }
-
-      const { data } = await client.post<MatchingReviewApproval>(
-        `/matching-review/cases/${caseId}/approve`,
-        leagueId ? { league_id: leagueId } : {}
-      );
-      return data;
-    },
-  });
-}
-
 export function useTeamReviewCases(
   filters: TeamReviewFilters = {},
   options: { enabled?: boolean } = {}
@@ -401,23 +360,37 @@ export function useTeamReviewCases(
 }
 
 export function useApproveTeamReviewCase() {
-  return useMutation<TeamReviewApproval, Error, { caseId: number }>({
-    mutationFn: async ({ caseId }) => {
+  return useMutation<TeamReviewApproval, Error, { caseId: number } & TeamReviewApprovalInput>({
+    mutationFn: async ({ caseId, team_id, create_team_name }) => {
       if (USE_MOCK) {
         await delay();
-        const caseItem = updateMockTeamReviewCaseStatus(caseId, 'approved');
+        const caseItem = mockTeamReviewCases.find((item) => item.id === caseId);
+        if (!caseItem) {
+          throw new Error('Team review case not found');
+        }
+        const target = resolveMockTeamReviewApproval(caseItem, {
+          team_id,
+          create_team_name,
+        });
+        const updatedCaseItem = updateMockTeamReviewCaseStatus(caseId, 'approved');
         return {
           case_id: caseId,
           status: 'approved',
-          saved_alias: caseItem.raw_team_name,
-          saved_team_name: caseItem.suggested_team_name,
+          saved_alias: updatedCaseItem.raw_team_name,
+          saved_team_id: target.savedTeamId,
+          saved_team_name: target.savedTeamName,
           resolved_team_name: null,
         };
       }
 
-      const { data } = await client.post<TeamReviewApproval>(
-        `/team-review/cases/${caseId}/approve`
-      );
+      const payload =
+        team_id != null || (create_team_name?.trim()?.length ?? 0) > 0
+          ? {
+              team_id,
+              create_team_name,
+            }
+          : {};
+      const { data } = await client.post<TeamReviewApproval>(`/team-review/cases/${caseId}/approve`, payload);
       return data;
     },
   });
@@ -437,6 +410,84 @@ export function useDeclineTeamReviewCase() {
 
       const { data } = await client.post<TeamReviewAction>(
         `/team-review/cases/${caseId}/decline`
+      );
+      return data;
+    },
+  });
+}
+
+export function useCanonicalTeams(
+  filters: CanonicalTeamFilters = {},
+  options: { enabled?: boolean } = {}
+) {
+  return useQuery<CanonicalTeam[]>({
+    queryKey: ['canonicalTeams', filters],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        const search = filters.search?.trim().toLowerCase();
+        let results = [...mockCanonicalTeams];
+        if (filters.sport) {
+          results = results.filter((team) => team.sport === filters.sport);
+        }
+        if (search) {
+          results = results.filter((team) =>
+            [team.display_name, ...team.aliases].some((value) => value.toLowerCase().includes(search))
+          );
+        }
+        const offset = filters.offset ?? 0;
+        const limit = filters.limit ?? results.length;
+        return results.slice(offset, offset + limit);
+      }
+
+      const { data } = await client.get<CanonicalTeam[]>('/canonical-teams', {
+        params: filters,
+      });
+      return data;
+    },
+    enabled: options.enabled ?? true,
+    staleTime: 30000,
+  });
+}
+
+export function useMergeCanonicalTeam() {
+  return useMutation<
+    CanonicalTeamMerge,
+    Error,
+    { sourceTeamId: number; targetTeamId: number }
+  >({
+    mutationFn: async ({ sourceTeamId, targetTeamId }) => {
+      if (USE_MOCK) {
+        await delay();
+        if (sourceTeamId === targetTeamId) {
+          throw new Error('Cannot merge a canonical team into itself');
+        }
+
+        const sourceIndex = mockCanonicalTeams.findIndex((team) => team.id === sourceTeamId);
+        const targetTeam = mockCanonicalTeams.find((team) => team.id === targetTeamId);
+        if (sourceIndex === -1 || !targetTeam) {
+          throw new Error('Canonical team not found');
+        }
+
+        const [sourceTeam] = mockCanonicalTeams.splice(sourceIndex, 1);
+        targetTeam.aliases = Array.from(
+          new Set([sourceTeam.display_name, ...sourceTeam.aliases, ...targetTeam.aliases])
+        ).sort((left, right) => left.localeCompare(right));
+        targetTeam.alias_count = targetTeam.aliases.length;
+
+        return {
+          source_team_id: sourceTeamId,
+          target_team_id: targetTeamId,
+          merged_team_name: targetTeam.display_name,
+          matches_scraped: 0,
+          odds_scraped: 0,
+          discrepancies_found: 0,
+        };
+      }
+
+      const { data } = await client.post<CanonicalTeamMerge>(
+        `/canonical-teams/${sourceTeamId}/merge`,
+        { target_team_id: targetTeamId }
       );
       return data;
     },

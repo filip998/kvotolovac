@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 
+import aiosqlite
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.config import settings
 from app.database import close_db, get_db, init_db
 from app.main import app
 from app.models.schemas import (
-    MatchingReviewDiagnostic,
     NormalizedOdds,
     RawOddsData,
     TeamReviewDiagnostic,
@@ -17,17 +18,16 @@ from app.models.schemas import (
 from app.scrapers.base import BaseScraper
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
-from app.services.league_registry import resolve_league
 from app.services.scheduler import scheduler
-from app.services.normalizer import normalize_odds_with_diagnostics, normalize_team_name
-from app.services.team_registry import CircularAliasError, remember_team_alias
+from app.services.normalizer import normalize_team_name
+from app.services.team_registry import create_canonical_team, remember_team_alias
 from app.store import odds_store
 
 
 @pytest.fixture(autouse=True)
 async def setup_app():
     """Set up fresh DB and register scrapers before each test."""
-    await init_db(":memory:")
+    await init_db(settings.db_path)
     # Clear and re-register scrapers
     registry._scrapers.clear()
     for bm in ("mozzart", "meridian", "maxbet"):
@@ -266,245 +266,219 @@ async def test_list_matches_can_filter_by_bookmaker(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_matching_review_summary_and_cases(client: AsyncClient, league_registry_file):
-    batch_scraped_at = "2026-04-16T17:00:00+00:00"
-    await odds_store.upsert_bookmaker("meridian", "Meridian")
-    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
-    await odds_store.upsert_league("bulgaria_nbl", "Bulgaria NBL", "basketball", "Bulgaria")
-    await odds_store.upsert_match(
-        "match-bulgaria",
-        "bulgaria_nbl",
-        "Rilski Sportist",
-        "Levski Sofia",
-        start_time=batch_scraped_at,
+async def test_list_canonical_teams_filters_by_sport(
+    client: AsyncClient,
+    team_registry_file,
+):
+    basketball_team = create_canonical_team(
+        display_name="Partizan",
+        sport="basketball",
     )
-    await odds_store.upsert_odds(
-        NormalizedOdds(
-            match_id="match-bulgaria",
-            bookmaker_id="mozzart",
-            league_id="bulgaria_nbl",
-            home_team="Rilski Sportist",
-            away_team="Levski Sofia",
-            market_type="game_total",
-            threshold=161.5,
-            over_odds=1.85,
-            under_odds=1.95,
-            start_time=batch_scraped_at,
-        ),
-        scraped_at=batch_scraped_at,
-    )
-    await odds_store.insert_matching_review_case(
-        MatchingReviewDiagnostic(
-            bookmaker_id="meridian",
-            raw_league_id="NBL",
-            normalized_raw_league_id="nbl",
-            suggested_league_id="bulgaria_nbl",
-            match_id="match-bulgaria",
-            home_team="Rilski Sportist",
-            away_team="Levski Sofia",
-            start_time=batch_scraped_at,
-            reason_code="league_inferred_from_event_context",
-            confidence="high",
-            evidence=["League votes: Bulgaria NBL x1, NBL x1"],
-        ),
-        scraped_at=batch_scraped_at,
-    )
-    await odds_store.set_current_snapshot(batch_scraped_at)
-
-    summary_resp = await client.get("/api/v1/matching-review/summary")
-    cases_resp = await client.get("/api/v1/matching-review/cases")
-
-    assert summary_resp.status_code == 200
-    assert summary_resp.json()["pending_reviews"] == 1
-    assert any(
-        row["league_id"] == "bulgaria_nbl"
-        for row in summary_resp.json()["leagues"]
+    football_team = create_canonical_team(
+        display_name="Partizan",
+        sport="football",
     )
 
-    assert cases_resp.status_code == 200
-    assert len(cases_resp.json()) == 1
-    assert cases_resp.json()[0]["suggested_league_name"] == "Bulgaria NBL"
+    basketball_resp = await client.get("/api/v1/canonical-teams?sport=basketball&search=Partizan")
+    football_resp = await client.get("/api/v1/canonical-teams?sport=football&search=Partizan")
+
+    assert basketball_resp.status_code == 200
+    assert [row["id"] for row in basketball_resp.json()] == [basketball_team.team_id]
+    assert football_resp.status_code == 200
+    assert [row["id"] for row in football_resp.json()] == [football_team.team_id]
 
 
 @pytest.mark.asyncio
-async def test_approve_matching_review_case_saves_bookmaker_alias(
+async def test_merge_canonical_teams_reassigns_aliases(
     client: AsyncClient,
-    league_registry_file,
+    team_registry_file,
 ):
-    batch_scraped_at = "2026-04-16T17:00:00+00:00"
-    await odds_store.upsert_bookmaker("meridian", "Meridian")
-    await odds_store.upsert_league("bulgaria_nbl", "Bulgaria NBL", "basketball", "Bulgaria")
-    case_id = await odds_store.insert_matching_review_case(
-        MatchingReviewDiagnostic(
-            bookmaker_id="meridian",
-            raw_league_id="NBL",
-            normalized_raw_league_id="nbl",
-            suggested_league_id="bulgaria_nbl",
-            match_id="match-bulgaria",
-            home_team="Rilski Sportist",
-            away_team="Levski Sofia",
-            start_time=batch_scraped_at,
-            reason_code="league_inferred_from_event_context",
-            confidence="high",
-            evidence=["League votes: Bulgaria NBL x1, NBL x1"],
-        ),
-        scraped_at=batch_scraped_at,
+    source = create_canonical_team(display_name="QA Merge Source")
+    target = create_canonical_team(display_name="QA Merge Target")
+    remember_team_alias(
+        bookmaker_id="maxbet",
+        raw_team_name="QA Merge Alias",
+        team_name="QA Merge Source",
     )
-    await odds_store.set_current_snapshot(batch_scraped_at)
-
-    approve_resp = await client.post(f"/api/v1/matching-review/cases/{case_id}/approve")
-    cases_resp = await client.get("/api/v1/matching-review/cases?status=approved")
-
-    assert approve_resp.status_code == 200
-    assert approve_resp.json()["saved_league_id"] == "bulgaria_nbl"
-    assert resolve_league("NBL", bookmaker_id="meridian").league_id == "bulgaria_nbl"
-    assert cases_resp.status_code == 200
-    assert cases_resp.json()[0]["status"] == "approved"
-
-    normalized, unresolved, reviews, team_reviews = normalize_odds_with_diagnostics(
-        [
-            RawOddsData(
-                bookmaker_id="mozzart",
-                league_id="Bulgarian NBL",
-                home_team="Rilski Sportist",
-                away_team="Levski Sofia",
-                market_type="game_total",
-                threshold=161.5,
-                over_odds=1.85,
-                under_odds=1.95,
-                start_time=batch_scraped_at,
-            ),
-            RawOddsData(
-                bookmaker_id="meridian",
-                league_id="NBL",
-                home_team="Rilski Sportist",
-                away_team="Levski Sofia",
-                market_type="game_total",
-                threshold=162.5,
-                over_odds=1.8,
-                under_odds=2.0,
-                start_time=batch_scraped_at,
-            ),
-        ]
+    remember_team_alias(
+        bookmaker_id="meridian",
+        raw_team_name="QA Merge Target Alias",
+        team_name="QA Merge Target",
     )
 
-    assert unresolved == []
-    assert len({offer.match_id for offer in normalized}) == 1
-    assert reviews == []
-    assert team_reviews == []
+    list_resp = await client.get("/api/v1/canonical-teams?search=QA%20Merge")
+    merge_resp = await client.post(
+        f"/api/v1/canonical-teams/{source.team_id}/merge",
+        json={"target_team_id": target.team_id},
+    )
+    merged_resp = await client.get("/api/v1/canonical-teams?search=QA%20Merge")
+
+    assert list_resp.status_code == 200
+    assert {team["display_name"] for team in list_resp.json()} == {
+        "QA Merge Source",
+        "QA Merge Target",
+    }
+    assert merge_resp.status_code == 200
+    assert merge_resp.json()["merged_team_name"] == "QA Merge Target"
+    assert normalize_team_name("QA Merge Alias", None, "maxbet") == "QA Merge Target"
+    assert normalize_team_name("QA Merge Source", None, "maxbet") == "QA Merge Target"
+    assert merged_resp.status_code == 200
+    assert [team["display_name"] for team in merged_resp.json()] == ["QA Merge Target"]
+    assert "QA Merge Source" in merged_resp.json()[0]["aliases"]
 
 
 @pytest.mark.asyncio
-async def test_approve_matching_review_case_marks_sibling_cases_approved(
+async def test_merge_canonical_teams_rewrites_pending_team_review_cases(
     client: AsyncClient,
-    league_registry_file,
+    team_registry_file,
 ):
-    batch_scraped_at = "2026-04-16T18:00:00+00:00"
+    await close_db()
+    await init_db(settings.db_path)
+    batch_scraped_at = "2026-04-16T19:45:00+00:00"
     await odds_store.upsert_bookmaker("meridian", "Meridian")
-    await odds_store.upsert_league("bulgaria_nbl", "Bulgaria NBL", "basketball", "Bulgaria")
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball", "Europe")
 
-    first_case_id = await odds_store.insert_matching_review_case(
-        MatchingReviewDiagnostic(
-            bookmaker_id="meridian",
-            raw_league_id="NBL",
-            normalized_raw_league_id="nbl",
-            suggested_league_id="bulgaria_nbl",
-            match_id="match-bulgaria-1",
-            home_team="Rilski Sportist",
-            away_team="Levski Sofia",
-            start_time=batch_scraped_at,
-            reason_code="league_inferred_from_event_context",
-            confidence="high",
-            evidence=["League votes: Bulgaria NBL x2"],
-        ),
-        scraped_at=batch_scraped_at,
-    )
-    await odds_store.insert_matching_review_case(
-        MatchingReviewDiagnostic(
-            bookmaker_id="meridian",
-            raw_league_id="NBL",
-            normalized_raw_league_id="nbl",
-            suggested_league_id="bulgaria_nbl",
-            match_id="match-bulgaria-2",
-            home_team="Beroe",
-            away_team="Shumen",
-            start_time=batch_scraped_at,
-            reason_code="league_inferred_from_event_context",
-            confidence="high",
-            evidence=["League votes: Bulgaria NBL x2"],
+    source = create_canonical_team(display_name="QA Pending Merge Source")
+    target = create_canonical_team(display_name="QA Pending Merge Target")
+    case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic.model_validate(
+            {
+                "bookmaker_id": "meridian",
+                "raw_league_id": "Euroleague",
+                "normalized_raw_league_id": "euroleague",
+                "scope_league_id": "euroleague",
+                "raw_team_name": "QA Pending Raw Alias",
+                "normalized_raw_team_name": "QA Pending Raw Alias",
+                "suggested_team_id": source.team_id,
+                "suggested_team_name": source.team_name,
+                "start_time": batch_scraped_at,
+                "reason_code": "candidate_team_match_same_start_time",
+                "confidence": "high",
+                "similarity_score": 95,
+                "candidate_teams": [
+                    {
+                        "team_id": source.team_id,
+                        "team_name": source.team_name,
+                        "score": 95,
+                    },
+                    {
+                        "team_id": target.team_id,
+                        "team_name": target.team_name,
+                        "score": 88,
+                    },
+                ],
+                "canonical_home_team": source.team_name,
+                "canonical_away_team": "Olympiacos",
+                "evidence": ["Exact start time: 2026-04-16T19:45:00+00:00"],
+                "status": "pending",
+            }
         ),
         scraped_at=batch_scraped_at,
     )
     await odds_store.set_current_snapshot(batch_scraped_at)
 
+    merge_resp = await client.post(
+        f"/api/v1/canonical-teams/{source.team_id}/merge",
+        json={"target_team_id": target.team_id},
+    )
     approve_resp = await client.post(
-        f"/api/v1/matching-review/cases/{first_case_id}/approve"
+        f"/api/v1/team-review/cases/{case_id}/approve",
+        json={"team_id": source.team_id},
     )
-    approved_resp = await client.get("/api/v1/matching-review/cases?status=approved")
-    pending_resp = await client.get("/api/v1/matching-review/cases?status=pending")
+    updated_case = await odds_store.get_team_review_case(case_id)
 
+    assert merge_resp.status_code == 200
+    assert updated_case is not None
+    assert updated_case.suggested_team_id == target.team_id
+    assert updated_case.suggested_team_name == target.team_name
+    assert updated_case.canonical_home_team == target.team_name
+    assert all(candidate.team_id != source.team_id for candidate in updated_case.candidate_teams)
     assert approve_resp.status_code == 200
-    assert approved_resp.status_code == 200
-    assert len(approved_resp.json()) == 2
-    assert {case["status"] for case in approved_resp.json()} == {"approved"}
-    assert pending_resp.status_code == 200
-    assert pending_resp.json() == []
+    assert approve_resp.json()["saved_team_id"] == target.team_id
+    assert normalize_team_name("QA Pending Raw Alias", None, "meridian") == target.team_name
 
 
 @pytest.mark.asyncio
-async def test_matching_review_summary_falls_back_to_latest_review_snapshot(
+async def test_merge_canonical_teams_rewrites_legacy_name_only_team_review_cases(
     client: AsyncClient,
+    team_registry_file,
 ):
-    batch_scraped_at = "2026-04-16T19:00:00+00:00"
+    await close_db()
+    await init_db(settings.db_path)
+    batch_scraped_at = "2026-04-16T19:50:00+00:00"
     await odds_store.upsert_bookmaker("meridian", "Meridian")
-    await odds_store.upsert_league("bulgaria_nbl", "Bulgaria NBL", "basketball", "Bulgaria")
-    await odds_store.upsert_match(
-        "match-bulgaria",
-        "bulgaria_nbl",
-        "Rilski Sportist",
-        "Levski Sofia",
-        batch_scraped_at,
-    )
-    await odds_store.upsert_odds(
-        NormalizedOdds(
-            match_id="match-bulgaria",
-            bookmaker_id="meridian",
-            league_id="bulgaria_nbl",
-            home_team="Rilski Sportist",
-            away_team="Levski Sofia",
-            market_type="game_total",
-            threshold=161.5,
-            over_odds=1.85,
-            under_odds=1.95,
-            start_time=batch_scraped_at,
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball", "Europe")
+
+    source = create_canonical_team(display_name="QA Legacy Merge Source")
+    target = create_canonical_team(display_name="QA Legacy Merge Target")
+    case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic.model_validate(
+            {
+                "bookmaker_id": "meridian",
+                "raw_league_id": "Euroleague",
+                "normalized_raw_league_id": "euroleague",
+                "scope_league_id": "euroleague",
+                "raw_team_name": "QA Legacy Raw Alias",
+                "normalized_raw_team_name": "QA Legacy Raw Alias",
+                "suggested_team_name": source.team_name,
+                "start_time": batch_scraped_at,
+                "reason_code": "candidate_team_match_same_start_time",
+                "confidence": "high",
+                "similarity_score": 94,
+                "evidence": ["Exact start time: 2026-04-16T19:50:00+00:00"],
+                "status": "pending",
+            }
         ),
         scraped_at=batch_scraped_at,
     )
-    await odds_store.insert_matching_review_case(
-        MatchingReviewDiagnostic(
-            bookmaker_id="meridian",
-            raw_league_id="NBL",
-            normalized_raw_league_id="nbl",
-            suggested_league_id="bulgaria_nbl",
-            match_id="match-bulgaria",
-            home_team="Rilski Sportist",
-            away_team="Levski Sofia",
-            start_time=batch_scraped_at,
-            reason_code="league_inferred_from_event_context",
-            confidence="high",
-            evidence=["League votes: Bulgaria NBL x2"],
-        ),
-        scraped_at=batch_scraped_at,
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    merge_resp = await client.post(
+        f"/api/v1/canonical-teams/{source.team_id}/merge",
+        json={"target_team_id": target.team_id},
+    )
+    approve_resp = await client.post(f"/api/v1/team-review/cases/{case_id}/approve")
+    updated_case = await odds_store.get_team_review_case(case_id)
+
+    assert merge_resp.status_code == 200
+    assert updated_case is not None
+    assert updated_case.suggested_team_id == target.team_id
+    assert updated_case.suggested_team_name == target.team_name
+    assert approve_resp.status_code == 200
+    assert approve_resp.json()["saved_team_id"] == target.team_id
+    assert normalize_team_name("QA Legacy Raw Alias", None, "meridian") == target.team_name
+
+
+@pytest.mark.asyncio
+async def test_merge_canonical_teams_rejects_same_team(
+    client: AsyncClient,
+    team_registry_file,
+):
+    team = create_canonical_team(display_name="QA Merge Same Team")
+
+    resp = await client.post(
+        f"/api/v1/canonical-teams/{team.team_id}/merge",
+        json={"target_team_id": team.team_id},
     )
 
-    summary_resp = await client.get("/api/v1/matching-review/summary")
-    cases_resp = await client.get("/api/v1/matching-review/cases")
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Cannot merge a canonical team into itself"
 
-    assert summary_resp.status_code == 200
-    assert summary_resp.json()["total_matches"] == 1
-    assert summary_resp.json()["pending_reviews"] == 1
-    assert cases_resp.status_code == 200
-    assert len(cases_resp.json()) == 1
+
+@pytest.mark.asyncio
+async def test_merge_canonical_teams_rejects_missing_target(
+    client: AsyncClient,
+    team_registry_file,
+):
+    team = create_canonical_team(display_name="QA Merge Missing Target")
+
+    resp = await client.post(
+        f"/api/v1/canonical-teams/{team.team_id}/merge",
+        json={"target_team_id": 99999},
+    )
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Both canonical teams must exist before merging"
 
 
 @pytest.mark.asyncio
@@ -632,7 +606,7 @@ async def test_team_review_case_can_be_declined(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_team_review_approval_rejects_unscoped_alias(
+async def test_team_review_approval_accepts_unscoped_alias(
     client: AsyncClient,
     team_registry_file,
 ):
@@ -663,11 +637,11 @@ async def test_team_review_approval_rejects_unscoped_alias(
     approve_resp = await client.post(f"/api/v1/team-review/cases/{case_id}/approve")
     pending_resp = await client.get("/api/v1/team-review/cases?status=pending")
 
-    assert approve_resp.status_code == 409
-    assert "resolved competition scope" in approve_resp.json()["detail"]
-    assert normalize_team_name("Rilski Sport.", None, "meridian") == "Rilski Sport."
+    assert approve_resp.status_code == 200
+    assert approve_resp.json()["saved_team_name"] == "Rilski Sportist"
+    assert normalize_team_name("Rilski Sport.", None, "meridian") == "Rilski Sportist"
     assert pending_resp.status_code == 200
-    assert [row["id"] for row in pending_resp.json()] == [case_id]
+    assert pending_resp.json() == []
 
 
 @pytest.mark.asyncio
@@ -805,3 +779,238 @@ async def test_team_review_approval_handles_null_scraped_at(
     assert approve_resp.status_code == 200
     assert approved_case is not None
     assert approved_case.status == "approved"
+
+
+@pytest.mark.asyncio
+async def test_init_db_migrates_team_review_cases_to_nullable_suggested_name(tmp_path):
+    await close_db()
+    db_path = tmp_path / "legacy-team-review.db"
+
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(
+            """
+            CREATE TABLE team_review_cases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bookmaker_id TEXT NOT NULL,
+                raw_league_id TEXT NOT NULL,
+                normalized_raw_league_id TEXT NOT NULL,
+                scope_league_id TEXT NOT NULL,
+                raw_team_name TEXT NOT NULL,
+                normalized_raw_team_name TEXT NOT NULL,
+                suggested_team_name TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
+                confidence TEXT NOT NULL,
+                evidence TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                scraped_at TEXT,
+                approved_at TEXT
+            );
+            """
+        )
+        await db.commit()
+
+    await init_db(str(db_path))
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_league("bulgaria_nbl", "Bulgaria NBL", "basketball", "Bulgaria")
+
+    case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic.model_validate(
+            {
+                "bookmaker_id": "meridian",
+                "raw_league_id": "NBL",
+                "normalized_raw_league_id": "nbl",
+                "scope_league_id": "bulgaria_nbl",
+                "raw_team_name": "Rilski Sport.",
+                "normalized_raw_team_name": "Rilski Sport.",
+                "suggested_team_name": None,
+                "start_time": "2026-04-16T23:45:00+00:00",
+                "reason_code": "candidate_team_match_same_start_time",
+                "confidence": "medium",
+                "similarity_score": 82,
+                "evidence": ["Candidate team: Rilski Sportist"],
+                "status": "pending",
+            }
+        ),
+        scraped_at="2026-04-16T23:45:00+00:00",
+    )
+
+    inserted_case = await odds_store.get_team_review_case(case_id)
+
+    assert inserted_case is not None
+    assert inserted_case.suggested_team_name is None
+
+
+@pytest.mark.asyncio
+async def test_init_db_enables_foreign_keys_for_canonical_team_refs():
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+
+    db = await get_db()
+    pragma_row = await (await db.execute("PRAGMA foreign_keys")).fetchone()
+
+    assert pragma_row is not None
+    assert pragma_row[0] == 1
+
+    with pytest.raises(aiosqlite.IntegrityError):
+        await db.execute(
+            """
+            INSERT INTO team_review_cases (
+                bookmaker_id,
+                raw_league_id,
+                normalized_raw_league_id,
+                sport,
+                scope_league_id,
+                raw_team_name,
+                normalized_raw_team_name,
+                suggested_team_id,
+                start_time,
+                reason_code,
+                evidence,
+                status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "meridian",
+                "Euroleague",
+                "euroleague",
+                "basketball",
+                "euroleague",
+                "Invalid FK Team",
+                "invalid fk team",
+                999999,
+                "2026-04-17T00:00:00+00:00",
+                "candidate_team_match_same_start_time",
+                "[]",
+                "pending",
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_init_db_rebuilds_legacy_tables_with_canonical_team_foreign_keys(tmp_path):
+    await close_db()
+    db_path = tmp_path / "legacy-canonical-fk.db"
+
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(
+            """
+            CREATE TABLE leagues (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                sport TEXT NOT NULL,
+                country TEXT,
+                is_active BOOLEAN DEFAULT TRUE
+            );
+            CREATE TABLE bookmakers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                website_url TEXT,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE matches (
+                id TEXT PRIMARY KEY,
+                league_id TEXT REFERENCES leagues(id),
+                home_team TEXT NOT NULL,
+                away_team TEXT NOT NULL,
+                start_time TIMESTAMP,
+                status TEXT DEFAULT 'upcoming',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE team_review_cases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bookmaker_id TEXT REFERENCES bookmakers(id),
+                raw_league_id TEXT NOT NULL,
+                normalized_raw_league_id TEXT NOT NULL,
+                scope_league_id TEXT,
+                raw_team_name TEXT NOT NULL,
+                normalized_raw_team_name TEXT NOT NULL,
+                suggested_team_name TEXT,
+                start_time TIMESTAMP,
+                reason_code TEXT NOT NULL,
+                confidence TEXT NOT NULL DEFAULT 'medium',
+                evidence TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'pending',
+                scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                approved_at TIMESTAMP,
+                declined_at TIMESTAMP
+            );
+            """
+        )
+        await db.commit()
+
+    await init_db(str(db_path))
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball", "Europe")
+
+    db = await get_db()
+    match_fks = await db.execute_fetchall("PRAGMA foreign_key_list(matches)")
+    team_review_fks = await db.execute_fetchall("PRAGMA foreign_key_list(team_review_cases)")
+
+    assert any(row[2] == "canonical_teams" and row[3] == "home_team_id" for row in match_fks)
+    assert any(row[2] == "canonical_teams" and row[3] == "away_team_id" for row in match_fks)
+    assert any(
+        row[2] == "canonical_teams" and row[3] == "suggested_team_id" for row in team_review_fks
+    )
+
+    with pytest.raises(aiosqlite.IntegrityError):
+        await db.execute(
+            """
+            INSERT INTO matches (
+                id,
+                league_id,
+                sport,
+                home_team_id,
+                away_team_id,
+                home_team,
+                away_team
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-fk-match",
+                "euroleague",
+                "basketball",
+                999999,
+                999998,
+                "Legacy Home",
+                "Legacy Away",
+            ),
+        )
+        await db.commit()
+    await db.rollback()
+
+    with pytest.raises(aiosqlite.IntegrityError):
+        await db.execute(
+            """
+            INSERT INTO team_review_cases (
+                bookmaker_id,
+                raw_league_id,
+                normalized_raw_league_id,
+                sport,
+                scope_league_id,
+                raw_team_name,
+                normalized_raw_team_name,
+                suggested_team_id,
+                start_time,
+                reason_code,
+                evidence,
+                status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "meridian",
+                "Euroleague",
+                "euroleague",
+                "basketball",
+                "euroleague",
+                "Legacy FK Team",
+                "legacy fk team",
+                999999,
+                "2026-04-17T00:30:00+00:00",
+                "candidate_team_match_same_start_time",
+                "[]",
+                "pending",
+            ),
+        )
+        await db.commit()
+    await db.rollback()
