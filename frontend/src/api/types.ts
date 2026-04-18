@@ -25,6 +25,8 @@ export interface Match {
   sport: string;
   home_team: string;
   away_team: string;
+  home_team_id?: number | null;
+  away_team_id?: number | null;
   start_time: string | null;
   status: 'upcoming' | 'live' | 'finished';
   available_bookmakers: MatchBookmaker[];
@@ -245,4 +247,25 @@ export interface CanonicalTeamMerge {
   matches_scraped: number;
   odds_scraped: number;
   discrepancies_found: number;
+}
+
+export interface MatchMergeTeamPairing {
+  source_team_id: number;
+  target_team_id: number;
+}
+
+export interface MatchMergeInput {
+  target_match_id: string;
+  source_match_ids: string[];
+  team_pairings: MatchMergeTeamPairing[];
+}
+
+export interface MatchMergeResult {
+  target_match_id: string;
+  merged_source_match_ids: string[];
+  merged_team_ids: MatchMergeTeamPairing[];
+  reassigned_odds: number;
+  reassigned_odds_history: number;
+  reassigned_discrepancies: number;
+  deleted_source_matches: number;
 }

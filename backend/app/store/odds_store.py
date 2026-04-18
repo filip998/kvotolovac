@@ -290,6 +290,112 @@ async def get_match(match_id: str) -> MatchOut | None:
     return MatchOut(**_row_to_dict(row[0]))
 
 
+async def merge_matches(
+    *,
+    target_match_id: str,
+    source_match_ids: list[str],
+) -> dict[str, int]:
+    """Reassign odds/odds_history/discrepancies from source matches to target,
+    deduping on the odds UNIQUE(match_id, bookmaker_id, market_type, player_name, threshold),
+    then delete the source match rows. All in a single transaction."""
+    if not source_match_ids:
+        return {
+            "reassigned_odds": 0,
+            "reassigned_odds_history": 0,
+            "reassigned_discrepancies": 0,
+            "deleted_source_matches": 0,
+        }
+    if target_match_id in source_match_ids:
+        raise ValueError("target_match_id cannot be in source_match_ids")
+
+    db = await get_db()
+    placeholders = _sql_placeholders(source_match_ids)
+    params: list[object] = list(source_match_ids)
+
+    await db.execute("BEGIN IMMEDIATE")
+    try:
+        # 1. Find every odds row across (target + sources) that would collide on the
+        #    post-merge UNIQUE(match_id, bookmaker_id, market_type, player_name, threshold)
+        #    key once all source rows are reassigned to target_match_id. This must
+        #    detect collisions both source↔target AND source↔source (otherwise the
+        #    UPDATE in step 2 trips the UNIQUE constraint).
+        all_match_ids = [target_match_id, *source_match_ids]
+        all_placeholders = _sql_placeholders(all_match_ids)
+        rows = await db.execute_fetchall(
+            f"""
+            SELECT id, bookmaker_id, market_type, player_name, threshold
+            FROM odds
+            WHERE match_id IN ({all_placeholders})
+            """,
+            all_match_ids,
+        )
+
+        groups: dict[tuple, list[int]] = {}
+        for row in rows:
+            key = (
+                row["bookmaker_id"],
+                row["market_type"],
+                row["player_name"],
+                row["threshold"],
+            )
+            groups.setdefault(key, []).append(row["id"])
+
+        ids_to_delete: list[int] = []
+        for ids in groups.values():
+            if len(ids) <= 1:
+                continue
+            winner = max(ids)
+            ids_to_delete.extend(i for i in ids if i != winner)
+
+        if ids_to_delete:
+            del_placeholders = _sql_placeholders(ids_to_delete)
+            await db.execute(
+                f"DELETE FROM odds WHERE id IN ({del_placeholders})",
+                ids_to_delete,
+            )
+
+        # 2. Reassign remaining source odds rows to the target match_id.
+        reassigned_odds_cur = await db.execute(
+            f"UPDATE odds SET match_id = ? WHERE match_id IN ({placeholders})",
+            [target_match_id, *params],
+        )
+        reassigned_odds = reassigned_odds_cur.rowcount or 0
+
+        # 3. odds_history has no UNIQUE constraint - bulk update.
+        reassigned_history_cur = await db.execute(
+            f"UPDATE odds_history SET match_id = ? WHERE match_id IN ({placeholders})",
+            [target_match_id, *params],
+        )
+        reassigned_history = reassigned_history_cur.rowcount or 0
+
+        # 4. discrepancies: bulk update; no UNIQUE constraint. The duplicate
+        #    rows will be deactivated on the next discrepancy detection cycle.
+        reassigned_disc_cur = await db.execute(
+            f"UPDATE discrepancies SET match_id = ? WHERE match_id IN ({placeholders})",
+            [target_match_id, *params],
+        )
+        reassigned_disc = reassigned_disc_cur.rowcount or 0
+
+        # 5. Delete the now-empty source match rows.
+        deleted_cur = await db.execute(
+            f"DELETE FROM matches WHERE id IN ({placeholders})",
+            params,
+        )
+        deleted_matches = deleted_cur.rowcount or 0
+
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+
+    return {
+        "reassigned_odds": reassigned_odds,
+        "reassigned_odds_history": reassigned_history,
+        "reassigned_discrepancies": reassigned_disc,
+        "deleted_source_matches": deleted_matches,
+    }
+
+
 async def _get_match_bookmaker_map(
     db: aiosqlite.Connection,
     match_ids: list[str],

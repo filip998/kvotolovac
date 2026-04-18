@@ -36,6 +36,8 @@ class MatchOut(BaseModel):
     sport: str = "basketball"
     home_team: str
     away_team: str
+    home_team_id: Optional[int] = None
+    away_team_id: Optional[int] = None
     start_time: Optional[str] = None
     status: str = "upcoming"
     available_bookmakers: list[MatchBookmakerOut] = Field(default_factory=list)
@@ -258,3 +260,25 @@ class CanonicalTeamMergeOut(BaseModel):
     matches_scraped: int = 0
     odds_scraped: int = 0
     discrepancies_found: int = 0
+
+
+# ── Manual match merge ─────────────────────────────────────
+class MatchMergeTeamPairing(BaseModel):
+    source_team_id: int
+    target_team_id: int
+
+
+class MatchMergeIn(BaseModel):
+    target_match_id: str
+    source_match_ids: list[str]
+    team_pairings: list[MatchMergeTeamPairing] = Field(default_factory=list)
+
+
+class MatchMergeOut(BaseModel):
+    target_match_id: str
+    merged_source_match_ids: list[str]
+    merged_team_ids: list[MatchMergeTeamPairing] = Field(default_factory=list)
+    reassigned_odds: int = 0
+    reassigned_odds_history: int = 0
+    reassigned_discrepancies: int = 0
+    deleted_source_matches: int = 0

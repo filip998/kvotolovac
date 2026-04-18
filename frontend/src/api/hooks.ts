@@ -7,6 +7,8 @@ import type {
   CanonicalTeamMerge,
   League,
   Match,
+  MatchMergeInput,
+  MatchMergeResult,
   OddsOffer,
   Discrepancy,
   SystemStatus,
@@ -573,6 +575,55 @@ export function useMatch(id: string) {
       return data;
     },
     enabled: !!id,
+  });
+}
+
+export function useMergeMatches() {
+  return useMutation<MatchMergeResult, Error, MatchMergeInput>({
+    mutationFn: async (payload) => {
+      if (USE_MOCK) {
+        await delay();
+        if (!payload.source_match_ids.length) {
+          throw new Error('source_match_ids must not be empty');
+        }
+        if (payload.source_match_ids.includes(payload.target_match_id)) {
+          throw new Error('target_match_id must not appear in source_match_ids');
+        }
+        const target = mockMatches.find((m) => m.id === payload.target_match_id);
+        if (!target) throw new Error(`Target match ${payload.target_match_id} not found`);
+        for (const sid of payload.source_match_ids) {
+          const src = mockMatches.find((m) => m.id === sid);
+          if (!src) throw new Error(`Source match ${sid} not found`);
+          if ((src.start_time ?? '') !== (target.start_time ?? '')) {
+            throw new Error(`Source match ${sid} start_time differs from target`);
+          }
+        }
+        // Mutate mocks: drop sources, "transfer" their bookmakers into target
+        const dropped = new Set(payload.source_match_ids);
+        for (let i = mockMatches.length - 1; i >= 0; i--) {
+          const m = mockMatches[i];
+          if (dropped.has(m.id)) {
+            for (const bm of m.available_bookmakers) {
+              if (!target.available_bookmakers.some((b) => b.id === bm.id)) {
+                target.available_bookmakers.push(bm);
+              }
+            }
+            mockMatches.splice(i, 1);
+          }
+        }
+        return {
+          target_match_id: payload.target_match_id,
+          merged_source_match_ids: [...payload.source_match_ids],
+          merged_team_ids: [...payload.team_pairings],
+          reassigned_odds: 0,
+          reassigned_odds_history: 0,
+          reassigned_discrepancies: 0,
+          deleted_source_matches: payload.source_match_ids.length,
+        };
+      }
+      const { data } = await client.post<MatchMergeResult>('/matches/merge', payload);
+      return data;
+    },
   });
 }
 
