@@ -464,6 +464,7 @@ def remember_team_alias(
     team_name: str,
     competition_id: str | None = None,
     sport: str = DEFAULT_SPORT,
+    source: str = "manual_review",
 ) -> TeamAliasResolution:
     del competition_id
     raw_key = normalize_identity_text(raw_team_name)
@@ -511,6 +512,9 @@ def remember_team_alias(
             raise CircularAliasError(
                 f"Alias '{raw_team_name}' already resolves to '{existing_resolution.team_name}'"
             )
+        if existing_resolution is not None and source == "auto_review":
+            conn.rollback()
+            return existing_resolution
 
         _upsert_alias(
             conn,
@@ -518,7 +522,7 @@ def remember_team_alias(
             alias=raw_team_name,
             canonical_team_id=target_resolution.team_id,
             bookmaker_id=bookmaker_key,
-            source="manual_review",
+            source=source,
         )
         conn.commit()
 
@@ -531,6 +535,40 @@ def remember_team_alias(
     if resolution is None:
         raise RuntimeError("Saved team alias could not be reloaded")
     return resolution
+
+
+def forget_team_alias(
+    *,
+    bookmaker_id: str,
+    raw_team_name: str,
+    sport: str = DEFAULT_SPORT,
+    expected_source: str | None = None,
+) -> bool:
+    raw_key = normalize_identity_text(raw_team_name)
+    bookmaker_key = _normalize_bookmaker_key(bookmaker_id)
+    if not raw_key:
+        return False
+
+    _ensure_bootstrapped()
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        query = """
+            DELETE FROM team_aliases
+            WHERE sport = ?
+              AND normalized_alias = ?
+              AND bookmaker_id = ?
+        """
+        params: list[object] = [sport, raw_key, bookmaker_key]
+        if expected_source is not None:
+            query += " AND source = ?"
+            params.append(expected_source)
+        cursor = conn.execute(query, params)
+        deleted = cursor.rowcount > 0
+        conn.commit()
+
+    if deleted:
+        clear_team_registry_cache(reset_bootstrap=False)
+    return deleted
 
 
 def create_canonical_team(

@@ -24,6 +24,26 @@ from app.services.team_registry import create_canonical_team, remember_team_alia
 from app.store import odds_store
 
 
+def _anchored_team_raw(
+    bookmaker_id: str,
+    home_team: str,
+    *,
+    away_team: str = "Levski Sofia",
+    league_id: str = "Bulgarian NBL",
+) -> RawOddsData:
+    return RawOddsData(
+        bookmaker_id=bookmaker_id,
+        league_id=league_id,
+        home_team=home_team,
+        away_team=away_team,
+        market_type="game_total",
+        threshold=161.5,
+        over_odds=1.85,
+        under_odds=1.95,
+        start_time="2030-01-01T20:00:00+00:00",
+    )
+
+
 @pytest.fixture(autouse=True)
 async def setup_app():
     """Set up fresh DB and register scrapers before each test."""
@@ -523,6 +543,85 @@ async def test_team_review_cases_and_approval(
     assert normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian") == "Rilski Sportist"
     assert approved_resp.status_code == 200
     assert approved_resp.json()[0]["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_team_review_endpoint_lists_auto_approved_alias_audit_rows(
+    client: AsyncClient,
+):
+    class AnchoredAliasScraper(BaseScraper):
+        def __init__(self, bookmaker_id: str, payload: list[RawOddsData]) -> None:
+            self._bookmaker_id = bookmaker_id
+            self._payload = payload
+
+        def get_bookmaker_id(self) -> str:
+            return self._bookmaker_id
+
+        def get_bookmaker_name(self) -> str:
+            return self._bookmaker_id.title()
+
+        def get_supported_leagues(self) -> list[str]:
+            return ["euroleague"]
+
+        async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
+            return list(self._payload)
+
+    registry._scrapers.clear()
+    registry.register(
+        AnchoredAliasScraper("mozzart", [_anchored_team_raw("mozzart", "Rilski Sportist")])
+    )
+    registry.register(
+        AnchoredAliasScraper(
+            "meridian",
+            [_anchored_team_raw("meridian", "Rilski Sport.", league_id="NBL")],
+        )
+    )
+    registry.register(
+        AnchoredAliasScraper(
+            "maxbet",
+            [_anchored_team_raw("maxbet", "Rilski Sport.", league_id="NBL")],
+        )
+    )
+
+    trigger_resp = await client.post("/api/v1/scrape/trigger")
+    approved_resp = await client.get("/api/v1/team-review/cases?status=approved")
+
+    assert trigger_resp.status_code == 200
+    assert trigger_resp.json()["odds_scraped"] == 3
+    assert approved_resp.status_code == 200
+    assert len(approved_resp.json()) == 2
+    assert {case["bookmaker_id"] for case in approved_resp.json()} == {"meridian", "maxbet"}
+    assert {case["review_kind"] for case in approved_resp.json()} == {"auto_alias_suggestion"}
+
+
+@pytest.mark.asyncio
+async def test_auto_review_does_not_overwrite_manual_alias_source():
+    remember_team_alias(
+        bookmaker_id="meridian",
+        raw_team_name="Rilski Sport.",
+        team_name="Rilski Sportist",
+        sport="basketball",
+    )
+
+    resolution = remember_team_alias(
+        bookmaker_id="meridian",
+        raw_team_name="Rilski Sport.",
+        team_name="Rilski Sportist",
+        sport="basketball",
+        source="auto_review",
+    )
+
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT source
+           FROM team_aliases
+           WHERE sport = ? AND normalized_alias = ? AND bookmaker_id = ?""",
+        ("basketball", "rilski sport", "meridian"),
+    )
+
+    assert resolution.source == "manual_review"
+    assert len(rows) == 1
+    assert rows[0]["source"] == "manual_review"
 
 
 @pytest.mark.asyncio

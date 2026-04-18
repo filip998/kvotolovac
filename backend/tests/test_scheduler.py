@@ -4,9 +4,11 @@ import asyncio
 
 import pytest
 
-from app.models.schemas import NormalizedOdds, RawOddsData
+from app.models.schemas import NormalizedOdds, RawOddsData, TeamReviewDiagnostic
 from app.scrapers.base import BaseScraper
 from app.services.scheduler import Scheduler
+from app.services.normalizer import normalize_team_name
+from app.services.team_registry import resolve_team_alias
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
 from app.store import odds_store
@@ -33,6 +35,26 @@ def _raw_odds(
         over_odds=over_odds,
         under_odds=under_odds,
         start_time="2030-01-01T20:00:00",
+    )
+
+
+def _anchored_team_raw(
+    bookmaker_id: str,
+    home_team: str,
+    *,
+    away_team: str = "Levski Sofia",
+    league_id: str = "Bulgarian NBL",
+) -> RawOddsData:
+    return RawOddsData(
+        bookmaker_id=bookmaker_id,
+        league_id=league_id,
+        home_team=home_team,
+        away_team=away_team,
+        market_type="game_total",
+        threshold=161.5,
+        over_odds=1.85,
+        under_odds=1.95,
+        start_time="2030-01-01T20:00:00+00:00",
     )
 
 
@@ -482,6 +504,277 @@ async def test_scheduler_run_cycle_keeps_previous_snapshot_if_store_fails_mid_ba
 
     assert [match.id for match in matches] == ["old"]
     assert status.last_scrape_at == "2026-04-10T13:39:04.516801"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_auto_saves_anchored_alias_after_repeated_scrape():
+    _register_test_scrapers(
+        StubScraper(
+            "mozzart",
+            payload_by_league={"euroleague": [_anchored_team_raw("mozzart", "Rilski Sportist")]},
+        ),
+        StubScraper(
+            "meridian",
+            payload_by_league={"euroleague": [_anchored_team_raw("meridian", "Rilski Sport.", league_id="NBL")]},
+        ),
+    )
+
+    first_result = await Scheduler(interval_minutes=1).run_cycle()
+    first_snapshot_cases = await odds_store.get_team_review_cases()
+
+    second_result = await Scheduler(interval_minutes=1).run_cycle()
+    second_snapshot_cases = await odds_store.get_team_review_cases(status="approved")
+
+    assert first_result["odds_scraped"] == 1
+    assert len(first_snapshot_cases) == 1
+    assert first_snapshot_cases[0].status == "pending"
+    assert first_snapshot_cases[0].review_kind == "alias_suggestion"
+
+    assert second_result["matches_scraped"] == 1
+    assert second_result["odds_scraped"] == 2
+    assert len(second_snapshot_cases) == 1
+    assert second_snapshot_cases[0].review_kind == "auto_alias_suggestion"
+    assert second_snapshot_cases[0].status == "approved"
+    assert (
+        normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian")
+        == "Rilski Sportist"
+    )
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_auto_saves_anchored_alias_after_second_bookmaker_confirmation():
+    _register_test_scrapers(
+        StubScraper(
+            "mozzart",
+            payload_by_league={"euroleague": [_anchored_team_raw("mozzart", "Rilski Sportist")]},
+        ),
+        StubScraper(
+            "meridian",
+            payload_by_league={"euroleague": [_anchored_team_raw("meridian", "Rilski Sport.", league_id="NBL")]},
+        ),
+        StubScraper(
+            "maxbet",
+            payload_by_league={"euroleague": [_anchored_team_raw("maxbet", "Rilski Sport.", league_id="NBL")]},
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+    approved_cases = await odds_store.get_team_review_cases(status="approved")
+
+    assert result["matches_scraped"] == 1
+    assert result["odds_scraped"] == 3
+    assert len(approved_cases) == 2
+    assert {case.bookmaker_id for case in approved_cases} == {"meridian", "maxbet"}
+    assert {case.review_kind for case in approved_cases} == {"auto_alias_suggestion"}
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_does_not_auto_save_anchored_alias_after_decline():
+    _register_test_scrapers(
+        StubScraper(
+            "mozzart",
+            payload_by_league={"euroleague": [_anchored_team_raw("mozzart", "Rilski Sportist")]},
+        ),
+        StubScraper(
+            "meridian",
+            payload_by_league={"euroleague": [_anchored_team_raw("meridian", "Rilski Sport.", league_id="NBL")]},
+        ),
+    )
+
+    await Scheduler(interval_minutes=1).run_cycle()
+    pending_cases = await odds_store.get_team_review_cases(status="pending")
+    await odds_store.mark_team_review_case_declined(pending_cases[0].id)
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+    current_pending_cases = await odds_store.get_team_review_cases(status="pending")
+    approved_cases = await odds_store.get_team_review_cases(status="approved")
+
+    assert result["odds_scraped"] == 1
+    assert len(current_pending_cases) == 1
+    assert current_pending_cases[0].review_kind == "alias_suggestion"
+    assert approved_cases == []
+    assert normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian") == "Rilski Sport."
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_rolls_back_auto_saved_alias_if_store_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _register_test_scrapers(
+        StubScraper(
+            "mozzart",
+            payload_by_league={"euroleague": [_anchored_team_raw("mozzart", "Rilski Sportist")]},
+        ),
+        StubScraper(
+            "meridian",
+            payload_by_league={"euroleague": [_anchored_team_raw("meridian", "Rilski Sport.", league_id="NBL")]},
+        ),
+    )
+
+    await Scheduler(interval_minutes=1).run_cycle()
+
+    original_upsert_odds = odds_store.upsert_odds
+    call_count = 0
+
+    async def failing_upsert_odds(odds, *, scraped_at):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise RuntimeError("simulated store failure")
+        return await original_upsert_odds(odds, scraped_at=scraped_at)
+
+    monkeypatch.setattr(odds_store, "upsert_odds", failing_upsert_odds)
+
+    with pytest.raises(RuntimeError, match="simulated store failure"):
+        await Scheduler(interval_minutes=1).run_cycle()
+
+    pending_cases = await odds_store.get_team_review_cases(status="pending")
+    approved_cases = await odds_store.get_team_review_cases(status="approved")
+
+    assert len(pending_cases) == 1
+    assert pending_cases[0].review_kind == "alias_suggestion"
+    assert approved_cases == []
+    assert normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian") == "Rilski Sport."
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_ignores_unsnapshotted_review_history_for_auto_approval(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _register_test_scrapers(
+        StubScraper(
+            "mozzart",
+            payload_by_league={"euroleague": [_anchored_team_raw("mozzart", "Rilski Sportist")]},
+        ),
+        StubScraper(
+            "meridian",
+            payload_by_league={"euroleague": [_anchored_team_raw("meridian", "Rilski Sport.", league_id="NBL")]},
+        ),
+    )
+    await odds_store.set_current_snapshot("2020-01-01T00:00:00+00:00")
+
+    original_set_current_snapshot = odds_store.set_current_snapshot
+    call_count = 0
+
+    async def flaky_set_current_snapshot(snapshot_at: str) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("simulated snapshot failure")
+        await original_set_current_snapshot(snapshot_at)
+
+    monkeypatch.setattr(odds_store, "set_current_snapshot", flaky_set_current_snapshot)
+
+    with pytest.raises(RuntimeError, match="simulated snapshot failure"):
+        await Scheduler(interval_minutes=1).run_cycle()
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+    pending_cases = await odds_store.get_team_review_cases(status="pending")
+    approved_cases = await odds_store.get_team_review_cases(status="approved")
+
+    assert result["odds_scraped"] == 1
+    assert len(pending_cases) == 1
+    assert pending_cases[0].review_kind == "alias_suggestion"
+    assert approved_cases == []
+    assert normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian") == "Rilski Sport."
+
+
+@pytest.mark.asyncio
+async def test_auto_apply_anchored_aliases_rolls_back_partial_alias_writes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    scheduler = Scheduler(interval_minutes=1)
+    history_calls = 0
+
+    async def flaky_history_summary(**kwargs):
+        nonlocal history_calls
+        history_calls += 1
+        if history_calls == 2:
+            raise RuntimeError("simulated history lookup failure")
+        return set(), False
+
+    monkeypatch.setattr(
+        odds_store,
+        "get_team_review_case_history_summary",
+        flaky_history_summary,
+    )
+
+    cases = [
+        TeamReviewDiagnostic(
+            bookmaker_id="meridian",
+            raw_league_id="NBL",
+            normalized_raw_league_id="nbl",
+            sport="basketball",
+            raw_team_name="Rilski Sport.",
+            normalized_raw_team_name="rilski sport",
+            suggested_team_id=101,
+            suggested_team_name="Rilski Sportist",
+            start_time="2030-01-01T20:00:00+00:00",
+            review_kind="alias_suggestion",
+            reason_code="candidate_team_match_same_start_time",
+            confidence="high",
+            matched_counterpart_team="Levski Sofia",
+            canonical_home_team="Rilski Sportist",
+            canonical_away_team="Levski Sofia",
+        ),
+        TeamReviewDiagnostic(
+            bookmaker_id="maxbet",
+            raw_league_id="NBL",
+            normalized_raw_league_id="nbl",
+            sport="basketball",
+            raw_team_name="Rilski Sport.",
+            normalized_raw_team_name="rilski sport",
+            suggested_team_id=101,
+            suggested_team_name="Rilski Sportist",
+            start_time="2030-01-01T20:00:00+00:00",
+            review_kind="alias_suggestion",
+            reason_code="candidate_team_match_same_start_time",
+            confidence="high",
+            matched_counterpart_team="Levski Sofia",
+            canonical_home_team="Rilski Sportist",
+            canonical_away_team="Levski Sofia",
+        ),
+        TeamReviewDiagnostic(
+            bookmaker_id="meridian",
+            raw_league_id="A1",
+            normalized_raw_league_id="a1",
+            sport="basketball",
+            raw_team_name="Panathinaikos AKTOR",
+            normalized_raw_team_name="panathinaikos aktor",
+            suggested_team_id=202,
+            suggested_team_name="Panathinaikos",
+            start_time="2030-01-02T20:00:00+00:00",
+            review_kind="alias_suggestion",
+            reason_code="candidate_team_match_same_start_time",
+            confidence="high",
+            matched_counterpart_team="Olympiacos",
+            canonical_home_team="Panathinaikos",
+            canonical_away_team="Olympiacos",
+        ),
+        TeamReviewDiagnostic(
+            bookmaker_id="maxbet",
+            raw_league_id="A1",
+            normalized_raw_league_id="a1",
+            sport="basketball",
+            raw_team_name="Panathinaikos AKTOR",
+            normalized_raw_team_name="panathinaikos aktor",
+            suggested_team_id=202,
+            suggested_team_name="Panathinaikos",
+            start_time="2030-01-02T20:00:00+00:00",
+            review_kind="alias_suggestion",
+            reason_code="candidate_team_match_same_start_time",
+            confidence="high",
+            matched_counterpart_team="Olympiacos",
+            canonical_home_team="Panathinaikos",
+            canonical_away_team="Olympiacos",
+        ),
+    ]
+
+    with pytest.raises(RuntimeError, match="simulated history lookup failure"):
+        await scheduler._auto_apply_anchored_aliases(cases)
+
+    assert resolve_team_alias("Rilski Sport.", bookmaker_id="meridian") is None
+    assert resolve_team_alias("Rilski Sport.", bookmaker_id="maxbet") is None
 
 
 @pytest.mark.asyncio

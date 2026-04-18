@@ -1000,6 +1000,9 @@ def _separate_missing_start_times(
 def _autocreate_exact_match_teams(raw_list: list[RawOddsData]) -> None:
     matchup_counts: Counter[tuple[str, str, tuple[str, str]]] = Counter()
     team_display_names: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+    anchored_unresolved_team_keys: dict[tuple[str, str, tuple[str, str]], set[str]] = defaultdict(set)
+    anchored_candidates: list[tuple[tuple[str, str, tuple[str, str]], tuple[str, str], int, str]] = []
+    known_team_ids_by_slot: dict[tuple[str, str], set[int]] = defaultdict(set)
 
     for raw in raw_list:
         if _is_unresolved_shared_platform_prop(raw) or raw.start_time is None:
@@ -1012,11 +1015,44 @@ def _autocreate_exact_match_teams(raw_list: list[RawOddsData]) -> None:
         matchup_counts[pair_key] += 1
         team_display_names[(raw.sport, home_key)][raw.home_team.strip()] += 1
         team_display_names[(raw.sport, away_key)][raw.away_team.strip()] += 1
+        slot_key = (raw.sport, raw.start_time)
+
+        home_resolution = resolve_team_name(
+            raw.home_team,
+            bookmaker_id=raw.bookmaker_id,
+            sport=raw.sport,
+        )
+        away_resolution = resolve_team_name(
+            raw.away_team,
+            bookmaker_id=raw.bookmaker_id,
+            sport=raw.sport,
+        )
+        if home_resolution.team_id is not None and away_resolution.team_id is not None:
+            known_team_ids_by_slot[slot_key].update(
+                {home_resolution.team_id, away_resolution.team_id}
+            )
+        elif home_resolution.team_id is not None and away_resolution.team_id is None:
+            anchored_candidates.append(
+                (pair_key, slot_key, home_resolution.team_id, away_key)
+            )
+        elif away_resolution.team_id is not None and home_resolution.team_id is None:
+            anchored_candidates.append(
+                (pair_key, slot_key, away_resolution.team_id, home_key)
+            )
+
+    for pair_key, slot_key, known_team_id, unresolved_team_key in anchored_candidates:
+        if known_team_id in known_team_ids_by_slot.get(slot_key, set()):
+            anchored_unresolved_team_keys[pair_key].add(unresolved_team_key)
 
     for sport, _start_time, pair_keys in matchup_counts:
         if matchup_counts[(sport, _start_time, pair_keys)] < 2:
             continue
         for team_key in pair_keys:
+            if team_key in anchored_unresolved_team_keys.get(
+                (sport, _start_time, pair_keys),
+                set(),
+            ):
+                continue
             display_counter = team_display_names.get((sport, team_key), Counter())
             if not display_counter:
                 continue

@@ -602,6 +602,50 @@ async def get_team_review_case(case_id: int) -> TeamReviewOut | None:
     return _row_to_team_review(rows[0])
 
 
+async def get_team_review_case_history_summary(
+    *,
+    sport: str,
+    normalized_raw_team_name: str,
+    suggested_team_id: int,
+    start_time: str,
+    canonical_home_team: str,
+    canonical_away_team: str,
+) -> tuple[set[str], bool]:
+    db = await get_db()
+    snapshot_at = await _get_current_snapshot_at(db)
+    if snapshot_at is None:
+        return set(), False
+    rows = await db.execute_fetchall(
+        """SELECT bookmaker_id, status
+           FROM team_review_cases
+           WHERE review_kind IN ('alias_suggestion', 'auto_alias_suggestion')
+             AND sport = ?
+             AND normalized_raw_team_name = ?
+             AND suggested_team_id = ?
+             AND start_time = ?
+             AND canonical_home_team = ?
+             AND canonical_away_team = ?
+             AND scraped_at IS NOT NULL
+             AND scraped_at <= ?""",
+        (
+            sport,
+            normalized_raw_team_name,
+            suggested_team_id,
+            start_time,
+            canonical_home_team,
+            canonical_away_team,
+            snapshot_at,
+        ),
+    )
+    confirming_bookmakers = {
+        str(row["bookmaker_id"])
+        for row in rows
+        if row["bookmaker_id"] and row["status"] != "declined"
+    }
+    has_declined = any(row["status"] == "declined" for row in rows)
+    return confirming_bookmakers, has_declined
+
+
 async def mark_team_review_case_approved(
     case_id: int,
 ) -> None:
