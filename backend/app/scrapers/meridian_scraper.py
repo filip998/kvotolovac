@@ -106,6 +106,8 @@ def _classify_supported_market_group(name: str) -> str | None:
         return "player_rebounds"
     if _matches_supported_player_group(name, normalized, "ukupnoasistencijaukljot"):
         return "player_assists"
+    if _matches_supported_player_group(name, normalized, "ukupnopostignutihtrojkiukljot"):
+        return "player_3points"
     if normalized.startswith("ukupnoukljot"):
         return "game_total_ot"
     return None
@@ -262,6 +264,7 @@ def _parse_supported_markets(
         "player_points": [],
         "player_rebounds": [],
         "player_assists": [],
+        "player_3points": [],
     }
     game_total_groups: list[dict] = []
 

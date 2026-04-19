@@ -98,6 +98,34 @@ def all_supported_markets_payload() -> dict:
                     }
                 ],
             },
+            {
+                "marketName": "Ukupno Postignutih Trojki (Uklj. OT)",
+                "markets": [
+                    {
+                        "name": "Jokic, Nikola",
+                        "state": "ACTIVE",
+                        "overUnder": 2.5,
+                        "selections": [
+                            {"name": "Više", "price": 2.15},
+                            {"name": "Manje", "price": 1.67},
+                        ],
+                    }
+                ],
+            },
+            {
+                "marketName": "Ukupno Postignutih Trojki (Uklj. OT)",
+                "markets": [
+                    {
+                        "name": "Nikola Jokic",
+                        "state": "ACTIVE",
+                        "overUnder": None,
+                        "selections": [
+                            {"name": "3+", "price": 2.8},
+                            {"name": "4+", "price": 5.2},
+                        ],
+                    }
+                ],
+            },
         ]
     }
 
@@ -242,6 +270,7 @@ def test_classify_supported_market_group():
     assert _classify_supported_market_group("Ukupno Poena (Uklj. OT)") == "player_points"
     assert _classify_supported_market_group("Ukupno Skokova (Uklj. OT)") == "player_rebounds"
     assert _classify_supported_market_group("Ukupno Asistencija (Uklj. OT)") == "player_assists"
+    assert _classify_supported_market_group("Ukupno Postignutih Trojki (Uklj. OT)") == "player_3points"
     assert _classify_supported_market_group("Diallo, Alpha Ukupno Poena (Uklj. OT)") == "player_points"
     assert _classify_supported_market_group("Ukupno (uklj.OT) ") == "game_total_ot"
     assert _classify_supported_market_group("AS Monaco Ukupno Poena (uklj.OT)") is None
@@ -364,7 +393,7 @@ def test_parse_supported_markets_returns_current_market_types(all_supported_mark
         start_time="2026-04-10T12:00:00+00:00",
     )
     assert len(results) > 0
-    assert {"player_points", "player_rebounds", "player_assists", "game_total_ot"} <= {
+    assert {"player_points", "player_rebounds", "player_assists", "player_3points", "game_total_ot"} <= {
         result.market_type for result in results
     }
 
@@ -399,6 +428,22 @@ def test_parse_supported_markets_accepts_player_prefixed_group_names():
     assert len(results) == 1
     assert results[0].market_type == "player_points"
     assert results[0].player_name == "Alpha Diallo"
+
+
+def test_parse_supported_markets_skips_player_3points_ladders(all_supported_markets_payload):
+    results = _parse_supported_markets(
+        all_supported_markets_payload["payload"],
+        event_id=123,
+        home_team="AS Monaco",
+        away_team="FC Barcelona",
+        league_id="euroleague",
+        start_time="2026-04-10T12:00:00+00:00",
+    )
+
+    threes = [result for result in results if result.market_type == "player_3points"]
+    assert len(threes) == 1
+    assert threes[0].player_name == "Nikola Jokic"
+    assert threes[0].threshold == 2.5
 
 
 # ── Integration: MeridianScraper with mocked HTTP ────────
@@ -603,6 +648,29 @@ async def test_scraper_fetches_all_group_once_per_event():
                     }
                 ]
             },
+            {
+                "marketName": "Ukupno Postignutih Trojki (Uklj. OT)",
+                "markets": [
+                    {
+                        "name": "Jokic, Nikola",
+                        "state": "ACTIVE",
+                        "overUnder": 2.5,
+                        "selections": [
+                            {"name": "Više", "price": 2.15},
+                            {"name": "Manje", "price": 1.67},
+                        ],
+                    },
+                    {
+                        "name": "Nikola Jokic",
+                        "state": "ACTIVE",
+                        "overUnder": None,
+                        "selections": [
+                            {"name": "3+", "price": 2.8},
+                            {"name": "4+", "price": 5.2},
+                        ],
+                    },
+                ]
+            },
         ]
     }
     market_calls: list[str] = []
@@ -623,11 +691,12 @@ async def test_scraper_fetches_all_group_once_per_event():
     ):
         results = await scraper.scrape_odds("basketball")
 
-    assert len(results) == 3
+    assert len(results) == 4
     assert {result.market_type for result in results} == {
         "player_points",
         "player_rebounds",
         "player_assists",
+        "player_3points",
     }
     assert market_calls == ["all"]
 
