@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import math
 import time
 from datetime import datetime, timezone
 
@@ -17,17 +16,10 @@ _AUTH_URL = "https://auth.meridianbet.com/oauth/token"
 _API_BASE = "https://online.meridianbet.com/betshop"
 _EVENTS_URL = f"{_API_BASE}/api/v1/standard/sport/55/events"
 _MARKETS_URL = f"{_API_BASE}/api/v2/events/{{event_id}}/markets"
-_OFFER_LEAGUE_URL = f"{_API_BASE}/api/v1/offer/sport/55/league"
 
 _CLIENT_NAME = "web-serbia"
 _CLIENT_ID = "zF9zVU3LsdjvpHv"
-
-# Universal game-group UUIDs for player prop markets
-_GAME_GROUPS: dict[str, str] = {
-    "player_points": "1ace0bb3-759d-41a1-8964-7dc8aac38cfe",
-    "player_rebounds": "ce657e80-2e15-47b9-bbcb-871f6e597a22",
-    "player_assists": "1d5c0101-d012-42dc-8d21-b3da1dfd1fd1",
-}
+_ALL_GAME_GROUP_ID = "all"
 
 _DEFAULT_HEADERS = {
     "Accept": "application/json",
@@ -43,9 +35,6 @@ _DEFAULT_HEADERS = {
 
 _TOKEN_REFRESH_MARGIN_S = 60
 _MAX_PAGES = 10
-_MAX_DETAIL_CONCURRENCY = 8
-_MIN_DETAIL_CONCURRENCY = 2
-_MAX_OFFER_LEAGUE_IDS_PER_REQUEST = 20
 
 
 def _build_basic_auth() -> str:
@@ -101,22 +90,25 @@ def _is_game_total_ot_group(name: str) -> bool:
     return normalized.startswith("ukupno(uklj.ot)")
 
 
-def _chunked(values: list[int], size: int) -> list[list[int]]:
-    return [values[index:index + size] for index in range(0, len(values), size)]
+def _normalize_group_name(name: str) -> str:
+    return "".join(character for character in name.casefold() if character.isalnum())
 
 
-def _get_detail_fetch_concurrency(http_client: HttpClient, event_count: int) -> int:
-    if event_count <= 0:
-        return 0
+def _matches_supported_player_group(name: str, normalized: str, suffix: str) -> bool:
+    return normalized.startswith(suffix) or ("," in name and normalized.endswith(suffix))
 
-    if http_client.rate_limit_per_second <= 0:
-        return min(event_count, _MAX_DETAIL_CONCURRENCY)
 
-    return min(
-        event_count,
-        _MAX_DETAIL_CONCURRENCY,
-        max(_MIN_DETAIL_CONCURRENCY, math.ceil(http_client.rate_limit_per_second)),
-    )
+def _classify_supported_market_group(name: str) -> str | None:
+    normalized = _normalize_group_name(name)
+    if _matches_supported_player_group(name, normalized, "ukupnopoenaukljot"):
+        return "player_points"
+    if _matches_supported_player_group(name, normalized, "ukupnoskokovaukljot"):
+        return "player_rebounds"
+    if _matches_supported_player_group(name, normalized, "ukupnoasistencijaukljot"):
+        return "player_assists"
+    if normalized.startswith("ukupnoukljot"):
+        return "game_total_ot"
+    return None
 
 
 def _build_event_context(event: dict, *, now_epoch_ms: int) -> dict[str, object] | None:
@@ -214,47 +206,99 @@ def _parse_markets(
     return results
 
 
-def _parse_game_total_ot_events(
-    leagues_payload: list[dict],
+def _parse_game_total_ot_markets(
+    markets_payload: list[dict],
     *,
-    now_epoch_ms: int,
+    home_team: str,
+    away_team: str,
+    league_id: str,
+    start_time: str | None,
 ) -> list[RawOddsData]:
     results: list[RawOddsData] = []
 
-    for league in leagues_payload:
-        for event in league.get("events", []):
-            event_context = _build_event_context(event, now_epoch_ms=now_epoch_ms)
-            if event_context is None:
+    for group in markets_payload:
+        if not _is_game_total_ot_group(str(group.get("marketName", ""))):
+            continue
+
+        for market in group.get("markets", []):
+            if market.get("state") != "ACTIVE":
                 continue
 
-            for position in event.get("positions", []):
-                for group in position.get("groups", []):
-                    if not _is_game_total_ot_group(str(group.get("name", ""))):
-                        continue
+            threshold = market.get("overUnder")
+            if threshold is None:
+                continue
 
-                    threshold = group.get("overUnder")
-                    if threshold is None:
-                        continue
+            over_odds, under_odds = _extract_over_under_odds(market.get("selections", []))
+            if over_odds is None and under_odds is None:
+                continue
 
-                    over_odds, under_odds = _extract_over_under_odds(group.get("selections", []))
-                    if over_odds is None and under_odds is None:
-                        continue
+            results.append(
+                RawOddsData(
+                    bookmaker_id="meridian",
+                    league_id=league_id,
+                    sport="basketball",
+                    home_team=home_team,
+                    away_team=away_team,
+                    market_type="game_total_ot",
+                    threshold=threshold,
+                    over_odds=over_odds,
+                    under_odds=under_odds,
+                    start_time=start_time,
+                )
+            )
+    return results
 
-                    results.append(
-                        RawOddsData(
-                            bookmaker_id="meridian",
-                            league_id=str(event_context["league_id"]),
-                            sport="basketball",
-                            home_team=str(event_context["home_team"]),
-                            away_team=str(event_context["away_team"]),
-                            market_type="game_total_ot",
-                            threshold=threshold,
-                            over_odds=over_odds,
-                            under_odds=under_odds,
-                            start_time=event_context["start_time"],
-                        )
-                    )
 
+def _parse_supported_markets(
+    markets_payload: list[dict],
+    *,
+    event_id: int,
+    home_team: str,
+    away_team: str,
+    league_id: str,
+    start_time: str | None,
+) -> list[RawOddsData]:
+    grouped_payloads: dict[str, list[dict]] = {
+        "player_points": [],
+        "player_rebounds": [],
+        "player_assists": [],
+    }
+    game_total_groups: list[dict] = []
+
+    for group in markets_payload:
+        market_type = _classify_supported_market_group(str(group.get("marketName", "")))
+        if market_type is None:
+            continue
+        if market_type == "game_total_ot":
+            game_total_groups.append(group)
+            continue
+        grouped_payloads[market_type].append(group)
+
+    results: list[RawOddsData] = []
+    for market_type, payload in grouped_payloads.items():
+        if not payload:
+            continue
+        results.extend(
+            _parse_markets(
+                payload,
+                event_id=event_id,
+                home_team=home_team,
+                away_team=away_team,
+                league_id=league_id,
+                start_time=start_time,
+                market_type=market_type,
+            )
+        )
+
+    results.extend(
+        _parse_game_total_ot_markets(
+            game_total_groups,
+            home_team=home_team,
+            away_team=away_team,
+            league_id=league_id,
+            start_time=start_time,
+        )
+    )
     return results
 
 
@@ -332,7 +376,7 @@ class MeridianScraper(BaseScraper):
         self,
         token: str,
         event_id: int,
-        game_group_id: str,
+        game_group_id: str = _ALL_GAME_GROUP_ID,
     ) -> list[dict]:
         """Fetch markets for a single event and game group."""
         url = _MARKETS_URL.format(event_id=event_id)
@@ -347,117 +391,26 @@ class MeridianScraper(BaseScraper):
             logger.debug("Meridian: no markets for event %s group %s", event_id, game_group_id)
             return []
 
-    async def _fetch_market_group(
+    async def _fetch_event_markets(
         self,
         token: str,
         event_context: dict[str, object],
-        market_type: str,
-        game_group_id: str,
-        semaphore: asyncio.Semaphore,
     ) -> list[RawOddsData]:
-        async with semaphore:
-            markets_payload = await self._fetch_markets(
-                token,
-                int(event_context["event_id"]),
-                game_group_id,
-            )
-
+        markets_payload = await self._fetch_markets(
+            token,
+            int(event_context["event_id"]),
+        )
         if not markets_payload:
             return []
 
-        return _parse_markets(
+        return _parse_supported_markets(
             markets_payload,
             event_id=int(event_context["event_id"]),
             home_team=str(event_context["home_team"]),
             away_team=str(event_context["away_team"]),
             league_id=str(event_context["league_id"]),
             start_time=event_context["start_time"],
-            market_type=market_type,
         )
-
-    async def _fetch_event_markets(
-        self,
-        token: str,
-        event_context: dict[str, object],
-        semaphore: asyncio.Semaphore,
-    ) -> list[RawOddsData]:
-        player_points = await self._fetch_market_group(
-            token,
-            event_context,
-            "player_points",
-            _GAME_GROUPS["player_points"],
-            semaphore,
-        )
-        if not player_points:
-            return []
-
-        secondary_batches = await asyncio.gather(
-            *(
-                self._fetch_market_group(
-                    token,
-                    event_context,
-                    market_type,
-                    game_group_id,
-                    semaphore,
-                )
-                for market_type, game_group_id in _GAME_GROUPS.items()
-                if market_type != "player_points"
-            )
-        )
-
-        results = list(player_points)
-        for batch in secondary_batches:
-            results.extend(batch)
-        return results
-
-    async def _fetch_game_total_ot_odds(
-        self,
-        token: str,
-        league_ids: list[int],
-        *,
-        now_epoch_ms: int,
-    ) -> list[RawOddsData]:
-        if not league_ids:
-            return []
-
-        results: list[RawOddsData] = []
-
-        for league_batch in _chunked(league_ids, _MAX_OFFER_LEAGUE_IDS_PER_REQUEST):
-            try:
-                data = await self._http.get_json(
-                    _OFFER_LEAGUE_URL,
-                    params={
-                        "page": "0",
-                        "time": "ONE_DAY",
-                        "leagues": ",".join(str(league_id) for league_id in league_batch),
-                    },
-                    headers=self._auth_headers(token),
-                )
-            except Exception:
-                logger.warning(
-                    "Meridian: failed to fetch OT total offer batch for %d leagues",
-                    len(league_batch),
-                )
-                continue
-
-            results.extend(
-                _parse_game_total_ot_events(
-                    data.get("payload", {}).get("leagues", []),
-                    now_epoch_ms=now_epoch_ms,
-                )
-            )
-
-        deduped: dict[tuple[str, str, str, float], RawOddsData] = {}
-        for result in results:
-            deduped[
-                (
-                    result.league_id,
-                    result.home_team,
-                    result.away_team,
-                    result.threshold,
-                )
-            ] = result
-        return list(deduped.values())
 
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         if league_id != "basketball":
@@ -486,33 +439,16 @@ class MeridianScraper(BaseScraper):
             logger.warning("Meridian: 0 candidate events after filtering %d listed events", len(events))
             return []
 
-        offer_league_ids = sorted(
-            {
-                int(event_context["league_numeric_id"])
-                for event_context in event_contexts
-                if event_context.get("league_numeric_id") is not None
-            }
-        )
-        game_total_ot_results = await self._fetch_game_total_ot_odds(
-            token,
-            offer_league_ids,
-            now_epoch_ms=now_epoch_ms,
-        )
-
-        concurrency = _get_detail_fetch_concurrency(self._http, len(event_contexts))
-        semaphore = asyncio.Semaphore(concurrency)
         event_results = await asyncio.gather(
-            *(self._fetch_event_markets(token, event_context, semaphore) for event_context in event_contexts)
+            *(self._fetch_event_markets(token, event_context) for event_context in event_contexts)
         )
         results = [item for batch in event_results for item in batch]
-        results.extend(game_total_ot_results)
 
         logger.info(
-            "Meridian scraped %d odds (%d OT totals) from %d listed events (%d candidates, detail concurrency=%d)",
+            "Meridian scraped %d odds from %d listed events (%d candidates) via %s",
             len(results),
-            len(game_total_ot_results),
             len(events),
             len(event_contexts),
-            concurrency,
+            _ALL_GAME_GROUP_ID,
         )
         return results

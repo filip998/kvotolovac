@@ -11,15 +11,15 @@ from app.scrapers.meridian_scraper import (
     MeridianScraper,
     _build_basic_auth,
     _build_event_context,
-    _get_detail_fetch_concurrency,
+    _classify_supported_market_group,
     _is_game_total_ot_group,
     _is_player_market,
-    _parse_game_total_ot_events,
+    _parse_game_total_ot_markets,
     _parse_player_name,
     _parse_markets,
     _parse_start_time,
+    _parse_supported_markets,
 )
-from app.scrapers.http_client import HttpClient
 from app.models.schemas import RawOddsData
 
 EVENTS_FIXTURE = Path(__file__).parent / "fixtures" / "meridian_events.json"
@@ -39,101 +39,66 @@ def markets_data() -> dict:
 
 
 @pytest.fixture
-def offer_leagues_data() -> dict:
+def all_supported_markets_payload() -> dict:
     return {
-        "payload": {
-            "leagues": [
-                {
-                    "leagueId": 77,
-                    "leagueName": "NBA",
-                    "leagueSlug": "usa-nba",
-                    "events": [
-                        {
-                            "header": {
-                                "eventId": 18722964,
-                                "state": "ACTIVE",
-                                "startTime": 4_102_444_800_000,
-                                "rivals": ["Philadelphia 76ers", "Orlando Magic"],
-                                "league": {
-                                    "leagueId": 77,
-                                    "name": "NBA",
-                                    "slug": "usa-nba",
-                                },
-                            },
-                            "positions": [
-                                {
-                                    "index": 0,
-                                    "groups": [
-                                        {
-                                            "name": "Pobednik (uklj.OT )",
-                                            "overUnder": None,
-                                            "selections": [
-                                                {"name": "1", "price": 1.79},
-                                                {"name": "2", "price": 2.04},
-                                            ],
-                                        }
-                                    ],
-                                },
-                                {
-                                    "index": 1,
-                                    "groups": [
-                                        {
-                                            "name": "Ukupno (uklj.OT) ",
-                                            "overUnder": 222.5,
-                                            "selections": [
-                                                {"name": "Manje", "price": 1.91},
-                                                {"name": "Više", "price": 1.9},
-                                            ],
-                                        }
-                                    ],
-                                },
-                                {
-                                    "index": 2,
-                                    "groups": [
-                                        {
-                                            "name": "Ukupno Poena",
-                                            "overUnder": 219.5,
-                                            "selections": [
-                                                {"name": "Manje", "price": 1.86},
-                                                {"name": "Više", "price": 1.94},
-                                            ],
-                                        }
-                                    ],
-                                },
-                            ],
-                        },
-                        {
-                            "header": {
-                                "eventId": 18723322,
-                                "state": "ACTIVE",
-                                "startTime": 4_102_448_400_000,
-                                "rivals": ["LA Clippers", "Golden State Warriors"],
-                                "league": {
-                                    "leagueId": 77,
-                                    "name": "NBA",
-                                    "slug": "usa-nba",
-                                },
-                            },
-                            "positions": [
-                                {
-                                    "index": 0,
-                                    "groups": [
-                                        {
-                                            "name": "Ukupno (uklj.OT) ",
-                                            "overUnder": 221.5,
-                                            "selections": [
-                                                {"name": "Manje", "price": 1.92},
-                                                {"name": "Više", "price": 1.89},
-                                            ],
-                                        }
-                                    ],
-                                }
-                            ],
-                        },
-                    ],
-                }
-            ]
-        }
+        "payload": [
+            {
+                "marketName": "Ukupno (uklj.OT) ",
+                "markets": [
+                    {
+                        "name": "Ukupno (uklj.OT) ",
+                        "state": "ACTIVE",
+                        "overUnder": 222.5,
+                        "selections": [
+                            {"name": "Manje", "price": 1.91},
+                            {"name": "Više", "price": 1.9},
+                        ],
+                    }
+                ],
+            },
+            {
+                "marketName": "Ukupno Poena (Uklj. OT)",
+                "markets": [
+                    {
+                        "name": "Jokic, Nikola",
+                        "state": "ACTIVE",
+                        "overUnder": 28.5,
+                        "selections": [
+                            {"name": "Više", "price": 1.8},
+                            {"name": "Manje", "price": 2.0},
+                        ],
+                    }
+                ],
+            },
+            {
+                "marketName": "Ukupno Skokova (Uklj. OT)",
+                "markets": [
+                    {
+                        "name": "Jokic, Nikola",
+                        "state": "ACTIVE",
+                        "overUnder": 11.5,
+                        "selections": [
+                            {"name": "Više", "price": 1.7},
+                            {"name": "Manje", "price": 2.1},
+                        ],
+                    }
+                ],
+            },
+            {
+                "marketName": "Ukupno Asistencija (Uklj. OT)",
+                "markets": [
+                    {
+                        "name": "Jokic, Nikola",
+                        "state": "ACTIVE",
+                        "overUnder": 9.5,
+                        "selections": [
+                            {"name": "Više", "price": 1.9},
+                            {"name": "Manje", "price": 1.9},
+                        ],
+                    }
+                ],
+            },
+        ]
     }
 
 
@@ -170,16 +135,6 @@ def test_build_basic_auth():
     auth = _build_basic_auth()
     assert isinstance(auth, str)
     assert len(auth) > 50  # base64-encoded sha512 is long
-
-
-def test_get_detail_fetch_concurrency_uses_http_limit():
-    client = HttpClient(rate_limit_per_second=4.0)
-    assert _get_detail_fetch_concurrency(client, 20) == 4
-
-
-def test_get_detail_fetch_concurrency_respects_cap():
-    client = HttpClient(rate_limit_per_second=20.0)
-    assert _get_detail_fetch_concurrency(client, 50) == 8
 
 
 def test_build_event_context_skips_past_or_invalid_events():
@@ -283,19 +238,31 @@ def test_is_game_total_ot_group():
     assert not _is_game_total_ot_group("Ukupno Poena")
 
 
-def test_parse_game_total_ot_events_returns_only_ot_totals(offer_leagues_data):
-    results = _parse_game_total_ot_events(
-        offer_leagues_data["payload"]["leagues"],
-        now_epoch_ms=0,
+def test_classify_supported_market_group():
+    assert _classify_supported_market_group("Ukupno Poena (Uklj. OT)") == "player_points"
+    assert _classify_supported_market_group("Ukupno Skokova (Uklj. OT)") == "player_rebounds"
+    assert _classify_supported_market_group("Ukupno Asistencija (Uklj. OT)") == "player_assists"
+    assert _classify_supported_market_group("Diallo, Alpha Ukupno Poena (Uklj. OT)") == "player_points"
+    assert _classify_supported_market_group("Ukupno (uklj.OT) ") == "game_total_ot"
+    assert _classify_supported_market_group("AS Monaco Ukupno Poena (uklj.OT)") is None
+
+
+def test_parse_game_total_ot_markets_returns_only_ot_totals(all_supported_markets_payload):
+    payload = all_supported_markets_payload["payload"]
+    results = _parse_game_total_ot_markets(
+        payload,
+        home_team="AS Monaco",
+        away_team="FC Barcelona",
+        league_id="euroleague",
+        start_time="2026-04-10T12:00:00+00:00",
     )
 
-    assert len(results) == 2
+    assert len(results) > 0
     assert {result.market_type for result in results} == {"game_total_ot"}
     assert {result.player_name for result in results} == {None}
-    assert {(result.home_team, result.away_team, result.threshold, result.over_odds, result.under_odds) for result in results} == {
-        ("Philadelphia 76ers", "Orlando Magic", 222.5, 1.9, 1.91),
-        ("LA Clippers", "Golden State Warriors", 221.5, 1.89, 1.92),
-    }
+    assert all(result.home_team == "AS Monaco" for result in results)
+    assert all(result.away_team == "FC Barcelona" for result in results)
+    assert all(result.threshold is not None for result in results)
 
 
 def test_parse_markets_skips_null_threshold():
@@ -386,16 +353,64 @@ def test_parse_markets_active_with_odds():
     assert r.away_team == "Barca"
 
 
+def test_parse_supported_markets_returns_current_market_types(all_supported_markets_payload):
+    payload = all_supported_markets_payload["payload"]
+    results = _parse_supported_markets(
+        payload,
+        event_id=123,
+        home_team="AS Monaco",
+        away_team="FC Barcelona",
+        league_id="euroleague",
+        start_time="2026-04-10T12:00:00+00:00",
+    )
+    assert len(results) > 0
+    assert {"player_points", "player_rebounds", "player_assists", "game_total_ot"} <= {
+        result.market_type for result in results
+    }
+
+
+def test_parse_supported_markets_accepts_player_prefixed_group_names():
+    payload = [
+        {
+            "marketName": "Diallo, Alpha Ukupno Poena (Uklj. OT)",
+            "markets": [
+                {
+                    "name": "Diallo, Alpha",
+                    "state": "ACTIVE",
+                    "overUnder": 13.5,
+                    "selections": [
+                        {"name": "Više", "price": 1.83},
+                        {"name": "Manje", "price": 1.97},
+                    ],
+                }
+            ],
+        }
+    ]
+
+    results = _parse_supported_markets(
+        payload,
+        event_id=123,
+        home_team="AS Monaco",
+        away_team="FC Barcelona",
+        league_id="euroleague",
+        start_time="2026-04-10T12:00:00+00:00",
+    )
+
+    assert len(results) == 1
+    assert results[0].market_type == "player_points"
+    assert results[0].player_name == "Alpha Diallo"
+
+
 # ── Integration: MeridianScraper with mocked HTTP ────────
 
 
 @pytest.mark.asyncio
-async def test_scraper_returns_data(events_data, markets_data, offer_leagues_data):
+async def test_scraper_returns_data(events_data, all_supported_markets_payload):
     scraper = MeridianScraper()
     future_events = copy.deepcopy(events_data)
     for event in future_events["payload"]["events"]:
         event["header"]["startTime"] = 4_102_444_800_000
-    markets_payload = markets_data["markets"]
+    markets_payload = all_supported_markets_payload
 
     async def mock_post(url, **kwargs):
         return {"access_token": "test-token", "expires_at": 9999999999000}
@@ -404,8 +419,6 @@ async def test_scraper_returns_data(events_data, markets_data, offer_leagues_dat
         if "/sport/55/events" in url:
             page = int(kwargs["params"]["page"])
             return future_events if page == 0 else {"payload": {"events": []}}
-        if "/offer/sport/55/league" in url:
-            return offer_leagues_data
         return markets_payload
 
     with patch.object(scraper._http, "post_json", side_effect=mock_post), \
@@ -516,10 +529,8 @@ async def test_scraper_filters_events_before_market_fetch():
         if "/sport/55/events" in url:
             page = int(kwargs["params"]["page"])
             return events_payload if page == 0 else {"payload": {"events": []}}
-        if "/offer/sport/55/league" in url:
-            return {"payload": {"leagues": []}}
         market_calls.append((int(url.split("/events/")[1].split("/")[0]), kwargs["params"]["gameGroupId"]))
-        return {"payload": []}
+        return {"payload": [{"marketName": "Ukupno (uklj.OT) ", "markets": []}]}
 
     with patch.object(scraper._http, "post_json", side_effect=mock_post), patch.object(
         scraper._http, "get_json", side_effect=mock_get
@@ -527,11 +538,11 @@ async def test_scraper_filters_events_before_market_fetch():
         results = await scraper.scrape_odds("basketball")
 
     assert results == []
-    assert market_calls == [(101, "1ace0bb3-759d-41a1-8964-7dc8aac38cfe")]
+    assert market_calls == [(101, "all")]
 
 
 @pytest.mark.asyncio
-async def test_scraper_fetches_secondary_groups_only_for_point_hits():
+async def test_scraper_fetches_all_group_once_per_event():
     scraper = MeridianScraper()
     events_payload = {
         "payload": {
@@ -548,9 +559,10 @@ async def test_scraper_fetches_secondary_groups_only_for_point_hits():
             ]
         }
     }
-    points_payload = {
+    all_payload = {
         "payload": [
             {
+                "marketName": "Ukupno Poena (Uklj. OT)",
                 "markets": [
                     {
                         "name": "Jokic, Nikola",
@@ -562,12 +574,9 @@ async def test_scraper_fetches_secondary_groups_only_for_point_hits():
                         ],
                     }
                 ]
-            }
-        ]
-    }
-    rebounds_payload = {
-        "payload": [
+            },
             {
+                "marketName": "Ukupno Skokova (Uklj. OT)",
                 "markets": [
                     {
                         "name": "Jokic, Nikola",
@@ -579,12 +588,9 @@ async def test_scraper_fetches_secondary_groups_only_for_point_hits():
                         ],
                     }
                 ]
-            }
-        ]
-    }
-    assists_payload = {
-        "payload": [
+            },
             {
+                "marketName": "Ukupno Asistencija (Uklj. OT)",
                 "markets": [
                     {
                         "name": "Jokic, Nikola",
@@ -596,7 +602,7 @@ async def test_scraper_fetches_secondary_groups_only_for_point_hits():
                         ],
                     }
                 ]
-            }
+            },
         ]
     }
     market_calls: list[str] = []
@@ -608,15 +614,9 @@ async def test_scraper_fetches_secondary_groups_only_for_point_hits():
         if "/sport/55/events" in url:
             page = int(kwargs["params"]["page"])
             return events_payload if page == 0 else {"payload": {"events": []}}
-        if "/offer/sport/55/league" in url:
-            return {"payload": {"leagues": []}}
         game_group = kwargs["params"]["gameGroupId"]
         market_calls.append(game_group)
-        if game_group == "1ace0bb3-759d-41a1-8964-7dc8aac38cfe":
-            return points_payload
-        if game_group == "ce657e80-2e15-47b9-bbcb-871f6e597a22":
-            return rebounds_payload
-        return assists_payload
+        return all_payload
 
     with patch.object(scraper._http, "post_json", side_effect=mock_post), patch.object(
         scraper._http, "get_json", side_effect=mock_get
@@ -629,15 +629,11 @@ async def test_scraper_fetches_secondary_groups_only_for_point_hits():
         "player_rebounds",
         "player_assists",
     }
-    assert market_calls == [
-        "1ace0bb3-759d-41a1-8964-7dc8aac38cfe",
-        "ce657e80-2e15-47b9-bbcb-871f6e597a22",
-        "1d5c0101-d012-42dc-8d21-b3da1dfd1fd1",
-    ]
+    assert market_calls == ["all"]
 
 
 @pytest.mark.asyncio
-async def test_scraper_fetches_game_total_ot_from_offer_endpoint(markets_data, offer_leagues_data):
+async def test_scraper_fetches_game_total_ot_from_all_payload(all_supported_markets_payload):
     scraper = MeridianScraper()
     events_payload = {
         "payload": {
@@ -654,8 +650,8 @@ async def test_scraper_fetches_game_total_ot_from_offer_endpoint(markets_data, o
             ]
         }
     }
-    markets_payload = markets_data["markets"]
-    requested_leagues: list[str] = []
+    markets_payload = all_supported_markets_payload
+    requested_groups: list[str] = []
 
     async def mock_post(url, **kwargs):
         return {"access_token": "test-token", "expires_at": 9999999999000}
@@ -664,9 +660,7 @@ async def test_scraper_fetches_game_total_ot_from_offer_endpoint(markets_data, o
         if "/sport/55/events" in url:
             page = int(kwargs["params"]["page"])
             return events_payload if page == 0 else {"payload": {"events": []}}
-        if "/offer/sport/55/league" in url:
-            requested_leagues.append(kwargs["params"]["leagues"])
-            return offer_leagues_data
+        requested_groups.append(kwargs["params"]["gameGroupId"])
         return markets_payload
 
     with patch.object(scraper._http, "post_json", side_effect=mock_post), patch.object(
@@ -675,8 +669,10 @@ async def test_scraper_fetches_game_total_ot_from_offer_endpoint(markets_data, o
         results = await scraper.scrape_odds("basketball")
 
     totals = [result for result in results if result.market_type == "game_total_ot"]
-    assert requested_leagues == ["77"]
-    assert {(result.home_team, result.away_team, result.threshold, result.over_odds, result.under_odds) for result in totals} == {
-        ("Philadelphia 76ers", "Orlando Magic", 222.5, 1.9, 1.91),
-        ("LA Clippers", "Golden State Warriors", 221.5, 1.89, 1.92),
+    assert requested_groups == ["all"]
+    assert len(totals) > 0
+    assert all(result.home_team == "Philadelphia 76ers" for result in totals)
+    assert all(result.away_team == "Orlando Magic" for result in totals)
+    assert {(result.threshold, result.over_odds, result.under_odds) for result in totals} == {
+        (222.5, 1.9, 1.91),
     }
