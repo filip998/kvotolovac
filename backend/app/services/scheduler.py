@@ -15,6 +15,7 @@ from ..services.league_registry import league_country, league_display_name
 from ..services.normalizer import normalize_odds_with_diagnostics
 from ..services.analyzer import analyze
 from ..services.notifications import NotificationService, InAppNotificationProvider
+from ..services.scraper_benchmarks import recorder as benchmark_recorder
 from ..services.team_registry import (
     CircularAliasError,
     forget_team_alias,
@@ -256,6 +257,12 @@ class Scheduler:
             self._scan_failed_tasks += 1
             self._scan_completed_tasks += 1
             self._scan_active_tasks = max(0, self._scan_active_tasks - 1)
+            benchmark_recorder.record_scrape_task(
+                bookmaker_id=bookmaker_id,
+                duration_ms=duration_ms,
+                raw_items=0,
+                failed=True,
+            )
             logger.exception(
                 "Scraper %s failed for league %s after %d ms",
                 bookmaker_id,
@@ -267,6 +274,12 @@ class Scheduler:
         duration_ms = int((time.perf_counter() - started_at) * 1000)
         self._scan_completed_tasks += 1
         self._scan_active_tasks = max(0, self._scan_active_tasks - 1)
+        benchmark_recorder.record_scrape_task(
+            bookmaker_id=bookmaker_id,
+            duration_ms=duration_ms,
+            raw_items=len(raw),
+            failed=False,
+        )
         logger.info(
             "Scraper %s completed for league %s in %d ms (%d items)",
             bookmaker_id,
@@ -287,6 +300,7 @@ class Scheduler:
             self._scan_completed_tasks = 0
             self._scan_failed_tasks = 0
             self._scan_active_tasks = 0
+            benchmark_recorder.begin_cycle(cycle_started_at_iso)
             logger.info("Starting scrape cycle at %s", cycle_started_at_iso)
 
             scrapers = registry.get_all()
@@ -409,6 +423,31 @@ class Scheduler:
                 "scrape_duration_ms": scrape_duration_ms,
                 "cycle_duration_ms": int((time.perf_counter() - cycle_started_at) * 1000),
             }
+
+            # Aggregate per-bookmaker counts from the normalized output, then publish
+            # the benchmark snapshot. Done after analysis so failures during analyze
+            # don't suppress the file output.
+            try:
+                matches_per_bm: dict[str, int] = defaultdict(int)
+                odds_per_bm: dict[str, int] = defaultdict(int)
+                seen_match_per_bm: dict[str, set[str]] = defaultdict(set)
+                for o in normalized:
+                    odds_per_bm[o.bookmaker_id] += 1
+                    if o.match_id not in seen_match_per_bm[o.bookmaker_id]:
+                        seen_match_per_bm[o.bookmaker_id].add(o.match_id)
+                        matches_per_bm[o.bookmaker_id] += 1
+                benchmark_recorder.record_phase_durations(
+                    scrape_duration_ms=scrape_duration_ms,
+                    cycle_duration_ms=result["cycle_duration_ms"],
+                )
+                benchmark_recorder.publish(
+                    matches_per_bookmaker=dict(matches_per_bm),
+                    odds_per_bookmaker=dict(odds_per_bm),
+                    total_unique_matches=len(seen_matches),
+                )
+            except Exception:
+                logger.exception("Failed to publish scraper benchmark snapshot")
+
             logger.info("Cycle complete: %s", result)
             return result
         finally:

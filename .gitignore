@@ -23,6 +23,7 @@ frontend/dist/
 .env
 .env.local
 backend/team_registry_review_*.json.lock
+backend/benchmarks/
 
 # OS
 .DS_Store

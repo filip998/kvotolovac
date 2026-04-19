@@ -228,6 +228,33 @@ class ScrapeResponse(BaseModel):
     discrepancies_found: int = 0
 
 
+# ── Scraper benchmarks ─────────────────────────────────────
+class ScraperBenchmarkOut(BaseModel):
+    """Per-scraper aggregates for the most recent scrape cycle."""
+
+    bookmaker_id: str
+    duration_ms: int
+    raw_items: int
+    matches_after_normalization: int
+    odds_count: int
+    leagues_attempted: int
+    leagues_failed: int
+    failure_rate: float
+
+
+class CycleBenchmarkOut(BaseModel):
+    """Latest cycle benchmark snapshot."""
+
+    cycle_started_at: Optional[str] = None
+    cycle_finished_at: Optional[str] = None
+    scrape_duration_ms: int = 0
+    cycle_duration_ms: int = 0
+    total_raw_items: int = 0
+    total_matches: int = 0
+    total_odds: int = 0
+    scrapers: list[ScraperBenchmarkOut] = Field(default_factory=list)
+
+
 class TeamReviewCandidate(BaseModel):
     team_id: int
     team_name: str

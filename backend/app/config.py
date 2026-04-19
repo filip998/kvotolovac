@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     proxy_list: str = ""
     rate_limit_per_second: float = 1.0
     meridian_rate_limit_per_second: float = 2.0
+    benchmark_dir: str = str(
+        Path(__file__).resolve().parent.parent / "benchmarks"
+    )
     league_registry_path: str = str(
         Path(__file__).resolve().parent / "data" / "league_registry.json"
     )
