@@ -394,10 +394,9 @@ async def test_scraper_returns_data(player_matches, basketball_fixture_data):
             return {"esMatches": player_matches}
         if url.endswith("/sport/B/mob"):
             return basketball_fixture_data
-        for m in player_matches:
-            if str(m.get("id", "")) in url:
-                return m
-        return player_matches[0]
+        if url.endswith("/matches/by-ids"):
+            return player_matches
+        raise AssertionError(f"unexpected url {url}")
 
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
         results = await scraper.scrape_odds("basketball")
@@ -479,9 +478,8 @@ async def test_scraper_returns_players_when_totals_list_fails(player_matches):
             raise Exception("totals list failed")
         if url.endswith("/sport/SK/mob"):
             return {"esMatches": player_matches}
-        for match in player_matches:
-            if str(match["id"]) in url:
-                return match
+        if url.endswith("/matches/by-ids"):
+            return player_matches
         raise AssertionError(f"unexpected url {url}")
 
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
@@ -493,7 +491,8 @@ async def test_scraper_returns_players_when_totals_list_fails(player_matches):
 
 
 @pytest.mark.asyncio
-async def test_scraper_fetches_details_concurrently_and_skips_failures():
+async def test_scraper_uses_bulk_endpoint_with_match_ids_token():
+    """Player-prop details must be fetched in one bulk call, not N+1."""
     list_matches = [
         {
             "id": 101,
@@ -511,8 +510,9 @@ async def test_scraper_fetches_details_concurrently_and_skips_failures():
             "params": {"ouPlTPRA": "34.5"},
         },
     ]
-    detail_matches = {
-        101: {
+    detail_matches = [
+        {
+            "id": 101,
             "home": "Player One",
             "away": "Team One",
             "leagueName": "Poeni igrača NBA",
@@ -520,7 +520,8 @@ async def test_scraper_fetches_details_concurrently_and_skips_failures():
             "params": {"ouPlPoints": "26.5"},
             "odds": {"51679": 1.9, "51681": 1.9},
         },
-        103: {
+        {
+            "id": 103,
             "home": "Player Three",
             "away": "Team Three",
             "leagueName": "Poeni igrača NBA",
@@ -528,38 +529,93 @@ async def test_scraper_fetches_details_concurrently_and_skips_failures():
             "params": {"ouPlTPRA": "34.5"},
             "odds": {"55215": 1.87, "55217": 1.93},
         },
-    }
+    ]
+
+    bulk_calls: list[dict] = []
 
     class StubHttpClient:
-        def __init__(self) -> None:
-            self.rate_limit_per_second = 4.0
-            self.active_details = 0
-            self.max_active_details = 0
+        rate_limit_per_second = 4.0
 
-        async def get_json(self, url: str, **kwargs):
+        async def get_json(self, url: str, params=None, headers=None, **kwargs):
             if url.endswith("/sport/SK/mob"):
                 return {"esMatches": list_matches}
             if url.endswith("/sport/B/mob"):
                 return {"esMatches": []}
+            if url.endswith("/matches/by-ids"):
+                bulk_calls.append({"url": url, "params": dict(params or {})})
+                return detail_matches
+            raise AssertionError(f"unexpected url {url}")
 
-            match_id = int(url.rsplit("/", 1)[-1])
-            self.active_details += 1
-            self.max_active_details = max(self.max_active_details, self.active_details)
-            await asyncio.sleep(0.02)
-            self.active_details -= 1
-
-            if match_id == 102:
-                raise Exception("detail failed")
-
-            return detail_matches[match_id]
-
-    http_client = StubHttpClient()
-    scraper = MaxBetScraper(http_client=http_client)
-
+    scraper = MaxBetScraper(http_client=StubHttpClient())
     results = await scraper.scrape_odds("basketball")
 
-    assert http_client.max_active_details > 1
-    assert {(result.player_name, result.market_type) for result in results} == {
+    # Exactly one bulk call carrying all three IDs as a comma-joined token.
+    assert len(bulk_calls) == 1
+    token = bulk_calls[0]["params"].get("matchIdsToken", "")
+    assert token == "101,102,103"
+    # Bulk omits id 102 → that match silently dropped, others parsed.
+    assert {(r.player_name, r.market_type) for r in results} == {
         ("Player One", "player_points"),
         ("Player Three", "player_points_rebounds_assists"),
     }
+
+
+@pytest.mark.asyncio
+async def test_scraper_handles_bulk_endpoint_failure(player_matches):
+    """If the bulk-detail call raises, player results are skipped but totals still flow."""
+    scraper = MaxBetScraper()
+
+    async def mock_get(url, **kwargs):
+        if url.endswith("/sport/SK/mob"):
+            return {"esMatches": player_matches}
+        if url.endswith("/sport/B/mob"):
+            return {"esMatches": []}
+        if url.endswith("/matches/by-ids"):
+            raise Exception("bulk down")
+        raise AssertionError(f"unexpected url {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    # No crash; just empty player results.
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_scraper_skips_bulk_call_when_no_player_ids():
+    scraper = MaxBetScraper()
+    bulk_called = False
+
+    async def mock_get(url, **kwargs):
+        nonlocal bulk_called
+        if url.endswith("/sport/SK/mob"):
+            return {"esMatches": []}
+        if url.endswith("/sport/B/mob"):
+            return {"esMatches": []}
+        if url.endswith("/matches/by-ids"):
+            bulk_called = True
+            return []
+        raise AssertionError(f"unexpected url {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert results == []
+    assert bulk_called is False
+
+
+@pytest.mark.asyncio
+async def test_scraper_unknown_sport_returns_empty():
+    scraper = MaxBetScraper()
+    assert await scraper.scrape_odds("table_tennis") == []
+    assert await scraper.scrape_odds("") == []
+
+
+@pytest.mark.asyncio
+async def test_get_supported_leagues_reflects_sport_specs():
+    scraper = MaxBetScraper()
+    leagues = scraper.get_supported_leagues()
+    assert "basketball" in leagues
+    # Adding a new SportSpec dict entry is the only thing needed to extend coverage.
+    from app.scrapers.maxbet_scraper import _SPORT_SPECS
+    assert set(leagues) == set(_SPORT_SPECS.keys())

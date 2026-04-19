@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .base import BaseScraper
@@ -11,9 +11,63 @@ from ..models.schemas import RawOddsData
 
 logger = logging.getLogger(__name__)
 
-_PLAYER_LIST_URL = "https://www.maxbet.rs/restapi/offer/sr/sport/SK/mob"
-_TOTALS_LIST_URL = "https://www.maxbet.rs/restapi/offer/sr/sport/B/mob"
-_MATCH_URL = "https://www.maxbet.rs/restapi/offer/sr/match/{match_id}"
+
+# ── Per-sport spec ──────────────────────────────────────────────────────
+#
+# Each SportSpec captures everything that is sport-specific about MaxBet's
+# offer, so adding a new sport (football, tennis…) is a single dict entry.
+# The bulk-fetch + parse pipeline lives in MaxBetScraper and is sport-agnostic.
+
+
+@dataclass(frozen=True)
+class ThresholdLine:
+    over_code: str
+    under_code: str
+    param_key: str
+    market_type: str
+
+
+@dataclass(frozen=True)
+class FixedMilestone:
+    over_code: str
+    threshold: float
+    market_type: str = "player_points_milestones"
+
+
+@dataclass(frozen=True)
+class GameTotalLine:
+    over_code: str
+    under_code: str
+    param_key: str
+
+
+@dataclass(frozen=True)
+class SportSpec:
+    sport: str
+    # Lists fetched concurrently. The "player" list provides player-prop matches
+    # (we only need their IDs + filter params); the "totals" list provides
+    # game-total matches whose odds we read directly from the list response.
+    player_list_url: str
+    totals_list_url: str | None
+    # Bulk-detail endpoint accepting a comma-joined `matchIdsToken=` query param.
+    # Returns a JSON list of fully-populated match objects (parity with
+    # /restapi/offer/sr/match/{id}).
+    bulk_detail_url: str
+    # League-name prefix used to identify player-prop matches in the player list.
+    player_league_prefix: str
+    # League-name prefix used to identify game-total matches in the totals list.
+    # When empty (""), every list match that is not a player-prop match qualifies.
+    totals_league_prefix: str
+    threshold_lines: tuple[ThresholdLine, ...]
+    fixed_milestones: tuple[FixedMilestone, ...]
+    game_total_lines: tuple[GameTotalLine, ...]
+    game_total_ot_lines: tuple[GameTotalLine, ...]
+    game_total_market_type: str
+    game_total_ot_market_type: str
+    canonical_leagues: dict[str, str] = field(default_factory=dict)
+
+
+# ── Basketball spec ─────────────────────────────────────────────────────
 
 _DEFAULT_PARAMS = {
     "annex": "3",
@@ -31,96 +85,53 @@ _DEFAULT_HEADERS = {
     "Referer": "https://www.maxbet.rs/",
 }
 
-# Tip type codes from MaxBet's ttg_lang endpoint
-_OVER_CODE = "51679"    # "+" — player scores MORE points (primary threshold)
-_UNDER_CODE = "51681"   # "-" — player scores LESS points (primary threshold)
-_ALT1_OVER = "55253"    # "alt1 +" — alt threshold 1 over
-_ALT1_UNDER = "55255"   # "alt1 -" — alt threshold 1 under
-_ALT2_OVER = "55256"    # "alt2 +" — alt threshold 2 over
-_ALT2_UNDER = "55258"   # "alt2 -" — alt threshold 2 under
-_REB_OVER = "51685"     # "SK+" — rebounds over
-_REB_UNDER = "51687"    # "SK-" — rebounds under
-_AST_OVER = "51682"     # "AS+" — assists over
-_AST_UNDER = "51684"    # "AS-" — assists under
-_THREES_OVER = "51688"  # "3+" — three-pointers over
-_THREES_UNDER = "51690"  # "3-" — three-pointers under
-_STEALS_OVER = "55672"  # "UK+" — steals over
-_STEALS_UNDER = "55674"  # "UK-" — steals under
-_BLOCKS_OVER = "55681"  # "BL+" — blocks over
-_BLOCKS_UNDER = "55683"  # "BL-" — blocks under
-_PR_OVER = "55244"      # "P+R+" — points + rebounds over
-_PR_UNDER = "55246"     # "P+R-" — points + rebounds under
-_PA_OVER = "55247"      # "P+A+" — points + assists over
-_PA_UNDER = "55249"     # "P+A-" — points + assists under
-_RA_OVER = "55250"      # "R+A+" — rebounds + assists over
-_RA_UNDER = "55252"     # "R+A-" — rebounds + assists under
-_PRA_OVER = "55215"     # "P+R+A+" — points + rebounds + assists over
-_PRA_UNDER = "55217"    # "P+R+A-" — points + rebounds + assists under
+# Tip type codes from MaxBet's ttg_lang endpoint (shared iBet platform).
+_BASKETBALL_THRESHOLD_LINES: tuple[ThresholdLine, ...] = (
+    ThresholdLine("51679", "51681", "ouPlPoints", "player_points"),
+    ThresholdLine("55253", "55255", "ouPlP2", "player_points"),
+    ThresholdLine("55256", "55258", "ouPlP3", "player_points"),
+    ThresholdLine("51685", "51687", "ouPlRebounds", "player_rebounds"),
+    ThresholdLine("51682", "51684", "ouPlAssists", "player_assists"),
+    ThresholdLine("51688", "51690", "ouPl3Points", "player_3points"),
+    ThresholdLine("55672", "55674", "ouPlSt", "player_steals"),
+    ThresholdLine("55681", "55683", "ouPlB", "player_blocks"),
+    ThresholdLine("55244", "55246", "ouPlTPR", "player_points_rebounds"),
+    ThresholdLine("55247", "55249", "ouPlTPA", "player_points_assists"),
+    ThresholdLine("55250", "55252", "ouPlTRA", "player_rebounds_assists"),
+    ThresholdLine("55215", "55217", "ouPlTPRA", "player_points_rebounds_assists"),
+)
 
-# Mapping: (over_code, under_code, param_key, market_type)
-_THRESHOLD_LINES = [
-    (_OVER_CODE, _UNDER_CODE, "ouPlPoints", "player_points"),
-    (_ALT1_OVER, _ALT1_UNDER, "ouPlP2", "player_points"),
-    (_ALT2_OVER, _ALT2_UNDER, "ouPlP3", "player_points"),
-    (_REB_OVER, _REB_UNDER, "ouPlRebounds", "player_rebounds"),
-    (_AST_OVER, _AST_UNDER, "ouPlAssists", "player_assists"),
-    (_THREES_OVER, _THREES_UNDER, "ouPl3Points", "player_3points"),
-    (_STEALS_OVER, _STEALS_UNDER, "ouPlSt", "player_steals"),
-    (_BLOCKS_OVER, _BLOCKS_UNDER, "ouPlB", "player_blocks"),
-    (_PR_OVER, _PR_UNDER, "ouPlTPR", "player_points_rebounds"),
-    (_PA_OVER, _PA_UNDER, "ouPlTPA", "player_points_assists"),
-    (_RA_OVER, _RA_UNDER, "ouPlTRA", "player_rebounds_assists"),
-    (_PRA_OVER, _PRA_UNDER, "ouPlTPRA", "player_points_rebounds_assists"),
-]
+_BASKETBALL_FIXED_MILESTONES: tuple[FixedMilestone, ...] = (
+    FixedMilestone("54096", 4.5),
+    FixedMilestone("54101", 9.5),
+    FixedMilestone("54106", 14.5),
+    FixedMilestone("54111", 19.5),
+    FixedMilestone("54116", 24.5),
+    FixedMilestone("54121", 29.5),
+    FixedMilestone("54126", 34.5),
+    FixedMilestone("54131", 39.5),
+    FixedMilestone("54136", 44.5),
+    FixedMilestone("54141", 49.5),
+    FixedMilestone("57454", 59.5),
+)
 
-_GAME_TOTAL_LINES = [
-    ("227", "228", "overUnder"),
-    ("429", "427", "overUnder2"),
-]
+_BASKETBALL_GAME_TOTAL_LINES: tuple[GameTotalLine, ...] = (
+    GameTotalLine("227", "228", "overUnder"),
+    GameTotalLine("429", "427", "overUnder2"),
+)
 
 # OT-inclusive full-game totals confirmed from the live basketball list feed.
-_GAME_TOTAL_OT_LINES = [
-    ("50445", "50444", "overUnderOvertime"),
-    ("50447", "50446", "overUnderOvertime2"),
-    ("50449", "50448", "overUnderOvertime3"),
-    ("50451", "50450", "overUnderOvertime4"),
-    ("50453", "50452", "overUnderOvertime5"),
-    ("50455", "50454", "overUnderOvertime6"),
-    ("50457", "50456", "overUnderOvertime7"),
-]
+_BASKETBALL_GAME_TOTAL_OT_LINES: tuple[GameTotalLine, ...] = (
+    GameTotalLine("50445", "50444", "overUnderOvertime"),
+    GameTotalLine("50447", "50446", "overUnderOvertime2"),
+    GameTotalLine("50449", "50448", "overUnderOvertime3"),
+    GameTotalLine("50451", "50450", "overUnderOvertime4"),
+    GameTotalLine("50453", "50452", "overUnderOvertime5"),
+    GameTotalLine("50455", "50454", "overUnderOvertime6"),
+    GameTotalLine("50457", "50456", "overUnderOvertime7"),
+)
 
-_LIST_MATCH_PARAM_KEYS = {
-    "ouPlPoints",
-    "ouPlRebounds",
-    "ouPlAssists",
-    "ouPl3Points",
-    "ouPlSt",
-    "ouPlB",
-    "ouPlTPR",
-    "ouPlTPA",
-    "ouPlTRA",
-    "ouPlTPRA",
-}
-
-_FIXED_POINTS_LADDERS = [
-    ("54096", 4.5),
-    ("54101", 9.5),
-    ("54106", 14.5),
-    ("54111", 19.5),
-    ("54116", 24.5),
-    ("54121", 29.5),
-    ("54126", 34.5),
-    ("54131", 39.5),
-    ("54136", 44.5),
-    ("54141", 49.5),
-    ("57454", 59.5),
-]
-
-_UNLIMITED_DETAIL_CONCURRENCY = 10
-_MIN_DETAIL_CONCURRENCY = 2
-_PLAYER_LEAGUE_PREFIX = "poeni igrača"
-_BASKETBALL_LEAGUE_PREFIX = "košarka"
-_CANONICAL_LEAGUES = {
+_BASKETBALL_CANONICAL_LEAGUES = {
     "nba": "nba",
     "usa nba": "nba",
     "nba play offs": "nba",
@@ -139,6 +150,55 @@ _CANONICAL_LEAGUES = {
     "portoriko 1": "portoriko_1",
 }
 
+_BASKETBALL_SPEC = SportSpec(
+    sport="basketball",
+    player_list_url="https://www.maxbet.rs/restapi/offer/sr/sport/SK/mob",
+    totals_list_url="https://www.maxbet.rs/restapi/offer/sr/sport/B/mob",
+    bulk_detail_url="https://www.maxbet.rs/restapi/offer/sr/matches/by-ids",
+    player_league_prefix="poeni igrača",
+    totals_league_prefix="košarka",
+    threshold_lines=_BASKETBALL_THRESHOLD_LINES,
+    fixed_milestones=_BASKETBALL_FIXED_MILESTONES,
+    game_total_lines=_BASKETBALL_GAME_TOTAL_LINES,
+    game_total_ot_lines=_BASKETBALL_GAME_TOTAL_OT_LINES,
+    game_total_market_type="game_total",
+    game_total_ot_market_type="game_total_ot",
+    canonical_leagues=_BASKETBALL_CANONICAL_LEAGUES,
+)
+
+_SPORT_SPECS: dict[str, SportSpec] = {
+    "basketball": _BASKETBALL_SPEC,
+}
+
+
+# ── Backward-compatible module-level constants (kept for existing tests) ──
+
+_PLAYER_LIST_URL = _BASKETBALL_SPEC.player_list_url
+_TOTALS_LIST_URL = _BASKETBALL_SPEC.totals_list_url
+_BULK_DETAIL_URL = _BASKETBALL_SPEC.bulk_detail_url
+
+_PLAYER_LEAGUE_PREFIX = _BASKETBALL_SPEC.player_league_prefix
+_BASKETBALL_LEAGUE_PREFIX = _BASKETBALL_SPEC.totals_league_prefix
+_CANONICAL_LEAGUES = _BASKETBALL_CANONICAL_LEAGUES
+
+_THRESHOLD_LINES = [
+    (line.over_code, line.under_code, line.param_key, line.market_type)
+    for line in _BASKETBALL_THRESHOLD_LINES
+]
+_GAME_TOTAL_LINES = [
+    (line.over_code, line.under_code, line.param_key)
+    for line in _BASKETBALL_GAME_TOTAL_LINES
+]
+_GAME_TOTAL_OT_LINES = [
+    (line.over_code, line.under_code, line.param_key)
+    for line in _BASKETBALL_GAME_TOTAL_OT_LINES
+]
+_FIXED_POINTS_LADDERS = [(m.over_code, m.threshold) for m in _BASKETBALL_FIXED_MILESTONES]
+_LIST_MATCH_PARAM_KEYS = {line.param_key for line in _BASKETBALL_THRESHOLD_LINES}
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────
+
 
 def _parse_start_time(epoch_ms: int | None) -> str | None:
     if not epoch_ms:
@@ -152,57 +212,61 @@ def _normalize_league_key(raw: str | None) -> str:
     return " ".join(raw.strip().lower().replace("_", " ").replace("-", " ").split())
 
 
-def _extract_league_id(league_name: str) -> str:
+def _extract_league_id(league_name: str, spec: SportSpec = _BASKETBALL_SPEC) -> str:
     raw = league_name.lower().strip()
-    for prefix in (_PLAYER_LEAGUE_PREFIX, _BASKETBALL_LEAGUE_PREFIX):
-        if raw.startswith(prefix):
-            raw = raw[len(prefix) :].strip(" ~-")
+    for prefix in (spec.player_league_prefix, spec.totals_league_prefix):
+        if prefix and raw.startswith(prefix):
+            raw = raw[len(prefix):].strip(" ~-")
             break
     normalized = _normalize_league_key(raw)
     if not normalized:
-        return "basketball"
-    return _CANONICAL_LEAGUES.get(normalized, normalized.replace(" ", "_"))
+        return spec.sport
+    return spec.canonical_leagues.get(normalized, normalized.replace(" ", "_"))
 
 
-def _parse_match_detail(match: dict) -> list[RawOddsData]:
-    """Parse a single match detail response into RawOddsData for all threshold lines."""
-    results: list[RawOddsData] = []
+def _is_player_match(match: dict, spec: SportSpec) -> bool:
+    league_name = (match.get("leagueName") or "").lower()
+    return spec.player_league_prefix in league_name
 
-    league_name = match.get("leagueName", "")
-    if _PLAYER_LEAGUE_PREFIX not in league_name.lower():
-        return results
 
-    params = match.get("params", {})
-    odds = match.get("odds", {})
+def _has_supported_player_param(match: dict, spec: SportSpec) -> bool:
+    params = match.get("params") or {}
+    return any(params.get(line.param_key) for line in spec.threshold_lines)
+
+
+def _parse_player_match(match: dict, spec: SportSpec) -> list[RawOddsData]:
+    """Parse a single player-prop match (from the bulk-detail response)."""
+    if not _is_player_match(match, spec):
+        return []
+
+    params = match.get("params") or {}
+    odds = match.get("odds") or {}
     player_name = match.get("home", "")
     team = match.get("away", "")
     start_time = _parse_start_time(match.get("kickOffTime"))
+    league_id = _extract_league_id(match.get("leagueName", ""), spec)
 
-    league_id = _extract_league_id(league_name)
+    results: list[RawOddsData] = []
 
-    def build_raw_odds(
-        *,
-        market_type: str,
-        threshold: float,
-        over_odds: float | None,
-        under_odds: float | None,
-    ) -> RawOddsData:
-        return RawOddsData(
-            bookmaker_id="maxbet",
-            league_id=league_id,
-            sport="basketball",
-            home_team=team,
-            away_team=player_name,
-            market_type=market_type,
-            player_name=player_name,
-            threshold=threshold,
-            over_odds=over_odds,
-            under_odds=under_odds,
-            start_time=start_time,
+    def emit(market_type: str, threshold: float, over: float | None, under: float | None) -> None:
+        results.append(
+            RawOddsData(
+                bookmaker_id="maxbet",
+                league_id=league_id,
+                sport=spec.sport,
+                home_team=team,
+                away_team=player_name,
+                market_type=market_type,
+                player_name=player_name,
+                threshold=threshold,
+                over_odds=over,
+                under_odds=under,
+                start_time=start_time,
+            )
         )
 
-    for over_code, under_code, param_key, market_type in _THRESHOLD_LINES:
-        threshold_str = params.get(param_key)
+    for line in spec.threshold_lines:
+        threshold_str = params.get(line.param_key)
         if not threshold_str:
             continue
         try:
@@ -210,67 +274,47 @@ def _parse_match_detail(match: dict) -> list[RawOddsData]:
         except (ValueError, TypeError):
             continue
 
-        over_odds = odds.get(over_code)
-        under_odds = odds.get(under_code)
+        over_odds = odds.get(line.over_code)
+        under_odds = odds.get(line.under_code)
         if over_odds is None and under_odds is None:
             continue
 
-        results.append(
-            build_raw_odds(
-                market_type=market_type,
-                threshold=threshold,
-                over_odds=over_odds,
-                under_odds=under_odds,
-            )
-        )
+        emit(line.market_type, threshold, over_odds, under_odds)
 
-    for over_code, threshold in _FIXED_POINTS_LADDERS:
-        over_odds = odds.get(over_code)
+    for milestone in spec.fixed_milestones:
+        over_odds = odds.get(milestone.over_code)
         if over_odds is None:
             continue
-        results.append(
-            build_raw_odds(
-                market_type="player_points_milestones",
-                threshold=threshold,
-                over_odds=over_odds,
-                under_odds=None,
-            )
-        )
+        emit(milestone.market_type, milestone.threshold, over_odds, None)
 
     return results
 
 
-def _parse_game_total_match(match: dict) -> list[RawOddsData]:
-    return _parse_game_total_lines(match, _GAME_TOTAL_LINES, "game_total")
-
-
-def _parse_game_total_ot_match(match: dict) -> list[RawOddsData]:
-    return _parse_game_total_lines(match, _GAME_TOTAL_OT_LINES, "game_total_ot")
-
-
-def _parse_game_total_lines(
+def _parse_game_total_lines_for_spec(
     match: dict,
-    lines: list[tuple[str, str, str]],
+    spec: SportSpec,
+    lines: tuple[GameTotalLine, ...],
     market_type: str,
 ) -> list[RawOddsData]:
-    results: list[RawOddsData] = []
+    league_name = match.get("leagueName") or ""
+    if not league_name:
+        return []
+    if _is_player_match(match, spec):
+        return []
 
-    league_name = match.get("leagueName", "")
-    if not league_name or _PLAYER_LEAGUE_PREFIX in league_name.lower():
-        return results
-
-    home_team = match.get("home", "").strip()
-    away_team = match.get("away", "").strip()
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
     if not home_team or not away_team:
-        return results
+        return []
 
-    params = match.get("params", {})
-    odds = match.get("odds", {})
+    params = match.get("params") or {}
+    odds = match.get("odds") or {}
     start_time = _parse_start_time(match.get("kickOffTime"))
-    league_id = _extract_league_id(league_name)
+    league_id = _extract_league_id(league_name, spec)
 
-    for over_code, under_code, param_key in lines:
-        threshold_str = params.get(param_key)
+    results: list[RawOddsData] = []
+    for line in lines:
+        threshold_str = params.get(line.param_key)
         if not threshold_str:
             continue
         try:
@@ -278,8 +322,8 @@ def _parse_game_total_lines(
         except (ValueError, TypeError):
             continue
 
-        over_odds = odds.get(over_code)
-        under_odds = odds.get(under_code)
+        over_odds = odds.get(line.over_code)
+        under_odds = odds.get(line.under_code)
         if over_odds is None and under_odds is None:
             continue
 
@@ -287,7 +331,7 @@ def _parse_game_total_lines(
             RawOddsData(
                 bookmaker_id="maxbet",
                 league_id=league_id,
-                sport="basketball",
+                sport=spec.sport,
                 home_team=home_team,
                 away_team=away_team,
                 market_type=market_type,
@@ -298,40 +342,59 @@ def _parse_game_total_lines(
                 start_time=start_time,
             )
         )
-
     return results
 
 
-def _get_player_match_ids(matches: list[dict]) -> list[int]:
-    """Extract supported player-props match IDs from the bulk listing."""
+def _get_player_match_ids_for_spec(matches: list[dict], spec: SportSpec) -> list[int]:
     ids: list[int] = []
     for m in matches:
-        if _PLAYER_LEAGUE_PREFIX not in m.get("leagueName", "").lower():
+        if not _is_player_match(m, spec):
             continue
-        params = m.get("params", {})
-        if not any(params.get(param_key) for param_key in _LIST_MATCH_PARAM_KEYS):
+        if not _has_supported_player_param(m, spec):
             continue
         match_id = m.get("id")
-        if match_id:
+        if match_id is not None:
             ids.append(match_id)
     return ids
 
 
-def _get_detail_fetch_concurrency(http_client: HttpClient, match_count: int) -> int:
-    if match_count <= 0:
-        return 0
+# ── Backward-compatible module-level wrappers (basketball-only) ──────────
 
-    if http_client.rate_limit_per_second <= 0:
-        return min(match_count, _UNLIMITED_DETAIL_CONCURRENCY)
 
-    return min(
-        match_count,
-        max(_MIN_DETAIL_CONCURRENCY, math.ceil(http_client.rate_limit_per_second)),
+def _parse_match_detail(match: dict) -> list[RawOddsData]:
+    return _parse_player_match(match, _BASKETBALL_SPEC)
+
+
+def _parse_game_total_match(match: dict) -> list[RawOddsData]:
+    return _parse_game_total_lines_for_spec(
+        match,
+        _BASKETBALL_SPEC,
+        _BASKETBALL_SPEC.game_total_lines,
+        _BASKETBALL_SPEC.game_total_market_type,
     )
 
 
+def _parse_game_total_ot_match(match: dict) -> list[RawOddsData]:
+    return _parse_game_total_lines_for_spec(
+        match,
+        _BASKETBALL_SPEC,
+        _BASKETBALL_SPEC.game_total_ot_lines,
+        _BASKETBALL_SPEC.game_total_ot_market_type,
+    )
+
+
+def _get_player_match_ids(matches: list[dict]) -> list[int]:
+    return _get_player_match_ids_for_spec(matches, _BASKETBALL_SPEC)
+
+
+# ── Scraper ─────────────────────────────────────────────────────────────
+
+
 class MaxBetScraper(BaseScraper):
-    """Real scraper for MaxBet basketball player props and full-game totals."""
+    """Real scraper for MaxBet, currently shipping basketball.
+
+    Adding a new sport means adding a new SportSpec entry to _SPORT_SPECS;
+    the per-sport pipeline is identical."""
 
     def __init__(self, http_client: HttpClient | None = None) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
@@ -343,85 +406,100 @@ class MaxBetScraper(BaseScraper):
         return "MaxBet"
 
     def get_supported_leagues(self) -> list[str]:
-        return ["basketball"]
+        return list(_SPORT_SPECS.keys())
 
-    async def _fetch_match_detail(
-        self,
-        match_id: int,
-        semaphore: asyncio.Semaphore,
-    ) -> list[RawOddsData]:
-        async with semaphore:
-            try:
-                detail = await self._http.get_json(
-                    _MATCH_URL.format(match_id=match_id),
-                    params=_DEFAULT_PARAMS,
-                    headers=_DEFAULT_HEADERS,
-                )
-            except Exception:
-                logger.warning("MaxBet: failed to fetch detail for match %s", match_id)
-                return []
-
-        return _parse_match_detail(detail)
-
-    async def _fetch_list_matches(self, url: str, label: str) -> list[dict]:
+    async def _fetch_list(self, url: str, label: str) -> list[dict]:
         try:
             data = await self._http.get_json(
-                url,
-                params=_DEFAULT_PARAMS,
-                headers=_DEFAULT_HEADERS,
+                url, params=_DEFAULT_PARAMS, headers=_DEFAULT_HEADERS,
             )
         except Exception:
             logger.warning("MaxBet: failed to fetch %s list", label, exc_info=True)
             return []
 
-        matches = data.get("esMatches", [])
+        matches = data.get("esMatches") if isinstance(data, dict) else None
         if not matches:
             logger.info("MaxBet: no %s matches found", label)
+            return []
         return matches
 
+    async def _fetch_bulk_details(
+        self,
+        bulk_url: str,
+        match_ids: list[int],
+    ) -> list[dict]:
+        if not match_ids:
+            return []
+        params = {**_DEFAULT_PARAMS, "matchIdsToken": ",".join(str(i) for i in match_ids)}
+        try:
+            data = await self._http.get_json(
+                bulk_url, params=params, headers=_DEFAULT_HEADERS,
+            )
+        except Exception:
+            logger.warning(
+                "MaxBet: bulk detail fetch failed for %d ids", len(match_ids), exc_info=True,
+            )
+            return []
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            # Defensive: some iBet endpoints return {id: match}; normalize.
+            return [v for v in data.values() if isinstance(v, dict)]
+        return []
+
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
-        if league_id != "basketball":
+        spec = _SPORT_SPECS.get(league_id)
+        if spec is None:
             return []
 
-        player_matches, total_matches = await asyncio.gather(
-            self._fetch_list_matches(_PLAYER_LIST_URL, "player props"),
-            self._fetch_list_matches(_TOTALS_LIST_URL, "game totals"),
-        )
+        list_tasks: list = [
+            self._fetch_list(spec.player_list_url, f"{spec.sport} player props")
+        ]
+        if spec.totals_list_url:
+            list_tasks.append(
+                self._fetch_list(spec.totals_list_url, f"{spec.sport} game totals")
+            )
 
+        list_results = await asyncio.gather(*list_tasks)
+        player_matches = list_results[0]
+        total_matches: list[dict] = list_results[1] if len(list_results) > 1 else []
+
+        # Game totals are read directly from the totals list (no detail fetch needed).
         regular_total_results: list[RawOddsData] = []
         ot_total_results: list[RawOddsData] = []
         total_match_count = 0
         for match in total_matches:
-            regular_parsed = _parse_game_total_match(match)
-            ot_parsed = _parse_game_total_ot_match(match)
-            if regular_parsed or ot_parsed:
-                total_match_count += 1
-            regular_total_results.extend(regular_parsed)
-            ot_total_results.extend(ot_parsed)
-
-        player_results: list[RawOddsData] = []
-        match_ids = _get_player_match_ids(player_matches)
-        concurrency = 0
-        if match_ids:
-            concurrency = _get_detail_fetch_concurrency(self._http, len(match_ids))
-            semaphore = asyncio.Semaphore(concurrency)
-            detail_results = await asyncio.gather(
-                *(self._fetch_match_detail(mid, semaphore) for mid in match_ids)
+            regular = _parse_game_total_lines_for_spec(
+                match, spec, spec.game_total_lines, spec.game_total_market_type,
             )
-            player_results = [item for batch in detail_results for item in batch]
-        else:
-            logger.info("MaxBet: no player points matches found")
+            ot = _parse_game_total_lines_for_spec(
+                match, spec, spec.game_total_ot_lines, spec.game_total_ot_market_type,
+            )
+            if regular or ot:
+                total_match_count += 1
+            regular_total_results.extend(regular)
+            ot_total_results.extend(ot)
 
-        total_results = regular_total_results + ot_total_results
-        results = total_results + player_results
+        # Player props: single bulk-detail GET replaces the previous N+1 loop.
+        player_results: list[RawOddsData] = []
+        match_ids = _get_player_match_ids_for_spec(player_matches, spec)
+        if match_ids:
+            details = await self._fetch_bulk_details(spec.bulk_detail_url, match_ids)
+            for detail in details:
+                player_results.extend(_parse_player_match(detail, spec))
+        else:
+            logger.info("MaxBet: no %s player-prop matches found", spec.sport)
+
+        results = regular_total_results + ot_total_results + player_results
         logger.info(
-            "MaxBet scraped %d odds (%d regular-time game totals, %d OT-inclusive game totals from %d matches, %d player odds from %d players, detail concurrency=%d)",
+            "MaxBet scraped %d %s odds (%d regular game totals, %d OT game totals from %d matches, "
+            "%d player odds from %d players via bulk-detail)",
             len(results),
+            spec.sport,
             len(regular_total_results),
             len(ot_total_results),
             total_match_count,
             len(player_results),
             len(match_ids),
-            concurrency,
         )
         return results
