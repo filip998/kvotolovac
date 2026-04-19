@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import time
 from datetime import datetime, timezone
 
@@ -35,6 +36,10 @@ _DEFAULT_HEADERS = {
 
 _TOKEN_REFRESH_MARGIN_S = 60
 _MAX_PAGES = 10
+_PRA_PLAYER_MARKET_RE = re.compile(
+    r"^(?P<player>.+?)\s+\([^)]+\)\s+Points,\s*Assists\s+and\s+Rebounds\s*$",
+    re.IGNORECASE,
+)
 
 
 def _build_basic_auth() -> str:
@@ -55,6 +60,21 @@ def _parse_player_name(raw_name: str) -> str:
         parts = raw_name.split(",", 1)
         return f"{parts[1].strip()} {parts[0].strip()}"
     return raw_name.strip()
+
+
+def _extract_player_name(raw_name: str) -> str | None:
+    name = raw_name.strip()
+    if not name:
+        return None
+
+    pra_match = _PRA_PLAYER_MARKET_RE.match(name)
+    if pra_match:
+        return pra_match.group("player").strip()
+
+    if "," in name:
+        return _parse_player_name(name)
+
+    return None
 
 
 def _extract_over_under_odds(selections: list[dict]) -> tuple[float | None, float | None]:
@@ -81,8 +101,8 @@ def _parse_start_time(epoch_ms: int | None) -> str | None:
 
 
 def _is_player_market(name: str) -> bool:
-    """Return True if the market name looks like a player ('LastName, FirstName')."""
-    return "," in name
+    """Return True if the market name can be resolved to a player prop name."""
+    return _extract_player_name(name) is not None
 
 
 def _is_game_total_ot_group(name: str) -> bool:
@@ -108,6 +128,8 @@ def _classify_supported_market_group(name: str) -> str | None:
         return "player_assists"
     if _matches_supported_player_group(name, normalized, "ukupnopostignutihtrojkiukljot"):
         return "player_3points"
+    if _PRA_PLAYER_MARKET_RE.match(name.strip()):
+        return "player_points_rebounds_assists"
     if normalized.startswith("ukupnoukljot"):
         return "game_total_ot"
     return None
@@ -164,10 +186,9 @@ def _parse_markets(
 ) -> list[RawOddsData]:
     """Parse Meridian markets response into RawOddsData.
 
-    Only markets whose ``name`` contains a comma (i.e. "LastName, FirstName"
-    format) are treated as player props.  This filters out fallback team-total
-    markets like "Ukupno (uklj.OT)" that Meridian sometimes returns when a
-    game-group has no player-level data.
+    Only markets whose ``name`` can be resolved to a player are treated as
+    player props. This filters out fallback team totals and ladder/milestone
+    shapes that Meridian sometimes returns alongside supported O/U markets.
     """
     results: list[RawOddsData] = []
 
@@ -180,8 +201,9 @@ def _parse_markets(
             if threshold is None:
                 continue
 
-            player_name = market.get("name", "")
-            if not player_name or not _is_player_market(player_name):
+            raw_player_name = str(market.get("name", ""))
+            player_name = _extract_player_name(raw_player_name)
+            if player_name is None:
                 continue
 
             over_odds, under_odds = _extract_over_under_odds(market.get("selections", []))
@@ -197,7 +219,7 @@ def _parse_markets(
                     home_team=home_team,
                     away_team=away_team,
                     market_type=market_type,
-                    player_name=_parse_player_name(player_name),
+                    player_name=player_name,
                     threshold=threshold,
                     over_odds=over_odds,
                     under_odds=under_odds,
@@ -265,6 +287,7 @@ def _parse_supported_markets(
         "player_rebounds": [],
         "player_assists": [],
         "player_3points": [],
+        "player_points_rebounds_assists": [],
     }
     game_total_groups: list[dict] = []
 
