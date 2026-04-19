@@ -25,6 +25,19 @@ def db(tmp_path, monkeypatch):
     asyncio.run(close_db())
 
 
+@pytest.fixture(autouse=True)
+def benchmark_dir(tmp_path, monkeypatch):
+    """Redirect scraper benchmark file output to a temp dir for every test.
+
+    The benchmark recorder is a module-level singleton that persists across
+    tests; without this fixture, any test that runs a full scrape cycle would
+    write artifacts into the real backend/benchmarks/ directory.
+    """
+    bench_path = tmp_path / "benchmarks"
+    monkeypatch.setattr(settings, "benchmark_dir", str(bench_path))
+    yield bench_path
+
+
 @pytest.fixture
 def league_registry_file(tmp_path, monkeypatch):
     source_path = Path(settings.league_registry_path)

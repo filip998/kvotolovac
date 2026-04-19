@@ -331,6 +331,10 @@ class Scheduler:
                 )
 
             self._scan_phase = "normalizing"
+            normalized = []
+            seen_matches: set[str] = set()
+            discrepancies = []
+            notified = 0
             (
                 normalized,
                 unresolved_odds,
@@ -350,7 +354,6 @@ class Scheduler:
 
                 self._scan_phase = "storing"
                 cycle_scraped_at = datetime.utcnow().isoformat()
-                seen_matches: set[str] = set()
                 for o in normalized:
                     if o.match_id not in seen_matches:
                         await odds_store.upsert_league(
@@ -414,6 +417,32 @@ class Scheduler:
                 if applied_auto_aliases:
                     await self._rollback_auto_applied_aliases(applied_auto_aliases)
                 raise
+            finally:
+                # Publish per-bookmaker benchmark snapshot regardless of whether
+                # downstream phases (normalize/store/analyze/notify) succeeded so
+                # operators can still see scrape-side timings on failed cycles.
+                try:
+                    matches_per_bm: dict[str, int] = defaultdict(int)
+                    odds_per_bm: dict[str, int] = defaultdict(int)
+                    seen_match_per_bm: dict[str, set[str]] = defaultdict(set)
+                    for o in normalized:
+                        odds_per_bm[o.bookmaker_id] += 1
+                        if o.match_id not in seen_match_per_bm[o.bookmaker_id]:
+                            seen_match_per_bm[o.bookmaker_id].add(o.match_id)
+                            matches_per_bm[o.bookmaker_id] += 1
+                    benchmark_recorder.record_phase_durations(
+                        scrape_duration_ms=scrape_duration_ms,
+                        cycle_duration_ms=int(
+                            (time.perf_counter() - cycle_started_at) * 1000
+                        ),
+                    )
+                    benchmark_recorder.publish(
+                        matches_per_bookmaker=dict(matches_per_bm),
+                        odds_per_bookmaker=dict(odds_per_bm),
+                        total_unique_matches=len(seen_matches),
+                    )
+                except Exception:
+                    logger.exception("Failed to publish scraper benchmark snapshot")
 
             result = {
                 "matches_scraped": len(seen_matches),
@@ -423,30 +452,6 @@ class Scheduler:
                 "scrape_duration_ms": scrape_duration_ms,
                 "cycle_duration_ms": int((time.perf_counter() - cycle_started_at) * 1000),
             }
-
-            # Aggregate per-bookmaker counts from the normalized output, then publish
-            # the benchmark snapshot. Done after analysis so failures during analyze
-            # don't suppress the file output.
-            try:
-                matches_per_bm: dict[str, int] = defaultdict(int)
-                odds_per_bm: dict[str, int] = defaultdict(int)
-                seen_match_per_bm: dict[str, set[str]] = defaultdict(set)
-                for o in normalized:
-                    odds_per_bm[o.bookmaker_id] += 1
-                    if o.match_id not in seen_match_per_bm[o.bookmaker_id]:
-                        seen_match_per_bm[o.bookmaker_id].add(o.match_id)
-                        matches_per_bm[o.bookmaker_id] += 1
-                benchmark_recorder.record_phase_durations(
-                    scrape_duration_ms=scrape_duration_ms,
-                    cycle_duration_ms=result["cycle_duration_ms"],
-                )
-                benchmark_recorder.publish(
-                    matches_per_bookmaker=dict(matches_per_bm),
-                    odds_per_bookmaker=dict(odds_per_bm),
-                    total_unique_matches=len(seen_matches),
-                )
-            except Exception:
-                logger.exception("Failed to publish scraper benchmark snapshot")
 
             logger.info("Cycle complete: %s", result)
             return result
