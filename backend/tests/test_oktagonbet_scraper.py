@@ -10,15 +10,14 @@ import pytest
 from app.scrapers.http_client import HttpClient
 from app.scrapers.oktagonbet_scraper import (
     OktagonBetScraper,
-    _get_detail_fetch_concurrency,
-    _get_player_match_ids,
-    _get_total_match_ids,
     _parse_match,
     _parse_game_total_ot_match,
     _parse_match_detail,
+    _parse_bulk_match,
     _parse_start_time,
     _is_player_market,
     _extract_league_id,
+    _SPORT_SPECS,
 )
 from app.models.schemas import RawOddsData
 
@@ -111,16 +110,6 @@ def test_extract_league_id_empty():
 
 
 # ── Parsing real fixture data ─────────────────────────────
-
-
-def test_get_player_match_ids(fixture_data, player_matches):
-    ids = _get_player_match_ids(fixture_data["esMatches"])
-    assert ids == [match["id"] for match in player_matches]
-
-
-def test_get_total_match_ids(totals_fixture_data):
-    ids = _get_total_match_ids(totals_fixture_data["list"]["esMatches"])
-    assert ids == [42182971]
 
 
 def test_parse_match_returns_data(player_matches):
@@ -391,24 +380,82 @@ def test_parse_match_detail_fixed_thresholds():
     assert all(r.under_odds is None for r in results)
 
 
-def test_get_detail_fetch_concurrency_uses_http_rate_limit():
-    http_client = HttpClient(rate_limit_per_second=4.0)
-    assert _get_detail_fetch_concurrency(http_client, 10) == 4
-
-
-def test_get_detail_fetch_concurrency_unlimited_rate_limit():
-    http_client = HttpClient(rate_limit_per_second=0)
-    assert _get_detail_fetch_concurrency(http_client, 12) == 10
-
-
 # ── Integration: OktagonBetScraper with mocked HTTP ──────────
+
+
+def _build_bulk_match_player(match_id: int, player: str, team: str, league: str, kickoff_ms: int, *, points_thr: float | None = None, points_over: float | None = None, points_under: float | None = None, milestones: dict | None = None) -> dict:
+    """Build a bulk-PUT-shape match for a player (SK) market."""
+    groups = []
+    if points_thr is not None:
+        groups.append({
+            "id": 6020,
+            "name": "Poeni Igraca",
+            "handicapParamValue": points_thr,
+            "tipTypes": [
+                {"tipTypeId": 51679, "value": points_over or 0},
+                {"tipTypeId": 51681, "value": points_under or 0},
+            ],
+        })
+    if milestones:
+        # milestones: {tip_type_id_str: odd}
+        groups.append({
+            "id": 2278620,
+            "name": "Milestones",
+            "handicapParamValue": None,
+            "tipTypes": [
+                {"tipTypeId": int(code), "value": odd} for code, odd in milestones.items()
+            ],
+        })
+    return {
+        "id": match_id,
+        "home": player,
+        "away": team,
+        "kickOffTime": kickoff_ms,
+        "leagueName": league,
+        "leagueCategory": "PL",
+        "sport": "SK",
+        "odBetPickGroups": groups,
+    }
+
+
+def _build_bulk_match_game_ot(match_id: int, home: str, away: str, league: str, kickoff_ms: int, ot_thresholds: dict[float, tuple[float | None, float | None]]) -> dict:
+    """Build a bulk-PUT-shape match for a basketball (B) game total OT market.
+
+    ``ot_thresholds`` maps threshold → (over_odd, under_odd). Each entry is
+    placed in its own group (matching how OktagonBet returns alt-OT lines).
+    """
+    # Allocate distinct (over, under) tip-type IDs from _GAME_TOTAL_OT_LINES
+    from app.scrapers.oktagonbet_scraper import _GAME_TOTAL_OT_LINES
+    groups = []
+    for idx, (thr, (over, under)) in enumerate(ot_thresholds.items()):
+        over_code, under_code, _ = _GAME_TOTAL_OT_LINES[idx % len(_GAME_TOTAL_OT_LINES)]
+        groups.append({
+            "id": 4204 + idx,
+            "name": f"Konacan ishod ukljucujuci OT - {thr}",
+            "handicapParamValue": thr,
+            "tipTypes": [
+                {"tipTypeId": int(over_code), "value": over or 0},
+                {"tipTypeId": int(under_code), "value": under or 0},
+            ],
+        })
+    return {
+        "id": match_id,
+        "home": home,
+        "away": away,
+        "kickOffTime": kickoff_ms,
+        "leagueName": league,
+        "sport": "B",
+        "odBetPickGroups": groups,
+    }
 
 
 @pytest.mark.asyncio
 async def test_scraper_returns_data(fixture_data):
     scraper = OktagonBetScraper()
-    with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get:
+    with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get, \
+         patch.object(scraper._http, "put_json", new_callable=AsyncMock) as mock_put:
         mock_get.return_value = fixture_data
+        mock_put.return_value = {}
         results = await scraper.scrape_odds("basketball")
 
     assert len(results) > 0
@@ -417,90 +464,120 @@ async def test_scraper_returns_data(fixture_data):
 
 
 @pytest.mark.asyncio
-async def test_scraper_fetches_ot_detail_ladder(totals_fixture_data):
+async def test_scraper_fetches_ot_detail_ladder_via_bulk():
+    """Bulk PUT response with extended OT thresholds should produce all ladder entries."""
     scraper = OktagonBetScraper()
-    list_data = json.loads(json.dumps(totals_fixture_data["list"]))
-    list_data["esMatches"][0]["odds"]["50444"] = 1.83
-    list_data["esMatches"][0]["odds"]["50445"] = 1.87
-
-    async def mock_get(url, **kwargs):
-        if "/sport/SK/mob" in url:
-            return {"esMatches": []}
-        if "/sport/B/mob" in url:
-            return list_data
-        if "/match/42182971" in url:
-            return totals_fixture_data["detail"]
-        raise AssertionError(f"Unexpected URL: {url}")
-
-    with patch.object(scraper._http, "get_json", side_effect=mock_get):
-        results = await scraper.scrape_odds("basketball")
-
-    assert len(results) == 9
-    assert {r.market_type for r in results} == {"game_total_ot"}
-    assert sorted(r.threshold for r in results) == [
-        153.5,
-        154.5,
-        155.5,
-        156.5,
-        157.5,
-        158.5,
-        159.5,
-        160.5,
-        161.5,
-    ]
-    base_line = next(result for result in results if result.threshold == 157.5)
-    assert (base_line.over_odds, base_line.under_odds) == (1.85, 1.85)
-
-
-@pytest.mark.asyncio
-async def test_scraper_detail_replaces_list_when_kickoff_time_changes(totals_fixture_data):
-    scraper = OktagonBetScraper()
-    list_data = json.loads(json.dumps(totals_fixture_data["list"]))
-    detail_data = json.loads(json.dumps(totals_fixture_data["detail"]))
-    list_data["esMatches"][0]["odds"]["50444"] = 1.83
-    list_data["esMatches"][0]["odds"]["50445"] = 1.87
-    detail_data["kickOffTime"] = list_data["esMatches"][0]["kickOffTime"] + 300000
-
-    async def mock_get(url, **kwargs):
-        if "/sport/SK/mob" in url:
-            return {"esMatches": []}
-        if "/sport/B/mob" in url:
-            return list_data
-        if "/match/42182971" in url:
-            return detail_data
-        raise AssertionError(f"Unexpected URL: {url}")
-
-    with patch.object(scraper._http, "get_json", side_effect=mock_get):
-        results = await scraper.scrape_odds("basketball")
-
-    assert len(results) == 9
-    base_line = next(result for result in results if result.threshold == 157.5)
-    assert (base_line.over_odds, base_line.under_odds) == (1.85, 1.85)
-    assert base_line.start_time == "2026-04-13T23:05:00+00:00"
-
-
-@pytest.mark.asyncio
-async def test_scraper_fetches_detail_ladders(player_matches):
-    scraper = OktagonBetScraper()
-    detail_matches = {
-        match["id"]: {
-            **match,
-            "odds": {**match["odds"], "54096": 1.18, "54101": 1.65},
-        }
-        for match in player_matches
+    list_match = {
+        "id": 42182971,
+        "home": "Obras Sanitarias",
+        "away": "Boca Juniors",
+        "kickOffTime": 1776722400000,
+        "leagueName": "Argentina ~ Liga A",
+        "sport": "B",
     }
+    bulk_match = _build_bulk_match_game_ot(
+        42182971, "Obras Sanitarias", "Boca Juniors",
+        "Argentina ~ Liga A", 1776722400000,
+        {
+            153.5: (1.55, 2.25),
+            154.5: (1.62, 2.10),
+            155.5: (1.70, 2.00),
+            156.5: (1.75, 1.95),
+            157.5: (1.85, 1.85),
+            158.5: (1.93, 1.77),
+            159.5: (2.00, 1.70),
+            160.5: (2.15, 1.60),
+            161.5: (2.30, 1.53),
+        },
+    )
+
+    async def mock_get(url, **kwargs):
+        if "/sport/SK/mob" in url:
+            return {"esMatches": []}
+        if "/sport/B/mob" in url:
+            return {"esMatches": [list_match]}
+        raise AssertionError(f"Unexpected GET URL: {url}")
+
+    async def mock_put(url, **kwargs):
+        assert "prematchesByIds.html" in url
+        return {42182971: bulk_match}
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get), \
+         patch.object(scraper._http, "put_json", side_effect=mock_put):
+        results = await scraper.scrape_odds("basketball")
+
+    ot_results = [r for r in results if r.market_type == "game_total_ot"]
+    assert len(ot_results) == 9
+    assert sorted(r.threshold for r in ot_results) == [
+        153.5, 154.5, 155.5, 156.5, 157.5, 158.5, 159.5, 160.5, 161.5,
+    ]
+    base_line = next(r for r in ot_results if r.threshold == 157.5)
+    assert (base_line.over_odds, base_line.under_odds) == (1.85, 1.85)
+
+
+@pytest.mark.asyncio
+async def test_scraper_uses_list_kickoff_when_bulk_kickoff_differs():
+    """List metadata wins for kickoff time even if bulk response has a different value."""
+    scraper = OktagonBetScraper()
+    list_kickoff = 1776722400000
+    list_match = {
+        "id": 42182971,
+        "home": "Obras Sanitarias",
+        "away": "Boca Juniors",
+        "kickOffTime": list_kickoff,
+        "leagueName": "Argentina ~ Liga A",
+        "sport": "B",
+    }
+    bulk_match = _build_bulk_match_game_ot(
+        42182971, "Obras Sanitarias", "Boca Juniors",
+        "Argentina ~ Liga A", list_kickoff + 300000,
+        {157.5: (1.85, 1.85)},
+    )
+
+    async def mock_get(url, **kwargs):
+        if "/sport/SK/mob" in url:
+            return {"esMatches": []}
+        if "/sport/B/mob" in url:
+            return {"esMatches": [list_match]}
+        raise AssertionError(f"Unexpected GET URL: {url}")
+
+    async def mock_put(url, **kwargs):
+        return {42182971: bulk_match}
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get), \
+         patch.object(scraper._http, "put_json", side_effect=mock_put):
+        results = await scraper.scrape_odds("basketball")
+
+    base_line = next(r for r in results if r.market_type == "game_total_ot" and r.threshold == 157.5)
+    assert base_line.start_time == "2026-04-20T22:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_scraper_fetches_milestone_ladders_via_bulk(player_matches):
+    """Bulk PUT response with the Milestones group should produce milestone entries per player."""
+    scraper = OktagonBetScraper()
+
+    # Build slim bulk-shape matches with milestones for each player.
+    bulk_payload = {}
+    for m in player_matches:
+        bulk_payload[m["id"]] = _build_bulk_match_player(
+            m["id"], m["home"], m["away"], m.get("leagueName", "Igrači ~ USA NBA"),
+            m.get("kickOffTime", 1775829600000),
+            milestones={"54096": 1.18, "54101": 1.65},
+        )
 
     async def mock_get(url, **kwargs):
         if "/sport/SK/mob" in url:
             return {"esMatches": player_matches}
         if "/sport/B/mob" in url:
             return {"esMatches": []}
-        for match_id, detail in detail_matches.items():
-            if f"/match/{match_id}" in url:
-                return detail
-        raise AssertionError(f"Unexpected URL: {url}")
+        raise AssertionError(f"Unexpected GET URL: {url}")
 
-    with patch.object(scraper._http, "get_json", side_effect=mock_get) as mock_get:
+    async def mock_put(url, **kwargs):
+        return bulk_payload
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get), \
+         patch.object(scraper._http, "put_json", side_effect=mock_put) as put_mock:
         results = await scraper.scrape_odds("basketball")
 
     ladder_results = [
@@ -510,19 +587,13 @@ async def test_scraper_fetches_detail_ladders(player_matches):
         and result.threshold in {4.5, 9.5}
     ]
     assert len(ladder_results) == len(player_matches) * 2
-    detail_calls = [
-        call.args[0]
-        for call in mock_get.await_args_list
-        if "/match/" in call.args[0]
-    ]
-    assert detail_calls == [
-        f"https://www.oktagonbet.com/restapi/offer/sr/match/{match['id']}"
-        for match in player_matches
-    ]
+    # Confirms we made exactly one bulk PUT (vs one GET per match).
+    assert put_mock.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_scraper_limits_detail_fetch_concurrency():
+async def test_scraper_makes_single_bulk_put_for_many_matches():
+    """Verify the bulk endpoint is called once per chunk, not per match."""
     matches = [
         {
             "id": 1000 + idx,
@@ -531,43 +602,39 @@ async def test_scraper_limits_detail_fetch_concurrency():
             "leagueName": "Igrači ~ USA NBA",
             "leagueCategory": "PL",
             "kickOffTime": 1775829600000,
-            "params": {"ouPlPoints": "15.5"},
-            "odds": {"51679": 1.88, "51681": 1.92},
+            "sport": "SK",
         }
         for idx in range(4)
     ]
-    scraper = OktagonBetScraper(HttpClient(rate_limit_per_second=3.0))
-    peak_active = 0
-    active = 0
+    bulk_payload = {
+        m["id"]: _build_bulk_match_player(
+            m["id"], m["home"], m["away"], m["leagueName"], m["kickOffTime"],
+            milestones={"54096": 1.5},
+        )
+        for m in matches
+    }
+    scraper = OktagonBetScraper()
 
     async def mock_get(url, **kwargs):
-        nonlocal peak_active, active
         if "/sport/SK/mob" in url:
             return {"esMatches": matches}
         if "/sport/B/mob" in url:
             return {"esMatches": []}
+        raise AssertionError(f"Unexpected GET URL: {url}")
 
-        active += 1
-        peak_active = max(peak_active, active)
-        try:
-            await asyncio.sleep(0.01)
-        finally:
-            active -= 1
+    async def mock_put(url, **kwargs):
+        return bulk_payload
 
-        match_id = int(url.rsplit("/", 1)[-1])
-        match = next(match for match in matches if match["id"] == match_id)
-        return {**match, "odds": {**match["odds"], "54096": 1.5}}
-
-    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+    with patch.object(scraper._http, "get_json", side_effect=mock_get), \
+         patch.object(scraper._http, "put_json", side_effect=mock_put) as put_mock:
         results = await scraper.scrape_odds("basketball")
 
-    assert peak_active > 1
-    assert peak_active <= 3
+    assert put_mock.await_count == 1  # single bulk call regardless of match count
     ladder_results = [
-        result for result in results
-        if result.market_type == "player_points_milestones"
-        and result.under_odds is None
-        and result.threshold == 4.5
+        r for r in results
+        if r.market_type == "player_points_milestones"
+        and r.under_odds is None
+        and r.threshold == 4.5
     ]
     assert len(ladder_results) == len(matches)
 
@@ -576,15 +643,62 @@ async def test_scraper_limits_detail_fetch_concurrency():
 async def test_scraper_filters_non_player_markets(fixture_data):
     """Duels and specials from fixture should be filtered out."""
     scraper = OktagonBetScraper()
-    with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get:
+    with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get, \
+         patch.object(scraper._http, "put_json", new_callable=AsyncMock) as mock_put:
         mock_get.return_value = fixture_data
+        mock_put.return_value = {}
         results = await scraper.scrape_odds("basketball")
 
     # Only "Igrači ~" (non-duel) matches should produce results
     player_names = {r.player_name for r in results}
     # Duels have two players in home — they should be filtered
     for name in player_names:
-        assert "&" not in name  # Specials have "Player A & Player B"
+        if name:
+            assert "&" not in name  # Specials have "Player A & Player B"
+
+
+def test_dedupe_merges_over_under_from_different_sources():
+    """Legacy parser emits over-only, bulk emits under-only — merged row should have both."""
+    over_only = RawOddsData(
+        bookmaker_id="oktagonbet", league_id="nba", sport="basketball",
+        home_team="Hawks", away_team="Player1", market_type="player_points",
+        player_name="Player1", threshold=15.5,
+        over_odds=1.85, under_odds=None, start_time="2026-04-13T23:00:00+00:00",
+    )
+    under_only = RawOddsData(
+        bookmaker_id="oktagonbet", league_id="nba", sport="basketball",
+        home_team="Hawks", away_team="Player1", market_type="player_points",
+        player_name="Player1", threshold=15.5,
+        over_odds=None, under_odds=1.92, start_time="2026-04-13T23:00:00+00:00",
+    )
+    merged = OktagonBetScraper._dedupe_raw_odds([over_only, under_only])
+    assert len(merged) == 1
+    assert merged[0].over_odds == 1.85
+    assert merged[0].under_odds == 1.92
+
+
+def test_parse_bulk_match_first_non_null_wins_for_duplicate_tip_types():
+    """If the same tipTypeId appears in two groups, keep the first non-null odd."""
+    spec = _SPORT_SPECS["basketball"]
+    match = {
+        "id": 1,
+        "home": "Player1",
+        "away": "Hawks",
+        "kickOffTime": 1775829600000,
+        "leagueName": "Igrači ~ USA NBA",
+        "leagueCategory": "PL",
+        "sport": "SK",
+        "odBetPickGroups": [
+            {"id": 6020, "name": "Poeni Igraca", "handicapParamValue": 15.5,
+             "tipTypes": [{"tipTypeId": 51679, "value": 1.85}, {"tipTypeId": 51681, "value": 1.95}]},
+            {"id": 6020, "name": "Poeni Igraca (dup)", "handicapParamValue": 15.5,
+             "tipTypes": [{"tipTypeId": 51679, "value": 9.99}, {"tipTypeId": 51681, "value": 9.99}]},
+        ],
+    }
+    results = _parse_bulk_match(match, spec)
+    assert len(results) == 1
+    assert results[0].over_odds == 1.85
+    assert results[0].under_odds == 1.95
 
 
 @pytest.mark.asyncio

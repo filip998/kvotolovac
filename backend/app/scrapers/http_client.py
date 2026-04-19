@@ -182,6 +182,59 @@ class HttpClient:
 
         raise last_error or RuntimeError(f"Failed after {self._max_retries + 1} attempts")
 
+    async def put_json(
+        self,
+        url: str,
+        *,
+        json_body: Any = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        """PUT JSON with retry, rate limiting, and proxy rotation.
+
+        Returns the parsed JSON body. The body may be a dict, list, or other
+        JSON-compatible value depending on the endpoint.
+        """
+        last_error: Exception | None = None
+
+        for attempt in range(self._max_retries + 1):
+            try:
+                client = await self._get_client()
+                merged_headers = {**self._default_headers, **(headers or {})}
+                await self._acquire_request_slot()
+
+                response = await client.put(
+                    url,
+                    json=json_body,
+                    headers=merged_headers,
+                )
+
+                if response.status_code in _RETRYABLE_STATUS_CODES:
+                    logger.warning(
+                        "Retryable status %d from %s (attempt %d/%d)",
+                        response.status_code, url, attempt + 1, self._max_retries + 1,
+                    )
+                    if attempt < self._max_retries:
+                        self._rotate_proxy()
+                        await asyncio.sleep(self._backoff_base * (2 ** attempt))
+                        continue
+                    response.raise_for_status()
+
+                response.raise_for_status()
+                return response.json()
+
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as exc:
+                last_error = exc
+                logger.warning(
+                    "Network error from %s: %s (attempt %d/%d)",
+                    url, exc, attempt + 1, self._max_retries + 1,
+                )
+                if attempt < self._max_retries:
+                    self._rotate_proxy()
+                    await asyncio.sleep(self._backoff_base * (2 ** attempt))
+                    continue
+
+        raise last_error or RuntimeError(f"Failed after {self._max_retries + 1} attempts")
+
     async def close(self) -> None:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
