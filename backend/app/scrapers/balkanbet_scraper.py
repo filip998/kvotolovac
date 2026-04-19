@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -13,21 +13,20 @@ from ..models.schemas import RawOddsData
 
 logger = logging.getLogger(__name__)
 
-_LIST_URL = "https://sports-sm-distribution-api.de-2.nsoftcdn.com/api/v1/events"
-_DETAIL_URL = "https://sports-sm-distribution-api.de-2.nsoftcdn.com/api/v1/events/{event_id}"
+# ── NSoft platform constants ────────────────────────────────────────────
+#
+# BalkanBet runs on NSoft 7platform.  All offer data is served by a single
+# REST endpoint that returns events with their markets and outcomes embedded
+# inline (no per-event detail call needed) when shortProps=1 is requested.
 
+_LIST_URL = "https://sports-sm-distribution-api.de-2.nsoftcdn.com/api/v1/events"
 _COMPANY_UUID = "4f54c6aa-82a9-475d-bf0e-dc02ded89225"
-_BASKETBALL_SPORT_ID = "36"
-_PLAYER_SPORT_ID = "273"
-_GAME_TOTAL_OT_MARKET_ID = 530
-_PLAYER_POINTS_MARKET_ID = 2402
 
 _LIST_DATA_FORMAT = '{"default":"object","events":"array","outcomes":"array"}'
 _LIST_LANGUAGE = (
     '{"default":"sr-Latn","events":"sr-Latn","sport":"sr-Latn",'
     '"category":"sr-Latn","tournament":"sr-Latn","team":"sr-Latn","market":"sr-Latn"}'
 )
-_DETAIL_DATA_FORMAT = '{"default":"array","markets":"array","events":"array"}'
 
 _DEFAULT_HEADERS = {
     "Accept": "application/json",
@@ -50,16 +49,40 @@ _BASE_LIST_PARAMS = {
     "language": _LIST_LANGUAGE,
     "timezone": "Europe/Belgrade",
 }
-_PLAYER_LIST_PARAMS = {**_BASE_LIST_PARAMS, "filter[sportId]": _PLAYER_SPORT_ID}
-_GAME_TOTAL_OT_LIST_PARAMS = {
-    **_BASE_LIST_PARAMS,
-    "filter[sportId]": _BASKETBALL_SPORT_ID,
-}
 
-_UNLIMITED_DETAIL_CONCURRENCY = 10
-_MIN_DETAIL_CONCURRENCY = 2
 _REQUEST_TIMEZONE = ZoneInfo("Europe/Belgrade")
-_TOURNAMENT_LEAGUE_MAP: dict[int, str] = {
+_PLAYER_NAME_RE = re.compile(r"^(.+?)\s*\(([^)]+)\)\s*$")
+
+
+# ── Per-sport spec ──────────────────────────────────────────────────────
+#
+# Each NSoftSportSpec captures everything sport-specific so adding a new sport
+# (football, tennis, hockey…) is a single dict entry.  The list-fetch + parse
+# pipeline lives in BalkanBetScraper and is sport-agnostic.
+
+
+@dataclass(frozen=True)
+class NSoftSportSpec:
+    """Per-sport configuration for the NSoft (BalkanBet) offer endpoint."""
+
+    sport: str
+    # NSoft splits player props onto a dedicated sport ID separate from the
+    # game-level sport ID. Both are stringified because that is how the API
+    # accepts them in `filter[sportId]`.
+    player_sport_id: str
+    totals_sport_id: str
+    # Set of NSoft `marketId` values that represent player point totals.
+    # We currently model them all as a single `player_points` market type
+    # (matches existing storage shape and other scrapers' output).
+    player_points_market_ids: frozenset[int]
+    # Set of NSoft `marketId` values that represent game totals incl. OT.
+    game_total_ot_market_ids: frozenset[int]
+    # tournamentId → canonical league slug.  Anything not found falls back to
+    # `balkanbet_tournament_<id>` / `balkanbet_category_<id>`.
+    tournament_league_map: dict[int, str] = field(default_factory=dict)
+
+
+_BASKETBALL_TOURNAMENT_LEAGUE_MAP: dict[int, str] = {
     252: "euroleague",
     29368: "aba_liga",
     30757: "turkey",
@@ -67,7 +90,21 @@ _TOURNAMENT_LEAGUE_MAP: dict[int, str] = {
     31353: "germany",
 }
 
-_PLAYER_NAME_RE = re.compile(r"^(.+?)\s*\(([^)]+)\)\s*$")
+_BASKETBALL_SPEC = NSoftSportSpec(
+    sport="basketball",
+    player_sport_id="273",
+    totals_sport_id="36",
+    player_points_market_ids=frozenset({2402}),
+    game_total_ot_market_ids=frozenset({530}),
+    tournament_league_map=_BASKETBALL_TOURNAMENT_LEAGUE_MAP,
+)
+
+_SPORT_SPECS: dict[str, NSoftSportSpec] = {
+    _BASKETBALL_SPEC.sport: _BASKETBALL_SPEC,
+}
+
+
+# ── Generic helpers ─────────────────────────────────────────────────────
 
 
 def _format_filter_from(dt: datetime | None = None) -> str:
@@ -88,7 +125,13 @@ def _parse_player_name(name: str) -> tuple[str, str | None]:
 
 
 def _iter_list_markets(event: dict) -> list[dict]:
-    markets = event.get("o") or {}
+    """Iterate over an event's markets, accepting both shortProps (`o`)
+    and long-key (`markets`) container shapes."""
+    markets = event.get("o")
+    if markets is None:
+        markets = event.get("markets")
+    if markets is None:
+        return []
     if isinstance(markets, dict):
         return [market for market in markets.values() if isinstance(market, dict)]
     if isinstance(markets, list):
@@ -96,31 +139,12 @@ def _iter_list_markets(event: dict) -> list[dict]:
     return []
 
 
-def _get_events_with_market_id(data: dict, market_id: int) -> list[dict]:
-    events = data.get("data", {}).get("events", [])
-    matching_events: list[dict] = []
-    for event in events:
-        if any(market.get("b") == market_id for market in _iter_list_markets(event)):
-            matching_events.append(event)
-    return matching_events
-
-
-def _get_event_ids(data: dict) -> list[int]:
-    """Extract event IDs that have a player-points market from list response."""
-    ids: list[int] = []
-    for ev in _get_events_with_market_id(data, _PLAYER_POINTS_MARKET_ID):
-        event_id = ev.get("a")
-        if event_id:
-            ids.append(int(event_id))
-    return ids
-
-
 def _normalize_start_time(raw: str | None) -> str | None:
     """Convert an ISO-8601 timestamp to the canonical ``+00:00`` format.
 
-    The BalkanBet API returns ``2026-04-11T16:00:00.000Z`` but other scrapers
-    produce ``2026-04-11T16:00:00+00:00``.  The normalizer compares start
-    times as strings, so the format must match.
+    BalkanBet returns ``2026-04-11T16:00:00.000Z``; the normalizer compares
+    start times as strings so we must match other scrapers' canonical
+    ``+00:00`` form exactly.
     """
     if not raw:
         return None
@@ -131,14 +155,44 @@ def _normalize_start_time(raw: str | None) -> str | None:
         return raw
 
 
-def _extract_league_id(category_id: int | None, tournament_id: int | None) -> str:
-    if tournament_id in _TOURNAMENT_LEAGUE_MAP:
-        return _TOURNAMENT_LEAGUE_MAP[tournament_id]
-    if tournament_id is not None:
-        return f"balkanbet_tournament_{tournament_id}"
-    if category_id is not None:
-        return f"balkanbet_category_{category_id}"
-    return "basketball"
+def _coerce_int(value) -> int | None:
+    """Coerce numeric-looking values (incl. numeric strings) to int.
+
+    NSoft has been observed to send IDs as either ``int`` or numeric ``str``
+    depending on shortProps/dataFormat options.  We canonicalize on int so
+    league-map lookups are stable.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.lstrip("-").isdigit():
+            try:
+                return int(stripped)
+            except ValueError:
+                return None
+    return None
+
+
+def _extract_league_id(
+    category_id,
+    tournament_id,
+    tournament_league_map: dict[int, str],
+    default: str = "basketball",
+) -> str:
+    tournament_int = _coerce_int(tournament_id)
+    category_int = _coerce_int(category_id)
+    if tournament_int is not None and tournament_int in tournament_league_map:
+        return tournament_league_map[tournament_int]
+    if tournament_int is not None:
+        return f"balkanbet_tournament_{tournament_int}"
+    if category_int is not None:
+        return f"balkanbet_category_{category_int}"
+    return default
 
 
 def _extract_outcome_price(outcome: dict) -> float | None:
@@ -162,59 +216,17 @@ def _extract_over_under_odds(outcomes: list[dict]) -> tuple[float | None, float 
     return over_odds, under_odds
 
 
-def _parse_event_detail(data: dict, league_id: str | None = None) -> list[RawOddsData]:
-    """Parse a single event detail response into RawOddsData entries."""
-    results: list[RawOddsData] = []
+def _extract_threshold(market: dict) -> float | None:
+    special_values = market.get("g") or market.get("specialValues") or []
+    if not special_values:
+        return None
+    try:
+        return float(special_values[0])
+    except (ValueError, TypeError, IndexError):
+        return None
 
-    detail = data.get("data", data)
-    if not detail:
-        return results
 
-    raw_name = detail.get("name", "")
-    player_name, team = _parse_player_name(raw_name)
-    start_time = _normalize_start_time(detail.get("startsAt"))
-    effective_league_id = league_id or _extract_league_id(
-        detail.get("categoryId"),
-        detail.get("tournamentId"),
-    )
-
-    markets = detail.get("markets") or []
-    for mkt in markets:
-        if mkt.get("marketId") != _PLAYER_POINTS_MARKET_ID:
-            continue
-
-        special_values = mkt.get("specialValues") or []
-        if not special_values:
-            continue
-
-        try:
-            threshold = float(special_values[0])
-        except (ValueError, TypeError, IndexError):
-            continue
-
-        outcomes = mkt.get("outcomes") or []
-        over_odds, under_odds = _extract_over_under_odds(outcomes)
-
-        if over_odds is None and under_odds is None:
-            continue
-
-        results.append(
-            RawOddsData(
-                bookmaker_id="balkanbet",
-                league_id=effective_league_id,
-                sport="basketball",
-                home_team=team or "",
-                away_team=player_name,
-                market_type="player_points",
-                player_name=player_name,
-                threshold=threshold,
-                over_odds=over_odds,
-                under_odds=under_odds,
-                start_time=start_time,
-            )
-        )
-
-    return results
+# ── List parsers ────────────────────────────────────────────────────────
 
 
 def _split_match_name(name: str) -> tuple[str, str] | None:
@@ -228,29 +240,40 @@ def _split_match_name(name: str) -> tuple[str, str] | None:
     return home_team, away_team
 
 
-def _parse_game_total_ot_list(data: dict) -> list[RawOddsData]:
-    results: list[RawOddsData] = []
+def _parse_player_points_list(
+    data: dict,
+    spec: NSoftSportSpec,
+) -> list[RawOddsData]:
+    """Parse the player-prop sport list response into RawOddsData entries.
 
-    for event in _get_events_with_market_id(data, _GAME_TOTAL_OT_MARKET_ID):
-        matchup = _split_match_name(event.get("j") or event.get("name") or "")
-        if matchup is None:
+    NSoft's ``WEB_OVERVIEW`` template returns markets and outcomes inline on
+    each event when ``shortProps=1`` is set, so a single list call replaces
+    the previous N+1 per-event detail fetches.
+    """
+    results: list[RawOddsData] = []
+    events = data.get("data", {}).get("events", [])
+
+    for event in events:
+        raw_name = event.get("j") or event.get("name") or ""
+        player_name, team = _parse_player_name(raw_name)
+        if not player_name:
             continue
 
-        home_team, away_team = matchup
         start_time = _normalize_start_time(event.get("n") or event.get("startsAt"))
-        league_id = _extract_league_id(event.get("c"), event.get("f"))
+        league_id = _extract_league_id(
+            event.get("c") if event.get("c") is not None else event.get("categoryId"),
+            event.get("f") if event.get("f") is not None else event.get("tournamentId"),
+            spec.tournament_league_map,
+            default=spec.sport,
+        )
 
         for market in _iter_list_markets(event):
-            if market.get("b") != _GAME_TOTAL_OT_MARKET_ID:
+            market_id = market.get("b") or market.get("marketId")
+            if market_id not in spec.player_points_market_ids:
                 continue
 
-            special_values = market.get("g") or market.get("specialValues") or []
-            if not special_values:
-                continue
-
-            try:
-                threshold = float(special_values[0])
-            except (ValueError, TypeError, IndexError):
+            threshold = _extract_threshold(market)
+            if threshold is None:
                 continue
 
             outcomes = market.get("h") or market.get("outcomes") or []
@@ -262,7 +285,61 @@ def _parse_game_total_ot_list(data: dict) -> list[RawOddsData]:
                 RawOddsData(
                     bookmaker_id="balkanbet",
                     league_id=league_id,
-                    sport="basketball",
+                    sport=spec.sport,
+                    home_team=team or "",
+                    away_team=player_name,
+                    market_type="player_points",
+                    player_name=player_name,
+                    threshold=threshold,
+                    over_odds=over_odds,
+                    under_odds=under_odds,
+                    start_time=start_time,
+                )
+            )
+
+    return results
+
+
+def _parse_game_total_ot_list(
+    data: dict,
+    spec: NSoftSportSpec,
+) -> list[RawOddsData]:
+    results: list[RawOddsData] = []
+    events = data.get("data", {}).get("events", [])
+
+    for event in events:
+        matchup = _split_match_name(event.get("j") or event.get("name") or "")
+        if matchup is None:
+            continue
+
+        home_team, away_team = matchup
+        start_time = _normalize_start_time(event.get("n") or event.get("startsAt"))
+        league_id = _extract_league_id(
+            event.get("c") if event.get("c") is not None else event.get("categoryId"),
+            event.get("f") if event.get("f") is not None else event.get("tournamentId"),
+            spec.tournament_league_map,
+            default=spec.sport,
+        )
+
+        for market in _iter_list_markets(event):
+            market_id = market.get("b") or market.get("marketId")
+            if market_id not in spec.game_total_ot_market_ids:
+                continue
+
+            threshold = _extract_threshold(market)
+            if threshold is None:
+                continue
+
+            outcomes = market.get("h") or market.get("outcomes") or []
+            over_odds, under_odds = _extract_over_under_odds(outcomes)
+            if over_odds is None and under_odds is None:
+                continue
+
+            results.append(
+                RawOddsData(
+                    bookmaker_id="balkanbet",
+                    league_id=league_id,
+                    sport=spec.sport,
                     home_team=home_team,
                     away_team=away_team,
                     market_type="game_total_ot",
@@ -276,19 +353,16 @@ def _parse_game_total_ot_list(data: dict) -> list[RawOddsData]:
     return results
 
 
-def _get_detail_fetch_concurrency(http_client: HttpClient, event_count: int) -> int:
-    if event_count <= 0:
-        return 0
-    if http_client.rate_limit_per_second <= 0:
-        return min(event_count, _UNLIMITED_DETAIL_CONCURRENCY)
-    return min(
-        event_count,
-        max(_MIN_DETAIL_CONCURRENCY, math.ceil(http_client.rate_limit_per_second)),
-    )
+# ── Scraper ─────────────────────────────────────────────────────────────
 
 
 class BalkanBetScraper(BaseScraper):
-    """Scraper for BalkanBet basketball player points and OT-inclusive totals."""
+    """Scraper for BalkanBet (NSoft 7platform) basketball player points and OT-inclusive totals.
+
+    Issues two list calls per scrape (player-props sport + game-totals sport)
+    and parses markets/outcomes directly from the inline ``WEB_OVERVIEW``
+    response.  No per-event detail calls are made.
+    """
 
     def __init__(self, http_client: HttpClient | None = None) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
@@ -300,31 +374,7 @@ class BalkanBetScraper(BaseScraper):
         return "BalkanBet"
 
     def get_supported_leagues(self) -> list[str]:
-        return ["basketball"]
-
-    async def _fetch_event_detail(
-        self,
-        event_id: int,
-        semaphore: asyncio.Semaphore,
-    ) -> list[RawOddsData]:
-        async with semaphore:
-            try:
-                detail = await self._http.get_json(
-                    _DETAIL_URL.format(event_id=event_id),
-                    params={
-                        "companyUuid": _COMPANY_UUID,
-                        "id": str(event_id),
-                        "language": _LIST_LANGUAGE,
-                        "timezone": "Europe/Belgrade",
-                        "dataFormat": _DETAIL_DATA_FORMAT,
-                    },
-                    headers=_DEFAULT_HEADERS,
-                )
-            except Exception:
-                logger.warning("BalkanBet: failed to fetch detail for event %s", event_id)
-                return []
-
-        return _parse_event_detail(detail)
+        return list(_SPORT_SPECS.keys())
 
     async def _fetch_list(self, params: dict, label: str) -> dict:
         try:
@@ -338,43 +388,36 @@ class BalkanBetScraper(BaseScraper):
             return {}
 
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
-        if league_id != "basketball":
+        spec = _SPORT_SPECS.get(league_id)
+        if spec is None:
             return []
 
         now_iso = _format_filter_from()
-        player_list_params = {**_PLAYER_LIST_PARAMS, "filter[from]": now_iso}
-        total_list_params = {**_GAME_TOTAL_OT_LIST_PARAMS, "filter[from]": now_iso}
+        player_params = {
+            **_BASE_LIST_PARAMS,
+            "filter[sportId]": spec.player_sport_id,
+            "filter[from]": now_iso,
+        }
+        totals_params = {
+            **_BASE_LIST_PARAMS,
+            "filter[sportId]": spec.totals_sport_id,
+            "filter[from]": now_iso,
+        }
 
-        player_data, total_data = await asyncio.gather(
-            self._fetch_list(player_list_params, "player-points"),
-            self._fetch_list(total_list_params, "game-total-ot"),
+        player_data, totals_data = await asyncio.gather(
+            self._fetch_list(player_params, f"{spec.sport} player-points"),
+            self._fetch_list(totals_params, f"{spec.sport} game-total-ot"),
         )
 
-        player_event_ids = _get_event_ids(player_data)
-        player_results: list[RawOddsData] = []
-        if player_event_ids:
-            concurrency = _get_detail_fetch_concurrency(self._http, len(player_event_ids))
-            semaphore = asyncio.Semaphore(concurrency)
-            detail_results = await asyncio.gather(
-                *(self._fetch_event_detail(eid, semaphore) for eid in player_event_ids)
-            )
-            player_results = [item for batch in detail_results for item in batch]
-        else:
-            concurrency = 0
-
-        ot_total_events = _get_events_with_market_id(total_data, _GAME_TOTAL_OT_MARKET_ID)
-        total_results = _parse_game_total_ot_list(total_data)
-        results = [*player_results, *total_results]
+        player_results = _parse_player_points_list(player_data, spec)
+        totals_results = _parse_game_total_ot_list(totals_data, spec)
+        results = [*player_results, *totals_results]
 
         logger.info(
-            (
-                "BalkanBet scraped %d player odds from %d player events "
-                "(detail concurrency=%d) and %d OT total odds from %d basketball events"
-            ),
+            "BalkanBet scraped %d %s player odds and %d %s OT total odds",
             len(player_results),
-            len(player_event_ids),
-            concurrency,
-            len(total_results),
-            len(ot_total_events),
+            spec.sport,
+            len(totals_results),
+            spec.sport,
         )
         return results
