@@ -32,6 +32,16 @@ CREATE TABLE IF NOT EXISTS matches (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS match_bookmaker_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id TEXT NOT NULL REFERENCES matches(id),
+    bookmaker_id TEXT NOT NULL REFERENCES bookmakers(id),
+    source_url TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(match_id, bookmaker_id)
+);
+
 CREATE TABLE IF NOT EXISTS odds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     match_id TEXT REFERENCES matches(id),

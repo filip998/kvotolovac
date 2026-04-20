@@ -211,6 +211,39 @@ async def upsert_match(
     await db.commit()
 
 
+async def _upsert_match_bookmaker_source_tx(
+    db: aiosqlite.Connection,
+    *,
+    match_id: str,
+    bookmaker_id: str,
+    source_url: str | None,
+) -> None:
+    await db.execute(
+        """INSERT INTO match_bookmaker_sources (match_id, bookmaker_id, source_url)
+           VALUES (?, ?, ?)
+           ON CONFLICT(match_id, bookmaker_id) DO UPDATE SET
+                source_url = COALESCE(excluded.source_url, match_bookmaker_sources.source_url),
+                updated_at = CURRENT_TIMESTAMP""",
+        (match_id, bookmaker_id, source_url),
+    )
+
+
+async def upsert_match_bookmaker_source(
+    *,
+    match_id: str,
+    bookmaker_id: str,
+    source_url: str | None,
+) -> None:
+    db = await get_db()
+    await _upsert_match_bookmaker_source_tx(
+        db,
+        match_id=match_id,
+        bookmaker_id=bookmaker_id,
+        source_url=source_url,
+    )
+    await db.commit()
+
+
 async def get_matches(
     league_id: str | None = None,
     status: str | None = None,
@@ -368,7 +401,50 @@ async def merge_matches(
         )
         reassigned_history = reassigned_history_cur.rowcount or 0
 
-        # 4. discrepancies: bulk update; no UNIQUE constraint. The duplicate
+        # 4. match_bookmaker_sources has UNIQUE(match_id, bookmaker_id), so it
+        #    needs the same dedupe-before-update treatment as odds.
+        source_rows = await db.execute_fetchall(
+            f"""
+            SELECT id, match_id, bookmaker_id, source_url
+            FROM match_bookmaker_sources
+            WHERE match_id IN ({all_placeholders})
+            """,
+            all_match_ids,
+        )
+
+        source_groups: dict[str, list[aiosqlite.Row]] = {}
+        for row in source_rows:
+            source_groups.setdefault(str(row["bookmaker_id"]), []).append(row)
+
+        source_ids_to_delete: list[int] = []
+        for grouped_rows in source_groups.values():
+            if len(grouped_rows) <= 1:
+                continue
+            winner = max(
+                grouped_rows,
+                key=lambda row: (
+                    1 if row["source_url"] else 0,
+                    1 if row["match_id"] == target_match_id else 0,
+                    int(row["id"]),
+                ),
+            )
+            source_ids_to_delete.extend(
+                int(row["id"]) for row in grouped_rows if row["id"] != winner["id"]
+            )
+
+        if source_ids_to_delete:
+            source_del_placeholders = _sql_placeholders(source_ids_to_delete)
+            await db.execute(
+                f"DELETE FROM match_bookmaker_sources WHERE id IN ({source_del_placeholders})",
+                source_ids_to_delete,
+            )
+
+        await db.execute(
+            f"UPDATE match_bookmaker_sources SET match_id = ? WHERE match_id IN ({placeholders})",
+            [target_match_id, *params],
+        )
+
+        # 5. discrepancies: bulk update; no UNIQUE constraint. The duplicate
         #    rows will be deactivated on the next discrepancy detection cycle.
         reassigned_disc_cur = await db.execute(
             f"UPDATE discrepancies SET match_id = ? WHERE match_id IN ({placeholders})",
@@ -376,7 +452,7 @@ async def merge_matches(
         )
         reassigned_disc = reassigned_disc_cur.rowcount or 0
 
-        # 5. Delete the now-empty source match rows.
+        # 6. Delete the now-empty source match rows.
         deleted_cur = await db.execute(
             f"DELETE FROM matches WHERE id IN ({placeholders})",
             params,
@@ -471,6 +547,12 @@ async def upsert_odds(odds: NormalizedOdds, *, scraped_at: str) -> int:
             scraped_at,
         ),
     )
+    await _upsert_match_bookmaker_source_tx(
+        db,
+        match_id=odds.match_id,
+        bookmaker_id=odds.bookmaker_id,
+        source_url=odds.source_url,
+    )
     await db.commit()
     cursor = await db.execute("SELECT last_insert_rowid()")
     row = await cursor.fetchone()
@@ -482,9 +564,11 @@ async def get_odds_for_match(match_id: str) -> list[OddsOut]:
     current_snapshot_at = await _get_current_snapshot_at(db)
     if current_snapshot_at is not None:
         rows = await db.execute_fetchall(
-            """SELECT o.*, b.name as bookmaker_name
+            """SELECT o.*, b.name as bookmaker_name, s.source_url as source_url
                FROM odds o
                LEFT JOIN bookmakers b ON o.bookmaker_id = b.id
+               LEFT JOIN match_bookmaker_sources s
+                 ON s.match_id = o.match_id AND s.bookmaker_id = o.bookmaker_id
                WHERE o.match_id = ? AND o.scraped_at = ?
                ORDER BY o.market_type, o.player_name, o.threshold""",
             (match_id, current_snapshot_at),
@@ -495,9 +579,11 @@ async def get_odds_for_match(match_id: str) -> list[OddsOut]:
             return []
         _, cutoff_at = legacy_window
         rows = await db.execute_fetchall(
-            """SELECT o.*, b.name as bookmaker_name
+            """SELECT o.*, b.name as bookmaker_name, s.source_url as source_url
                FROM odds o
                LEFT JOIN bookmakers b ON o.bookmaker_id = b.id
+               LEFT JOIN match_bookmaker_sources s
+                 ON s.match_id = o.match_id AND s.bookmaker_id = o.bookmaker_id
                WHERE o.match_id = ? AND o.scraped_at >= ?
                ORDER BY o.market_type, o.player_name, o.threshold""",
             (match_id, cutoff_at),
@@ -831,12 +917,17 @@ async def get_discrepancies(
 ) -> list[DiscrepancyDetail]:
     db = await get_db()
     q = """SELECT d.*, m.home_team, m.away_team, l.name as league_name,
-                  ba.name as bookmaker_a_name, bb.name as bookmaker_b_name
+                  ba.name as bookmaker_a_name, sa.source_url as bookmaker_a_source_url,
+                  bb.name as bookmaker_b_name, sb.source_url as bookmaker_b_source_url
            FROM discrepancies d
            LEFT JOIN matches m ON d.match_id = m.id
            LEFT JOIN leagues l ON m.league_id = l.id
            LEFT JOIN bookmakers ba ON d.bookmaker_a_id = ba.id
-           LEFT JOIN bookmakers bb ON d.bookmaker_b_id = bb.id"""
+           LEFT JOIN bookmakers bb ON d.bookmaker_b_id = bb.id
+           LEFT JOIN match_bookmaker_sources sa
+             ON sa.match_id = d.match_id AND sa.bookmaker_id = d.bookmaker_a_id
+           LEFT JOIN match_bookmaker_sources sb
+             ON sb.match_id = d.match_id AND sb.bookmaker_id = d.bookmaker_b_id"""
     conditions = []
     params: list = []
 
@@ -879,11 +970,16 @@ async def get_discrepancy(disc_id: int) -> DiscrepancyDetail | None:
     db = await get_db()
     rows = await db.execute_fetchall(
         """SELECT d.*, m.home_team, m.away_team,
-                  ba.name as bookmaker_a_name, bb.name as bookmaker_b_name
+                  ba.name as bookmaker_a_name, sa.source_url as bookmaker_a_source_url,
+                  bb.name as bookmaker_b_name, sb.source_url as bookmaker_b_source_url
            FROM discrepancies d
            LEFT JOIN matches m ON d.match_id = m.id
            LEFT JOIN bookmakers ba ON d.bookmaker_a_id = ba.id
            LEFT JOIN bookmakers bb ON d.bookmaker_b_id = bb.id
+           LEFT JOIN match_bookmaker_sources sa
+             ON sa.match_id = d.match_id AND sa.bookmaker_id = d.bookmaker_a_id
+           LEFT JOIN match_bookmaker_sources sb
+             ON sb.match_id = d.match_id AND sb.bookmaker_id = d.bookmaker_b_id
            WHERE d.id = ?""",
         (disc_id,),
     )

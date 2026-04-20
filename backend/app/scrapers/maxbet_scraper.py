@@ -176,6 +176,7 @@ _SPORT_SPECS: dict[str, SportSpec] = {
 _PLAYER_LIST_URL = _BASKETBALL_SPEC.player_list_url
 _TOTALS_LIST_URL = _BASKETBALL_SPEC.totals_list_url
 _BULK_DETAIL_URL = _BASKETBALL_SPEC.bulk_detail_url
+_MATCH_PAGE_URL = "https://www.maxbet.rs/sr/pocetna#/sport/event/{match_id}"
 
 _PLAYER_LEAGUE_PREFIX = _BASKETBALL_SPEC.player_league_prefix
 _BASKETBALL_LEAGUE_PREFIX = _BASKETBALL_SPEC.totals_league_prefix
@@ -247,6 +248,10 @@ def _parse_player_match(match: dict, spec: SportSpec) -> list[RawOddsData]:
     league_id = _extract_league_id(match.get("leagueName", ""), spec)
 
     results: list[RawOddsData] = []
+    source_url = None
+    match_id = match.get("id")
+    if match_id is not None:
+        source_url = _MATCH_PAGE_URL.format(match_id=match_id)
 
     def emit(market_type: str, threshold: float, over: float | None, under: float | None) -> None:
         results.append(
@@ -256,6 +261,7 @@ def _parse_player_match(match: dict, spec: SportSpec) -> list[RawOddsData]:
                 sport=spec.sport,
                 home_team=team,
                 away_team=player_name,
+                source_url=source_url,
                 market_type=market_type,
                 player_name=player_name,
                 threshold=threshold,
@@ -311,6 +317,10 @@ def _parse_game_total_lines_for_spec(
     odds = match.get("odds") or {}
     start_time = _parse_start_time(match.get("kickOffTime"))
     league_id = _extract_league_id(league_name, spec)
+    source_url = None
+    match_id = match.get("id")
+    if match_id is not None:
+        source_url = _MATCH_PAGE_URL.format(match_id=match_id)
 
     results: list[RawOddsData] = []
     for line in lines:
@@ -334,6 +344,7 @@ def _parse_game_total_lines_for_spec(
                 sport=spec.sport,
                 home_team=home_team,
                 away_team=away_team,
+                source_url=source_url,
                 market_type=market_type,
                 player_name=None,
                 threshold=threshold,

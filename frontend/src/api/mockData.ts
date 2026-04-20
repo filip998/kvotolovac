@@ -122,42 +122,42 @@ export const mockOddsOffers: OddsOffer[] = [
   // Match 1: Olympiacos vs Real Madrid
   { id: 1, match_id: 'match-1', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'player_points', player_name: 'Sasha Vezenkov', threshold: 18.5, over_odds: 1.85, under_odds: 1.95, scraped_at: ago(5) },
   { id: 2, match_id: 'match-1', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'player_points', player_name: 'Sasha Vezenkov', threshold: 20.5, over_odds: 1.75, under_odds: 1.90, scraped_at: ago(3) },
-  { id: 3, match_id: 'match-1', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'player_points', player_name: 'Sasha Vezenkov', threshold: 19.5, over_odds: 1.80, under_odds: 1.88, scraped_at: ago(4) },
+  { id: 3, match_id: 'match-1', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23281441', market_type: 'player_points', player_name: 'Sasha Vezenkov', threshold: 19.5, over_odds: 1.80, under_odds: 1.88, scraped_at: ago(4) },
   { id: 4, match_id: 'match-1', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'game_total', player_name: null, threshold: 155.5, over_odds: 1.80, under_odds: 2.00, scraped_at: ago(5) },
   { id: 5, match_id: 'match-1', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'game_total', player_name: null, threshold: 158.5, over_odds: 1.90, under_odds: 1.85, scraped_at: ago(3) },
-  { id: 6, match_id: 'match-1', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'game_total', player_name: null, threshold: 156.5, over_odds: 1.85, under_odds: 1.92, scraped_at: ago(4) },
+  { id: 6, match_id: 'match-1', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23281441', market_type: 'game_total', player_name: null, threshold: 156.5, over_odds: 1.85, under_odds: 1.92, scraped_at: ago(4) },
   { id: 7, match_id: 'match-1', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'player_points', player_name: 'Facundo Campazzo', threshold: 14.5, over_odds: 1.90, under_odds: 1.88, scraped_at: ago(5) },
   { id: 8, match_id: 'match-1', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'player_points', player_name: 'Facundo Campazzo', threshold: 15.5, over_odds: 1.82, under_odds: 1.95, scraped_at: ago(3) },
 
   // Match 2: Fenerbahce vs Partizan
   { id: 9, match_id: 'match-2', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'player_points', player_name: 'Nigel Hayes-Davis', threshold: 15.5, over_odds: 1.88, under_odds: 1.92, scraped_at: ago(5) },
-  { id: 10, match_id: 'match-2', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'player_points', player_name: 'Nigel Hayes-Davis', threshold: 17.5, over_odds: 1.75, under_odds: 2.05, scraped_at: ago(4) },
+  { id: 10, match_id: 'match-2', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23289963', market_type: 'player_points', player_name: 'Nigel Hayes-Davis', threshold: 17.5, over_odds: 1.75, under_odds: 2.05, scraped_at: ago(4) },
   { id: 11, match_id: 'match-2', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'player_points', player_name: 'Nigel Hayes-Davis', threshold: 16.5, over_odds: 1.82, under_odds: 1.95, scraped_at: ago(3) },
   { id: 12, match_id: 'match-2', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'game_total', player_name: null, threshold: 160.5, over_odds: 1.82, under_odds: 1.95, scraped_at: ago(5) },
-  { id: 13, match_id: 'match-2', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'game_total', player_name: null, threshold: 162.5, over_odds: 1.88, under_odds: 1.90, scraped_at: ago(4) },
+  { id: 13, match_id: 'match-2', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23289963', market_type: 'game_total', player_name: null, threshold: 162.5, over_odds: 1.88, under_odds: 1.90, scraped_at: ago(4) },
 
   // Match 3: Barcelona vs Crvena Zvezda
   { id: 14, match_id: 'match-3', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'player_points', player_name: 'Nikola Kalinić', threshold: 12.5, over_odds: 1.92, under_odds: 1.85, scraped_at: ago(6) },
   { id: 15, match_id: 'match-3', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'player_points', player_name: 'Nikola Kalinić', threshold: 14.5, over_odds: 1.78, under_odds: 2.00, scraped_at: ago(2) },
-  { id: 16, match_id: 'match-3', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'player_points', player_name: 'Nikola Kalinić', threshold: 13.5, over_odds: 1.85, under_odds: 1.92, scraped_at: ago(4) },
+  { id: 16, match_id: 'match-3', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23290818', market_type: 'player_points', player_name: 'Nikola Kalinić', threshold: 13.5, over_odds: 1.85, under_odds: 1.92, scraped_at: ago(4) },
   { id: 17, match_id: 'match-3', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'game_total', player_name: null, threshold: 162.5, over_odds: 1.78, under_odds: 2.02, scraped_at: ago(6) },
   { id: 18, match_id: 'match-3', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'game_total', player_name: null, threshold: 164.5, over_odds: 1.85, under_odds: 1.92, scraped_at: ago(2) },
 
   // Match 4: Mega MIS vs Budućnost
   { id: 19, match_id: 'match-4', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'player_points', player_name: 'Nikola Đurišić', threshold: 16.5, over_odds: 1.85, under_odds: 1.92, scraped_at: ago(8) },
-  { id: 20, match_id: 'match-4', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'player_points', player_name: 'Nikola Đurišić', threshold: 18.5, over_odds: 1.78, under_odds: 2.00, scraped_at: ago(6) },
+  { id: 20, match_id: 'match-4', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23290818', market_type: 'player_points', player_name: 'Nikola Đurišić', threshold: 18.5, over_odds: 1.78, under_odds: 2.00, scraped_at: ago(6) },
   { id: 21, match_id: 'match-4', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'game_total', player_name: null, threshold: 165.5, over_odds: 1.85, under_odds: 1.92, scraped_at: ago(8) },
-  { id: 22, match_id: 'match-4', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'game_total', player_name: null, threshold: 168.5, over_odds: 1.90, under_odds: 1.88, scraped_at: ago(6) },
+  { id: 22, match_id: 'match-4', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23290818', market_type: 'game_total', player_name: null, threshold: 168.5, over_odds: 1.90, under_odds: 1.88, scraped_at: ago(6) },
 
   // Match 5: Crvena Zvezda vs Cedevita Olimpija
   { id: 23, match_id: 'match-5', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'player_points', player_name: 'Filip Petrušev', threshold: 17.5, over_odds: 1.82, under_odds: 1.95, scraped_at: ago(10) },
   { id: 24, match_id: 'match-5', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'player_points', player_name: 'Filip Petrušev', threshold: 19.5, over_odds: 1.75, under_odds: 2.05, scraped_at: ago(7) },
-  { id: 25, match_id: 'match-5', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'player_points', player_name: 'Filip Petrušev', threshold: 18.5, over_odds: 1.80, under_odds: 1.98, scraped_at: ago(5) },
+  { id: 25, match_id: 'match-5', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23289963', market_type: 'player_points', player_name: 'Filip Petrušev', threshold: 18.5, over_odds: 1.80, under_odds: 1.98, scraped_at: ago(5) },
 
   // Match 6: FMP vs Vojvodina
   { id: 26, match_id: 'match-6', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'game_total', player_name: null, threshold: 158.5, over_odds: 1.88, under_odds: 1.90, scraped_at: ago(12) },
   { id: 27, match_id: 'match-6', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'game_total', player_name: null, threshold: 161.5, over_odds: 1.82, under_odds: 1.95, scraped_at: ago(8) },
-  { id: 28, match_id: 'match-6', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'game_total_ot', player_name: null, threshold: 160.5, over_odds: 2.02, under_odds: 1.84, scraped_at: ago(6) },
+  { id: 28, match_id: 'match-6', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23281441', market_type: 'game_total_ot', player_name: null, threshold: 160.5, over_odds: 2.02, under_odds: 1.84, scraped_at: ago(6) },
   { id: 29, match_id: 'match-6', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'game_total_ot', player_name: null, threshold: 163.5, over_odds: 1.86, under_odds: 2.02, scraped_at: ago(5) },
 ];
 
@@ -194,6 +194,7 @@ export const mockDiscrepancies: Discrepancy[] = [
     player_name: null,
     bookmaker_a_id: 'maxbet',
     bookmaker_a_name: 'MaxBet',
+    bookmaker_a_source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23281441',
     bookmaker_b_id: 'meridian',
     bookmaker_b_name: 'Meridian',
     threshold_a: 155.5,
@@ -218,6 +219,7 @@ export const mockDiscrepancies: Discrepancy[] = [
     bookmaker_a_name: 'Mozzart',
     bookmaker_b_id: 'maxbet',
     bookmaker_b_name: 'MaxBet',
+    bookmaker_b_source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23289963',
     threshold_a: 15.5,
     threshold_b: 17.5,
     odds_a: 1.88,
@@ -262,6 +264,7 @@ export const mockDiscrepancies: Discrepancy[] = [
     bookmaker_a_name: 'Mozzart',
     bookmaker_b_id: 'maxbet',
     bookmaker_b_name: 'MaxBet',
+    bookmaker_b_source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23290818',
     threshold_a: 16.5,
     threshold_b: 18.5,
     odds_a: 1.85,
@@ -284,6 +287,7 @@ export const mockDiscrepancies: Discrepancy[] = [
     bookmaker_a_name: 'Mozzart',
     bookmaker_b_id: 'maxbet',
     bookmaker_b_name: 'MaxBet',
+    bookmaker_b_source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23289963',
     threshold_a: 165.5,
     threshold_b: 168.5,
     odds_a: 1.85,
@@ -392,6 +396,7 @@ export const mockDiscrepancies: Discrepancy[] = [
     player_name: null,
     bookmaker_a_id: 'maxbet',
     bookmaker_a_name: 'MaxBet',
+    bookmaker_a_source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23281441',
     bookmaker_b_id: 'meridian',
     bookmaker_b_name: 'Meridian',
     threshold_a: 160.5,

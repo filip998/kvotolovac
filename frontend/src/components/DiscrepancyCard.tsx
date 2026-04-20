@@ -76,7 +76,11 @@ export default function DiscrepancyCard({
       <div className="mb-4 grid grid-cols-2 gap-3">
         <div className="rounded-2xl border border-border/70 bg-bg/55 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
           <div className="mb-2">
-            <BookmakerBadge name={d.bookmaker_a_name} />
+            <BookmakerBadge
+              name={d.bookmaker_a_name}
+              href={d.bookmaker_a_source_url}
+              ariaLabel={`Open ${d.bookmaker_a_name} match page for ${d.home_team} vs ${d.away_team}`}
+            />
           </div>
           <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-muted">
             Over
@@ -92,7 +96,11 @@ export default function DiscrepancyCard({
         </div>
         <div className="rounded-2xl border border-border/70 bg-bg/55 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
           <div className="mb-2">
-            <BookmakerBadge name={d.bookmaker_b_name} />
+            <BookmakerBadge
+              name={d.bookmaker_b_name}
+              href={d.bookmaker_b_source_url}
+              ariaLabel={`Open ${d.bookmaker_b_name} match page for ${d.home_team} vs ${d.away_team}`}
+            />
           </div>
           <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-muted">
             Under
