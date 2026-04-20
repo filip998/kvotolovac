@@ -50,13 +50,18 @@ export default function OddsTable({ offers, discrepancies = [], title }: OddsTab
                       : 'hover:bg-surface-raised'
                   }`}
                 >
-                  <td className="px-4 py-2.5">
-                    <div className="flex items-center gap-2">
-                      <BookmakerBadge name={offer.bookmaker_name} compact />
-                      {highlighted && (
-                        <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
-                          OPP
-                        </span>
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <BookmakerBadge
+                          name={offer.bookmaker_name}
+                          compact
+                          href={offer.source_url}
+                          ariaLabel={`Open ${offer.bookmaker_name} match page`}
+                        />
+                        {highlighted && (
+                          <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+                            OPP
+                          </span>
                       )}
                     </div>
                   </td>

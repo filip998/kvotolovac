@@ -16,17 +16,21 @@ function normalizeBookmakerKey(name: string) {
 export default function BookmakerBadge({
   name,
   compact = false,
+  href,
+  ariaLabel,
 }: {
   name: string;
   compact?: boolean;
+  href?: string | null;
+  ariaLabel?: string;
 }) {
   const config =
     BOOKMAKER_CONFIG[normalizeBookmakerKey(name)] ?? {
       initials: name.slice(0, 2).toUpperCase(),
     };
 
-  return (
-    <span className="inline-flex items-center gap-2">
+  const content = (
+    <>
       <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-white p-0.5">
         {config.logoSrc ? (
           <img
@@ -42,6 +46,49 @@ export default function BookmakerBadge({
         )}
       </span>
       {!compact && <span className="text-sm text-text-secondary">{name}</span>}
-    </span>
+    </>
+  );
+
+  if (!href) {
+    return <span className="inline-flex items-center gap-2">{content}</span>;
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      aria-label={ariaLabel ?? `Open ${name} match page`}
+      className="group inline-flex items-center gap-1.5 rounded-md outline-none transition hover:text-accent focus-visible:ring-2 focus-visible:ring-accent/35 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
+    >
+      <span className="inline-flex items-center gap-2">{content}</span>
+      <span
+        className="inline-flex h-4 w-4 items-center justify-center text-text-muted transition group-hover:text-accent"
+        aria-hidden="true"
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M4 2H10V8"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M10 2L2 10"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </span>
+    </a>
   );
 }

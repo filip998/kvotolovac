@@ -175,6 +175,7 @@ async def test_match_odds(client: AsyncClient):
     resp = await client.get(f"/api/v1/matches/{match_id}/odds")
     assert resp.status_code == 200
     assert len(resp.json()) > 0
+    assert "source_url" in resp.json()[0]
 
 
 @pytest.mark.asyncio
@@ -195,6 +196,8 @@ async def test_list_discrepancies(client: AsyncClient):
     discs = resp.json()
     assert len(discs) > 0
     assert "middle_profit_margin" in discs[0]
+    assert "bookmaker_a_source_url" in discs[0]
+    assert "bookmaker_b_source_url" in discs[0]
 
 
 @pytest.mark.asyncio

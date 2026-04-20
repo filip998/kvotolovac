@@ -80,6 +80,7 @@ async def test_upsert_odds_and_history():
         league_id="euroleague",
         home_team="Partizan",
         away_team="Crvena Zvezda",
+        source_url="https://example.com/m1",
         market_type="player_points",
         player_name="Iffe Lundberg",
         threshold=16.5,
@@ -91,9 +92,56 @@ async def test_upsert_odds_and_history():
     current = await odds_store.get_odds_for_match("m1")
     assert len(current) == 1
     assert current[0].threshold == 16.5
+    assert current[0].source_url == "https://example.com/m1"
 
     history = await odds_store.get_odds_history_for_match("m1")
     assert len(history) >= 1
+
+
+@pytest.mark.asyncio
+async def test_upsert_odds_preserves_existing_source_url_when_new_snapshot_has_none():
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("m1", "euroleague", "Partizan", "Crvena Zvezda")
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="m1",
+            bookmaker_id="mozzart",
+            league_id="euroleague",
+            home_team="Partizan",
+            away_team="Crvena Zvezda",
+            source_url="https://example.com/m1",
+            market_type="player_points",
+            player_name="Iffe Lundberg",
+            threshold=16.5,
+            over_odds=1.85,
+            under_odds=1.95,
+        ),
+        scraped_at="2026-04-11T20:06:00.735723",
+    )
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="m1",
+            bookmaker_id="mozzart",
+            league_id="euroleague",
+            home_team="Partizan",
+            away_team="Crvena Zvezda",
+            source_url=None,
+            market_type="player_points",
+            player_name="Iffe Lundberg",
+            threshold=16.5,
+            over_odds=1.9,
+            under_odds=1.9,
+        ),
+        scraped_at="2026-04-11T20:11:00.735723",
+    )
+    await odds_store.set_current_snapshot("2026-04-11T20:11:00.735723")
+
+    current = await odds_store.get_odds_for_match("m1")
+
+    assert len(current) == 1
+    assert current[0].source_url == "https://example.com/m1"
 
 
 @pytest.mark.asyncio
@@ -477,6 +525,16 @@ async def test_get_discrepancy_detail():
     await odds_store.upsert_match("m1", "euroleague", "Partizan", "Zvezda")
     await odds_store.upsert_bookmaker("mozzart", "Mozzart")
     await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_match_bookmaker_source(
+        match_id="m1",
+        bookmaker_id="mozzart",
+        source_url="https://example.com/mozzart/m1",
+    )
+    await odds_store.upsert_match_bookmaker_source(
+        match_id="m1",
+        bookmaker_id="meridian",
+        source_url="https://example.com/meridian/m1",
+    )
 
     disc_id = await odds_store.insert_discrepancy(
         match_id="m1", market_type="player_points", player_name="Lundberg",
@@ -487,6 +545,8 @@ async def test_get_discrepancy_detail():
     detail = await odds_store.get_discrepancy(disc_id)
     assert detail is not None
     assert detail.bookmaker_a_name == "Mozzart"
+    assert detail.bookmaker_a_source_url == "https://example.com/mozzart/m1"
+    assert detail.bookmaker_b_source_url == "https://example.com/meridian/m1"
     assert detail.home_team == "Partizan"
     assert detail.middle_profit_margin == 0.96
 

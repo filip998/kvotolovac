@@ -160,6 +160,8 @@ def test_parse_match_detail_returns_data(player_matches):
     results = _parse_match_detail(player_matches[0])
     assert len(results) > 0
     assert all(isinstance(r, RawOddsData) for r in results)
+    assert all(r.source_url for r in results)
+    assert str(player_matches[0]["id"]) in results[0].source_url
 
 
 def test_parse_match_detail_has_player_names(player_matches):

@@ -52,6 +52,7 @@ export interface OddsOffer {
   match_id: string;
   bookmaker_id: string;
   bookmaker_name: string;
+  source_url?: string | null;
   market_type: MarketType;
   player_name: string | null;
   threshold: number;
@@ -70,8 +71,10 @@ export interface Discrepancy {
   player_name: string | null;
   bookmaker_a_id: string;
   bookmaker_a_name: string;
+  bookmaker_a_source_url?: string | null;
   bookmaker_b_id: string;
   bookmaker_b_name: string;
+  bookmaker_b_source_url?: string | null;
   threshold_a: number;
   threshold_b: number;
   odds_a: number;

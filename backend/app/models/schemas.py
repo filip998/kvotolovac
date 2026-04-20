@@ -49,6 +49,7 @@ class OddsOut(BaseModel):
     match_id: str
     bookmaker_id: str
     bookmaker_name: Optional[str] = None
+    source_url: Optional[str] = None
     market_type: str
     player_name: Optional[str] = None
     threshold: float
@@ -134,6 +135,7 @@ class RawOddsData(BaseModel):
     sport: str = "basketball"
     home_team: str
     away_team: str
+    source_url: Optional[str] = None
     market_type: str
     player_name: Optional[str] = None
     threshold: float
@@ -152,6 +154,7 @@ class NormalizedOdds(BaseModel):
     away_team_id: int = 0
     home_team: str
     away_team: str
+    source_url: Optional[str] = None
     market_type: str
     player_name: Optional[str] = None
     threshold: float
@@ -184,7 +187,9 @@ class DiscrepancyDetail(DiscrepancyOut):
     away_team: Optional[str] = None
     league_name: Optional[str] = None
     bookmaker_a_name: Optional[str] = None
+    bookmaker_a_source_url: Optional[str] = None
     bookmaker_b_name: Optional[str] = None
+    bookmaker_b_source_url: Optional[str] = None
 
 
 # ── Notification ───────────────────────────────────────────
