@@ -6,11 +6,10 @@ import type { UnresolvedOdds } from '../api/types';
 import { MARKET_TYPE_LABELS } from '../utils/constants';
 import { buildSearchIndex, filterSearchIndex, normalizeSearchText } from '../utils/search';
 import OfferSearchStrip from './OfferSearchStrip';
+import { groupUnresolvedOdds } from '../utils/unresolvedWarnings';
 import {
   formatDateTime,
-  formatOdds,
   formatRelativeTime,
-  formatThreshold,
 } from '../utils/format';
 
 const REASON_LABELS: Record<string, string> = {
@@ -21,6 +20,21 @@ const REASON_LABELS: Record<string, string> = {
 
 function reasonLabel(reasonCode: string) {
   return REASON_LABELS[reasonCode] ?? reasonCode.replace(/_/g, ' ');
+}
+
+function countLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function leagueSummary(leagueLabels: string[]) {
+  if (leagueLabels.length === 0) {
+    return 'Unknown league';
+  }
+  if (leagueLabels.length === 1) {
+    return leagueLabels[0];
+  }
+
+  return `${leagueLabels[0]} +${leagueLabels.length - 1} variants`;
 }
 
 export default function UnresolvedOddsPanel({
@@ -37,19 +51,35 @@ export default function UnresolvedOddsPanel({
   onSearchChange: (value: string) => void;
 }) {
   const appliedSearchQuery = useDeferredValue(searchQuery);
+  const groupedRows = useMemo(() => groupUnresolvedOdds(rows), [rows]);
   const searchableRows = useMemo(
     () =>
-      buildSearchIndex(rows, (row) => [
-        row.player_name,
-        row.raw_team_name,
-        row.normalized_team_name,
+      buildSearchIndex(groupedRows, (group) => [
+        group.normalizedTeamName,
+        ...group.rawTeamNames,
+        ...group.leagueLabels,
+        ...group.matchupContext,
+        ...group.playerNames,
+        ...group.bookmakerNames,
+        ...group.marketTypes.map(
+          (marketType) =>
+            MARKET_TYPE_LABELS[marketType as keyof typeof MARKET_TYPE_LABELS] ?? marketType
+        ),
       ]),
-    [rows]
+    [groupedRows]
   );
 
   const filteredRows = useMemo(
     () => filterSearchIndex(searchableRows, appliedSearchQuery),
     [appliedSearchQuery, searchableRows]
+  );
+  const totalAffectedOdds = useMemo(
+    () => groupedRows.reduce((sum, group) => sum + group.affectedOddsCount, 0),
+    [groupedRows]
+  );
+  const filteredAffectedOdds = useMemo(
+    () => filteredRows.reduce((sum, group) => sum + group.affectedOddsCount, 0),
+    [filteredRows]
   );
   const hasSearchQuery = normalizeSearchText(appliedSearchQuery).length > 0;
   const activeSearchLabel = appliedSearchQuery.trim();
@@ -58,9 +88,9 @@ export default function UnresolvedOddsPanel({
       value={searchQuery}
       onChange={onSearchChange}
       scopeLabel="Warnings"
-      placeholder="Search dropped team or player names, e.g. PAOK or Sloukas"
+      placeholder="Search ambiguous teams, matchup context or players, e.g. Barcelona or Brizuela"
       resultCount={filteredRows.length}
-      totalCount={rows.length}
+      totalCount={groupedRows.length}
       tone="warning"
     />
   );
@@ -91,7 +121,7 @@ export default function UnresolvedOddsPanel({
         {searchStrip}
         <EmptyState
           title={`No warnings match "${activeSearchLabel}"`}
-          message="Warnings search checks team and player names in the dropped-prop snapshot. Try a broader name or clear the query."
+          message="Warnings search checks ambiguous teams, matchup context, players, leagues and bookmakers in the current snapshot."
         />
       </div>
     );
@@ -115,10 +145,17 @@ export default function UnresolvedOddsPanel({
 
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-surface p-4 text-sm text-text-secondary">
         <span className="font-medium text-text">
-          {hasSearchQuery ? `${filteredRows.length} of ${rows.length}` : filteredRows.length} dropped rows
+          {hasSearchQuery
+            ? `${filteredRows.length} of ${groupedRows.length}`
+            : filteredRows.length}{' '}
+          ambiguous events
         </span>
         <span>
-          {new Set(filteredRows.map((row) => row.bookmaker_id)).size} bookmakers
+          {hasSearchQuery ? `${filteredAffectedOdds} of ${totalAffectedOdds}` : filteredAffectedOdds}{' '}
+          affected odds
+        </span>
+        <span>
+          {new Set(filteredRows.flatMap((group) => group.bookmakerNames)).size} bookmakers
         </span>
         <span>Current snapshot only</span>
       </div>
@@ -128,57 +165,64 @@ export default function UnresolvedOddsPanel({
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border text-[11px] font-medium uppercase tracking-wider text-text-muted">
-                <th className="px-4 py-2.5 text-left">Player / Market</th>
-                <th className="px-4 py-2.5 text-left">Bookmaker</th>
-                <th className="px-4 py-2.5 text-left">Team / League</th>
+                <th className="px-4 py-2.5 text-left">Ambiguous team / event</th>
+                <th className="px-4 py-2.5 text-left">Bookmakers</th>
+                <th className="px-4 py-2.5 text-left">Impact</th>
                 <th className="px-4 py-2.5 text-left">Reason</th>
-                <th className="hidden px-4 py-2.5 text-left lg:table-cell">Same-slot matchups</th>
+                <th className="hidden px-4 py-2.5 text-left lg:table-cell">Relevant matchups</th>
                 <th className="hidden px-4 py-2.5 text-right xl:table-cell">Seen</th>
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map((row) => {
-                const marketLabel =
-                  MARKET_TYPE_LABELS[row.market_type as keyof typeof MARKET_TYPE_LABELS] ??
-                  row.market_type;
-                const bookmakerName = row.bookmaker_name ?? row.bookmaker_id;
+              {filteredRows.map((group) => {
+                const hasRawTeamVariants = group.rawTeamNames.some(
+                  (rawTeamName) => rawTeamName !== group.normalizedTeamName
+                );
                 return (
-                  <tr key={row.id} className="border-t border-border align-top transition hover:bg-surface-raised">
+                  <tr key={group.id} className="border-t border-border align-top transition hover:bg-surface-raised">
                     <td className="px-4 py-3">
-                      <div className="font-medium text-text">{row.player_name || marketLabel}</div>
-                      <div className="text-[11px] text-text-muted">
-                        {row.player_name ? marketLabel : 'No player name'}
-                      </div>
-                      <div className="mt-1 font-mono text-[11px] text-text-secondary">
-                        {formatThreshold(row.threshold)} @ {formatOdds(row.over_odds)} / {formatOdds(row.under_odds)}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <BookmakerBadge name={bookmakerName} />
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="text-text-secondary">{row.raw_team_name}</div>
-                      {row.normalized_team_name !== row.raw_team_name && (
+                      <div className="font-medium text-text">{group.normalizedTeamName}</div>
+                      {hasRawTeamVariants && (
                         <div className="text-[11px] text-text-muted">
-                          Normalized: {row.normalized_team_name}
+                          Seen as: {group.rawTeamNames.join(', ')}
                         </div>
                       )}
                       <div className="mt-1 text-[11px] text-text-muted">
-                        {row.league_name ?? row.league_id}
-                        {row.start_time ? ` · ${formatDateTime(row.start_time)}` : ''}
+                        {leagueSummary(group.leagueLabels)}
+                        {group.startTime ? ` · ${formatDateTime(group.startTime)}` : ''}
                       </div>
                     </td>
                     <td className="px-4 py-3">
-                      <div className="font-medium text-warning">{reasonLabel(row.reason_code)}</div>
+                      <div className="flex flex-wrap gap-2">
+                        {group.bookmakerNames.map((bookmakerName) => (
+                          <BookmakerBadge key={`${group.id}-${bookmakerName}`} name={bookmakerName} compact />
+                        ))}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-text">
+                        {countLabel(group.affectedOddsCount, 'affected odd', 'affected odds')}
+                      </div>
                       <div className="mt-1 text-[11px] text-text-muted">
-                        Candidate matches: {row.candidate_count}
+                        {countLabel(group.playerNames.length, 'player')} ·{' '}
+                        {countLabel(group.marketTypes.length, 'market')}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-warning">{reasonLabel(group.reasonCode)}</div>
+                      <div className="mt-1 text-[11px] text-text-muted">
+                        {group.candidateCount > 0
+                          ? `Candidate matches: ${group.candidateCount}`
+                          : group.matchupContext.length > 0
+                            ? countLabel(group.matchupContext.length, 'same-slot matchup')
+                            : 'No same-slot matchups'}
                       </div>
                     </td>
                     <td className="hidden px-4 py-3 lg:table-cell">
-                      {row.available_matchups_same_slot.length > 0 ? (
+                      {group.matchupContext.length > 0 ? (
                         <div className="space-y-1">
-                          {row.available_matchups_same_slot.map((matchup) => (
-                            <div key={`${row.id}-${matchup}`} className="text-[11px] text-text-secondary">
+                          {group.matchupContext.map((matchup) => (
+                            <div key={`${group.id}-${matchup}`} className="text-[11px] text-text-secondary">
                               {matchup}
                             </div>
                           ))}
@@ -188,7 +232,7 @@ export default function UnresolvedOddsPanel({
                       )}
                     </td>
                     <td className="hidden px-4 py-3 text-right text-text-muted xl:table-cell">
-                      {formatRelativeTime(row.scraped_at)}
+                      {formatRelativeTime(group.latestScrapedAt)}
                     </td>
                   </tr>
                 );
