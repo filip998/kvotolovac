@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from .base import BaseScraper
 from .http_client import HttpClient
+from ..config import settings
 from ..models.schemas import RawOddsData
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ class SportSpec:
 
 # ── Basketball spec ─────────────────────────────────────────────────────
 
-_DEFAULT_PARAMS = {
+_BASE_PARAMS = {
     "annex": "3",
     "mobileVersion": "1.17.1.25",
     "locale": "sr",
@@ -84,6 +85,13 @@ _DEFAULT_HEADERS = {
     ),
     "Referer": "https://www.maxbet.rs/",
 }
+
+
+def _list_params() -> dict[str, str]:
+    return {
+        **_BASE_PARAMS,
+        "hours": str(settings.scrape_lookahead_hours),
+    }
 
 # Tip type codes from MaxBet's ttg_lang endpoint (shared iBet platform).
 _BASKETBALL_THRESHOLD_LINES: tuple[ThresholdLine, ...] = (
@@ -411,7 +419,7 @@ class MaxBetScraper(BaseScraper):
     async def _fetch_list(self, url: str, label: str) -> list[dict]:
         try:
             data = await self._http.get_json(
-                url, params=_DEFAULT_PARAMS, headers=_DEFAULT_HEADERS,
+                url, params=_list_params(), headers=_DEFAULT_HEADERS,
             )
         except Exception:
             logger.warning("MaxBet: failed to fetch %s list", label, exc_info=True)
@@ -430,7 +438,7 @@ class MaxBetScraper(BaseScraper):
     ) -> list[dict]:
         if not match_ids:
             return []
-        params = {**_DEFAULT_PARAMS, "matchIdsToken": ",".join(str(i) for i in match_ids)}
+        params = {**_BASE_PARAMS, "matchIdsToken": ",".join(str(i) for i in match_ids)}
         try:
             data = await self._http.get_json(
                 bulk_url, params=params, headers=_DEFAULT_HEADERS,

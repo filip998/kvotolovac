@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from .base import BaseScraper
 from .http_client import HttpClient
+from ..config import settings
 from ..models.schemas import RawOddsData
 
 logger = logging.getLogger(__name__)
@@ -18,9 +19,8 @@ _BULK_URL = "https://www.oktagonbet.com/ibet/offer/prematchesByIds.html"
 # Conservative chunk size — observed 124 IDs/PUT working with ~1.4s latency.
 _BULK_CHUNK_SIZE = 150
 
-_DEFAULT_PARAMS = {
+_BASE_PARAMS = {
     "annex": "1",
-    "hours": "12",
     "mobileVersion": "2.44.5.6",
     "locale": "sr",
 }
@@ -89,6 +89,13 @@ _FIXED_POINT_LADDERS = [
     ("54141", 49.5),
     ("57454", 59.5),
 ]
+
+
+def _list_params() -> dict[str, str]:
+    return {
+        **_BASE_PARAMS,
+        "hours": str(settings.scrape_lookahead_hours),
+    }
 
 _GAME_TOTAL_OT_LINES = [
     ("50445", "50444", "overUnderOvertime"),
@@ -557,7 +564,7 @@ class OktagonBetScraper(BaseScraper):
         try:
             return await self._http.get_json(
                 url,
-                params=_DEFAULT_PARAMS,
+                params=_list_params(),
                 headers=_DEFAULT_HEADERS,
             )
         except Exception:

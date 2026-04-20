@@ -442,6 +442,24 @@ async def test_scraper_unsupported_league():
 
 
 @pytest.mark.asyncio
+async def test_list_requests_use_configured_lookahead_hours(monkeypatch):
+    scraper = MerkurXTipScraper()
+    captured_params: list[dict] = []
+    monkeypatch.setattr("app.config.settings.scrape_lookahead_hours", 36)
+
+    async def mock_get(url, **kwargs):
+        captured_params.append(kwargs.get("params", {}))
+        return {"esMatches": []}
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        await scraper._fetch_bulk_match_ids()
+        await scraper._fetch_total_matches()
+
+    assert len(captured_params) == 2
+    assert all(params["hours"] == "36" for params in captured_params)
+
+
+@pytest.mark.asyncio
 async def test_scraper_empty_league():
     scraper = MerkurXTipScraper()
     with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get:

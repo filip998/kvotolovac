@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from .base import BaseScraper
 from .http_client import HttpClient
 from ..models.schemas import RawOddsData
+from ..services.scrape_window import current_utc_time, lookahead_cutoff
 
 logger = logging.getLogger(__name__)
 
@@ -392,16 +393,20 @@ class BalkanBetScraper(BaseScraper):
         if spec is None:
             return []
 
-        now_iso = _format_filter_from()
+        now = current_utc_time()
+        now_iso = _format_filter_from(now)
+        cutoff_iso = _format_filter_from(lookahead_cutoff(now))
         player_params = {
             **_BASE_LIST_PARAMS,
             "filter[sportId]": spec.player_sport_id,
             "filter[from]": now_iso,
+            "filter[to]": cutoff_iso,
         }
         totals_params = {
             **_BASE_LIST_PARAMS,
             "filter[sportId]": spec.totals_sport_id,
             "filter[from]": now_iso,
+            "filter[to]": cutoff_iso,
         }
 
         player_data, totals_data = await asyncio.gather(

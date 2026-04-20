@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -16,6 +17,7 @@ class Settings(BaseSettings):
     proxy_list: str = ""
     rate_limit_per_second: float = 1.0
     meridian_rate_limit_per_second: float = 2.0
+    scrape_lookahead_hours: int = Field(default=24, ge=0)
     benchmark_dir: str = str(
         Path(__file__).resolve().parent.parent / "benchmarks"
     )

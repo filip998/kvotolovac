@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -459,6 +460,27 @@ async def test_scraper_returns_player_props_and_ot_totals(fixture_data, totals_f
     }
     game_totals = [result for result in results if result.market_type == "game_total_ot"]
     assert sorted(result.threshold for result in game_totals) == [167.5, 168.5, 169.5, 170.5]
+
+
+@pytest.mark.asyncio
+async def test_scraper_list_requests_use_24h_window(monkeypatch):
+    scraper = AdmiralBetScraper()
+    captured_params: list[dict] = []
+    fixed_now = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.config.settings.scrape_lookahead_hours", 24)
+    monkeypatch.setattr("app.scrapers.admiralbet_scraper.current_utc_time", lambda: fixed_now)
+
+    async def mock_get(url, **kwargs):
+        captured_params.append(kwargs.get("params", {}))
+        return []
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert results == []
+    assert len(captured_params) == 2
+    assert all(params["dateFrom"] == "2030-01-01T12:00:00" for params in captured_params)
+    assert all(params["dateTo"] == "2030-01-02T12:00:00" for params in captured_params)
 
 
 @pytest.mark.asyncio

@@ -464,6 +464,24 @@ async def test_scraper_returns_data(fixture_data):
 
 
 @pytest.mark.asyncio
+async def test_scraper_list_requests_use_configured_lookahead_hours(monkeypatch):
+    scraper = OktagonBetScraper()
+    captured_params: list[dict] = []
+    monkeypatch.setattr("app.config.settings.scrape_lookahead_hours", 36)
+
+    async def mock_get(url, **kwargs):
+        captured_params.append(kwargs.get("params", {}))
+        return {"esMatches": []}
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert results == []
+    assert captured_params
+    assert all(params["hours"] == "36" for params in captured_params)
+
+
+@pytest.mark.asyncio
 async def test_scraper_fetches_ot_detail_ladder_via_bulk():
     """Bulk PUT response with extended OT thresholds should produce all ladder entries."""
     scraper = OktagonBetScraper()

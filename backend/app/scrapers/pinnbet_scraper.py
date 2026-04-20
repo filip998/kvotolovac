@@ -6,6 +6,11 @@ from datetime import datetime, timezone
 
 from .base import BaseScraper
 from .http_client import HttpClient
+from ..services.scrape_window import (
+    current_utc_time,
+    format_utc_naive_seconds,
+    lookahead_cutoff,
+)
 from ..models.schemas import RawOddsData
 from ..services.normalizer import normalize_team_name
 
@@ -107,8 +112,9 @@ def _build_list_url(
     competition_id: int | None = None,
 ) -> str:
     """Build list URL with repeated eventMappingTypes pre-encoded."""
-    now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-    date_to = "2031-12-31T00:00:00"
+    now_dt = current_utc_time()
+    now = format_utc_naive_seconds(now_dt)
+    date_to = format_utc_naive_seconds(lookahead_cutoff(now_dt))
     mapping_qs = "&".join(
         f"eventMappingTypes={t}" for t in _EVENT_MAPPING_TYPES
     )

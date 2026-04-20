@@ -38,6 +38,13 @@ def benchmark_dir(tmp_path, monkeypatch):
     yield bench_path
 
 
+@pytest.fixture(autouse=True)
+def wide_scrape_lookahead(monkeypatch):
+    """Keep synthetic far-future fixtures stable unless a test overrides the window."""
+    monkeypatch.setattr(settings, "scrape_lookahead_hours", 24 * 365 * 10)
+    yield
+
+
 @pytest.fixture
 def league_registry_file(tmp_path, monkeypatch):
     source_path = Path(settings.league_registry_path)
