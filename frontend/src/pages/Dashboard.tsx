@@ -42,6 +42,7 @@ import {
 } from '../hooks/useDashboardStakeUnits';
 import { useBookmakerFilter } from '../hooks/useBookmakerFilter';
 import { buildSearchIndex, filterSearchIndex, normalizeSearchText } from '../utils/search';
+import { groupUnresolvedOdds } from '../utils/unresolvedWarnings';
 
 interface MatchGroup {
   matchId: string;
@@ -303,10 +304,14 @@ export default function Dashboard() {
     }
     return result;
   }, [filteredDiscrepancies]);
+  const unresolvedWarningGroups = useMemo(
+    () => groupUnresolvedOdds(unresolvedOdds ?? []),
+    [unresolvedOdds]
+  );
 
   const discrepancyCount = discrepancies?.length ?? 0;
   const filteredDiscrepancyCount = filteredDiscrepancies.length;
-  const unresolvedCount = unresolvedOdds?.length ?? 0;
+  const unresolvedCount = unresolvedWarningGroups.length;
   const teamReviewCount = teamReviewCases?.filter((row) => row.status === 'pending').length ?? 0;
   const canonicalTeamCount = canonicalTeams?.length ?? 0;
   const teamApproveCaseId =
