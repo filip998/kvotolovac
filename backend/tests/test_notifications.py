@@ -61,7 +61,7 @@ async def test_notification_service_no_providers():
     service = NotificationService(gap_threshold=1.0)
     discs = [_make_disc(2.0)]
     count = await service.notify_discrepancies(discs)
-    assert count == 1  # counted even without providers
+    assert count == 0
 
 
 @pytest.mark.asyncio

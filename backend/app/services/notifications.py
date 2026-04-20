@@ -44,6 +44,8 @@ class NotificationService:
         count = 0
         for d in discrepancies:
             if d.gap >= self.gap_threshold:
+                if not self._providers:
+                    continue
                 title = f"Discrepancy: {d.player_name or 'game'} ({d.gap}pt gap)"
                 message = (
                     f"{d.bookmaker_a_id} over {d.threshold_a} vs "

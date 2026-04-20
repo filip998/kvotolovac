@@ -916,6 +916,91 @@ async def get_notifications(unread_only: bool = False, limit: int = 50) -> list[
     return [NotificationOut(**_row_to_dict(r)) for r in rows]
 
 
+def _retention_cutoff(snapshot_at: str, days: int) -> str:
+    return (datetime.fromisoformat(snapshot_at) - timedelta(days=days)).isoformat()
+
+
+async def cleanup_retained_data(current_snapshot_at: str) -> dict[str, int]:
+    db = await aiosqlite.connect(settings.db_path)
+    try:
+        await db.execute("BEGIN IMMEDIATE")
+        deleted_stale_odds_cur = await db.execute(
+            "DELETE FROM odds WHERE scraped_at IS NULL OR scraped_at != ?",
+            (current_snapshot_at,),
+        )
+        deleted_unresolved_cur = await db.execute(
+            "DELETE FROM unresolved_odds WHERE scraped_at IS NULL OR scraped_at != ?",
+            (current_snapshot_at,),
+        )
+        deleted_inactive_discrepancies_cur = await db.execute(
+            "DELETE FROM discrepancies WHERE is_active = FALSE"
+        )
+
+        if settings.odds_history_retention_days > 0:
+            odds_history_cutoff = _retention_cutoff(
+                current_snapshot_at, settings.odds_history_retention_days
+            )
+            deleted_odds_history_cur = await db.execute(
+                """
+                DELETE FROM odds_history
+                WHERE scraped_at IS NOT NULL
+                  AND datetime(scraped_at) < datetime(?)
+                """,
+                (odds_history_cutoff,),
+            )
+        else:
+            deleted_odds_history_cur = await db.execute(
+                "DELETE FROM odds_history WHERE scraped_at IS NOT NULL"
+            )
+
+        if settings.team_review_retention_days > 0:
+            team_review_cutoff = _retention_cutoff(
+                current_snapshot_at, settings.team_review_retention_days
+            )
+            deleted_team_reviews_cur = await db.execute(
+                """
+                DELETE FROM team_review_cases
+                WHERE scraped_at IS NOT NULL
+                  AND datetime(scraped_at) < datetime(?)
+                """,
+                (team_review_cutoff,),
+            )
+        else:
+            deleted_team_reviews_cur = await db.execute(
+                "DELETE FROM team_review_cases WHERE scraped_at IS NOT NULL"
+            )
+
+        if settings.persist_inapp_notifications and settings.notification_retention_days > 0:
+            notification_cutoff = _retention_cutoff(
+                current_snapshot_at, settings.notification_retention_days
+            )
+            deleted_notifications_cur = await db.execute(
+                """
+                DELETE FROM notifications
+                WHERE datetime(created_at) < datetime(?)
+                """,
+                (notification_cutoff,),
+            )
+        else:
+            deleted_notifications_cur = await db.execute("DELETE FROM notifications")
+
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
+
+    return {
+        "deleted_stale_odds": deleted_stale_odds_cur.rowcount or 0,
+        "deleted_stale_unresolved_odds": deleted_unresolved_cur.rowcount or 0,
+        "deleted_inactive_discrepancies": deleted_inactive_discrepancies_cur.rowcount or 0,
+        "deleted_odds_history": deleted_odds_history_cur.rowcount or 0,
+        "deleted_team_review_cases": deleted_team_reviews_cur.rowcount or 0,
+        "deleted_notifications": deleted_notifications_cur.rowcount or 0,
+    }
+
+
 # ── System Status ──────────────────────────────────────────
 
 async def get_system_status(

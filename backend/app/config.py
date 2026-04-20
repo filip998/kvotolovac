@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
     bookmakers: str = "mozzart,meridian,maxbet,oktagonbet,admiralbet,balkanbet,merkurxtip,pinnbet"
     notification_gap_threshold: float = 1.5
+    persist_inapp_notifications: bool = False
+    notification_retention_days: int = 3
+    odds_history_retention_days: int = 7
+    team_review_retention_days: int = 90
     scraper_mode: str = "mock"  # "mock" or "real"
     proxy_list: str = ""
     rate_limit_per_second: float = 1.0

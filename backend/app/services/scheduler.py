@@ -73,7 +73,8 @@ class Scheduler:
         self._notification_service = NotificationService(
             gap_threshold=settings.notification_gap_threshold
         )
-        self._notification_service.register_provider(InAppNotificationProvider())
+        if settings.persist_inapp_notifications:
+            self._notification_service.register_provider(InAppNotificationProvider())
 
     @property
     def is_running(self) -> bool:
@@ -443,6 +444,13 @@ class Scheduler:
                     )
                 except Exception:
                     logger.exception("Failed to publish scraper benchmark snapshot")
+
+            try:
+                self._scan_phase = "retaining"
+                cleanup_counts = await odds_store.cleanup_retained_data(cycle_scraped_at)
+                logger.info("Retention cleanup complete: %s", cleanup_counts)
+            except Exception:
+                logger.exception("Retention cleanup failed after a successful scrape cycle")
 
             result = {
                 "matches_scraped": len(seen_matches),

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
-from app.models.schemas import NormalizedOdds, UnresolvedOddsDiagnostic
+from app.config import settings
+from app.database import get_db
+from app.models.schemas import NormalizedOdds, TeamReviewDiagnostic, UnresolvedOddsDiagnostic
 from app.store import odds_store
 
 
@@ -509,6 +513,310 @@ async def test_notifications_crud():
     notifs = await odds_store.get_notifications()
     assert len(notifs) == 1
     assert notifs[0].title == "Test"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_retained_data_prunes_stale_snapshot_rows(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(settings, "persist_inapp_notifications", False)
+    monkeypatch.setattr(settings, "odds_history_retention_days", 7)
+    monkeypatch.setattr(settings, "team_review_retention_days", 30)
+
+    current_snapshot_at = "2026-04-20T12:00:00"
+    stale_snapshot_at = "2026-04-10T12:00:00"
+    old_history_at = "2026-03-01T12:00:00"
+    recent_history_at = "2026-04-18T12:00:00"
+
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_match("stale", "euroleague", "Bayern Munich", "Maccabi Tel Aviv")
+    await odds_store.upsert_match("fresh", "euroleague", "Maccabi Tel Aviv", "Hapoel Tel-Aviv")
+
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="stale",
+            bookmaker_id="meridian",
+            league_id="euroleague",
+            home_team="Bayern Munich",
+            away_team="Maccabi Tel Aviv",
+            market_type="player_points",
+            player_name="Saben Lee",
+            threshold=13.5,
+            over_odds=1.8,
+            under_odds=2.0,
+        ),
+        scraped_at=old_history_at,
+    )
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="fresh",
+            bookmaker_id="meridian",
+            league_id="euroleague",
+            home_team="Maccabi Tel Aviv",
+            away_team="Hapoel Tel-Aviv",
+            market_type="player_points",
+            player_name="Tamir Blatt",
+            threshold=6.5,
+            over_odds=2.09,
+            under_odds=1.66,
+        ),
+        scraped_at=current_snapshot_at,
+    )
+    await odds_store.insert_unresolved_odds(
+        UnresolvedOddsDiagnostic(
+            bookmaker_id="meridian",
+            raw_league_id="euroleague",
+            league_id="euroleague",
+            market_type="player_points",
+            player_name="Saben Lee",
+            raw_team_name="Bayern Munich",
+            normalized_team_name="bayern munich",
+            start_time=stale_snapshot_at,
+            threshold=13.5,
+            over_odds=1.8,
+            under_odds=2.0,
+            reason_code="no_match_found",
+        ),
+        scraped_at=stale_snapshot_at,
+    )
+    await odds_store.insert_unresolved_odds(
+        UnresolvedOddsDiagnostic(
+            bookmaker_id="meridian",
+            raw_league_id="euroleague",
+            league_id="euroleague",
+            market_type="player_points",
+            player_name="Tamir Blatt",
+            raw_team_name="Maccabi Tel Aviv",
+            normalized_team_name="maccabi tel aviv",
+            start_time=current_snapshot_at,
+            threshold=6.5,
+            over_odds=2.09,
+            under_odds=1.66,
+            reason_code="no_match_found",
+        ),
+        scraped_at=current_snapshot_at,
+    )
+    await odds_store.insert_discrepancy(
+        "stale",
+        "player_points",
+        "Saben Lee",
+        "meridian",
+        "mozzart",
+        13.5,
+        15.5,
+        1.8,
+        1.95,
+        2.0,
+        0.03,
+    )
+    await odds_store.deactivate_all_discrepancies()
+    active_discrepancy_id = await odds_store.insert_discrepancy(
+        "fresh",
+        "player_points",
+        "Tamir Blatt",
+        "meridian",
+        "mozzart",
+        6.5,
+        8.5,
+        2.09,
+        1.95,
+        2.0,
+        0.04,
+    )
+
+    old_case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic(
+            bookmaker_id="meridian",
+            raw_league_id="euroleague",
+            normalized_raw_league_id="euroleague",
+            scope_league_id="euroleague",
+            raw_team_name="Old Alias",
+            normalized_raw_team_name="old alias",
+            start_time=old_history_at,
+            reason_code="candidate_team_match_same_start_time",
+            matched_counterpart_team="Maccabi Tel Aviv",
+            canonical_home_team="Old Team",
+            canonical_away_team="Maccabi Tel Aviv",
+        ),
+        scraped_at=old_history_at,
+    )
+    recent_case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic(
+            bookmaker_id="meridian",
+            raw_league_id="euroleague",
+            normalized_raw_league_id="euroleague",
+            scope_league_id="euroleague",
+            raw_team_name="Recent Alias",
+            normalized_raw_team_name="recent alias",
+            start_time=recent_history_at,
+            reason_code="candidate_team_match_same_start_time",
+            matched_counterpart_team="Hapoel Tel-Aviv",
+            canonical_home_team="Recent Team",
+            canonical_away_team="Hapoel Tel-Aviv",
+        ),
+        scraped_at=recent_history_at,
+    )
+
+    old_notification_id = await odds_store.insert_notification(
+        "discrepancy", "Old Alert", "body", {"gap": 2.0}
+    )
+    recent_notification_id = await odds_store.insert_notification(
+        "discrepancy", "Recent Alert", "body", {"gap": 2.0}
+    )
+    db = await get_db()
+    await db.execute(
+        "UPDATE notifications SET created_at = ? WHERE id = ?",
+        ("2026-04-01 12:00:00", old_notification_id),
+    )
+    await db.execute(
+        "UPDATE notifications SET created_at = ? WHERE id = ?",
+        ("2026-04-19 12:00:00", recent_notification_id),
+    )
+    await db.commit()
+
+    counts = await odds_store.cleanup_retained_data(current_snapshot_at)
+
+    odds_rows = await db.execute_fetchall(
+        "SELECT match_id, scraped_at FROM odds ORDER BY match_id"
+    )
+    unresolved_rows = await db.execute_fetchall(
+        "SELECT raw_team_name, scraped_at FROM unresolved_odds ORDER BY id"
+    )
+    discrepancy_rows = await db.execute_fetchall(
+        "SELECT id, is_active FROM discrepancies ORDER BY id"
+    )
+    history_rows = await db.execute_fetchall(
+        "SELECT match_id, scraped_at FROM odds_history ORDER BY id"
+    )
+    review_rows = await db.execute_fetchall(
+        "SELECT id, raw_team_name FROM team_review_cases ORDER BY id"
+    )
+    notification_rows = await db.execute_fetchall(
+        "SELECT id FROM notifications ORDER BY id"
+    )
+
+    assert [(row["match_id"], row["scraped_at"]) for row in odds_rows] == [
+        ("fresh", current_snapshot_at)
+    ]
+    assert [(row["raw_team_name"], row["scraped_at"]) for row in unresolved_rows] == [
+        ("Maccabi Tel Aviv", current_snapshot_at)
+    ]
+    assert [(row["id"], row["is_active"]) for row in discrepancy_rows] == [
+        (active_discrepancy_id, 1)
+    ]
+    assert [(row["match_id"], row["scraped_at"]) for row in history_rows] == [
+        ("fresh", current_snapshot_at)
+    ]
+    assert [(row["id"], row["raw_team_name"]) for row in review_rows] == [
+        (recent_case_id, "Recent Alias")
+    ]
+    assert notification_rows == []
+    assert counts == {
+        "deleted_stale_odds": 1,
+        "deleted_stale_unresolved_odds": 1,
+        "deleted_inactive_discrepancies": 1,
+        "deleted_odds_history": 1,
+        "deleted_team_review_cases": 1,
+        "deleted_notifications": 2,
+    }
+    assert old_case_id != recent_case_id
+
+
+@pytest.mark.asyncio
+async def test_cleanup_retained_data_keeps_recent_notifications_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "persist_inapp_notifications", True)
+    monkeypatch.setattr(settings, "notification_retention_days", 3)
+
+    current_snapshot_at = "2026-04-20T12:00:00"
+    old_notification_id = await odds_store.insert_notification(
+        "discrepancy", "Old Alert", "body", {"gap": 2.0}
+    )
+    recent_notification_id = await odds_store.insert_notification(
+        "discrepancy", "Recent Alert", "body", {"gap": 2.0}
+    )
+
+    db = await get_db()
+    await db.execute(
+        "UPDATE notifications SET created_at = ? WHERE id = ?",
+        ("2026-04-10 12:00:00", old_notification_id),
+    )
+    await db.execute(
+        "UPDATE notifications SET created_at = ? WHERE id = ?",
+        ("2026-04-19 12:00:00", recent_notification_id),
+    )
+    await db.commit()
+
+    counts = await odds_store.cleanup_retained_data(current_snapshot_at)
+    notification_rows = await db.execute_fetchall(
+        "SELECT id FROM notifications ORDER BY id"
+    )
+
+    assert [row["id"] for row in notification_rows] == [recent_notification_id]
+    assert counts["deleted_notifications"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cleanup_retained_data_uses_isolated_connection_for_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "persist_inapp_notifications", False)
+
+    pause_delete = asyncio.Event()
+    allow_delete = asyncio.Event()
+    original_connect = odds_store.aiosqlite.connect
+
+    class PausingConnection:
+        def __init__(self, conn):
+            self._conn = conn
+
+        async def execute(self, sql, parameters=()):
+            if sql.strip() == "DELETE FROM notifications":
+                pause_delete.set()
+                await allow_delete.wait()
+            return await self._conn.execute(sql, parameters)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    async def fake_connect(*args, **kwargs):
+        conn = await original_connect(*args, **kwargs)
+        return PausingConnection(conn)
+
+    monkeypatch.setattr(odds_store.aiosqlite, "connect", fake_connect)
+
+    old_notification_id = await odds_store.insert_notification(
+        "discrepancy", "Old Alert", "body", {"gap": 2.0}
+    )
+    db = await get_db()
+    await db.execute(
+        "UPDATE notifications SET created_at = ? WHERE id = ?",
+        ("2026-04-01 12:00:00", old_notification_id),
+    )
+    await db.commit()
+
+    cleanup_task = asyncio.create_task(
+        odds_store.cleanup_retained_data("2026-04-20T12:00:00")
+    )
+    await pause_delete.wait()
+
+    insert_task = asyncio.create_task(
+        odds_store.insert_notification("discrepancy", "Concurrent Alert", "body", {"gap": 2.5})
+    )
+    await asyncio.sleep(0)
+    allow_delete.set()
+
+    counts = await cleanup_task
+    inserted_id = await insert_task
+    notification_rows = await db.execute_fetchall(
+        "SELECT id, title FROM notifications ORDER BY id"
+    )
+
+    assert inserted_id > 0
+    assert [(row["id"], row["title"]) for row in notification_rows] == [
+        (inserted_id, "Concurrent Alert")
+    ]
+    assert counts["deleted_notifications"] == 1
 
 
 @pytest.mark.asyncio

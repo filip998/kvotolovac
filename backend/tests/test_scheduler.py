@@ -4,10 +4,12 @@ import asyncio
 
 import pytest
 
+from app.config import settings
 from app.models.schemas import NormalizedOdds, RawOddsData, TeamReviewDiagnostic
 from app.scrapers.base import BaseScraper
 from app.services.scheduler import Scheduler
 from app.services.normalizer import normalize_team_name
+from app.services.notifications import InAppNotificationProvider
 from app.services.team_registry import resolve_team_alias
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
@@ -238,7 +240,7 @@ async def test_scheduler_run_cycle_isolates_scraper_failures():
     assert result["matches_scraped"] == 1
     assert result["odds_scraped"] == 2
     assert result["discrepancies_found"] == 1
-    assert result["notifications_sent"] == 1
+    assert result["notifications_sent"] == 0
 
 
 @pytest.mark.asyncio
@@ -262,7 +264,7 @@ async def test_scheduler_run_cycle_isolates_malformed_scraper_returns():
     assert result["matches_scraped"] == 1
     assert result["odds_scraped"] == 2
     assert result["discrepancies_found"] == 1
-    assert result["notifications_sent"] == 1
+    assert result["notifications_sent"] == 0
 
 
 @pytest.mark.asyncio
@@ -286,7 +288,7 @@ async def test_scheduler_run_cycle_isolates_malformed_scraper_items():
     assert result["matches_scraped"] == 1
     assert result["odds_scraped"] == 2
     assert result["discrepancies_found"] == 1
-    assert result["notifications_sent"] == 1
+    assert result["notifications_sent"] == 0
 
 
 @pytest.mark.asyncio
@@ -307,6 +309,105 @@ async def test_scheduler_run_cycle_returns_expected_output_shape():
     ):
         assert isinstance(result[key], int)
         assert result[key] >= 0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_calls_retention_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cleanup_calls: list[str] = []
+
+    async def fake_cleanup(snapshot_at: str) -> dict[str, int]:
+        cleanup_calls.append(snapshot_at)
+        return {
+            "deleted_stale_odds": 0,
+            "deleted_stale_unresolved_odds": 0,
+            "deleted_inactive_discrepancies": 0,
+            "deleted_odds_history": 0,
+            "deleted_team_review_cases": 0,
+            "deleted_notifications": 0,
+        }
+
+    monkeypatch.setattr(odds_store, "cleanup_retained_data", fake_cleanup)
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["matches_scraped"] > 0
+    assert len(cleanup_calls) == 1
+    assert cleanup_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_skips_in_app_notification_provider_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    send_calls = 0
+
+    async def fake_send(self, type: str, title: str, message: str, data=None) -> None:
+        nonlocal send_calls
+        send_calls += 1
+
+    monkeypatch.setattr(settings, "persist_inapp_notifications", False)
+    monkeypatch.setattr(InAppNotificationProvider, "send", fake_send)
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["notifications_sent"] == 0
+    assert send_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_uses_in_app_notification_provider_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    send_calls = 0
+
+    async def fake_send(self, type: str, title: str, message: str, data=None) -> None:
+        nonlocal send_calls
+        send_calls += 1
+
+    monkeypatch.setattr(settings, "persist_inapp_notifications", True)
+    monkeypatch.setattr(InAppNotificationProvider, "send", fake_send)
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["notifications_sent"] > 0
+    assert send_calls == result["notifications_sent"]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_cleanup_failure_does_not_roll_back_auto_saved_alias(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _register_test_scrapers(
+        StubScraper(
+            "mozzart",
+            payload_by_league={"euroleague": [_anchored_team_raw("mozzart", "Rilski Sportist")]},
+        ),
+        StubScraper(
+            "meridian",
+            payload_by_league={"euroleague": [_anchored_team_raw("meridian", "Rilski Sport.", league_id="NBL")]},
+        ),
+    )
+
+    await Scheduler(interval_minutes=1).run_cycle()
+
+    async def failing_cleanup(snapshot_at: str) -> dict[str, int]:
+        raise RuntimeError("simulated cleanup failure")
+
+    monkeypatch.setattr(odds_store, "cleanup_retained_data", failing_cleanup)
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+    approved_cases = await odds_store.get_team_review_cases(status="approved")
+
+    assert result["matches_scraped"] == 1
+    assert result["odds_scraped"] == 2
+    assert len(approved_cases) == 1
+    assert approved_cases[0].review_kind == "auto_alias_suggestion"
+    assert (
+        normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian")
+        == "Rilski Sportist"
+    )
 
 
 @pytest.mark.asyncio
