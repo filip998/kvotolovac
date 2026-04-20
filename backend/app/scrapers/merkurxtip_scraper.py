@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from .base import BaseScraper
 from .http_client import HttpClient
+from ..config import settings
 from ..models.schemas import RawOddsData
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ _TOTALS_LIST_URL = "https://www.merkurxtip.rs/restapi/offer/sr/sport/B/mob"
 _LEAGUE_URL = "https://www.merkurxtip.rs/restapi/offer/sr/sport/SK/league/{league_id}/mob"
 _MATCH_URL = "https://www.merkurxtip.rs/restapi/offer/sr/match/{match_id}"
 
-_DEFAULT_PARAMS = {
+_BASE_PARAMS = {
     "annex": "0",
     "mobileVersion": "1.16.2.34",
     "locale": "sr",
@@ -33,6 +34,13 @@ _DEFAULT_HEADERS = {
     ),
     "Referer": "https://www.merkurxtip.rs/",
 }
+
+
+def _list_params() -> dict[str, str]:
+    return {
+        **_BASE_PARAMS,
+        "hours": str(settings.scrape_lookahead_hours),
+    }
 
 # Tip type codes — same white-label platform as MaxBet / OktagonBet
 _OVER_CODE = "51679"
@@ -370,7 +378,7 @@ class MerkurXTipScraper(BaseScraper):
             try:
                 detail = await self._http.get_json(
                     _MATCH_URL.format(match_id=match_id),
-                    params=_DEFAULT_PARAMS,
+                    params=_BASE_PARAMS,
                     headers=_DEFAULT_HEADERS,
                 )
             except Exception:
@@ -384,7 +392,7 @@ class MerkurXTipScraper(BaseScraper):
         try:
             data = await self._http.get_json(
                 _PLAYER_LIST_URL,
-                params=_DEFAULT_PARAMS,
+                params=_list_params(),
                 headers=_DEFAULT_HEADERS,
             )
         except Exception:
@@ -398,7 +406,7 @@ class MerkurXTipScraper(BaseScraper):
         try:
             data = await self._http.get_json(
                 _TOTALS_LIST_URL,
-                params=_DEFAULT_PARAMS,
+                params=_list_params(),
                 headers=_DEFAULT_HEADERS,
             )
         except Exception:
@@ -412,7 +420,7 @@ class MerkurXTipScraper(BaseScraper):
         try:
             data = await self._http.get_json(
                 _LEAGUE_URL.format(league_id=league_id),
-                params=_DEFAULT_PARAMS,
+                params=_BASE_PARAMS,
                 headers=_DEFAULT_HEADERS,
             )
         except Exception:

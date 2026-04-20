@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -469,6 +470,29 @@ async def test_scraper_list_request_uses_live_accepted_filter_from_format():
         re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", p["filter[from]"])
         for p in captured_params
     )
+
+
+@pytest.mark.asyncio
+async def test_scraper_list_request_uses_24h_filter_to(monkeypatch):
+    scraper = BalkanBetScraper()
+    captured_params: list[dict] = []
+    fixed_now = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.config.settings.scrape_lookahead_hours", 24)
+    monkeypatch.setattr("app.scrapers.balkanbet_scraper.current_utc_time", lambda: fixed_now)
+
+    async def mock_get(url, **kwargs):
+        captured_params.append(kwargs.get("params", {}))
+        return {"data": {"events": []}}
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert results == []
+    assert captured_params
+    expected_from = _format_filter_from(fixed_now)
+    expected_to = _format_filter_from(fixed_now + timedelta(hours=24))
+    assert all(p["filter[from]"] == expected_from for p in captured_params)
+    assert all(p["filter[to]"] == expected_to for p in captured_params)
 
 
 # ── SportSpec extensibility ──────────────────────────────

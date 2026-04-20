@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -289,6 +290,65 @@ async def test_scheduler_run_cycle_isolates_malformed_scraper_items():
     assert result["odds_scraped"] == 2
     assert result["discrepancies_found"] == 1
     assert result["notifications_sent"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_filters_odds_beyond_configured_lookahead(
+    monkeypatch,
+):
+    fixed_now = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.config.settings.scrape_lookahead_hours", 24)
+    monkeypatch.setattr("app.services.scrape_window.current_utc_time", lambda: fixed_now)
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={
+                "euroleague": [
+                    RawOddsData(
+                        bookmaker_id="alpha",
+                        league_id="euroleague",
+                        home_team="Olympiacos",
+                        away_team="Real Madrid",
+                        market_type="player_points",
+                        player_name="Sasha Vezenkov",
+                        threshold=18.5,
+                        over_odds=1.9,
+                        under_odds=1.9,
+                        start_time=(fixed_now + timedelta(hours=23)).isoformat(),
+                    ),
+                    RawOddsData(
+                        bookmaker_id="alpha",
+                        league_id="euroleague",
+                        home_team="Olympiacos",
+                        away_team="Real Madrid",
+                        market_type="player_points",
+                        player_name="Sasha Vezenkov",
+                        threshold=20.5,
+                        over_odds=1.9,
+                        under_odds=1.9,
+                        start_time=(fixed_now + timedelta(hours=24)).isoformat(),
+                    ),
+                    RawOddsData(
+                        bookmaker_id="alpha",
+                        league_id="euroleague",
+                        home_team="Olympiacos",
+                        away_team="Real Madrid",
+                        market_type="player_points",
+                        player_name="Sasha Vezenkov",
+                        threshold=22.5,
+                        over_odds=1.9,
+                        under_odds=1.9,
+                        start_time=(fixed_now + timedelta(hours=25)).isoformat(),
+                    ),
+                ]
+            },
+        )
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["matches_scraped"] == 2
+    assert result["odds_scraped"] == 2
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,10 @@ from ..services.league_registry import league_country, league_display_name
 from ..services.normalizer import normalize_odds_with_diagnostics
 from ..services.analyzer import analyze
 from ..services.notifications import NotificationService, InAppNotificationProvider
+from ..services.scrape_window import (
+    configured_lookahead_hours,
+    filter_raw_odds_by_lookahead,
+)
 from ..services.scraper_benchmarks import recorder as benchmark_recorder
 from ..services.team_registry import (
     CircularAliasError,
@@ -272,6 +276,9 @@ class Scheduler:
             )
             return []
 
+        filtered_raw = filter_raw_odds_by_lookahead(raw)
+        dropped_count = len(raw) - len(filtered_raw)
+        raw = filtered_raw
         duration_ms = int((time.perf_counter() - started_at) * 1000)
         self._scan_completed_tasks += 1
         self._scan_active_tasks = max(0, self._scan_active_tasks - 1)
@@ -288,6 +295,13 @@ class Scheduler:
             duration_ms,
             len(raw),
         )
+        if dropped_count:
+            logger.info(
+                "Scraper %s dropped %d items outside %dh lookahead",
+                bookmaker_id,
+                dropped_count,
+                configured_lookahead_hours(),
+            )
         return raw
 
     async def _run_cycle_once(self) -> dict:

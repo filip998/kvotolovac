@@ -6,6 +6,11 @@ from datetime import datetime, timezone
 
 from .base import BaseScraper
 from .http_client import HttpClient
+from ..services.scrape_window import (
+    current_utc_time,
+    format_utc_naive_seconds,
+    lookahead_cutoff,
+)
 from ..models.schemas import RawOddsData
 
 logger = logging.getLogger(__name__)
@@ -17,7 +22,7 @@ _PLAYER_DEFAULT_PARAMS = {
     "sportId": "123",
     "isLive": "false",
     "dateFrom": "",  # filled at scrape time
-    "dateTo": "2031-12-31T00:00:00",
+    "dateTo": "",  # filled at scrape time
     "eventMappingTypes": ["1", "2", "3", "4", "5"],
 }
 
@@ -26,7 +31,7 @@ _GAME_TOTAL_DEFAULT_PARAMS = {
     "sportId": "2",
     "isLive": "false",
     "dateFrom": "",  # filled at scrape time
-    "dateTo": "2031-12-31T00:00:00",
+    "dateTo": "",  # filled at scrape time
     "eventMappingTypes": ["1", "2", "3", "4", "5"],
 }
 
@@ -336,9 +341,18 @@ class AdmiralBetScraper(BaseScraper):
         if league_id != "basketball":
             return []
 
-        now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-        player_params = {**_PLAYER_DEFAULT_PARAMS, "dateFrom": now}
-        game_total_params = {**_GAME_TOTAL_DEFAULT_PARAMS, "dateFrom": now}
+        now = current_utc_time()
+        cutoff = lookahead_cutoff(now)
+        player_params = {
+            **_PLAYER_DEFAULT_PARAMS,
+            "dateFrom": format_utc_naive_seconds(now),
+            "dateTo": format_utc_naive_seconds(cutoff),
+        }
+        game_total_params = {
+            **_GAME_TOTAL_DEFAULT_PARAMS,
+            "dateFrom": format_utc_naive_seconds(now),
+            "dateTo": format_utc_naive_seconds(cutoff),
+        }
 
         player_data, basketball_events = await asyncio.gather(
             self._fetch_list(player_params, "player specials list"),

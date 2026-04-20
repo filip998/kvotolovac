@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -485,6 +487,29 @@ async def test_scraper_http_error():
         mock_get.side_effect = Exception("Network error")
         results = await scraper.scrape_odds("basketball")
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_scraper_list_urls_use_24h_window(monkeypatch):
+    scraper = PinnBetScraper()
+    captured_urls: list[str] = []
+    fixed_now = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.config.settings.scrape_lookahead_hours", 24)
+    monkeypatch.setattr("app.scrapers.pinnbet_scraper.current_utc_time", lambda: fixed_now)
+
+    async def mock_get(url, **kwargs):
+        captured_urls.append(url)
+        return []
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert results == []
+    assert captured_urls
+    for url in captured_urls:
+        query = parse_qs(urlparse(url).query)
+        assert query["dateFrom"] == ["2030-01-01T12:00:00"]
+        assert query["dateTo"] == ["2030-01-02T12:00:00"]
 
 
 @pytest.mark.asyncio
