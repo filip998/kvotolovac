@@ -81,15 +81,11 @@ _DEFAULT_HEADERS: dict[str, str] = {
 
 _DEFAULT_PARAMS: dict[str, str] = {}
 
-# (sportId, regionId, competitionId, fallback league_id)
-_KNOWN_COMPETITIONS: list[tuple[int, int, int, str]] = [
-    (3, 462, 3221, "nba"),       # NBA when available
-    (3, 464, 22317, "aba_liga"), # AdmiralBet ABA liga - plej of (current live fallback)
-]
-
 _COMPETITION_NAME_LEAGUE_MAP: dict[str, str] = {
     "nba": "nba",
     "usa nba": "nba",
+    "nba plej of": "nba",
+    "nba playoff": "nba",
     "euroleague": "euroleague",
     "evroliga": "euroleague",
     "aba liga": "aba_liga",
@@ -99,6 +95,7 @@ _COMPETITION_NAME_LEAGUE_MAP: dict[str, str] = {
 }
 _COMPETITION_ID_LEAGUE_MAP: dict[int, str] = {
     3221: "nba",
+    13981: "nba",
     22317: "aba_liga",
 }
 
@@ -448,54 +445,46 @@ class PinnBetScraper(BaseScraper):
 
         return data
 
+    async def _fetch_player_events(self) -> list[dict]:
+        url = _build_list_url(
+            _PLAYER_SPORT_ID,
+            page_id=_PLAYER_PAGE_ID,
+        )
+
+        try:
+            data = await self._http.get_json(url, headers=_DEFAULT_HEADERS)
+        except Exception:
+            logger.warning("PinnBet: failed to fetch basketball player events")
+            return []
+
+        if not isinstance(data, list):  # type: ignore[arg-type]
+            logger.warning(
+                "PinnBet: unexpected response type %s for basketball player events",
+                type(data).__name__,
+            )
+            return []
+
+        player_events = _get_player_event_ids(data)
+        if not player_events:
+            logger.warning("PinnBet: no player events in basketball player feed")
+
+        return player_events
+
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         if league_id != "basketball":
             return []
 
         player_results: list[RawOddsData] = []
         total_results: list[RawOddsData] = []
-
-        for sport_id, region_id, competition_id, comp_league_id in _KNOWN_COMPETITIONS:
-            url = _build_list_url(
-                sport_id,
-                page_id=_PLAYER_PAGE_ID,
-                region_id=region_id,
-                competition_id=competition_id,
-            )
-
-            try:
-                data = await self._http.get_json(url, headers=_DEFAULT_HEADERS)
-            except Exception:
-                logger.warning(
-                    "PinnBet: failed to fetch events for competition %s",
-                    competition_id,
-                )
-                continue
-
-            # The list endpoint returns a JSON array, not an object.
-            if not isinstance(data, list):  # type: ignore[arg-type]
-                logger.warning(
-                    "PinnBet: unexpected response type %s for competition %s",
-                    type(data).__name__,
-                    competition_id,
-                )
-                continue
-
-            player_events = _get_player_event_ids(data)
-            if not player_events:
-                logger.warning(
-                    "PinnBet: no player events for competition %s",
-                    competition_id,
-                )
-                continue
-
+        player_events = await self._fetch_player_events()
+        if player_events:
             semaphore = asyncio.Semaphore(_DETAIL_CONCURRENCY)
             detail_results = await asyncio.gather(
                 *(
                     self._fetch_event_detail(
                         ev,
                         semaphore,
-                        league_id=_extract_league_id(ev, fallback_league_id=comp_league_id),
+                        league_id=_extract_league_id(ev),
                     )
                     for ev in player_events
                 )
@@ -511,10 +500,11 @@ class PinnBetScraper(BaseScraper):
 
         logger.info(
             (
-                "PinnBet scraped %d player odds and %d OT total odds "
-                "from %d basketball prematch events"
+                "PinnBet scraped %d player odds from %d player feed events "
+                "and %d OT total odds from %d basketball prematch events"
             ),
             len(player_results),
+            len(player_events),
             len(total_results),
             len(basketball_events),
         )

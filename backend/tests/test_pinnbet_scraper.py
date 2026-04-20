@@ -111,6 +111,16 @@ def test_extract_league_id_prefers_known_competition_id_over_unknown_name():
     assert _extract_league_id(event) == "nba"
 
 
+def test_extract_league_id_maps_nba_playoff_name():
+    event = {"competitionName": "NBA - plej of", "competitionId": 999999}
+    assert _extract_league_id(event) == "nba"
+
+
+def test_extract_league_id_maps_nba_playoff_competition_id():
+    event = {"competitionId": 13981}
+    assert _extract_league_id(event) == "nba"
+
+
 def test_extract_league_id_keeps_unknown_name_when_id_is_unknown():
     event = {"competitionName": "Some Random League Name", "competitionId": 999999}
     assert _extract_league_id(event) == "some random league name"
@@ -511,6 +521,13 @@ async def test_scraper_list_urls_use_24h_window(monkeypatch):
         assert query["dateFrom"] == ["2030-01-01T12:00:00"]
         assert query["dateTo"] == ["2030-01-02T12:00:00"]
 
+    player_urls = [
+        url for url in captured_urls if "getWebEventsSelections" in url and "sportId=3" in url
+    ]
+    assert len(player_urls) == 1
+    assert "regionId=" not in player_urls[0]
+    assert "competitionId=" not in player_urls[0]
+
 
 @pytest.mark.asyncio
 async def test_scraper_unexpected_response_type():
@@ -545,15 +562,14 @@ async def test_scraper_no_player_events():
 @pytest.mark.asyncio
 async def test_scraper_integration(events_data, bets_data, totals_data):
     scraper = PinnBetScraper()
-    player_list_call_count = 0
+    player_urls: list[str] = []
 
     async def mock_get(url, **kwargs):
-        nonlocal player_list_call_count
         if "getWebEventsSelections" in url:
             if "pageId=35&sportId=2" in url:
                 return totals_data
-            player_list_call_count += 1
-            return events_data if player_list_call_count == 1 else []
+            player_urls.append(url)
+            return events_data
         return bets_data
 
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
@@ -569,6 +585,9 @@ async def test_scraper_integration(events_data, bets_data, totals_data):
     assert len(game_totals) == 11
     assert {r.home_team for r in game_totals} == {"Lyon Villeurbanne"}
     assert {r.away_team for r in game_totals} == {"Fenerbahce"}
+    assert len(player_urls) == 1
+    assert "regionId=" not in player_urls[0]
+    assert "competitionId=" not in player_urls[0]
 
 
 @pytest.mark.asyncio
@@ -584,7 +603,7 @@ async def test_scraper_detail_failure_skipped(events_data, bets_data, totals_dat
             if "pageId=35&sportId=2" in url:
                 return totals_data
             player_list_call_count += 1
-            return events_data if player_list_call_count == 1 else []
+            return events_data
         call_count += 1
         if call_count == 1:
             raise Exception("detail failed")
@@ -594,6 +613,7 @@ async def test_scraper_detail_failure_skipped(events_data, bets_data, totals_dat
         results = await scraper.scrape_odds("basketball")
 
     assert len(results) == 12
+    assert player_list_call_count == 1
 
 
 @pytest.mark.asyncio
@@ -610,7 +630,7 @@ async def test_scraper_concurrent_detail_fetches(events_data, bets_data, totals_
             if "pageId=35&sportId=2" in url:
                 return totals_data
             player_list_call_count += 1
-            return events_data if player_list_call_count == 1 else []
+            return events_data
         active += 1
         max_active = max(max_active, active)
         await asyncio.sleep(0.02)
@@ -622,3 +642,4 @@ async def test_scraper_concurrent_detail_fetches(events_data, bets_data, totals_
 
     assert max_active >= 2
     assert len(results) == 13
+    assert player_list_call_count == 1
