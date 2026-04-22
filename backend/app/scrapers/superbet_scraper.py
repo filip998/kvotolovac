@@ -61,6 +61,55 @@ _CANONICAL_LEAGUES: dict[str, str] = {
     "portoriko 1": "portoriko_1",
 }
 
+_GAME_TOTAL_MARKET_NAMES = {
+    "ukupno poena uklj produzetke",
+}
+
+_PLAYER_POINTS_MARKET_NAMES = {
+    "ukupno poena igraca uklj produzetke",
+}
+
+_PLAYER_ASSISTS_MARKET_NAMES = {
+    "ukupno asistencija igraca uklj produzetke",
+}
+
+_PLAYER_REBOUNDS_MARKET_NAMES = {
+    "ukupno skokova igraca uklj produzetke",
+}
+
+_PLAYER_3POINTS_MARKET_NAMES = {
+    "ukupno pogodaka za 3 poena uklj produzetke",
+    "3 poena igraca uklj produzetke",
+}
+
+_PLAYER_POINTS_ASSISTS_MARKET_NAMES = {
+    "poeni igraca asistencije uklj produzetke",
+}
+
+_PLAYER_POINTS_REBOUNDS_MARKET_NAMES = {
+    "poeni igraca skokovi uklj produzetke",
+}
+
+_PLAYER_REBOUNDS_ASSISTS_MARKET_NAMES = {
+    "skokovi igraca asistencije uklj produzetke",
+}
+
+_PLAYER_POINTS_REBOUNDS_ASSISTS_MARKET_NAMES = {
+    "poeni igraca skokovi asistencije uklj produzetke",
+}
+
+_PLAYER_BLOCKS_MARKET_NAMES = {
+    "ukupno blokada igraca uklj produzetke",
+}
+
+_PLAYER_STEALS_MARKET_NAMES = {
+    "ukupno ukradenih lopti igraca uklj produzetke",
+}
+
+_PLAYER_TURNOVERS_MARKET_NAMES = {
+    "ukupno izgubljenih lopti igraca uklj produzetke",
+}
+
 
 @dataclass(frozen=True)
 class SportSpec:
@@ -237,51 +286,36 @@ def _classify_market_type(
     specifiers: dict[str, object],
 ) -> str | None:
     normalized_name = normalize_identity_text(market_name)
-    normalized_group = normalize_identity_text(group_name)
     has_player = bool(_normalize_player_name(specifiers.get("player")))
     has_milestone = specifiers.get("milestone") is not None
 
-    if not has_player and normalized_name == "ukupno poena uklj produzetke":
+    if not has_player and normalized_name in _GAME_TOTAL_MARKET_NAMES:
         return "game_total_ot"
 
-    if "poeni igraca skokovi asistencije" in normalized_name:
+    if normalized_name in _PLAYER_POINTS_REBOUNDS_ASSISTS_MARKET_NAMES:
         return "player_points_rebounds_assists" if has_player else None
-    if "poeni igraca asistencije" in normalized_name:
+    if normalized_name in _PLAYER_POINTS_ASSISTS_MARKET_NAMES:
         return "player_points_assists" if has_player else None
-    if "poeni igraca skokovi" in normalized_name and "asistencije" not in normalized_name:
+    if normalized_name in _PLAYER_POINTS_REBOUNDS_MARKET_NAMES:
         return "player_points_rebounds" if has_player else None
-    if "skokovi igraca asistencije" in normalized_name:
+    if normalized_name in _PLAYER_REBOUNDS_ASSISTS_MARKET_NAMES:
         return "player_rebounds_assists" if has_player else None
-    if "ukupno blokada igraca" in normalized_name:
+    if normalized_name in _PLAYER_BLOCKS_MARKET_NAMES:
         return "player_blocks" if has_player else None
-    if "ukupno ukradenih lopti igraca" in normalized_name:
+    if normalized_name in _PLAYER_STEALS_MARKET_NAMES:
         return "player_steals" if has_player else None
-    if "ukupno izgubljenih lopti igraca" in normalized_name:
+    if normalized_name in _PLAYER_TURNOVERS_MARKET_NAMES:
         return "player_turnovers" if has_player else None
-    if (
-        "ukupno pogodaka za 3 poena" in normalized_name
-        or normalized_name.startswith("3 poena igraca")
-    ):
+    if normalized_name in _PLAYER_3POINTS_MARKET_NAMES:
         return "player_3points" if has_player else None
-    if "suteva za 3 poena igraca" in normalized_name:
-        return None
-    if "ukupno asistencija igraca" in normalized_name:
+    if normalized_name in _PLAYER_ASSISTS_MARKET_NAMES:
         return "player_assists" if has_player else None
-    if "ukupno skokova igraca" in normalized_name:
+    if normalized_name in _PLAYER_REBOUNDS_MARKET_NAMES:
         return "player_rebounds" if has_player else None
-    if "ukupno poena igraca" in normalized_name:
+    if normalized_name in _PLAYER_POINTS_MARKET_NAMES:
         if not has_player:
             return None
         return "player_points_milestones" if has_milestone else "player_points"
-
-    if normalized_group == "poeni igraca" and has_player:
-        return "player_points_milestones" if has_milestone else "player_points"
-    if normalized_group == "asistencije" and has_player:
-        return "player_assists"
-    if normalized_group == "skokovi" and has_player:
-        return "player_rebounds"
-    if normalized_group == "3 poena igraca" and has_player:
-        return "player_3points"
     return None
 
 
