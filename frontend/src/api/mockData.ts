@@ -26,6 +26,7 @@ export const mockBookmakers: Bookmaker[] = [
   { id: 'maxbet', name: 'MaxBet', is_active: true },
   { id: 'soccerbet', name: 'SoccerBet', is_active: true },
   { id: 'superbet', name: 'Superbet', is_active: true },
+  { id: 'betole', name: 'BetOle', is_active: true },
 ];
 
 export const mockMatches: Match[] = [
@@ -42,6 +43,7 @@ export const mockMatches: Match[] = [
       { id: 'maxbet', name: 'MaxBet' },
       { id: 'meridian', name: 'Meridian' },
       { id: 'mozzart', name: 'Mozzart' },
+      { id: 'betole', name: 'BetOle' },
     ],
   },
   {
@@ -57,6 +59,7 @@ export const mockMatches: Match[] = [
       { id: 'maxbet', name: 'MaxBet' },
       { id: 'meridian', name: 'Meridian' },
       { id: 'mozzart', name: 'Mozzart' },
+      { id: 'betole', name: 'BetOle' },
     ],
   },
   {
@@ -161,6 +164,9 @@ export const mockOddsOffers: OddsOffer[] = [
   { id: 27, match_id: 'match-6', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'game_total', player_name: null, threshold: 161.5, over_odds: 1.82, under_odds: 1.95, scraped_at: ago(8) },
   { id: 28, match_id: 'match-6', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23281441', market_type: 'game_total_ot', player_name: null, threshold: 160.5, over_odds: 2.02, under_odds: 1.84, scraped_at: ago(6) },
   { id: 29, match_id: 'match-6', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'game_total_ot', player_name: null, threshold: 163.5, over_odds: 1.86, under_odds: 2.02, scraped_at: ago(5) },
+  { id: 30, match_id: 'match-1', bookmaker_id: 'betole', bookmaker_name: 'BetOle', source_url: 'https://www.betole.com/match-special/90241113', market_type: 'player_points', player_name: 'Sasha Vezenkov', threshold: 19.5, over_odds: 1.84, under_odds: 1.94, scraped_at: ago(2) },
+  { id: 31, match_id: 'match-1', bookmaker_id: 'betole', bookmaker_name: 'BetOle', source_url: 'https://www.betole.com/match-special/90241113', market_type: 'game_total_ot', player_name: null, threshold: 156.5, over_odds: 1.91, under_odds: 1.86, scraped_at: ago(2) },
+  { id: 32, match_id: 'match-2', bookmaker_id: 'betole', bookmaker_name: 'BetOle', source_url: 'https://www.betole.com/match-special/90241114', market_type: 'player_points', player_name: 'Nigel Hayes-Davis', threshold: 16.5, over_odds: 1.84, under_odds: 1.94, scraped_at: ago(1) },
 ];
 
 export const mockDiscrepancies: Discrepancy[] = [

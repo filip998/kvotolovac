@@ -1,0 +1,444 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from .base import BaseScraper
+from .http_client import HttpClient
+from ..models.schemas import RawOddsData
+from ..services.scrape_window import current_utc_time, lookahead_cutoff
+from ..services.text_normalizer import normalize_identity_text
+
+logger = logging.getLogger(__name__)
+
+_REGULAR_LEAGUES_URL = "https://www.betole.com/restapi/offer/sr/categories/sport/B/l"
+_PLAYER_LEAGUES_URL = "https://www.betole.com/restapi/offer/sr/categories/sport/SK/l"
+_REGULAR_LEAGUE_PREVIEW_URL = (
+    "https://www.betole.com/restapi/offer/sr/sport/B/league/{league_id}/mob"
+)
+_PLAYER_LEAGUE_PREVIEW_URL = (
+    "https://www.betole.com/restapi/offer/sr/sport/SK/league/{league_id}/mob"
+)
+
+_DEFAULT_HEADERS: dict[str, str] = {
+    "Accept": "application/json",
+    "Referer": "https://www.betole.com/home",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/147.0.0.0 Safari/537.36"
+    ),
+}
+_DEFAULT_PARAMS: dict[str, str] = {
+    "annex": "0",
+    "desktopVersion": "2.46.6.3",
+    "locale": "sr",
+}
+
+_BOOKMAKER_ID = "betole"
+_FETCH_CONCURRENCY = 8
+
+
+@dataclass(frozen=True)
+class ThresholdLine:
+    over_code: str
+    under_code: str
+    param_key: str
+    market_type: str
+
+
+@dataclass(frozen=True)
+class LeagueCategory:
+    league_id: str
+    league_name: str
+    match_count: int
+
+
+@dataclass(frozen=True)
+class MatchContext:
+    match_id: int
+    match_code: int
+    league_id: str
+    home_team: str
+    away_team: str
+    start_time: str | None
+
+
+@dataclass(frozen=True)
+class MatchupIndex:
+    by_match_code: dict[int, MatchContext]
+    by_team_slot: dict[tuple[str, int], MatchContext]
+
+
+_PLAYER_THRESHOLD_LINES: tuple[ThresholdLine, ...] = (
+    ThresholdLine("51679", "51681", "ouPlPoints", "player_points"),
+    ThresholdLine("51682", "51684", "ouPlAssists", "player_assists"),
+    ThresholdLine("51685", "51687", "ouPlRebounds", "player_rebounds"),
+)
+_GAME_TOTAL_OT_LINE = ThresholdLine("50445", "50444", "overUnderOvertime", "game_total_ot")
+
+_CANONICAL_LEAGUES: dict[str, str] = {
+    "usa nba play offs": "nba",
+    "usa nba play in": "nba",
+    "europe euroleague play in": "euroleague",
+    "europe euroleague play offs": "euroleague",
+    "europe aba league losers stage": "aba_liga",
+    "europe aba league winners stage": "aba_liga",
+    "germany bbl": "germany",
+    "greece basket league": "greece",
+    "turkey super ligi": "turkey",
+    "argentina la liga": "argentina_1",
+    "brazil nbb play offs": "brazil_nbb",
+}
+
+
+def _parse_int(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_float(value: object) -> float | None:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_start_time(epoch_ms: object) -> str | None:
+    parsed = _parse_int(epoch_ms)
+    if parsed is None:
+        return None
+    return datetime.fromtimestamp(parsed / 1000, tz=timezone.utc).isoformat()
+
+
+def _normalize_league_key(raw_name: str | None) -> str:
+    normalized = normalize_identity_text(raw_name)
+    for suffix in (" players duel", " players"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)].strip()
+            break
+    return normalized
+
+
+def _extract_league_id(raw_name: str | None) -> str:
+    normalized = _normalize_league_key(raw_name)
+    if not normalized:
+        return "basketball"
+    return _CANONICAL_LEAGUES.get(normalized, normalized.replace(" ", "_"))
+
+
+def _is_player_league(raw_name: str | None) -> bool:
+    normalized = normalize_identity_text(raw_name)
+    return normalized.endswith(" players")
+
+
+def _within_lookahead(match: dict, cutoff_ms: int) -> bool:
+    kickoff = _parse_int(match.get("kickOffTime"))
+    return kickoff is None or kickoff <= cutoff_ms
+
+
+def _build_source_url(match_id: int | None) -> str | None:
+    if match_id is None:
+        return None
+    return f"https://www.betole.com/match-special/{match_id}"
+
+
+def _collect_leagues(data: dict, *, player_view: bool) -> list[LeagueCategory]:
+    categories = data.get("categories") or []
+    leagues: list[LeagueCategory] = []
+    for category in categories:
+        if not isinstance(category, dict):
+            continue
+        league_id = category.get("id")
+        league_name = category.get("name")
+        if not league_id or not isinstance(league_name, str) or not league_name.strip():
+            continue
+        if player_view and not _is_player_league(league_name):
+            continue
+        match_count = _parse_int(category.get("count")) or 0
+        if match_count <= 0:
+            continue
+        leagues.append(
+            LeagueCategory(
+                league_id=str(league_id),
+                league_name=league_name.strip(),
+                match_count=match_count,
+            )
+        )
+    return leagues
+
+
+def _build_matchup_index(matches: list[dict]) -> MatchupIndex:
+    by_match_code: dict[int, MatchContext] = {}
+    by_team_slot: dict[tuple[str, int], MatchContext] = {}
+
+    for match in matches:
+        match_id = _parse_int(match.get("id"))
+        match_code = _parse_int(match.get("matchCode"))
+        kickoff = _parse_int(match.get("kickOffTime"))
+        home_team = (match.get("home") or "").strip()
+        away_team = (match.get("away") or "").strip()
+        if (
+            match_id is None
+            or match_code is None
+            or kickoff is None
+            or not home_team
+            or not away_team
+        ):
+            continue
+
+        context = MatchContext(
+            match_id=match_id,
+            match_code=match_code,
+            league_id=_extract_league_id(match.get("leagueName")),
+            home_team=home_team,
+            away_team=away_team,
+            start_time=_parse_start_time(kickoff),
+        )
+        by_match_code[match_code] = context
+        by_team_slot[(normalize_identity_text(home_team), kickoff)] = context
+        by_team_slot[(normalize_identity_text(away_team), kickoff)] = context
+
+    return MatchupIndex(by_match_code=by_match_code, by_team_slot=by_team_slot)
+
+
+def _resolve_matchup_context(match: dict, matchup_index: MatchupIndex) -> MatchContext | None:
+    super_code = _parse_int(match.get("superCode"))
+    if super_code is not None:
+        context = matchup_index.by_match_code.get(super_code)
+        if context is not None:
+            return context
+
+    kickoff = _parse_int(match.get("kickOffTime"))
+    team_name = normalize_identity_text(match.get("away"))
+    if kickoff is None or not team_name:
+        return None
+    return matchup_index.by_team_slot.get((team_name, kickoff))
+
+
+def _parse_regular_match(match: dict) -> list[RawOddsData]:
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return []
+
+    params = match.get("params") or {}
+    odds = match.get("odds") or {}
+    threshold = _parse_float(params.get(_GAME_TOTAL_OT_LINE.param_key))
+    if threshold is None:
+        return []
+
+    over_odds = _parse_float(odds.get(_GAME_TOTAL_OT_LINE.over_code))
+    under_odds = _parse_float(odds.get(_GAME_TOTAL_OT_LINE.under_code))
+    if over_odds is None and under_odds is None:
+        return []
+
+    return [
+        RawOddsData(
+            bookmaker_id=_BOOKMAKER_ID,
+            league_id=_extract_league_id(match.get("leagueName")),
+            sport="basketball",
+            home_team=home_team,
+            away_team=away_team,
+            source_url=_build_source_url(_parse_int(match.get("id"))),
+            market_type=_GAME_TOTAL_OT_LINE.market_type,
+            player_name=None,
+            threshold=threshold,
+            over_odds=over_odds,
+            under_odds=under_odds,
+            start_time=_parse_start_time(match.get("kickOffTime")),
+        )
+    ]
+
+
+def _parse_player_match(match: dict, matchup_index: MatchupIndex) -> list[RawOddsData]:
+    player_name = (match.get("home") or "").strip()
+    if not player_name:
+        return []
+
+    context = _resolve_matchup_context(match, matchup_index)
+    if context is None:
+        return []
+
+    params = match.get("params") or {}
+    odds = match.get("odds") or {}
+    source_url = _build_source_url(context.match_id)
+
+    results: list[RawOddsData] = []
+    for line in _PLAYER_THRESHOLD_LINES:
+        threshold = _parse_float(params.get(line.param_key))
+        if threshold is None:
+            continue
+
+        over_odds = _parse_float(odds.get(line.over_code))
+        under_odds = _parse_float(odds.get(line.under_code))
+        if over_odds is None and under_odds is None:
+            continue
+
+        results.append(
+            RawOddsData(
+                bookmaker_id=_BOOKMAKER_ID,
+                league_id=context.league_id,
+                sport="basketball",
+                home_team=context.home_team,
+                away_team=context.away_team,
+                source_url=source_url,
+                market_type=line.market_type,
+                player_name=player_name,
+                threshold=threshold,
+                over_odds=over_odds,
+                under_odds=under_odds,
+                start_time=context.start_time,
+            )
+        )
+
+    return results
+
+
+def _select_regular_leagues(
+    regular_leagues: list[LeagueCategory],
+    player_leagues: list[LeagueCategory],
+) -> list[LeagueCategory]:
+    regular_by_key = {
+        _normalize_league_key(league.league_name): league for league in regular_leagues
+    }
+
+    selected: list[LeagueCategory] = []
+    missing_match = False
+    for player_league in player_leagues:
+        matched_league = regular_by_key.get(_normalize_league_key(player_league.league_name))
+        if matched_league is None:
+            missing_match = True
+            continue
+        selected.append(matched_league)
+
+    if missing_match or not selected:
+        return regular_leagues
+
+    deduped: dict[str, LeagueCategory] = {league.league_id: league for league in selected}
+    return list(deduped.values())
+
+
+class BetOleScraper(BaseScraper):
+    def __init__(self, http_client: HttpClient | None = None) -> None:
+        self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
+
+    def get_bookmaker_id(self) -> str:
+        return _BOOKMAKER_ID
+
+    def get_bookmaker_name(self) -> str:
+        return "BetOle"
+
+    def get_supported_leagues(self) -> list[str]:
+        return ["basketball"]
+
+    async def _fetch_leagues(self, url: str, *, player_view: bool) -> list[LeagueCategory]:
+        try:
+            data = await self._http.get_json(
+                url,
+                params=_DEFAULT_PARAMS,
+                headers=_DEFAULT_HEADERS,
+            )
+        except Exception:
+            logger.warning("BetOle: failed to fetch %s leagues", "player" if player_view else "regular")
+            return []
+
+        return _collect_leagues(data, player_view=player_view)
+
+    async def _fetch_preview_rows(self, url: str, semaphore: asyncio.Semaphore) -> list[dict]:
+        async with semaphore:
+            try:
+                data = await self._http.get_json(
+                    url,
+                    params=_DEFAULT_PARAMS,
+                    headers=_DEFAULT_HEADERS,
+                )
+            except Exception:
+                logger.warning("BetOle: failed to fetch preview %s", url)
+                return []
+
+        rows = data.get("esMatches") or []
+        if not isinstance(rows, list):
+            return []
+
+        cutoff_ms = int(lookahead_cutoff(current_utc_time()).timestamp() * 1000)
+        return [
+            row
+            for row in rows
+            if isinstance(row, dict) and _within_lookahead(row, cutoff_ms)
+        ]
+
+    async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
+        if league_id != "basketball":
+            return []
+
+        regular_leagues, player_leagues = await asyncio.gather(
+            self._fetch_leagues(_REGULAR_LEAGUES_URL, player_view=False),
+            self._fetch_leagues(_PLAYER_LEAGUES_URL, player_view=True),
+        )
+        if not player_leagues:
+            logger.warning("BetOle: no player leagues discovered")
+            return []
+
+        target_regular_leagues = _select_regular_leagues(regular_leagues, player_leagues)
+        preview_semaphore = asyncio.Semaphore(_FETCH_CONCURRENCY)
+        regular_batches, player_batches = await asyncio.gather(
+            asyncio.gather(
+                *(
+                    self._fetch_preview_rows(
+                        _REGULAR_LEAGUE_PREVIEW_URL.format(league_id=league.league_id),
+                        preview_semaphore,
+                    )
+                    for league in target_regular_leagues
+                )
+            ),
+            asyncio.gather(
+                *(
+                    self._fetch_preview_rows(
+                        _PLAYER_LEAGUE_PREVIEW_URL.format(league_id=league.league_id),
+                        preview_semaphore,
+                    )
+                    for league in player_leagues
+                )
+            ),
+        )
+
+        regular_matches = [match for batch in regular_batches for match in batch]
+        player_matches = [match for batch in player_batches for match in batch]
+        matchup_index = _build_matchup_index(regular_matches)
+
+        regular_results = [
+            result
+            for match in regular_matches
+            for result in _parse_regular_match(match)
+        ]
+
+        player_results: list[RawOddsData] = []
+        unmatched_player_rows = 0
+        for match in player_matches:
+            parsed = _parse_player_match(match, matchup_index)
+            if not parsed:
+                unmatched_player_rows += 1
+                continue
+            player_results.extend(parsed)
+
+        results = [*regular_results, *player_results]
+        logger.info(
+            (
+                "BetOle scraped %d player odds from %d player rows across %d player leagues "
+                "and %d OT total odds from %d regular matches across %d regular leagues "
+                "(unmatched player rows=%d)"
+            ),
+            len(player_results),
+            len(player_matches),
+            len(player_leagues),
+            len(regular_results),
+            len(regular_matches),
+            len(target_regular_leagues),
+            unmatched_player_rows,
+        )
+        return results
