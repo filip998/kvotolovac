@@ -1,6 +1,11 @@
 {
   "version": 1,
   "skills": {
+    "add-bookmaker-scraper": {
+      "source": "./skills/add-bookmaker-scraper",
+      "sourceType": "local",
+      "computedHash": "ab7eeb88bc0395a30d482d4178364b2fdadf6e3fdd6aa43529544bf7055abffb"
+    },
     "write-a-prd": {
       "source": "mattpocock/skills",
       "sourceType": "github",
