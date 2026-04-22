@@ -407,6 +407,224 @@ def test_parse_event_payload_groups_supported_superbet_markets():
     assert all(row.source_url == context.source_url for row in results)
 
 
+def test_parse_event_payload_skips_three_point_attempt_markets():
+    context = EventContext(
+        event_id=12769041,
+        league_id="nba",
+        home_team="Oklahoma City Thunder",
+        away_team="Phoenix Suns",
+        start_time=START_DT.isoformat(),
+        source_url="https://superbet.rs/kvote/kosarka/oklahoma-city-thunder-vs-phoenix-suns-12769041?mdt=o",
+    )
+    event_payload = {
+        "event_id": 12769041,
+        "fixture": {
+            "event_name": "Oklahoma City Thunder·Phoenix Suns",
+            "utc_date": START_Z,
+            "category_id": 61,
+            "tournament_id": 2177,
+        },
+        "markets": [
+            {
+                "id": 231810,
+                "name": "Ukupno šuteva za 3 poena igrača (uklj. produžetke)",
+                "odds": [
+                    _odd(
+                        1.95,
+                        name="Alex Caruso - Više od 2.5",
+                        info="Biće više od 2.5 šuteva iz igre za 3 poena (uklj. produžetke)",
+                        specifiers={"player": "Alex Caruso", "total": "2.5"},
+                    ),
+                    _odd(
+                        1.73,
+                        name="Alex Caruso - Manje od 2.5",
+                        info="Biće manje od 2.5 šuteva iz igre za 3 poena (uklj. produžetke)",
+                        specifiers={"player": "Alex Caruso", "total": "2.5"},
+                    ),
+                ],
+            }
+        ],
+    }
+
+    results = _parse_event_payload(
+        event_payload,
+        context=context,
+        market_group_lookup={**MARKET_GROUP_LOOKUP, 231810: "3 poena igrača"},
+    )
+
+    assert results == []
+
+
+def test_parse_event_payload_skips_mixed_group_auxiliary_and_period_markets():
+    context = EventContext(
+        event_id=12769041,
+        league_id="nba",
+        home_team="Oklahoma City Thunder",
+        away_team="Phoenix Suns",
+        start_time=START_DT.isoformat(),
+        source_url="https://superbet.rs/kvote/kosarka/oklahoma-city-thunder-vs-phoenix-suns-12769041?mdt=o",
+    )
+    event_payload = {
+        "event_id": 12769041,
+        "fixture": {
+            "event_name": "Oklahoma City Thunder·Phoenix Suns",
+            "utc_date": START_Z,
+            "category_id": 61,
+            "tournament_id": 2177,
+        },
+        "markets": [
+            {
+                "id": 233565,
+                "name": "Ukupno poena igrača (uklj. produžetke)",
+                "odds": [
+                    _odd(
+                        1.92,
+                        name="Caruso, Alex - Više od 5.5",
+                        info="Postiže više od 5.5 poena (uklj. produžetke)",
+                        specifiers={"player": "Caruso, Alex", "total": "5.5"},
+                    ),
+                    _odd(
+                        1.9,
+                        name="Caruso, Alex - Manje od 5.5",
+                        info="Postiže manje od 5.5 poena (uklj. produžetke)",
+                        specifiers={"player": "Caruso, Alex", "total": "5.5"},
+                    ),
+                ],
+            },
+            {
+                "id": 201533,
+                "name": "1. četvrtina - Ukupno poena igrača",
+                "odds": [
+                    _odd(
+                        1.83,
+                        name="Alex Caruso - Više od 0.5",
+                        info="Biće više od 0.5 poena u 1. četvrtini",
+                        specifiers={"player": "Alex Caruso", "total": "0.5"},
+                    ),
+                    _odd(
+                        1.88,
+                        name="Alex Caruso - Manje od 0.5",
+                        info="Biće manje od 0.5 poena u 1. četvrtini",
+                        specifiers={"player": "Alex Caruso", "total": "0.5"},
+                    ),
+                ],
+            },
+            {
+                "id": 201534,
+                "name": "1. četvrtina - Ukupno asistencija igrača",
+                "odds": [
+                    _odd(
+                        2.82,
+                        name="Alex Caruso - Više od 0.5",
+                        info="Biće više od 0.5 asistencija u 1. četvrtini",
+                        specifiers={"player": "Alex Caruso", "total": "0.5"},
+                    ),
+                    _odd(
+                        1.38,
+                        name="Alex Caruso - Manje od 0.5",
+                        info="Biće manje od 0.5 asistencija u 1. četvrtini",
+                        specifiers={"player": "Alex Caruso", "total": "0.5"},
+                    ),
+                ],
+            },
+            {
+                "id": 201535,
+                "name": "1. četvrtina - Ukupno skokova igrača",
+                "odds": [
+                    _odd(
+                        1.73,
+                        name="Alex Caruso - Više od 0.5",
+                        info="Biće više od 0.5 skokova u 1. četvrtini",
+                        specifiers={"player": "Alex Caruso", "total": "0.5"},
+                    ),
+                    _odd(
+                        2.0,
+                        name="Alex Caruso - Manje od 0.5",
+                        info="Biće manje od 0.5 skokova u 1. četvrtini",
+                        specifiers={"player": "Alex Caruso", "total": "0.5"},
+                    ),
+                ],
+            },
+            {
+                "id": 231804,
+                "name": "Ukupno pogođenih slobodnih bacanja igrača (uklj. produžetke)",
+                "odds": [
+                    _odd(
+                        2.32,
+                        name="Alex Caruso - Više od 0.5",
+                        info="Biće više od 0.5 pogođenih slobodnih bacanja (uklj. produžetke)",
+                        specifiers={"player": "Alex Caruso", "total": "0.5"},
+                    ),
+                    _odd(
+                        1.54,
+                        name="Alex Caruso - Manje od 0.5",
+                        info="Biće manje od 0.5 pogođenih slobodnih bacanja (uklj. produžetke)",
+                        specifiers={"player": "Alex Caruso", "total": "0.5"},
+                    ),
+                ],
+            },
+            {
+                "id": 231807,
+                "name": "Ukupno šuteva iz igre igrača (uklj. produžetke)",
+                "odds": [
+                    _odd(
+                        2.07,
+                        name="Alex Caruso - Više od 4.5",
+                        info="Biće više od 4.5 šuteva iz igre (uklj. produžetke)",
+                        specifiers={"player": "Alex Caruso", "total": "4.5"},
+                    ),
+                    _odd(
+                        1.64,
+                        name="Alex Caruso - Manje od 4.5",
+                        info="Biće manje od 4.5 šuteva iz igre (uklj. produžetke)",
+                        specifiers={"player": "Alex Caruso", "total": "4.5"},
+                    ),
+                ],
+            },
+            {
+                "id": 231809,
+                "name": "Ukupno šuteva za 2 poena igrača (uklj. produžetke)",
+                "odds": [
+                    _odd(
+                        1.83,
+                        name="Alex Caruso - Više od 1.5",
+                        info="Biće više od 1.5 šuteva iz igre za 2 poena (uklj. produžetke)",
+                        specifiers={"player": "Alex Caruso", "total": "1.5"},
+                    ),
+                    _odd(
+                        1.83,
+                        name="Alex Caruso - Manje od 1.5",
+                        info="Biće manje od 1.5 šuteva iz igre za 2 poena (uklj. produžetke)",
+                        specifiers={"player": "Alex Caruso", "total": "1.5"},
+                    ),
+                ],
+            },
+        ],
+    }
+
+    results = _parse_event_payload(
+        event_payload,
+        context=context,
+        market_group_lookup={
+            **MARKET_GROUP_LOOKUP,
+            233565: "Poeni igrača",
+            201533: "Poeni igrača",
+            201534: "Asistencije",
+            201535: "Skokovi",
+            231804: "Poeni igrača",
+            231807: "Poeni igrača",
+            231809: "Poeni igrača",
+        },
+    )
+
+    assert [
+        (row.market_type, row.player_name, row.threshold, row.over_odds, row.under_odds)
+        for row in results
+    ] == [
+        ("player_points", "Alex Caruso", 5.5, 1.92, 1.9),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_scrape_odds_uses_structure_market_groups_and_batched_event_sse():
     async def fake_get_json(url: str, *, params=None, headers=None):
