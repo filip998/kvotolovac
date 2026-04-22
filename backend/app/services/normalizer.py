@@ -52,6 +52,7 @@ _CANONICAL_PLAYERS: dict[str, str] = {
 
 FUZZY_THRESHOLD = 75
 TEAM_REVIEW_CANDIDATE_THRESHOLD = 76
+ANCHORED_AUTO_APPLY_THRESHOLD = 85
 TEAM_REVIEW_MAX_CANDIDATES = 3
 
 _MARKET_TYPE_MAPPING: dict[str, str] = {
@@ -543,6 +544,7 @@ class _EventSlotResolution:
     home_team: str
     away_team: str
     league_id: str
+    support_count: int
     confidence: str
     evidence: tuple[str, ...]
 
@@ -553,6 +555,9 @@ class _TeamReviewCandidate:
     team_name: str
     score: float
     matched_alias: str | None = None
+    slot_support: int | None = None
+    canonical_home_team: str | None = None
+    canonical_away_team: str | None = None
 
 
 @dataclass(frozen=True)
@@ -562,6 +567,7 @@ class _TeamReviewSlotCandidate:
     counterpart_team: str
     canonical_home_team: str
     canonical_away_team: str
+    slot_support: int
 
 
 @dataclass(frozen=True)
@@ -603,6 +609,7 @@ def _build_event_slot_resolutions(
         Counter[tuple[int, int]],
     ] = defaultdict(Counter)
     league_counts: dict[tuple[tuple[str, str], tuple[int, int]], Counter[str]] = defaultdict(Counter)
+    bookmaker_counts: dict[tuple[tuple[str, str], tuple[int, int]], set[str]] = defaultdict(set)
     team_names: dict[int, str] = {}
     display_names: dict[str, str] = {}
 
@@ -637,6 +644,7 @@ def _build_event_slot_resolutions(
             _slot_orientation_key(home_resolution.team_id, away_resolution.team_id)
         ] += 1
         league_counts[slot][direct_league.league_id] += 1
+        bookmaker_counts[slot].add(raw.bookmaker_id)
         team_names[home_resolution.team_id] = home_resolution.team_name
         team_names[away_resolution.team_id] = away_resolution.team_name
         display_names[direct_league.league_id] = direct_league.display_name
@@ -664,6 +672,7 @@ def _build_event_slot_resolutions(
             home_team=team_names[chosen_home_id],
             away_team=team_names[chosen_away_id],
             league_id=chosen_league,
+            support_count=len(bookmaker_counts[slot]),
             confidence=confidence,
             evidence=(
                 f"Sport: {slot[0][0]}",
@@ -717,6 +726,50 @@ def _rank_team_review_candidates(
     ]
 
 
+def _rank_slot_team_review_candidates(
+    raw_team_name: str,
+    candidate_teams: list[_TeamReviewSlotCandidate],
+    *,
+    threshold: float = 0.0,
+) -> list[_TeamReviewCandidate]:
+    raw_key = _normalize_team_key(raw_team_name)
+    ranked: list[_TeamReviewCandidate] = []
+    seen_team_ids: set[int] = set()
+
+    for candidate in candidate_teams:
+        candidate_key = _normalize_team_key(candidate.team_name)
+        if (
+            not candidate_key
+            or candidate_key == raw_key
+            or candidate.team_id in seen_team_ids
+        ):
+            continue
+        seen_team_ids.add(candidate.team_id)
+        score = _team_candidate_score(raw_team_name, candidate.team_name)
+        if score < threshold:
+            continue
+        ranked.append(
+            _TeamReviewCandidate(
+                team_id=candidate.team_id,
+                team_name=candidate.team_name,
+                score=score,
+                slot_support=candidate.slot_support,
+                canonical_home_team=candidate.canonical_home_team,
+                canonical_away_team=candidate.canonical_away_team,
+            )
+        )
+
+    return sorted(
+        ranked,
+        key=lambda item: (
+            -item.score,
+            -(item.slot_support or 0),
+            item.team_id,
+            item.team_name,
+        ),
+    )[:TEAM_REVIEW_MAX_CANDIDATES]
+
+
 def _team_review_slot_candidates(
     slot_resolutions: list[_EventSlotResolution],
     *,
@@ -758,6 +811,7 @@ def _team_review_slot_candidates(
                 ),
                 canonical_home_team=resolution.home_team,
                 canonical_away_team=resolution.away_team,
+                slot_support=resolution.support_count,
             ),
         )
 
@@ -773,6 +827,9 @@ def _to_review_candidates(
             team_name=candidate.team_name,
             score=candidate.score,
             matched_alias=candidate.matched_alias,
+            slot_support=candidate.slot_support,
+            canonical_home_team=candidate.canonical_home_team,
+            canonical_away_team=candidate.canonical_away_team,
         )
         for candidate in candidates
     ]
@@ -851,17 +908,15 @@ def _build_team_review_cases(
                 )
                 if len(slot_candidates) == 1:
                     slot_candidate = next(iter(slot_candidates.values()))
-                    ranked_candidates = [
-                        _TeamReviewCandidate(
-                            team_id=slot_candidate.team_id,
-                            team_name=slot_candidate.team_name,
-                            score=_team_candidate_score(raw_team_name, slot_candidate.team_name),
-                        )
-                    ]
+                    ranked_candidates = _rank_slot_team_review_candidates(
+                        raw_team_name,
+                        list(slot_candidates.values()),
+                    )
+                    suggested_slot_candidate = ranked_candidates[0]
                     review_kind = "alias_suggestion"
                     confidence = "high"
-                    canonical_home_team = slot_candidate.canonical_home_team
-                    canonical_away_team = slot_candidate.canonical_away_team
+                    canonical_home_team = suggested_slot_candidate.canonical_home_team
+                    canonical_away_team = suggested_slot_candidate.canonical_away_team
                     evidence.extend(
                         [
                             f"Matched other team: {slot_candidate.counterpart_team}",
@@ -870,12 +925,9 @@ def _build_team_review_cases(
                         ]
                     )
                 elif slot_candidates:
-                    ranked_candidates = _rank_team_review_candidates(
+                    ranked_candidates = _rank_slot_team_review_candidates(
                         raw_team_name,
-                        [
-                            (candidate.team_id, candidate.team_name)
-                            for candidate in slot_candidates.values()
-                        ],
+                        list(slot_candidates.values()),
                         threshold=0.0,
                     )
                     review_kind = "candidate_search"
@@ -903,6 +955,9 @@ def _build_team_review_cases(
                     evidence.append("No canonical team matched this label in the current database")
 
             suggested_candidate = ranked_candidates[0] if ranked_candidates else None
+            if canonical_home_team is None and suggested_candidate is not None:
+                canonical_home_team = suggested_candidate.canonical_home_team
+                canonical_away_team = suggested_candidate.canonical_away_team
             review_key = (
                 raw.bookmaker_id,
                 raw.sport,

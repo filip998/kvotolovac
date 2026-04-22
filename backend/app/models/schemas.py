@@ -265,6 +265,9 @@ class TeamReviewCandidate(BaseModel):
     team_name: str
     score: Optional[float] = None
     matched_alias: Optional[str] = None
+    slot_support: Optional[int] = None
+    canonical_home_team: Optional[str] = None
+    canonical_away_team: Optional[str] = None
 
 
 class TeamReviewApprovalIn(BaseModel):

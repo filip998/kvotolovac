@@ -142,6 +142,9 @@ export interface TeamReviewCandidate {
   team_name: string;
   score: number | null;
   matched_alias: string | null;
+  slot_support?: number | null;
+  canonical_home_team?: string | null;
+  canonical_away_team?: string | null;
 }
 
 export interface TeamReviewApproval {

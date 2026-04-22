@@ -301,6 +301,84 @@ def test_normalize_odds_creates_team_review_candidates_for_same_tipoff(team_regi
     assert team_reviews[0].review_kind == "alias_suggestion"
     assert team_reviews[0].matched_counterpart_team == "Levski Sofia"
     assert team_reviews[0].reason_code == "candidate_team_match_same_start_time"
+    assert team_reviews[0].canonical_home_team == "Rilski Sportist"
+    assert team_reviews[0].canonical_away_team == "Levski Sofia"
+    assert len(team_reviews[0].candidate_teams) == 1
+    assert team_reviews[0].candidate_teams[0].slot_support == 1
+    assert team_reviews[0].candidate_teams[0].canonical_home_team == "Rilski Sportist"
+    assert team_reviews[0].candidate_teams[0].canonical_away_team == "Levski Sofia"
+
+
+def test_same_tipoff_candidates_break_ties_by_slot_support(team_registry_file):
+    from app.services.team_registry import create_canonical_team
+
+    winner = create_canonical_team(display_name="QA Shared Name Alpha")
+    runner_up = create_canonical_team(display_name="QA Shared Name Beta")
+    opponent = create_canonical_team(display_name="QA Opponent")
+
+    normalized, unresolved, team_reviews = normalize_odds_with_diagnostics(
+        [
+            RawOddsData(
+                bookmaker_id="book-a",
+                league_id="NBL",
+                home_team=winner.team_name,
+                away_team=opponent.team_name,
+                market_type="game_total",
+                threshold=161.5,
+                over_odds=1.85,
+                under_odds=1.95,
+                start_time="2026-04-16T17:00:00+00:00",
+            ),
+            RawOddsData(
+                bookmaker_id="book-b",
+                league_id="NBL",
+                home_team=winner.team_name,
+                away_team=opponent.team_name,
+                market_type="game_total",
+                threshold=162.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-16T17:00:00+00:00",
+            ),
+            RawOddsData(
+                bookmaker_id="book-c",
+                league_id="NBL",
+                home_team=runner_up.team_name,
+                away_team=opponent.team_name,
+                market_type="game_total",
+                threshold=163.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-16T17:00:00+00:00",
+            ),
+            RawOddsData(
+                bookmaker_id="book-d",
+                league_id="NBL",
+                home_team="QA Shared Name",
+                away_team=opponent.team_name,
+                market_type="game_total",
+                threshold=164.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-16T17:00:00+00:00",
+            ),
+        ]
+    )
+
+    assert unresolved == []
+    assert len(normalized) == 3
+    assert len(team_reviews) == 1
+    review = team_reviews[0]
+    assert review.raw_team_name == "QA Shared Name"
+    assert review.review_kind == "candidate_search"
+    assert review.suggested_team_name == winner.team_name
+    assert review.canonical_home_team == winner.team_name
+    assert review.canonical_away_team == opponent.team_name
+    assert [candidate.team_name for candidate in review.candidate_teams] == [
+        winner.team_name,
+        runner_up.team_name,
+    ]
+    assert [candidate.slot_support for candidate in review.candidate_teams] == [2, 1]
 
 
 def test_team_review_candidates_require_same_event_context(team_registry_file):
