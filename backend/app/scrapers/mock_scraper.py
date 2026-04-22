@@ -106,6 +106,7 @@ _BOOKMAKER_META = {
     "superbet": ("Superbet", "https://superbet.rs"),
     "betole": ("BetOle", "https://www.betole.com"),
     "365": ("365", "https://www.365.rs/"),
+    "volcanobet": ("VolcanoBet", "https://www.volcanobet.rs/sport-v2/prematch/events"),
 }
 
 _PLAYER_MARKETS["soccerbet"] = [
@@ -154,6 +155,19 @@ _PLAYER_MARKETS["365"] = [
         "over": round(max(1.01, market["over"] + (0.02 if idx % 2 == 0 else -0.01)), 2),
         "under": round(
             max(1.01, market["under"] + (-0.01 if idx % 2 == 0 else 0.02)),
+            2,
+        ),
+    }
+    for idx, market in enumerate(_PLAYER_MARKETS["maxbet"])
+]
+
+_PLAYER_MARKETS["volcanobet"] = [
+    {
+        **market,
+        "threshold": market["threshold"] + (0.5 if idx % 4 == 0 else 0.0),
+        "over": round(max(1.01, market["over"] + (0.01 if idx % 2 == 0 else -0.03)), 2),
+        "under": round(
+            max(1.01, market["under"] + (-0.01 if idx % 2 == 0 else 0.03)),
             2,
         ),
     }

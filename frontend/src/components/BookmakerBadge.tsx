@@ -11,6 +11,7 @@ const BOOKMAKER_CONFIG: Record<string, { initials: string; logoSrc?: string }> =
   superbet: { initials: 'SU', logoSrc: '/bookmaker-logos/superbet.png' },
   betole: { initials: 'BO' },
   365: { initials: '365' },
+  volcanobet: { initials: 'VB' },
 };
 
 function normalizeBookmakerKey(name: string) {

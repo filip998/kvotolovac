@@ -28,6 +28,7 @@ export const mockBookmakers: Bookmaker[] = [
   { id: 'superbet', name: 'Superbet', is_active: true },
   { id: 'betole', name: 'BetOle', is_active: true },
   { id: '365', name: '365', is_active: true },
+  { id: 'volcanobet', name: 'VolcanoBet', is_active: true },
 ];
 
 export const mockMatches: Match[] = [
@@ -46,6 +47,7 @@ export const mockMatches: Match[] = [
       { id: 'mozzart', name: 'Mozzart' },
       { id: 'betole', name: 'BetOle' },
       { id: '365', name: '365' },
+      { id: 'volcanobet', name: 'VolcanoBet' },
     ],
   },
   {
@@ -63,6 +65,7 @@ export const mockMatches: Match[] = [
       { id: 'mozzart', name: 'Mozzart' },
       { id: 'betole', name: 'BetOle' },
       { id: '365', name: '365' },
+      { id: 'volcanobet', name: 'VolcanoBet' },
     ],
   },
   {
@@ -173,6 +176,9 @@ export const mockOddsOffers: OddsOffer[] = [
   { id: 33, match_id: 'match-1', bookmaker_id: '365', bookmaker_name: '365', market_type: 'player_points', player_name: 'Sasha Vezenkov', threshold: 19.5, over_odds: 1.86, under_odds: 1.92, scraped_at: ago(1) },
   { id: 34, match_id: 'match-1', bookmaker_id: '365', bookmaker_name: '365', market_type: 'game_total_ot', player_name: null, threshold: 157.5, over_odds: 1.89, under_odds: 1.87, scraped_at: ago(1) },
   { id: 35, match_id: 'match-2', bookmaker_id: '365', bookmaker_name: '365', market_type: 'player_points', player_name: 'Nigel Hayes-Davis', threshold: 16.5, over_odds: 1.83, under_odds: 1.95, scraped_at: ago(1) },
+  { id: 36, match_id: 'match-1', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', source_url: 'https://www.volcanobet.rs/sport-v2/prematch/events', market_type: 'player_points', player_name: 'Sasha Vezenkov', threshold: 19.0, over_odds: 1.86, under_odds: 1.92, scraped_at: ago(2) },
+  { id: 37, match_id: 'match-1', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', source_url: 'https://www.volcanobet.rs/sport-v2/prematch/events', market_type: 'game_total_ot', player_name: null, threshold: 157.5, over_odds: 1.89, under_odds: 1.88, scraped_at: ago(2) },
+  { id: 38, match_id: 'match-2', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', source_url: 'https://www.volcanobet.rs/sport-v2/prematch/events', market_type: 'player_points', player_name: 'Nigel Hayes-Davis', threshold: 16.0, over_odds: 1.87, under_odds: 1.91, scraped_at: ago(1) },
 ];
 
 export const mockDiscrepancies: Discrepancy[] = [
@@ -654,7 +660,7 @@ export const mockSystemStatus: SystemStatus = {
   total_matches: 6,
   total_odds: mockOddsOffers.length,
   total_discrepancies: mockDiscrepancies.length,
-  active_bookmakers: 7,
+  active_bookmakers: 8,
   scheduler_running: true,
   scan: {
     in_progress: true,
@@ -674,5 +680,6 @@ export const mockSystemStatus: SystemStatus = {
     { id: 'superbet', name: 'Superbet', last_scrape: ago(6), is_active: true },
     { id: 'betole', name: 'BetOle', last_scrape: ago(4), is_active: true },
     { id: '365', name: '365', last_scrape: ago(1), is_active: true },
+    { id: 'volcanobet', name: 'VolcanoBet', last_scrape: ago(4), is_active: true },
   ],
 };
