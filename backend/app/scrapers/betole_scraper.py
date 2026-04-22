@@ -380,9 +380,11 @@ class BetOleScraper(BaseScraper):
             self._fetch_leagues(_REGULAR_LEAGUES_URL, player_view=False),
             self._fetch_leagues(_PLAYER_LEAGUES_URL, player_view=True),
         )
-        if not player_leagues:
-            logger.warning("BetOle: no player leagues discovered")
+        if not regular_leagues:
+            logger.warning("BetOle: no regular leagues discovered")
             return []
+        if not player_leagues:
+            logger.warning("BetOle: no player leagues discovered; scraping regular leagues only")
 
         target_regular_leagues = _select_regular_leagues(regular_leagues, player_leagues)
         preview_semaphore = asyncio.Semaphore(_FETCH_CONCURRENCY)
@@ -393,7 +395,7 @@ class BetOleScraper(BaseScraper):
                         _REGULAR_LEAGUE_PREVIEW_URL.format(league_id=league.league_id),
                         preview_semaphore,
                     )
-                    for league in target_regular_leagues
+                    for league in regular_leagues
                 )
             ),
             asyncio.gather(
@@ -404,12 +406,20 @@ class BetOleScraper(BaseScraper):
                     )
                     for league in player_leagues
                 )
-            ),
+            )
+            if player_leagues
+            else asyncio.sleep(0, result=[]),
         )
 
-        regular_matches = [match for batch in regular_batches for match in batch]
+        regular_matches: list[dict] = []
+        target_regular_ids = {league.league_id for league in target_regular_leagues}
+        target_regular_matches: list[dict] = []
+        for league, batch in zip(regular_leagues, regular_batches):
+            regular_matches.extend(batch)
+            if league.league_id in target_regular_ids:
+                target_regular_matches.extend(batch)
         player_matches = [match for batch in player_batches for match in batch]
-        matchup_index = _build_matchup_index(regular_matches)
+        matchup_index = _build_matchup_index(target_regular_matches)
 
         regular_results = [
             result
@@ -438,7 +448,7 @@ class BetOleScraper(BaseScraper):
             len(player_leagues),
             len(regular_results),
             len(regular_matches),
-            len(target_regular_leagues),
+            len(regular_leagues),
             unmatched_player_rows,
         )
         return results

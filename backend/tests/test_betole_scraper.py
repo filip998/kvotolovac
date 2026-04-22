@@ -52,6 +52,14 @@ PLAYER_LEAGUES_RESPONSE = {
     ]
 }
 
+EXTRA_REGULAR_LEAGUE = {
+    "id": "2265038",
+    "name": "Brazil, NBB - Play Offs",
+    "type": "LEAGUE",
+    "url": "B",
+    "count": 7,
+}
+
 
 @pytest.fixture
 def regular_preview_data() -> dict:
@@ -115,7 +123,7 @@ def test_parse_player_match_falls_back_to_team_and_kickoff(player_preview_data, 
 
 
 @pytest.mark.asyncio
-async def test_scrape_odds_uses_matched_player_and_regular_leagues(
+async def test_scrape_odds_keeps_all_regular_leagues_while_matching_player_props(
     monkeypatch: pytest.MonkeyPatch,
     regular_preview_data,
     player_preview_data,
@@ -130,14 +138,32 @@ async def test_scrape_odds_uses_matched_player_and_regular_leagues(
         lambda now: now + timedelta(hours=24),
     )
 
+    extra_regular_preview = {
+        "esMatches": [
+            {
+                **regular_preview_data["esMatches"][0],
+                "id": 90249999,
+                "matchCode": 7777,
+                "leagueName": EXTRA_REGULAR_LEAGUE["name"],
+                "home": "Franca",
+                "away": "Botafogo",
+            }
+        ]
+    }
+    regular_leagues_response = {
+        "categories": [*REGULAR_LEAGUES_RESPONSE["categories"], EXTRA_REGULAR_LEAGUE]
+    }
+
     async def fake_get_json(url: str, *, params=None, headers=None):
         del params, headers
         if url == _REGULAR_LEAGUES_URL:
-            return REGULAR_LEAGUES_RESPONSE
+            return regular_leagues_response
         if url == _PLAYER_LEAGUES_URL:
             return PLAYER_LEAGUES_RESPONSE
         if url == _REGULAR_LEAGUE_PREVIEW_URL.format(league_id="2257173"):
             return regular_preview_data
+        if url == _REGULAR_LEAGUE_PREVIEW_URL.format(league_id=EXTRA_REGULAR_LEAGUE["id"]):
+            return extra_regular_preview
         if url == _PLAYER_LEAGUE_PREVIEW_URL.format(league_id="2266084"):
             return player_preview_data
         raise AssertionError(f"Unexpected URL: {url}")
@@ -162,5 +188,121 @@ async def test_scrape_odds_uses_matched_player_and_regular_leagues(
     assert {row.away_team for row in results if row.player_name} == {"Orlando Magic"}
 
     requested_urls = {call.args[0] for call in http_client.get_json.call_args_list}
+    assert _REGULAR_LEAGUE_PREVIEW_URL.format(league_id=EXTRA_REGULAR_LEAGUE["id"]) in requested_urls
     assert _PLAYER_LEAGUE_PREVIEW_URL.format(league_id="2300270") not in requested_urls
 
+    regular_matchups = {
+        (row.home_team, row.away_team, row.league_id)
+        for row in results
+        if row.player_name is None
+    }
+    assert regular_matchups == {
+        ("Detroit Pistons", "Orlando Magic", "nba"),
+        ("Franca", "Botafogo", "brazil_nbb"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_scrape_odds_returns_regular_results_when_player_leagues_are_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    regular_preview_data,
+):
+    fixture_start = datetime.fromtimestamp(1776898800, tz=timezone.utc)
+    monkeypatch.setattr(
+        "app.scrapers.betole_scraper.current_utc_time",
+        lambda: fixture_start - timedelta(hours=1),
+    )
+    monkeypatch.setattr(
+        "app.scrapers.betole_scraper.lookahead_cutoff",
+        lambda now: now + timedelta(hours=24),
+    )
+
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del params, headers
+        if url == _REGULAR_LEAGUES_URL:
+            return REGULAR_LEAGUES_RESPONSE
+        if url == _PLAYER_LEAGUES_URL:
+            return {"categories": []}
+        if url == _REGULAR_LEAGUE_PREVIEW_URL.format(league_id="2257173"):
+            return regular_preview_data
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    http_client = AsyncMock()
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = BetOleScraper(http_client=http_client)
+    results = await scraper.scrape_odds("basketball")
+
+    assert {row.market_type for row in results} == {"game_total_ot"}
+    assert all(row.player_name is None for row in results)
+
+    requested_urls = {call.args[0] for call in http_client.get_json.call_args_list}
+    assert _PLAYER_LEAGUE_PREVIEW_URL.format(league_id="2266084") not in requested_urls
+
+
+@pytest.mark.asyncio
+async def test_scrape_odds_builds_player_matchups_from_matched_regular_leagues(
+    monkeypatch: pytest.MonkeyPatch,
+    regular_preview_data,
+    player_preview_data,
+):
+    fixture_start = datetime.fromtimestamp(1776898800, tz=timezone.utc)
+    monkeypatch.setattr(
+        "app.scrapers.betole_scraper.current_utc_time",
+        lambda: fixture_start - timedelta(hours=1),
+    )
+    monkeypatch.setattr(
+        "app.scrapers.betole_scraper.lookahead_cutoff",
+        lambda now: now + timedelta(hours=24),
+    )
+
+    colliding_regular_preview = {
+        "esMatches": [
+            {
+                **regular_preview_data["esMatches"][0],
+                "id": 90248888,
+                "matchCode": 8888,
+                "leagueName": EXTRA_REGULAR_LEAGUE["name"],
+                "home": "Franca",
+                "away": "Detroit Pistons",
+            }
+        ]
+    }
+    regular_leagues_response = {
+        "categories": [*REGULAR_LEAGUES_RESPONSE["categories"], EXTRA_REGULAR_LEAGUE]
+    }
+    player_preview_without_super_code = {
+        "esMatches": [
+            {
+                key: value
+                for key, value in player_preview_data["esMatches"][0].items()
+                if key != "superCode"
+            }
+        ]
+    }
+
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del params, headers
+        if url == _REGULAR_LEAGUES_URL:
+            return regular_leagues_response
+        if url == _PLAYER_LEAGUES_URL:
+            return PLAYER_LEAGUES_RESPONSE
+        if url == _REGULAR_LEAGUE_PREVIEW_URL.format(league_id="2257173"):
+            return regular_preview_data
+        if url == _REGULAR_LEAGUE_PREVIEW_URL.format(league_id=EXTRA_REGULAR_LEAGUE["id"]):
+            return colliding_regular_preview
+        if url == _PLAYER_LEAGUE_PREVIEW_URL.format(league_id="2266084"):
+            return player_preview_without_super_code
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    http_client = AsyncMock()
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = BetOleScraper(http_client=http_client)
+    results = await scraper.scrape_odds("basketball")
+
+    player_rows = [row for row in results if row.player_name == "Ausar Thompson"]
+    assert player_rows
+    assert {(row.home_team, row.away_team, row.league_id) for row in player_rows} == {
+        ("Detroit Pistons", "Orlando Magic", "nba")
+    }
