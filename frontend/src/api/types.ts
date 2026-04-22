@@ -40,6 +40,7 @@ export type MarketType =
   | 'player_3points'
   | 'player_steals'
   | 'player_blocks'
+  | 'player_turnovers'
   | 'player_points_rebounds'
   | 'player_points_assists'
   | 'player_rebounds_assists'

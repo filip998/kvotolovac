@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -11,7 +12,7 @@ class Settings(BaseSettings):
     scrape_interval_minutes: int = 10
     log_level: str = "INFO"
     cors_origins: str = "*"
-    bookmakers: str = "mozzart,meridian,maxbet,oktagonbet,admiralbet,balkanbet,merkurxtip,pinnbet"
+    bookmakers: str = "mozzart,meridian,maxbet,oktagonbet,admiralbet,balkanbet,merkurxtip,pinnbet,soccerbet"
     notification_gap_threshold: float = 1.5
     persist_inapp_notifications: bool = False
     notification_retention_days: int = 3
@@ -21,6 +22,8 @@ class Settings(BaseSettings):
     proxy_list: str = ""
     rate_limit_per_second: float = 1.0
     meridian_rate_limit_per_second: float = 2.0
+    # partial = preview feeds only; full = preview feeds plus match-by-code enrichment.
+    soccerbet_detail_mode: Literal["partial", "full"] = "partial"
     scrape_lookahead_hours: int = Field(default=24, ge=0)
     benchmark_dir: str = str(
         Path(__file__).resolve().parent.parent / "benchmarks"

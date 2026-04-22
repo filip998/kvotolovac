@@ -102,7 +102,21 @@ _BOOKMAKER_META = {
     "mozzart": ("Mozzart", "https://www.mozzartbet.com"),
     "meridian": ("Meridian", "https://www.meridianbet.rs"),
     "maxbet": ("MaxBet", "https://www.maxbet.rs"),
+    "soccerbet": ("SoccerBet", "https://www.soccerbet.rs"),
 }
+
+_PLAYER_MARKETS["soccerbet"] = [
+    {
+        **market,
+        "threshold": market["threshold"] + (0.5 if idx % 3 == 0 else 0.0),
+        "over": round(max(1.01, market["over"] + (0.02 if idx % 2 == 0 else -0.01)), 2),
+        "under": round(
+            max(1.01, market["under"] + (-0.02 if idx % 2 == 0 else 0.01)),
+            2,
+        ),
+    }
+    for idx, market in enumerate(_PLAYER_MARKETS["maxbet"])
+]
 
 
 class MockScraper(BaseScraper):

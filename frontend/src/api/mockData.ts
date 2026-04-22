@@ -24,6 +24,7 @@ export const mockBookmakers: Bookmaker[] = [
   { id: 'mozzart', name: 'Mozzart', is_active: true },
   { id: 'meridian', name: 'Meridian', is_active: true },
   { id: 'maxbet', name: 'MaxBet', is_active: true },
+  { id: 'soccerbet', name: 'SoccerBet', is_active: true },
 ];
 
 export const mockMatches: Match[] = [
@@ -640,7 +641,7 @@ export const mockSystemStatus: SystemStatus = {
   total_matches: 6,
   total_odds: mockOddsOffers.length,
   total_discrepancies: mockDiscrepancies.length,
-  active_bookmakers: 3,
+  active_bookmakers: 4,
   scheduler_running: true,
   scan: {
     in_progress: true,
@@ -656,5 +657,6 @@ export const mockSystemStatus: SystemStatus = {
     { id: 'mozzart', name: 'Mozzart', last_scrape: ago(2), is_active: true },
     { id: 'meridian', name: 'Meridian', last_scrape: ago(3), is_active: true },
     { id: 'maxbet', name: 'MaxBet', last_scrape: ago(4), is_active: true },
+    { id: 'soccerbet', name: 'SoccerBet', last_scrape: ago(5), is_active: true },
   ],
 };
