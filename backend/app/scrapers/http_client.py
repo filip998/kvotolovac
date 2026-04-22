@@ -37,7 +37,7 @@ class HttpClient:
         self._proxy_index = 0
         self._default_headers = default_headers or {}
         self._last_request_time: float = 0.0
-        self._rate_limit_lock = asyncio.Lock()
+        self._rate_limit_lock: asyncio.Lock | None = None
         self._client: httpx.AsyncClient | None = None
 
     @property
@@ -60,13 +60,19 @@ class HttpClient:
         if self._proxies:
             self._proxy_index = (self._proxy_index + 1) % len(self._proxies)
             # Force new client on next request so it picks up the new proxy
-            if self._client and not self._client.is_closed:
-                asyncio.get_event_loop().create_task(self._client.aclose())
+            client = self._client
+            if client and not client.is_closed:
+                try:
+                    asyncio.get_running_loop().create_task(client.aclose())
+                except RuntimeError:
+                    logger.warning("Cannot close rotated HTTP client without a running event loop")
             self._client = None
 
     async def _acquire_request_slot(self) -> None:
         if self._min_interval <= 0:
             return
+        if self._rate_limit_lock is None:
+            self._rate_limit_lock = asyncio.Lock()
         async with self._rate_limit_lock:
             elapsed = time.monotonic() - self._last_request_time
             if elapsed < self._min_interval:

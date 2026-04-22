@@ -28,6 +28,13 @@ class MockTransport(httpx.AsyncBaseTransport):
         return self._call_count
 
 
+def test_http_client_can_be_constructed_without_event_loop():
+    client = HttpClient()
+
+    assert client._rate_limit_lock is None
+    assert client._client is None
+
+
 @pytest.mark.asyncio
 async def test_post_json_success():
     client = HttpClient(rate_limit_per_second=0)
@@ -156,6 +163,18 @@ async def test_get_json_rate_limit_is_concurrency_safe():
     assert all(gap >= 0.045 for gap in gaps)
     assert elapsed < 0.3
 
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_lock_is_created_lazily():
+    client = HttpClient(rate_limit_per_second=20)
+    assert client._rate_limit_lock is None
+
+    client._client = httpx.AsyncClient(transport=MockTransport())
+    await client.get_json("https://example.com/api")
+
+    assert client._rate_limit_lock is not None
     await client.close()
 
 
