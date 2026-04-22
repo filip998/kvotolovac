@@ -8,10 +8,14 @@ import pytest
 from app.config import settings
 from app.models.schemas import NormalizedOdds, RawOddsData, TeamReviewDiagnostic
 from app.scrapers.base import BaseScraper
-from app.services.scheduler import Scheduler
+from app.services.scheduler import Scheduler, _normalize_merge_pairings
 from app.services.normalizer import normalize_team_name
 from app.services.notifications import InAppNotificationProvider
-from app.services.team_registry import resolve_team_alias
+from app.services.team_registry import (
+    create_canonical_team,
+    remember_team_alias,
+    resolve_team_alias,
+)
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
 from app.store import odds_store
@@ -118,6 +122,23 @@ class StubScraper(BaseScraper):
             if self._recorder is not None:
                 self._recorder["active"] -= 1
                 self._recorder["finishes"].append((self._bookmaker_id, league_id))
+
+
+def test_normalize_merge_pairings_flattens_valid_chains():
+    normalized, conflicts = _normalize_merge_pairings([(3, 2), (2, 1)])
+
+    assert normalized == {2: 1, 3: 1}
+    assert conflicts == set()
+
+
+def test_normalize_merge_pairings_rejects_reciprocal_cycles_regardless_of_order():
+    normalized_forward, conflicts_forward = _normalize_merge_pairings([(1, 2), (2, 1)])
+    normalized_reverse, conflicts_reverse = _normalize_merge_pairings([(2, 1), (1, 2)])
+
+    assert normalized_forward == {}
+    assert normalized_reverse == {}
+    assert conflicts_forward == {1, 2}
+    assert conflicts_reverse == {1, 2}
 
 
 @pytest.fixture(autouse=True)
@@ -462,8 +483,7 @@ async def test_scheduler_cleanup_failure_does_not_roll_back_auto_saved_alias(
 
     assert result["matches_scraped"] == 1
     assert result["odds_scraped"] == 2
-    assert len(approved_cases) == 1
-    assert approved_cases[0].review_kind == "auto_alias_suggestion"
+    assert approved_cases == []
     assert (
         normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian")
         == "Rilski Sportist"
@@ -668,7 +688,7 @@ async def test_scheduler_run_cycle_keeps_previous_snapshot_if_store_fails_mid_ba
 
 
 @pytest.mark.asyncio
-async def test_scheduler_run_cycle_auto_saves_anchored_alias_after_repeated_scrape():
+async def test_scheduler_run_cycle_auto_saves_anchored_alias_same_scrape():
     _register_test_scrapers(
         StubScraper(
             "mozzart",
@@ -680,22 +700,14 @@ async def test_scheduler_run_cycle_auto_saves_anchored_alias_after_repeated_scra
         ),
     )
 
-    first_result = await Scheduler(interval_minutes=1).run_cycle()
-    first_snapshot_cases = await odds_store.get_team_review_cases()
+    result = await Scheduler(interval_minutes=1).run_cycle()
+    approved_cases = await odds_store.get_team_review_cases(status="approved")
 
-    second_result = await Scheduler(interval_minutes=1).run_cycle()
-    second_snapshot_cases = await odds_store.get_team_review_cases(status="approved")
-
-    assert first_result["odds_scraped"] == 1
-    assert len(first_snapshot_cases) == 1
-    assert first_snapshot_cases[0].status == "pending"
-    assert first_snapshot_cases[0].review_kind == "alias_suggestion"
-
-    assert second_result["matches_scraped"] == 1
-    assert second_result["odds_scraped"] == 2
-    assert len(second_snapshot_cases) == 1
-    assert second_snapshot_cases[0].review_kind == "auto_alias_suggestion"
-    assert second_snapshot_cases[0].status == "approved"
+    assert result["matches_scraped"] == 1
+    assert result["odds_scraped"] == 2
+    assert len(approved_cases) == 1
+    assert approved_cases[0].review_kind == "auto_alias_suggestion"
+    assert approved_cases[0].status == "approved"
     assert (
         normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian")
         == "Rilski Sportist"
@@ -703,7 +715,7 @@ async def test_scheduler_run_cycle_auto_saves_anchored_alias_after_repeated_scra
 
 
 @pytest.mark.asyncio
-async def test_scheduler_run_cycle_auto_saves_anchored_alias_after_second_bookmaker_confirmation():
+async def test_scheduler_run_cycle_auto_saves_multiple_anchored_aliases_same_scrape():
     _register_test_scrapers(
         StubScraper(
             "mozzart",
@@ -730,31 +742,170 @@ async def test_scheduler_run_cycle_auto_saves_anchored_alias_after_second_bookma
 
 
 @pytest.mark.asyncio
-async def test_scheduler_run_cycle_does_not_auto_save_anchored_alias_after_decline():
-    _register_test_scrapers(
-        StubScraper(
-            "mozzart",
-            payload_by_league={"euroleague": [_anchored_team_raw("mozzart", "Rilski Sportist")]},
-        ),
-        StubScraper(
-            "meridian",
-            payload_by_league={"euroleague": [_anchored_team_raw("meridian", "Rilski Sport.", league_id="NBL")]},
-        ),
+async def test_auto_apply_anchored_aliases_skips_declined_history(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    scheduler = Scheduler(interval_minutes=1)
+
+    async def declined_history_summary(**kwargs):
+        return set(), True
+
+    monkeypatch.setattr(
+        odds_store,
+        "get_team_review_case_history_summary",
+        declined_history_summary,
     )
 
-    await Scheduler(interval_minutes=1).run_cycle()
-    pending_cases = await odds_store.get_team_review_cases(status="pending")
-    await odds_store.mark_team_review_case_declined(pending_cases[0].id)
+    cases = [
+        TeamReviewDiagnostic(
+            bookmaker_id="meridian",
+            raw_league_id="NBL",
+            normalized_raw_league_id="nbl",
+            sport="basketball",
+            raw_team_name="Rilski Sport.",
+            normalized_raw_team_name="rilski sport",
+            suggested_team_id=101,
+            suggested_team_name="Rilski Sportist",
+            start_time="2030-01-01T20:00:00+00:00",
+            review_kind="alias_suggestion",
+            reason_code="candidate_team_match_same_start_time",
+            confidence="high",
+            similarity_score=95,
+            matched_counterpart_team="Levski Sofia",
+            canonical_home_team="Rilski Sportist",
+            canonical_away_team="Levski Sofia",
+        )
+    ]
 
-    result = await Scheduler(interval_minutes=1).run_cycle()
-    current_pending_cases = await odds_store.get_team_review_cases(status="pending")
-    approved_cases = await odds_store.get_team_review_cases(status="approved")
+    approved_cases, applied_aliases, pending_merge_pairings = await scheduler._auto_apply_anchored_aliases(cases)
 
-    assert result["odds_scraped"] == 1
-    assert len(current_pending_cases) == 1
-    assert current_pending_cases[0].review_kind == "alias_suggestion"
     assert approved_cases == []
+    assert applied_aliases == []
+    assert pending_merge_pairings == []
     assert normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian") == "Rilski Sport."
+
+
+@pytest.mark.asyncio
+async def test_auto_apply_anchored_aliases_respects_threshold():
+    scheduler = Scheduler(interval_minutes=1)
+    cases = [
+        TeamReviewDiagnostic(
+            bookmaker_id="meridian",
+            raw_league_id="NBL",
+            normalized_raw_league_id="nbl",
+            sport="basketball",
+            raw_team_name="Rilski Sport.",
+            normalized_raw_team_name="rilski sport",
+            suggested_team_id=101,
+            suggested_team_name="Rilski Sportist",
+            start_time="2030-01-01T20:00:00+00:00",
+            review_kind="candidate_search",
+            reason_code="candidate_team_match_same_start_time",
+            confidence="medium",
+            similarity_score=84,
+            matched_counterpart_team="Levski Sofia",
+            canonical_home_team="Rilski Sportist",
+            canonical_away_team="Levski Sofia",
+        )
+    ]
+
+    approved_cases, applied_aliases, pending_merge_pairings = await scheduler._auto_apply_anchored_aliases(cases)
+
+    assert approved_cases == []
+    assert applied_aliases == []
+    assert pending_merge_pairings == []
+    assert normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian") == "Rilski Sport."
+
+
+@pytest.mark.asyncio
+async def test_auto_apply_anchored_aliases_overrides_losing_label_and_merges_canonical_team():
+    winner = create_canonical_team(display_name="QA Winner Team")
+    runner_up = create_canonical_team(display_name="QA Runner Team")
+    opponent = create_canonical_team(display_name="QA Opponent Team")
+    remember_team_alias(
+        bookmaker_id="book-a",
+        raw_team_name="QA Winner Label",
+        team_name=winner.team_name,
+    )
+    remember_team_alias(
+        bookmaker_id="book-a",
+        raw_team_name="QA Opponent Label",
+        team_name=opponent.team_name,
+    )
+    remember_team_alias(
+        bookmaker_id="book-b",
+        raw_team_name="QA Opponent Label",
+        team_name=opponent.team_name,
+    )
+    remember_team_alias(
+        bookmaker_id="book-c",
+        raw_team_name="QA Opponent Label",
+        team_name=opponent.team_name,
+    )
+
+    scheduler = Scheduler(interval_minutes=1)
+    raw_rows = [
+        _anchored_team_raw("book-a", "QA Winner Label", away_team="QA Opponent Label"),
+        _anchored_team_raw("book-b", runner_up.team_name, away_team="QA Opponent Label"),
+        _anchored_team_raw("book-c", "QA Fresh Label", away_team="QA Opponent Label"),
+    ]
+    cases = [
+        TeamReviewDiagnostic(
+            bookmaker_id="book-c",
+            raw_league_id="NBL",
+            normalized_raw_league_id="nbl",
+            sport="basketball",
+            raw_team_name="QA Fresh Label",
+            normalized_raw_team_name="qa fresh label",
+            suggested_team_id=winner.team_id,
+            suggested_team_name=winner.team_name,
+            start_time="2030-01-01T20:00:00+00:00",
+            review_kind="candidate_search",
+            reason_code="candidate_team_match_same_start_time",
+            confidence="medium",
+            similarity_score=100,
+            matched_counterpart_team=opponent.team_name,
+            canonical_home_team=winner.team_name,
+            canonical_away_team=opponent.team_name,
+            candidate_teams=[
+                {
+                    "team_id": winner.team_id,
+                    "team_name": winner.team_name,
+                    "score": 100,
+                    "slot_support": 1,
+                    "canonical_home_team": winner.team_name,
+                    "canonical_away_team": opponent.team_name,
+                },
+                {
+                    "team_id": runner_up.team_id,
+                    "team_name": runner_up.team_name,
+                    "score": 95,
+                    "slot_support": 1,
+                    "canonical_home_team": runner_up.team_name,
+                    "canonical_away_team": opponent.team_name,
+                },
+            ],
+        )
+    ]
+
+    approved_cases, applied_aliases, pending_merge_pairings = await scheduler._auto_apply_anchored_aliases(
+        cases,
+        raw_rows,
+    )
+
+    assert len(approved_cases) == 1
+    assert approved_cases[0].review_kind == "auto_alias_suggestion"
+    assert set(applied_aliases) == {
+        ("book-c", "QA Fresh Label", "basketball"),
+        ("book-b", runner_up.team_name, "basketball"),
+    }
+    assert pending_merge_pairings == [(runner_up.team_id, winner.team_id)]
+    assert normalize_team_name("QA Fresh Label", "NBL", "book-c") == winner.team_name
+    assert normalize_team_name(runner_up.team_name, "NBL", "book-b") == winner.team_name
+
+    await scheduler._apply_canonical_merges(pending_merge_pairings)
+
+    assert normalize_team_name("QA Runner Team", "NBL", "book-b") == winner.team_name
 
 
 @pytest.mark.asyncio
@@ -771,8 +922,6 @@ async def test_scheduler_run_cycle_rolls_back_auto_saved_alias_if_store_fails(
             payload_by_league={"euroleague": [_anchored_team_raw("meridian", "Rilski Sport.", league_id="NBL")]},
         ),
     )
-
-    await Scheduler(interval_minutes=1).run_cycle()
 
     original_upsert_odds = odds_store.upsert_odds
     call_count = 0
@@ -792,8 +941,7 @@ async def test_scheduler_run_cycle_rolls_back_auto_saved_alias_if_store_fails(
     pending_cases = await odds_store.get_team_review_cases(status="pending")
     approved_cases = await odds_store.get_team_review_cases(status="approved")
 
-    assert len(pending_cases) == 1
-    assert pending_cases[0].review_kind == "alias_suggestion"
+    assert pending_cases == []
     assert approved_cases == []
     assert normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian") == "Rilski Sport."
 
@@ -833,11 +981,11 @@ async def test_scheduler_run_cycle_ignores_unsnapshotted_review_history_for_auto
     pending_cases = await odds_store.get_team_review_cases(status="pending")
     approved_cases = await odds_store.get_team_review_cases(status="approved")
 
-    assert result["odds_scraped"] == 1
-    assert len(pending_cases) == 1
-    assert pending_cases[0].review_kind == "alias_suggestion"
-    assert approved_cases == []
-    assert normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian") == "Rilski Sport."
+    assert result["odds_scraped"] == 2
+    assert pending_cases == []
+    assert len(approved_cases) == 1
+    assert approved_cases[0].review_kind == "auto_alias_suggestion"
+    assert normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian") == "Rilski Sportist"
 
 
 @pytest.mark.asyncio
@@ -874,6 +1022,7 @@ async def test_auto_apply_anchored_aliases_rolls_back_partial_alias_writes(
             review_kind="alias_suggestion",
             reason_code="candidate_team_match_same_start_time",
             confidence="high",
+            similarity_score=95,
             matched_counterpart_team="Levski Sofia",
             canonical_home_team="Rilski Sportist",
             canonical_away_team="Levski Sofia",
@@ -891,6 +1040,7 @@ async def test_auto_apply_anchored_aliases_rolls_back_partial_alias_writes(
             review_kind="alias_suggestion",
             reason_code="candidate_team_match_same_start_time",
             confidence="high",
+            similarity_score=95,
             matched_counterpart_team="Levski Sofia",
             canonical_home_team="Rilski Sportist",
             canonical_away_team="Levski Sofia",
@@ -908,6 +1058,7 @@ async def test_auto_apply_anchored_aliases_rolls_back_partial_alias_writes(
             review_kind="alias_suggestion",
             reason_code="candidate_team_match_same_start_time",
             confidence="high",
+            similarity_score=95,
             matched_counterpart_team="Olympiacos",
             canonical_home_team="Panathinaikos",
             canonical_away_team="Olympiacos",
@@ -925,6 +1076,7 @@ async def test_auto_apply_anchored_aliases_rolls_back_partial_alias_writes(
             review_kind="alias_suggestion",
             reason_code="candidate_team_match_same_start_time",
             confidence="high",
+            similarity_score=95,
             matched_counterpart_team="Olympiacos",
             canonical_home_team="Panathinaikos",
             canonical_away_team="Olympiacos",

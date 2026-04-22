@@ -71,6 +71,7 @@ class TeamAliasResolution:
     team_name: str
     source: str
     sport: str
+    bookmaker_id: str = _GLOBAL_BOOKMAKER_ID
 
 
 @dataclass(frozen=True)
@@ -235,6 +236,7 @@ def _create_canonical_team(
             team_name=str(existing["display_name"]),
             source="canonical",
             sport=sport,
+            bookmaker_id=_GLOBAL_BOOKMAKER_ID,
         )
 
     cursor = conn.execute(
@@ -263,6 +265,7 @@ def _create_canonical_team(
         team_name=display_name.strip(),
         source=source,
         sport=sport,
+        bookmaker_id=_GLOBAL_BOOKMAKER_ID,
     )
 
 
@@ -301,6 +304,7 @@ def _find_resolution_by_exact_alias(
         team_name=str(row["team_name"]),
         source=str(row["source"]),
         sport=sport,
+        bookmaker_id=str(row["bookmaker_id"]),
     )
 
 
@@ -323,6 +327,7 @@ def _resolve_existing_team(
             team_name=str(direct["display_name"]),
             source="canonical",
             sport=sport,
+            bookmaker_id=_GLOBAL_BOOKMAKER_ID,
         )
     return _find_resolution_by_exact_alias(
         conn, raw_key=normalized_team_name, sport=sport, bookmaker_id=bookmaker_id
@@ -509,9 +514,15 @@ def remember_team_alias(
             bookmaker_id=bookmaker_key,
         )
         if existing_resolution is not None and existing_resolution.team_id != target_resolution.team_id:
-            raise CircularAliasError(
-                f"Alias '{raw_team_name}' already resolves to '{existing_resolution.team_name}'"
-            )
+            if (
+                source == "auto_review"
+                and existing_resolution.bookmaker_id == _GLOBAL_BOOKMAKER_ID
+            ):
+                existing_resolution = None
+            else:
+                raise CircularAliasError(
+                    f"Alias '{raw_team_name}' already resolves to '{existing_resolution.team_name}'"
+                )
         if existing_resolution is not None and source == "auto_review":
             conn.rollback()
             return existing_resolution

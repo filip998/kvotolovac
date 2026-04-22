@@ -12,7 +12,11 @@ from ..scrapers.base import BaseScraper
 from ..scrapers.registry import registry
 from ..models.schemas import ScanProgressOut
 from ..services.league_registry import league_country, league_display_name
-from ..services.normalizer import normalize_odds_with_diagnostics
+from ..services.normalizer import (
+    ANCHORED_AUTO_APPLY_THRESHOLD,
+    normalize_odds_with_diagnostics,
+    resolve_team_name,
+)
 from ..services.analyzer import analyze
 from ..services.notifications import NotificationService, InAppNotificationProvider
 from ..services.scrape_window import (
@@ -23,6 +27,8 @@ from ..services.scraper_benchmarks import recorder as benchmark_recorder
 from ..services.team_registry import (
     CircularAliasError,
     forget_team_alias,
+    get_canonical_team,
+    merge_canonical_teams,
     remember_team_alias,
 )
 from ..store import odds_store
@@ -33,28 +39,91 @@ logger = logging.getLogger(__name__)
 AUTO_ALIAS_REVIEW_KIND = "auto_alias_suggestion"
 
 
-def _auto_alias_group_key(case) -> tuple[str, str, int, str, str, str]:
-    return (
-        case.sport,
-        case.normalized_raw_team_name,
-        case.suggested_team_id or 0,
-        case.start_time or "",
-        case.canonical_home_team or "",
-        case.canonical_away_team or "",
-    )
-
-
 def _is_auto_alias_candidate(case) -> bool:
     return (
-        case.review_kind == "alias_suggestion"
+        case.review_kind in {"alias_suggestion", "candidate_search"}
         and case.reason_code == "candidate_team_match_same_start_time"
-        and case.confidence == "high"
         and case.suggested_team_id is not None
         and case.suggested_team_name is not None
         and case.start_time is not None
         and case.matched_counterpart_team is not None
         and case.canonical_home_team is not None
         and case.canonical_away_team is not None
+        and case.similarity_score is not None
+        and case.similarity_score >= ANCHORED_AUTO_APPLY_THRESHOLD
+    )
+
+
+def _candidate_merge_source_ids(case) -> set[int]:
+    return {
+        candidate.team_id
+        for candidate in case.candidate_teams
+        if (
+            candidate.team_id != case.suggested_team_id
+            and candidate.score is not None
+            and candidate.score >= ANCHORED_AUTO_APPLY_THRESHOLD
+        )
+    }
+
+
+def _normalize_merge_pairings(
+    pairings: list[tuple[int, int]],
+) -> tuple[dict[int, int], set[int]]:
+    normalized: dict[int, int] = {}
+    conflicts: set[int] = set()
+
+    for source_team_id, target_team_id in pairings:
+        if source_team_id <= 0 or target_team_id <= 0 or source_team_id == target_team_id:
+            continue
+        existing_target = normalized.get(source_team_id)
+        if existing_target is not None and existing_target != target_team_id:
+            conflicts.add(source_team_id)
+            continue
+        normalized[source_team_id] = target_team_id
+
+    for source_team_id in conflicts:
+        normalized.pop(source_team_id, None)
+
+    resolved: dict[int, int] = {}
+    cycle_conflicts: set[int] = set()
+
+    for source_team_id in list(normalized):
+        if source_team_id in resolved or source_team_id in cycle_conflicts:
+            continue
+
+        path: list[int] = []
+        visited: dict[int, int] = {}
+        current_team_id = source_team_id
+
+        while True:
+            if current_team_id in cycle_conflicts:
+                cycle_conflicts.update(path)
+                break
+            if current_team_id in resolved:
+                final_target = resolved[current_team_id]
+                for path_team_id in path:
+                    resolved[path_team_id] = final_target
+                break
+            if current_team_id not in normalized:
+                for path_team_id in path:
+                    resolved[path_team_id] = current_team_id
+                break
+            if current_team_id in visited:
+                cycle_conflicts.update(path)
+                break
+
+            visited[current_team_id] = len(path)
+            path.append(current_team_id)
+            current_team_id = normalized[current_team_id]
+
+    conflicts.update(cycle_conflicts)
+    return (
+        {
+            source_team_id: target_team_id
+            for source_team_id, target_team_id in resolved.items()
+            if source_team_id not in conflicts and source_team_id in normalized
+        },
+        conflicts,
     )
 
 
@@ -107,88 +176,206 @@ class Scheduler:
         self._scan_failed_tasks = 0
         self._scan_active_tasks = 0
 
-    async def _auto_apply_anchored_aliases(self, team_review_cases: list) -> tuple[list, list[tuple[str, str, str]]]:
-        candidate_groups: dict[tuple[str, str, int, str, str, str], list] = defaultdict(list)
-        for case in team_review_cases:
-            if _is_auto_alias_candidate(case):
-                candidate_groups[_auto_alias_group_key(case)].append(case)
+    def _build_case_alias_requests(
+        self,
+        case,
+        raw_rows: list[RawOddsData] | None,
+    ) -> list[tuple[str, str, str, str]]:
+        requests = [
+            (
+                case.bookmaker_id,
+                case.raw_team_name,
+                case.suggested_team_name,
+                case.sport,
+            )
+        ]
+        if raw_rows is None:
+            return requests
 
+        losing_team_ids = _candidate_merge_source_ids(case)
+        if not losing_team_ids or not case.matched_counterpart_team:
+            return requests
+
+        counterpart_resolution = resolve_team_name(
+            case.matched_counterpart_team,
+            sport=case.sport,
+        )
+        if counterpart_resolution.team_id is None:
+            return requests
+
+        seen_requests = {
+            (case.bookmaker_id, case.raw_team_name, case.sport),
+        }
+        for raw in raw_rows:
+            if raw.sport != case.sport or raw.start_time != case.start_time:
+                continue
+
+            home_resolution = resolve_team_name(
+                raw.home_team,
+                bookmaker_id=raw.bookmaker_id,
+                sport=raw.sport,
+            )
+            away_resolution = resolve_team_name(
+                raw.away_team,
+                bookmaker_id=raw.bookmaker_id,
+                sport=raw.sport,
+            )
+
+            if (
+                home_resolution.team_id in losing_team_ids
+                and away_resolution.team_id == counterpart_resolution.team_id
+            ):
+                request_key = (raw.bookmaker_id, raw.home_team, raw.sport)
+                if request_key not in seen_requests:
+                    seen_requests.add(request_key)
+                    requests.append(
+                        (
+                            raw.bookmaker_id,
+                            raw.home_team,
+                            case.suggested_team_name,
+                            raw.sport,
+                        )
+                    )
+
+            if (
+                away_resolution.team_id in losing_team_ids
+                and home_resolution.team_id == counterpart_resolution.team_id
+            ):
+                request_key = (raw.bookmaker_id, raw.away_team, raw.sport)
+                if request_key not in seen_requests:
+                    seen_requests.add(request_key)
+                    requests.append(
+                        (
+                            raw.bookmaker_id,
+                            raw.away_team,
+                            case.suggested_team_name,
+                            raw.sport,
+                        )
+                    )
+
+        return requests
+
+    async def _auto_apply_anchored_aliases(
+        self,
+        team_review_cases: list,
+        raw_rows: list[RawOddsData] | None = None,
+    ) -> tuple[list, list[tuple[str, str, str]], list[tuple[int, int]]]:
         auto_approved_cases: list = []
         applied_aliases: list[tuple[str, str, str]] = []
+        pending_merge_pairings: list[tuple[int, int]] = []
+        seen_alias_targets: dict[tuple[str, str, str], str] = {}
+
         try:
-            for group_key, grouped_cases in candidate_groups.items():
-                (
-                    sport,
-                    normalized_raw_team_name,
-                    suggested_team_id,
-                    start_time,
-                    canonical_home_team,
-                    canonical_away_team,
-                ) = group_key
-                historical_bookmakers, has_declined = await odds_store.get_team_review_case_history_summary(
-                    sport=sport,
-                    normalized_raw_team_name=normalized_raw_team_name,
-                    suggested_team_id=suggested_team_id,
-                    start_time=start_time,
-                    canonical_home_team=canonical_home_team,
-                    canonical_away_team=canonical_away_team,
+            for case in team_review_cases:
+                if not _is_auto_alias_candidate(case):
+                    continue
+
+                _, has_declined = await odds_store.get_team_review_case_history_summary(
+                    sport=case.sport,
+                    normalized_raw_team_name=case.normalized_raw_team_name,
+                    suggested_team_id=case.suggested_team_id,
+                    start_time=case.start_time,
+                    canonical_home_team=case.canonical_home_team,
+                    canonical_away_team=case.canonical_away_team,
                 )
                 if has_declined:
                     continue
 
-                current_bookmakers = {case.bookmaker_id for case in grouped_cases}
-                combined_bookmakers = historical_bookmakers | current_bookmakers
-                repeated_scrape = any(
-                    case.bookmaker_id in historical_bookmakers for case in grouped_cases
-                )
-                second_bookmaker_confirmation = len(combined_bookmakers) >= 2
-                if not repeated_scrape and not second_bookmaker_confirmation:
-                    continue
+                case_applied_aliases: list[tuple[str, str, str]] = []
+                resolution = None
+                case_failed = False
 
-                for case in grouped_cases:
+                for bookmaker_id, raw_team_name, target_team_name, sport in self._build_case_alias_requests(
+                    case,
+                    raw_rows,
+                ):
+                    alias_key = (bookmaker_id, raw_team_name, sport)
+                    existing_target = seen_alias_targets.get(alias_key)
+                    if existing_target is not None:
+                        if existing_target != target_team_name:
+                            logger.warning(
+                                "Skipping auto-approved alias %s for bookmaker %s due to conflicting in-cycle targets: %s vs %s",
+                                raw_team_name,
+                                bookmaker_id,
+                                existing_target,
+                                target_team_name,
+                            )
+                            case_failed = True
+                            break
+                        continue
+
                     try:
-                        resolution = await asyncio.to_thread(
+                        alias_resolution = await asyncio.to_thread(
                             remember_team_alias,
-                            bookmaker_id=case.bookmaker_id,
-                            raw_team_name=case.raw_team_name,
-                            team_name=case.suggested_team_name,
-                            sport=case.sport,
+                            bookmaker_id=bookmaker_id,
+                            raw_team_name=raw_team_name,
+                            team_name=target_team_name,
+                            sport=sport,
                             source="auto_review",
                         )
                     except (CircularAliasError, RuntimeError, ValueError):
                         logger.exception(
                             "Failed auto-saving anchored alias %s for bookmaker %s",
-                            case.raw_team_name,
-                            case.bookmaker_id,
+                            raw_team_name,
+                            bookmaker_id,
                         )
+                        case_failed = True
+                        break
+
+                    seen_alias_targets[alias_key] = alias_resolution.team_name
+                    case_applied_aliases.append(alias_key)
+                    if alias_key == (case.bookmaker_id, case.raw_team_name, case.sport):
+                        resolution = alias_resolution
+
+                if case_failed:
+                    if case_applied_aliases:
+                        await self._rollback_auto_applied_aliases(case_applied_aliases)
+                        for alias_key in case_applied_aliases:
+                            seen_alias_targets.pop(alias_key, None)
+                    continue
+
+                if resolution is None:
+                    # The primary alias target was already applied earlier in this cycle.
+                    resolution = resolve_team_name(
+                        case.raw_team_name,
+                        bookmaker_id=case.bookmaker_id,
+                        sport=case.sport,
+                    )
+                    if resolution.team_id is None:
                         continue
 
-                    evidence = list(case.evidence)
-                    if case.bookmaker_id in historical_bookmakers:
-                        evidence.append("Auto-approved after repeated anchored alias scrape")
-                    if second_bookmaker_confirmation:
-                        evidence.append(
-                            "Auto-approved after confirming bookmakers: "
-                            + ", ".join(sorted(combined_bookmakers))
-                        )
-
-                    auto_approved_cases.append(
-                        case.model_copy(
-                            update={
-                                "suggested_team_id": resolution.team_id,
-                                "suggested_team_name": resolution.team_name,
-                                "review_kind": AUTO_ALIAS_REVIEW_KIND,
-                                "status": "approved",
-                                "evidence": evidence,
-                            },
-                        )
+                applied_aliases.extend(case_applied_aliases)
+                evidence = list(case.evidence)
+                evidence.append(
+                    "Auto-approved in the same scrape after anchored fuzzy match "
+                    f"(score {case.similarity_score:g}, threshold {ANCHORED_AUTO_APPLY_THRESHOLD})"
+                )
+                if len(_candidate_merge_source_ids(case)) > 0:
+                    evidence.append(
+                        "Applied same-scrape bookmaker overrides for competing canonical labels"
                     )
-                    applied_aliases.append((case.bookmaker_id, case.raw_team_name, case.sport))
+
+                auto_approved_cases.append(
+                    case.model_copy(
+                        update={
+                            "suggested_team_id": resolution.team_id,
+                            "suggested_team_name": resolution.team_name,
+                            "review_kind": AUTO_ALIAS_REVIEW_KIND,
+                            "status": "approved",
+                            "evidence": evidence,
+                        },
+                    )
+                )
+                pending_merge_pairings.extend(
+                    (source_team_id, resolution.team_id)
+                    for source_team_id in _candidate_merge_source_ids(case)
+                )
         except Exception:
             if applied_aliases:
                 await self._rollback_auto_applied_aliases(applied_aliases)
             raise
-        return auto_approved_cases, applied_aliases
+
+        return auto_approved_cases, applied_aliases, pending_merge_pairings
 
     async def _rollback_auto_applied_aliases(
         self,
@@ -208,6 +395,41 @@ class Scheduler:
                     "Failed rolling back auto-saved alias %s for bookmaker %s",
                     raw_team_name,
                     bookmaker_id,
+                )
+
+    async def _apply_canonical_merges(
+        self,
+        pending_merge_pairings: list[tuple[int, int]],
+    ) -> None:
+        normalized_pairings, conflicts = _normalize_merge_pairings(pending_merge_pairings)
+        for source_team_id in sorted(conflicts):
+            logger.warning(
+                "Skipping auto-merge for canonical team %s due to conflicting targets in the same scrape",
+                source_team_id,
+            )
+
+        for source_team_id, target_team_id in sorted(normalized_pairings.items()):
+            source_team = await asyncio.to_thread(get_canonical_team, source_team_id)
+            target_team = await asyncio.to_thread(
+                get_canonical_team,
+                target_team_id,
+                follow_merge=True,
+            )
+            if source_team is None or target_team is None:
+                continue
+            if source_team.id == target_team.id:
+                continue
+            try:
+                await asyncio.to_thread(
+                    merge_canonical_teams,
+                    source_team_id=source_team.id,
+                    target_team_id=target_team.id,
+                )
+            except ValueError:
+                logger.exception(
+                    "Failed auto-merging canonical team %s into %s",
+                    source_team.id,
+                    target_team.id,
                 )
 
     async def start(self) -> None:
@@ -350,6 +572,7 @@ class Scheduler:
             seen_matches: set[str] = set()
             discrepancies = []
             notified = 0
+            pending_auto_merges: list[tuple[int, int]] = []
             (
                 normalized,
                 unresolved_odds,
@@ -357,8 +580,13 @@ class Scheduler:
             ) = normalize_odds_with_diagnostics(all_raw)
             applied_auto_aliases: list[tuple[str, str, str]] = []
             try:
-                auto_approved_team_reviews, applied_auto_aliases = (
-                    await self._auto_apply_anchored_aliases(team_review_cases)
+                (
+                    auto_approved_team_reviews,
+                    applied_auto_aliases,
+                    pending_auto_merges,
+                ) = await self._auto_apply_anchored_aliases(
+                    team_review_cases,
+                    all_raw,
                 )
                 if auto_approved_team_reviews:
                     (
@@ -465,6 +693,12 @@ class Scheduler:
                 logger.info("Retention cleanup complete: %s", cleanup_counts)
             except Exception:
                 logger.exception("Retention cleanup failed after a successful scrape cycle")
+
+            if pending_auto_merges:
+                try:
+                    await self._apply_canonical_merges(pending_auto_merges)
+                except Exception:
+                    logger.exception("Automatic canonical merges failed after a successful scrape cycle")
 
             result = {
                 "matches_scraped": len(seen_matches),
