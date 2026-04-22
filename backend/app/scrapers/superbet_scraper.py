@@ -263,6 +263,8 @@ def _classify_market_type(
         or normalized_name.startswith("3 poena igraca")
     ):
         return "player_3points" if has_player else None
+    if "suteva za 3 poena igraca" in normalized_name:
+        return None
     if "ukupno asistencija igraca" in normalized_name:
         return "player_assists" if has_player else None
     if "ukupno skokova igraca" in normalized_name:

@@ -407,6 +407,54 @@ def test_parse_event_payload_groups_supported_superbet_markets():
     assert all(row.source_url == context.source_url for row in results)
 
 
+def test_parse_event_payload_skips_three_point_attempt_markets():
+    context = EventContext(
+        event_id=12769041,
+        league_id="nba",
+        home_team="Oklahoma City Thunder",
+        away_team="Phoenix Suns",
+        start_time=START_DT.isoformat(),
+        source_url="https://superbet.rs/kvote/kosarka/oklahoma-city-thunder-vs-phoenix-suns-12769041?mdt=o",
+    )
+    event_payload = {
+        "event_id": 12769041,
+        "fixture": {
+            "event_name": "Oklahoma City Thunder·Phoenix Suns",
+            "utc_date": START_Z,
+            "category_id": 61,
+            "tournament_id": 2177,
+        },
+        "markets": [
+            {
+                "id": 231810,
+                "name": "Ukupno šuteva za 3 poena igrača (uklj. produžetke)",
+                "odds": [
+                    _odd(
+                        1.95,
+                        name="Alex Caruso - Više od 2.5",
+                        info="Biće više od 2.5 šuteva iz igre za 3 poena (uklj. produžetke)",
+                        specifiers={"player": "Alex Caruso", "total": "2.5"},
+                    ),
+                    _odd(
+                        1.73,
+                        name="Alex Caruso - Manje od 2.5",
+                        info="Biće manje od 2.5 šuteva iz igre za 3 poena (uklj. produžetke)",
+                        specifiers={"player": "Alex Caruso", "total": "2.5"},
+                    ),
+                ],
+            }
+        ],
+    }
+
+    results = _parse_event_payload(
+        event_payload,
+        context=context,
+        market_group_lookup={**MARKET_GROUP_LOOKUP, 231810: "3 poena igrača"},
+    )
+
+    assert results == []
+
+
 @pytest.mark.asyncio
 async def test_scrape_odds_uses_structure_market_groups_and_batched_event_sse():
     async def fake_get_json(url: str, *, params=None, headers=None):
