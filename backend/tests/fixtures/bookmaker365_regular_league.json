@@ -1,0 +1,29 @@
+{
+  "esMatches": [
+    {
+      "id": 47536399,
+      "matchCode": 718,
+      "home": "Detroit",
+      "away": "Orlando",
+      "kickOffTime": 1776898800000,
+      "leagueId": 2228013,
+      "leagueName": "NBA / Play Off",
+      "params": {
+        "overUnder": "217.5",
+        "overUnder2": "216.5",
+        "overUnderOvertime": "218.5",
+        "overUnderOvertime2": "217.5"
+      },
+      "odds": {
+        "227": 1.85,
+        "228": 1.9,
+        "429": 1.8,
+        "427": 1.95,
+        "50445": 1.9,
+        "50444": 1.85,
+        "50447": 1.85,
+        "50446": 1.95
+      }
+    }
+  ]
+}

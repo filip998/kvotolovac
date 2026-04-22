@@ -10,6 +10,7 @@ const BOOKMAKER_CONFIG: Record<string, { initials: string; logoSrc?: string }> =
   soccerbet: { initials: 'SB', logoSrc: '/bookmaker-logos/soccerbet.png' },
   superbet: { initials: 'SU', logoSrc: '/bookmaker-logos/superbet.png' },
   betole: { initials: 'BO' },
+  365: { initials: '365' },
 };
 
 function normalizeBookmakerKey(name: string) {

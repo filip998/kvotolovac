@@ -72,6 +72,23 @@ async def test_create_real_scrapers_applies_meridian_rate_limit_override():
 
 
 @pytest.mark.asyncio
+async def test_create_real_scrapers_supports_365():
+    scrapers, clients = _create_real_scrapers(
+        ["365"],
+        rate_limit_per_second=1,
+        meridian_rate_limit_per_second=4,
+        proxies=None,
+    )
+
+    try:
+        assert [scraper.get_bookmaker_id() for scraper in scrapers] == ["365"]
+        assert len(clients) == 1
+        assert scrapers[0]._http is clients[0]
+    finally:
+        await _close_http_clients(clients)
+
+
+@pytest.mark.asyncio
 async def test_close_http_clients_attempts_all_and_reraises_failure():
     close_order: list[str] = []
 

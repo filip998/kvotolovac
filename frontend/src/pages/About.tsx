@@ -14,6 +14,7 @@ const bookmakers = [
   'SoccerBet',
   'Superbet',
   'BetOle',
+  '365',
 ];
 
 const pillars = [

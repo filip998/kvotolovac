@@ -51,6 +51,16 @@ async def test_mock_scraper_supports_betole():
 
 
 @pytest.mark.asyncio
+async def test_mock_scraper_supports_365():
+    scraper = MockScraper("365")
+    data = await scraper.scrape_odds("euroleague")
+
+    assert scraper.get_bookmaker_name() == "365"
+    assert len(data) > 0
+    assert all(item.bookmaker_id == "365" for item in data)
+
+
+@pytest.mark.asyncio
 async def test_mock_scraper_unsupported_league():
     scraper = MockScraper("mozzart")
     data = await scraper.scrape_odds("nba")
