@@ -25,6 +25,7 @@ from .scrapers.base import BaseScraper
 from .scrapers.http_client import HttpClient
 from .scrapers.registry import registry
 from .services.scheduler import scheduler
+from .store import odds_store
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
@@ -133,6 +134,7 @@ async def lifespan(app: FastAPI):
 
     # Register scrapers based on configured mode
     managed_clients: list[HttpClient] = []
+    registered_scrapers: list[BaseScraper] = []
     if settings.scraper_mode == "real":
         scrapers, managed_clients = _create_real_scrapers(
             settings.bookmaker_list,
@@ -142,14 +144,22 @@ async def lifespan(app: FastAPI):
         )
         for scraper in scrapers:
             registry.register(scraper)
+        registered_scrapers = scrapers
     else:
         for bm_id in settings.bookmaker_list:
             try:
                 scraper = MockScraper(bm_id)
                 registry.register(scraper)
+                registered_scrapers.append(scraper)
                 logger.info("Registered scraper: %s", bm_id)
             except ValueError:
                 logger.warning("No mock scraper for bookmaker: %s", bm_id)
+
+    for scraper in registered_scrapers:
+        await odds_store.upsert_bookmaker(
+            id=scraper.get_bookmaker_id(),
+            name=scraper.get_bookmaker_name(),
+        )
 
     # Start scheduler loop in the background so the API is responsive immediately.
     await scheduler.start()
