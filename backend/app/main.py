@@ -22,6 +22,7 @@ from .scrapers.pinnbet_scraper import PinnBetScraper
 from .scrapers.soccerbet_scraper import SoccerBetScraper
 from .scrapers.superbet_scraper import SuperbetScraper
 from .scrapers.betole_scraper import BetOleScraper
+from .scrapers.volcanobet_scraper import VolcanoBetScraper
 from .scrapers.base import BaseScraper
 from .scrapers.http_client import HttpClient
 from .scrapers.registry import registry
@@ -43,6 +44,7 @@ _REAL_SCRAPER_FACTORIES: dict[str, Callable[[HttpClient], BaseScraper]] = {
     "soccerbet": SoccerBetScraper,
     "superbet": SuperbetScraper,
     "betole": BetOleScraper,
+    "volcanobet": VolcanoBetScraper,
 }
 
 
