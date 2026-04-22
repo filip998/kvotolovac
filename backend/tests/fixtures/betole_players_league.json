@@ -1,0 +1,50 @@
+{
+  "esMatches": [
+    {
+      "id": 90248360,
+      "matchCode": 31432,
+      "superCode": 4698,
+      "home": "Ausar Thompson",
+      "away": "Detroit Pistons",
+      "kickOffTime": 1776898800000,
+      "leagueId": 2266084,
+      "leagueName": "USA, NBA - Play Offs,Players",
+      "params": {
+        "ouPlRebounds": "5.5",
+        "ouPlPoints": "9.5",
+        "ouPlAssists": "2.5"
+      },
+      "odds": {
+        "51681": 1.81,
+        "51682": 1.62,
+        "51685": 2.05,
+        "51684": 2.1,
+        "51687": 1.65,
+        "51679": 1.98
+      }
+    },
+    {
+      "id": 90248361,
+      "matchCode": 31433,
+      "superCode": 4698,
+      "home": "Cade Cunningham",
+      "away": "Detroit Pistons",
+      "kickOffTime": 1776898800000,
+      "leagueId": 2266084,
+      "leagueName": "USA, NBA - Play Offs,Players",
+      "params": {
+        "ouPlRebounds": "5.5",
+        "ouPlPoints": "28.5",
+        "ouPlAssists": "9.5"
+      },
+      "odds": {
+        "51681": 1.85,
+        "51682": 1.8,
+        "51685": 1.75,
+        "51684": 1.9,
+        "51687": 1.97,
+        "51679": 1.95
+      }
+    }
+  ]
+}

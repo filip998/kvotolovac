@@ -1,0 +1,27 @@
+{
+  "esMatches": [
+    {
+      "id": 90241113,
+      "matchCode": 4698,
+      "home": "Detroit Pistons",
+      "away": "Orlando Magic",
+      "kickOffTime": 1776898800000,
+      "leagueId": 2257173,
+      "leagueName": "USA, NBA - Play Offs",
+      "params": {
+        "handicapFirstPeriod": "-2.5",
+        "overUnderP": "111.5",
+        "hdp": "-4.5",
+        "handicapOvertime": "-8.5",
+        "overUnderOvertime": "219.5",
+        "overUnderFirstPeriod": "55.5"
+      },
+      "odds": {
+        "50979": 1.83,
+        "50980": 1.93,
+        "50444": 1.85,
+        "50445": 1.9
+      }
+    }
+  ]
+}

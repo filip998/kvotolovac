@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     scrape_interval_minutes: int = 10
     log_level: str = "INFO"
     cors_origins: str = "*"
-    bookmakers: str = "mozzart,meridian,maxbet,oktagonbet,admiralbet,balkanbet,merkurxtip,pinnbet,soccerbet,superbet"
+    bookmakers: str = "mozzart,meridian,maxbet,oktagonbet,admiralbet,balkanbet,merkurxtip,pinnbet,soccerbet,superbet,betole"
     notification_gap_threshold: float = 1.5
     persist_inapp_notifications: bool = False
     notification_retention_days: int = 3

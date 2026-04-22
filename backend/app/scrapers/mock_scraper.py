@@ -104,6 +104,7 @@ _BOOKMAKER_META = {
     "maxbet": ("MaxBet", "https://www.maxbet.rs"),
     "soccerbet": ("SoccerBet", "https://www.soccerbet.rs"),
     "superbet": ("Superbet", "https://superbet.rs"),
+    "betole": ("BetOle", "https://www.betole.com"),
 }
 
 _PLAYER_MARKETS["soccerbet"] = [
@@ -126,6 +127,19 @@ _PLAYER_MARKETS["superbet"] = [
         "over": round(max(1.01, market["over"] + (0.03 if idx % 2 == 0 else -0.02)), 2),
         "under": round(
             max(1.01, market["under"] + (-0.03 if idx % 2 == 0 else 0.02)),
+            2,
+        ),
+    }
+    for idx, market in enumerate(_PLAYER_MARKETS["maxbet"])
+]
+
+_PLAYER_MARKETS["betole"] = [
+    {
+        **market,
+        "threshold": market["threshold"] + (0.5 if idx % 4 == 0 else 0.0),
+        "over": round(max(1.01, market["over"] + (0.01 if idx % 2 == 0 else -0.02)), 2),
+        "under": round(
+            max(1.01, market["under"] + (-0.01 if idx % 2 == 0 else 0.02)),
             2,
         ),
     }
