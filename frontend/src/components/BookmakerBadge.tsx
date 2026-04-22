@@ -7,7 +7,8 @@ const BOOKMAKER_CONFIG: Record<string, { initials: string; logoSrc?: string }> =
   balkanbet: { initials: 'BB', logoSrc: '/bookmaker-logos/balkanbet.png' },
   merkurxtip: { initials: 'MX', logoSrc: '/bookmaker-logos/merkurxtip.png' },
   pinnbet: { initials: 'PN', logoSrc: '/bookmaker-logos/pinnbet.png' },
-  soccerbet: { initials: 'SB' },
+  soccerbet: { initials: 'SB', logoSrc: '/bookmaker-logos/soccerbet.png' },
+  superbet: { initials: 'SU', logoSrc: '/bookmaker-logos/superbet.png' },
 };
 
 function normalizeBookmakerKey(name: string) {

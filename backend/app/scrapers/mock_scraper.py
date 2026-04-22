@@ -103,6 +103,7 @@ _BOOKMAKER_META = {
     "meridian": ("Meridian", "https://www.meridianbet.rs"),
     "maxbet": ("MaxBet", "https://www.maxbet.rs"),
     "soccerbet": ("SoccerBet", "https://www.soccerbet.rs"),
+    "superbet": ("Superbet", "https://superbet.rs"),
 }
 
 _PLAYER_MARKETS["soccerbet"] = [
@@ -112,6 +113,19 @@ _PLAYER_MARKETS["soccerbet"] = [
         "over": round(max(1.01, market["over"] + (0.02 if idx % 2 == 0 else -0.01)), 2),
         "under": round(
             max(1.01, market["under"] + (-0.02 if idx % 2 == 0 else 0.01)),
+            2,
+        ),
+    }
+    for idx, market in enumerate(_PLAYER_MARKETS["maxbet"])
+]
+
+_PLAYER_MARKETS["superbet"] = [
+    {
+        **market,
+        "threshold": market["threshold"] + (-0.5 if idx % 4 == 0 else 0.5),
+        "over": round(max(1.01, market["over"] + (0.03 if idx % 2 == 0 else -0.02)), 2),
+        "under": round(
+            max(1.01, market["under"] + (-0.03 if idx % 2 == 0 else 0.02)),
             2,
         ),
     }

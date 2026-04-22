@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any
@@ -197,6 +198,8 @@ class HttpClient:
         last_error: Exception | None = None
 
         for attempt in range(self._max_retries + 1):
+            retry_delay: float | None = None
+            should_rotate_proxy = False
             try:
                 client = await self._get_client()
                 merged_headers = {**self._default_headers, **(headers or {})}
@@ -226,6 +229,107 @@ class HttpClient:
                 last_error = exc
                 logger.warning(
                     "Network error from %s: %s (attempt %d/%d)",
+                    url, exc, attempt + 1, self._max_retries + 1,
+                )
+                if attempt < self._max_retries:
+                    self._rotate_proxy()
+                    await asyncio.sleep(self._backoff_base * (2 ** attempt))
+                    continue
+
+        raise last_error or RuntimeError(f"Failed after {self._max_retries + 1} attempts")
+
+    async def get_sse_json(
+        self,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        max_messages: int = 1,
+        read_timeout: float | None = None,
+    ) -> list[Any]:
+        """GET JSON messages from an SSE endpoint with retry and rate limiting."""
+        if max_messages <= 0:
+            raise ValueError("max_messages must be positive")
+
+        last_error: Exception | None = None
+
+        for attempt in range(self._max_retries + 1):
+            retry_delay: float | None = None
+            should_rotate_proxy = False
+            try:
+                client = await self._get_client()
+                merged_headers = {**self._default_headers, **(headers or {})}
+                await self._acquire_request_slot()
+
+                timeout = httpx.Timeout(
+                    connect=self._timeout,
+                    read=read_timeout if read_timeout is not None else self._timeout,
+                    write=self._timeout,
+                    pool=self._timeout,
+                )
+
+                async with client.stream(
+                    "GET",
+                    url,
+                    params=params,
+                    headers=merged_headers,
+                    timeout=timeout,
+                ) as response:
+                    if response.status_code in _RETRYABLE_STATUS_CODES:
+                        logger.warning(
+                            "Retryable status %d from %s (attempt %d/%d)",
+                            response.status_code, url, attempt + 1, self._max_retries + 1,
+                        )
+                        if attempt < self._max_retries:
+                            should_rotate_proxy = True
+                            retry_delay = self._backoff_base * (2 ** attempt)
+                        else:
+                            response.raise_for_status()
+                    else:
+                        response.raise_for_status()
+
+                    if retry_delay is None:
+                        messages: list[Any] = []
+                        data_lines: list[str] = []
+
+                        async for line in response.aiter_lines():
+                            if not line:
+                                if data_lines:
+                                    messages.append(json.loads("\n".join(data_lines)))
+                                    data_lines = []
+                                    if len(messages) >= max_messages:
+                                        return messages
+                                continue
+
+                            if line.startswith(":"):
+                                continue
+                            if line.startswith("data:"):
+                                data_lines.append(line[5:].lstrip())
+
+                        if data_lines:
+                            messages.append(json.loads("\n".join(data_lines)))
+
+                        if messages:
+                            return messages[:max_messages]
+
+                        raise RuntimeError(f"No SSE data received from {url}")
+
+                if retry_delay is not None:
+                    if should_rotate_proxy:
+                        self._rotate_proxy()
+                    await asyncio.sleep(retry_delay)
+                    continue
+
+            except (
+                httpx.TimeoutException,
+                httpx.ConnectError,
+                httpx.ReadError,
+                json.JSONDecodeError,
+                RuntimeError,
+            ) as exc:
+                last_error = exc
+                logger.warning(
+                    "SSE read error from %s: %s (attempt %d/%d)",
                     url, exc, attempt + 1, self._max_retries + 1,
                 )
                 if attempt < self._max_retries:

@@ -31,6 +31,16 @@ async def test_mock_scraper_supported_leagues():
 
 
 @pytest.mark.asyncio
+async def test_mock_scraper_supports_superbet():
+    scraper = MockScraper("superbet")
+    data = await scraper.scrape_odds("euroleague")
+
+    assert scraper.get_bookmaker_name() == "Superbet"
+    assert len(data) > 0
+    assert all(item.bookmaker_id == "superbet" for item in data)
+
+
+@pytest.mark.asyncio
 async def test_mock_scraper_unsupported_league():
     scraper = MockScraper("mozzart")
     data = await scraper.scrape_odds("nba")

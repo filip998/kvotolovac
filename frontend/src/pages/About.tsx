@@ -11,6 +11,8 @@ const bookmakers = [
   'BalkanBet',
   'MerkurXTip',
   'PinnBet',
+  'SoccerBet',
+  'Superbet',
 ];
 
 const pillars = [
