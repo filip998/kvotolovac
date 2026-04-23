@@ -91,6 +91,19 @@ def test_parse_player_name_nested_parens():
     assert team == "Team Name"
 
 
+def test_parse_player_name_trailing_dash():
+    """NSoft sometimes appends ' -' after the team parenthesis."""
+    name, team = _parse_player_name("N.Jokić (Denver) -")
+    assert name == "N.Jokić"
+    assert team == "Denver"
+
+
+def test_parse_player_name_trailing_dash_with_spaces():
+    name, team = _parse_player_name("J.Harden (Cleveland)  -  ")
+    assert name == "J.Harden"
+    assert team == "Cleveland"
+
+
 # ── _extract_league_id ────────────────────────────────────
 
 

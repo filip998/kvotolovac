@@ -124,10 +124,16 @@ def _format_filter_from(dt: datetime | None = None) -> str:
 
 
 def _parse_player_name(name: str) -> tuple[str, str | None]:
-    """Split 'A.Plummer (Bosna)' into ('A.Plummer', 'Bosna')."""
+    """Split 'A.Plummer (Bosna)' into ('A.Plummer', 'Bosna').
+
+    NSoft occasionally appends trailing noise such as `` -`` after the
+    parenthesised team name (e.g. ``N.Jokić (Denver) -``).  Strip it
+    before matching so the team is still extracted.
+    """
     if not name:
         return (name, None)
-    m = _PLAYER_NAME_RE.match(name)
+    cleaned = re.sub(r"\)\s*-\s*$", ")", name)
+    m = _PLAYER_NAME_RE.match(cleaned)
     if m:
         return (m.group(1).strip(), m.group(2).strip())
     return (name.strip(), None)
