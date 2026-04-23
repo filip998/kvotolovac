@@ -72,10 +72,9 @@ class NSoftSportSpec:
     # accepts them in `filter[sportId]`.
     player_sport_id: str
     totals_sport_id: str
-    # Set of NSoft `marketId` values that represent player point totals.
-    # We currently model them all as a single `player_points` market type
-    # (matches existing storage shape and other scrapers' output).
-    player_points_market_ids: frozenset[int]
+    # Mapping of NSoft `marketId` → canonical market_type for player props.
+    # Covers points, assists, rebounds, 3-pointers, combo markets, and milestones.
+    player_market_map: dict[int, str]
     # Set of NSoft `marketId` values that represent game totals incl. OT.
     game_total_ot_market_ids: frozenset[int]
     # tournamentId → canonical league slug.  Anything not found falls back to
@@ -95,7 +94,16 @@ _BASKETBALL_SPEC = NSoftSportSpec(
     sport="basketball",
     player_sport_id="273",
     totals_sport_id="36",
-    player_points_market_ids=frozenset({2402}),
+    player_market_map={
+        2402: "player_points",
+        2403: "player_rebounds",
+        2406: "player_assists",
+        3087: "player_3points",
+        3123: "player_points_rebounds",
+        3126: "player_points_assists",
+        3138: "player_points_rebounds_assists",
+        5091: "player_points_milestones",
+    },
     game_total_ot_market_ids=frozenset({530}),
     tournament_league_map=_BASKETBALL_TOURNAMENT_LEAGUE_MAP,
 )
@@ -241,7 +249,7 @@ def _split_match_name(name: str) -> tuple[str, str] | None:
     return home_team, away_team
 
 
-def _parse_player_points_list(
+def _parse_player_props_list(
     data: dict,
     spec: NSoftSportSpec,
 ) -> list[RawOddsData]:
@@ -269,8 +277,9 @@ def _parse_player_points_list(
         )
 
         for market in _iter_list_markets(event):
-            market_id = market.get("b") or market.get("marketId")
-            if market_id not in spec.player_points_market_ids:
+            market_id = _coerce_int(market.get("b") or market.get("marketId"))
+            market_type = spec.player_market_map.get(market_id)
+            if market_type is None:
                 continue
 
             threshold = _extract_threshold(market)
@@ -289,7 +298,7 @@ def _parse_player_points_list(
                     sport=spec.sport,
                     home_team=team or "",
                     away_team=player_name,
-                    market_type="player_points",
+                    market_type=market_type,
                     player_name=player_name,
                     threshold=threshold,
                     over_odds=over_odds,
@@ -323,7 +332,7 @@ def _parse_game_total_ot_list(
         )
 
         for market in _iter_list_markets(event):
-            market_id = market.get("b") or market.get("marketId")
+            market_id = _coerce_int(market.get("b") or market.get("marketId"))
             if market_id not in spec.game_total_ot_market_ids:
                 continue
 
@@ -414,12 +423,12 @@ class BalkanBetScraper(BaseScraper):
             self._fetch_list(totals_params, f"{spec.sport} game-total-ot"),
         )
 
-        player_results = _parse_player_points_list(player_data, spec)
+        player_results = _parse_player_props_list(player_data, spec)
         totals_results = _parse_game_total_ot_list(totals_data, spec)
         results = [*player_results, *totals_results]
 
         logger.info(
-            "BalkanBet scraped %d %s player odds and %d %s OT total odds",
+            "BalkanBet scraped %d %s player prop odds and %d %s OT total odds",
             len(player_results),
             spec.sport,
             len(totals_results),

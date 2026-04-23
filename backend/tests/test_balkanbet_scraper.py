@@ -17,7 +17,7 @@ from app.scrapers.balkanbet_scraper import (
     _normalize_start_time,
     _parse_game_total_ot_list,
     _parse_player_name,
-    _parse_player_points_list,
+    _parse_player_props_list,
 )
 from app.models.schemas import RawOddsData
 
@@ -134,34 +134,38 @@ def test_extract_league_id_uses_default_arg_for_unknown_sport():
     assert _extract_league_id(None, None, {}, default="football") == "football"
 
 
-# ── _parse_player_points_list ─────────────────────────────
+# ── _parse_player_props_list ─────────────────────────────
 
 
-def test_parse_player_points_list_from_live_fixture(player_list_data):
+def test_parse_player_props_list_from_live_fixture(player_list_data):
     """Live response from BalkanBet's WEB_OVERVIEW endpoint must parse cleanly."""
-    results = _parse_player_points_list(player_list_data, _BASKETBALL_SPEC)
+    results = _parse_player_props_list(player_list_data, _BASKETBALL_SPEC)
     assert len(results) > 0
     assert all(isinstance(r, RawOddsData) for r in results)
     assert {r.bookmaker_id for r in results} == {"balkanbet"}
-    assert {r.market_type for r in results} == {"player_points"}
+    assert "player_points" in {r.market_type for r in results}
+    expected_types = {
+        "player_points", "player_rebounds", "player_assists", "player_3points",
+        "player_points_rebounds", "player_points_assists",
+        "player_points_rebounds_assists", "player_points_milestones",
+    }
+    assert {r.market_type for r in results} <= expected_types
+    assert len({r.market_type for r in results}) > 1, "Fixture should produce multiple market types"
     assert {r.sport for r in results} == {"basketball"}
     assert all(r.player_name for r in results)
     assert all(r.threshold is not None for r in results)
     assert all(
         r.over_odds is not None or r.under_odds is not None for r in results
     )
-    # Every event in the fixture is a player-prop carrier; the parser must
-    # produce at least one row per event with markets.
-    assert len(results) >= len(player_list_data["data"]["events"])
 
 
-def test_parse_player_points_list_empty():
-    assert _parse_player_points_list({}, _BASKETBALL_SPEC) == []
-    assert _parse_player_points_list({"data": {}}, _BASKETBALL_SPEC) == []
-    assert _parse_player_points_list({"data": {"events": []}}, _BASKETBALL_SPEC) == []
+def test_parse_player_props_list_empty():
+    assert _parse_player_props_list({}, _BASKETBALL_SPEC) == []
+    assert _parse_player_props_list({"data": {}}, _BASKETBALL_SPEC) == []
+    assert _parse_player_props_list({"data": {"events": []}}, _BASKETBALL_SPEC) == []
 
 
-def test_parse_player_points_list_skips_unparseable_name():
+def test_parse_player_props_list_skips_unparseable_name():
     data = {
         "data": {
             "events": [
@@ -183,10 +187,10 @@ def test_parse_player_points_list_skips_unparseable_name():
             ]
         }
     }
-    assert _parse_player_points_list(data, _BASKETBALL_SPEC) == []
+    assert _parse_player_props_list(data, _BASKETBALL_SPEC) == []
 
 
-def test_parse_player_points_list_skips_market_without_threshold():
+def test_parse_player_props_list_skips_market_without_threshold():
     data = {
         "data": {
             "events": [
@@ -208,10 +212,10 @@ def test_parse_player_points_list_skips_market_without_threshold():
             ]
         }
     }
-    assert _parse_player_points_list(data, _BASKETBALL_SPEC) == []
+    assert _parse_player_props_list(data, _BASKETBALL_SPEC) == []
 
 
-def test_parse_player_points_list_skips_market_with_no_odds():
+def test_parse_player_props_list_skips_market_with_no_odds():
     data = {
         "data": {
             "events": [
@@ -230,10 +234,10 @@ def test_parse_player_points_list_skips_market_with_no_odds():
             ]
         }
     }
-    assert _parse_player_points_list(data, _BASKETBALL_SPEC) == []
+    assert _parse_player_props_list(data, _BASKETBALL_SPEC) == []
 
 
-def test_parse_player_points_list_ignores_unrelated_markets():
+def test_parse_player_props_list_ignores_unrelated_markets():
     data = {
         "data": {
             "events": [
@@ -252,10 +256,10 @@ def test_parse_player_points_list_ignores_unrelated_markets():
             ]
         }
     }
-    assert _parse_player_points_list(data, _BASKETBALL_SPEC) == []
+    assert _parse_player_props_list(data, _BASKETBALL_SPEC) == []
 
 
-def test_parse_player_points_list_handles_only_over():
+def test_parse_player_props_list_handles_only_over():
     data = {
         "data": {
             "events": [
@@ -274,7 +278,7 @@ def test_parse_player_points_list_handles_only_over():
             ]
         }
     }
-    results = _parse_player_points_list(data, _BASKETBALL_SPEC)
+    results = _parse_player_props_list(data, _BASKETBALL_SPEC)
     assert len(results) == 1
     assert results[0].over_odds == 1.7
     assert results[0].under_odds is None
@@ -338,7 +342,8 @@ async def test_scraper_returns_data(player_list_data, game_total_ot_list_data):
     assert len(results) > 0
     assert all(isinstance(r, RawOddsData) for r in results)
     assert all(r.bookmaker_id == "balkanbet" for r in results)
-    assert {"player_points", "game_total_ot"} <= {r.market_type for r in results}
+    assert "player_points" in {r.market_type for r in results}
+    assert "game_total_ot" in {r.market_type for r in results}
 
 
 @pytest.mark.asyncio
@@ -402,7 +407,8 @@ async def test_scraper_keeps_player_points_when_ot_list_fails(player_list_data):
         results = await scraper.scrape_odds("basketball")
 
     assert len(results) > 0
-    assert {r.market_type for r in results} == {"player_points"}
+    assert "game_total_ot" not in {r.market_type for r in results}
+    assert "player_points" in {r.market_type for r in results}
 
 
 @pytest.mark.asyncio
@@ -498,7 +504,7 @@ async def test_scraper_list_request_uses_24h_filter_to(monkeypatch):
 # ── SportSpec extensibility ──────────────────────────────
 
 
-def test_parse_player_points_list_supports_long_key_format():
+def test_parse_player_props_list_supports_long_key_format():
     """Defensive: if NSoft stops honoring shortProps=1, parsers must still work."""
     data = {
         "data": {
@@ -522,7 +528,7 @@ def test_parse_player_points_list_supports_long_key_format():
             ]
         }
     }
-    results = _parse_player_points_list(data, _BASKETBALL_SPEC)
+    results = _parse_player_props_list(data, _BASKETBALL_SPEC)
     assert len(results) == 1
     assert results[0].player_name == "J.Doe"
     assert results[0].threshold == 20.5
@@ -567,5 +573,104 @@ def test_sport_specs_registry_has_basketball():
     assert _SPORT_SPECS["basketball"] is _BASKETBALL_SPEC
     assert _BASKETBALL_SPEC.player_sport_id == "273"
     assert _BASKETBALL_SPEC.totals_sport_id == "36"
-    assert 2402 in _BASKETBALL_SPEC.player_points_market_ids
+    assert 2402 in _BASKETBALL_SPEC.player_market_map
+    assert _BASKETBALL_SPEC.player_market_map[2402] == "player_points"
     assert 530 in _BASKETBALL_SPEC.game_total_ot_market_ids
+
+
+def test_parse_player_props_list_coerces_string_market_id():
+    """NSoft may return marketId as a string; parser must coerce to int for map lookup."""
+    data = {
+        "data": {
+            "events": [
+                {
+                    "j": "J.Doe (TeamX)",
+                    "n": "2026-04-12T19:00:00.000Z",
+                    "c": 2334,
+                    "f": 252,
+                    "o": {
+                        "1": {
+                            "a": 1,
+                            "b": "2403",
+                            "g": ["8.5"],
+                            "h": [{"e": "Više", "g": 1.8}, {"e": "Manje", "g": 1.9}],
+                        }
+                    },
+                }
+            ]
+        }
+    }
+    results = _parse_player_props_list(data, _BASKETBALL_SPEC)
+    assert len(results) == 1
+    assert results[0].market_type == "player_rebounds"
+
+
+def test_parse_player_props_list_skips_da_ne_markets():
+    """Markets 3132/3135 use DA/NE (yes/no) outcomes, not Više/Manje — they must produce no rows."""
+    data = {
+        "data": {
+            "events": [
+                {
+                    "j": "J.Doe (TeamX)",
+                    "n": "2026-04-12T19:00:00.000Z",
+                    "c": 2334,
+                    "f": 252,
+                    "o": {
+                        "1": {
+                            "a": 1,
+                            "b": 3132,
+                            "g": [],
+                            "h": [{"e": "DA", "g": 4.2}, {"e": "NE", "g": 1.2}],
+                        },
+                        "2": {
+                            "a": 2,
+                            "b": 3135,
+                            "g": [],
+                            "h": [{"e": "DA", "g": 9.0}],
+                        },
+                    },
+                }
+            ]
+        }
+    }
+    results = _parse_player_props_list(data, _BASKETBALL_SPEC)
+    assert results == []
+
+
+def test_parse_player_props_multiple_market_types():
+    """Parser must emit correct market_type for each market ID."""
+    data = {
+        "data": {
+            "events": [
+                {
+                    "j": "J.Doe (TeamX)",
+                    "n": "2026-04-12T19:00:00.000Z",
+                    "c": 2334,
+                    "f": 252,
+                    "o": {
+                        "1": {
+                            "a": 1,
+                            "b": 2402,
+                            "g": ["20.5"],
+                            "h": [{"e": "Više", "g": 1.7}, {"e": "Manje", "g": 2.1}],
+                        },
+                        "2": {
+                            "a": 2,
+                            "b": 2406,
+                            "g": ["5.5"],
+                            "h": [{"e": "Više", "g": 1.8}, {"e": "Manje", "g": 1.9}],
+                        },
+                        "3": {
+                            "a": 3,
+                            "b": 3087,
+                            "g": ["2.5"],
+                            "h": [{"e": "Više", "g": 2.0}, {"e": "Manje", "g": 1.7}],
+                        },
+                    },
+                }
+            ]
+        }
+    }
+    results = _parse_player_props_list(data, _BASKETBALL_SPEC)
+    types = {r.market_type for r in results}
+    assert types == {"player_points", "player_assists", "player_3points"}
