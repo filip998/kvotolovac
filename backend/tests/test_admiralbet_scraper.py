@@ -424,6 +424,47 @@ def test_fixture_over_under_have_odds(fixture_data):
     assert len(with_both) > 0
 
 
+def test_parse_over_under_bets_all_market_types():
+    """All 8 player over/under betTypeIds must map to the correct market_type."""
+    bet_map = {
+        1598: "player_points",
+        1599: "player_assists",
+        1600: "player_rebounds",
+        300: "player_3points",
+        1601: "player_points_assists",
+        1602: "player_points_rebounds",
+        1603: "player_rebounds_assists",
+        1604: "player_points_rebounds_assists",
+    }
+    for bet_type_id, expected_market in bet_map.items():
+        event = {
+            "name": "Test Player - Test Team",
+            "dateTime": "2026-04-15T20:00:00",
+            "bets": [{"betTypeId": bet_type_id, "sBV": "5.5", "isPlayable": True, "betOutcomes": [
+                {"name": "vise", "odd": 1.8, "isPlayable": True},
+                {"name": "manje", "odd": 1.9, "isPlayable": True},
+            ]}],
+        }
+        results = _parse_event(event)
+        assert len(results) == 1, f"betTypeId {bet_type_id} should produce 1 result"
+        assert results[0].market_type == expected_market, (
+            f"betTypeId {bet_type_id}: expected {expected_market}, got {results[0].market_type}"
+        )
+
+
+def test_parse_over_under_bets_ignores_unknown_bet_type():
+    """Unknown betTypeIds must not produce over/under results."""
+    event = {
+        "name": "Test Player - Test Team",
+        "dateTime": "2026-04-15T20:00:00",
+        "bets": [{"betTypeId": 9999, "sBV": "5.5", "isPlayable": True, "betOutcomes": [
+            {"name": "vise", "odd": 1.8, "isPlayable": True},
+            {"name": "manje", "odd": 1.9, "isPlayable": True},
+        ]}],
+    }
+    assert _parse_event(event) == []
+
+
 # ── Scraper integration ──────────────────────────────────
 
 

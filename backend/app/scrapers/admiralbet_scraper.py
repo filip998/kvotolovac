@@ -44,9 +44,20 @@ _DEFAULT_HEADERS = {
 }
 
 # betTypeId constants
-_BET_POINTS_OVER_UNDER = 1598  # "Ukupno poena" — threshold in sBV
 _BET_POINTS_MILESTONES = 1683  # "Postiže poena" — milestone outcomes (5+, 10+, …)
 _BET_GAME_TOTAL_OT = 213  # "Ukupno (+OT)"
+
+# Mapping of betTypeId → canonical market_type for player over/under props.
+_BET_OVER_UNDER_MAP: dict[int, str] = {
+    1598: "player_points",                  # Ukupno poena
+    1599: "player_assists",                 # Ukupno asistencija
+    1600: "player_rebounds",                # Ukupno skokova
+    300: "player_3points",                  # Ukupno pogodjenih trojki
+    1601: "player_points_assists",          # Ukupno poena+asistencija
+    1602: "player_points_rebounds",          # Ukupno poena+skokova
+    1603: "player_rebounds_assists",         # Ukupno asistencija+skokova
+    1604: "player_points_rebounds_assists",  # Ukupno poena+asistencija+skokova
+}
 
 # Map competitionName values to canonical league IDs used by other scrapers.
 # When NBA competitionId/name is discovered, add it here.
@@ -124,10 +135,11 @@ def _parse_start_time(dt_str: str | None) -> str | None:
 
 def _parse_over_under_bets(event: dict, player_name: str, team: str,
                            start_time: str | None, league_id: str) -> list[RawOddsData]:
-    """Extract over/under lines from betTypeId 1598 bets."""
+    """Extract over/under lines from player prop bets."""
     results: list[RawOddsData] = []
     for bet in event.get("bets", []):
-        if bet.get("betTypeId") != _BET_POINTS_OVER_UNDER:
+        market_type = _BET_OVER_UNDER_MAP.get(bet.get("betTypeId"))
+        if market_type is None:
             continue
         if not bet.get("isPlayable"):
             continue
@@ -160,7 +172,7 @@ def _parse_over_under_bets(event: dict, player_name: str, team: str,
             sport="basketball",
             home_team=team,
             away_team=player_name,
-            market_type="player_points",
+            market_type=market_type,
             player_name=player_name,
             threshold=threshold,
             over_odds=over_odds,
