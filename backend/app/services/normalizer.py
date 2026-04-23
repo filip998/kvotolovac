@@ -759,8 +759,14 @@ def _rank_slot_team_review_candidates(
             )
         )
 
+    return _sort_team_review_candidates(ranked)
+
+
+def _sort_team_review_candidates(
+    candidates: list[_TeamReviewCandidate],
+) -> list[_TeamReviewCandidate]:
     return sorted(
-        ranked,
+        candidates,
         key=lambda item: (
             -item.score,
             -(item.slot_support or 0),
@@ -768,6 +774,30 @@ def _rank_slot_team_review_candidates(
             item.team_name,
         ),
     )[:TEAM_REVIEW_MAX_CANDIDATES]
+
+
+def _merge_review_candidates_with_current_team(
+    ranked_candidates: list[_TeamReviewCandidate],
+    *,
+    current_team_id: int,
+    current_team_name: str,
+    current_slot: _EventSlotResolution,
+) -> list[_TeamReviewCandidate]:
+    if not ranked_candidates:
+        return []
+
+    current_candidate = _TeamReviewCandidate(
+        team_id=current_team_id,
+        team_name=current_team_name,
+        score=ranked_candidates[0].score,
+        slot_support=current_slot.support_count,
+        canonical_home_team=current_slot.home_team,
+        canonical_away_team=current_slot.away_team,
+    )
+    extra_candidates = ranked_candidates[1 : TEAM_REVIEW_MAX_CANDIDATES - 1]
+    return _sort_team_review_candidates(
+        [ranked_candidates[0], current_candidate, *extra_candidates]
+    )
 
 
 def _team_review_slot_candidates(
@@ -865,142 +895,239 @@ def _build_team_review_cases(
 
     review_cases: dict[tuple[str, str, str, str, str], TeamReviewDiagnostic] = {}
 
-    for raw in raw_list:
-        direct_league = resolve_league(raw.league_id, raw.bookmaker_id)
-        if raw.start_time is None:
-            continue
-
-        candidate_slots = slots_by_start_time.get((raw.sport, raw.start_time), [])
-
-        team_inputs = (raw.home_team, raw.away_team)
-        team_resolutions = [
-            resolve_team_name(
-                team_name,
-                bookmaker_id=raw.bookmaker_id,
-                sport=raw.sport,
-            )
-            for team_name in team_inputs
-        ]
-
-        for team_index, raw_team_name in enumerate(team_inputs):
-            team_resolution = team_resolutions[team_index]
-            if team_resolution.team_id is not None:
+    for include_resolved in (False, True):
+        for raw in raw_list:
+            direct_league = resolve_league(raw.league_id, raw.bookmaker_id)
+            if raw.start_time is None:
                 continue
 
-            counterpart_resolution = team_resolutions[1 - team_index]
-            ranked_candidates: list[_TeamReviewCandidate] = []
-            review_kind = "candidate_search"
-            confidence = "low"
-            evidence = [f"Exact start time: {raw.start_time}"]
-            matched_counterpart_team = (
-                counterpart_resolution.team_name
-                if counterpart_resolution.team_id is not None
-                else None
-            )
-            canonical_home_team: str | None = None
-            canonical_away_team: str | None = None
+            candidate_slots = slots_by_start_time.get((raw.sport, raw.start_time), [])
 
-            if counterpart_resolution.team_id is not None:
-                slot_candidates = _team_review_slot_candidates(
-                    candidate_slots,
-                    counterpart_team_id=counterpart_resolution.team_id,
-                    raw_team_name=raw_team_name,
+            team_inputs = (raw.home_team, raw.away_team)
+            team_resolutions = [
+                resolve_team_name(
+                    team_name,
+                    bookmaker_id=raw.bookmaker_id,
+                    sport=raw.sport,
                 )
-                if len(slot_candidates) == 1:
-                    slot_candidate = next(iter(slot_candidates.values()))
-                    ranked_candidates = _rank_slot_team_review_candidates(
-                        raw_team_name,
-                        list(slot_candidates.values()),
+                for team_name in team_inputs
+            ]
+
+            for team_index, raw_team_name in enumerate(team_inputs):
+                team_resolution = team_resolutions[team_index]
+                if include_resolved != (team_resolution.team_id is not None):
+                    continue
+
+                counterpart_resolution = team_resolutions[1 - team_index]
+                matched_counterpart_team = (
+                    counterpart_resolution.team_name
+                    if counterpart_resolution.team_id is not None
+                    else None
+                )
+                ranked_candidates: list[_TeamReviewCandidate] = []
+                review_kind = "candidate_search"
+                confidence = "low"
+                evidence = [f"Exact start time: {raw.start_time}"]
+                canonical_home_team: str | None = None
+                canonical_away_team: str | None = None
+
+                if team_resolution.team_id is not None:
+                    if counterpart_resolution.team_id is None:
+                        continue
+
+                    slot_candidates = _team_review_slot_candidates(
+                        candidate_slots,
+                        counterpart_team_id=counterpart_resolution.team_id,
+                        raw_team_name=raw_team_name,
                     )
-                    suggested_slot_candidate = ranked_candidates[0]
-                    review_kind = "alias_suggestion"
-                    confidence = "high"
-                    canonical_home_team = suggested_slot_candidate.canonical_home_team
-                    canonical_away_team = suggested_slot_candidate.canonical_away_team
-                    evidence.extend(
-                        [
-                            f"Matched other team: {slot_candidate.counterpart_team}",
-                            f"Canonical event: {slot_candidate.canonical_home_team} vs {slot_candidate.canonical_away_team}",
-                            "Unique canonical event found at the same sport and kickoff",
-                        ]
+                    current_slot = slot_resolutions.get(
+                        _event_slot_key(
+                            team_resolution.team_id,
+                            counterpart_resolution.team_id,
+                            raw.start_time,
+                            raw.sport,
+                        )
                     )
-                elif slot_candidates:
+                    if not slot_candidates or current_slot is None:
+                        continue
+
                     ranked_candidates = _rank_slot_team_review_candidates(
                         raw_team_name,
                         list(slot_candidates.values()),
                         threshold=0.0,
                     )
-                    review_kind = "candidate_search"
-                    confidence = "medium"
+                    if not ranked_candidates:
+                        continue
+
+                    suggested_slot_candidate = slot_candidates.get(ranked_candidates[0].team_id)
+                    if (
+                        suggested_slot_candidate is None
+                        or suggested_slot_candidate.slot_support <= current_slot.support_count
+                    ):
+                        continue
+
+                    ranked_candidates = _merge_review_candidates_with_current_team(
+                        ranked_candidates,
+                        current_team_id=team_resolution.team_id,
+                        current_team_name=team_resolution.team_name,
+                        current_slot=current_slot,
+                    )
+                    suggested_slot_candidate = ranked_candidates[0]
+                    review_kind = (
+                        "alias_suggestion"
+                        if len(slot_candidates) == 1
+                        else "candidate_search"
+                    )
+                    confidence = "high" if len(slot_candidates) == 1 else "medium"
+                    canonical_home_team = suggested_slot_candidate.canonical_home_team
+                    canonical_away_team = suggested_slot_candidate.canonical_away_team
                     evidence.extend(
                         [
                             f"Matched other team: {counterpart_resolution.team_name}",
-                            "Multiple canonical events share that team at this exact kickoff",
+                            (
+                                "Current canonical event: "
+                                f"{current_slot.home_team} vs {current_slot.away_team} "
+                                f"(support x{current_slot.support_count})"
+                            ),
+                            (
+                                "Stronger competing canonical event: "
+                                f"{suggested_slot_candidate.canonical_home_team} vs "
+                                f"{suggested_slot_candidate.canonical_away_team} "
+                                f"(support x{suggested_slot_candidate.slot_support})"
+                            ),
                         ]
                     )
-
-            if not ranked_candidates:
-                ranked_candidates = _search_global_review_candidates(
-                    raw_team_name,
-                    sport=raw.sport,
-                )
-                if ranked_candidates:
-                    confidence = (
-                        "medium"
-                        if ranked_candidates[0].score >= TEAM_REVIEW_CANDIDATE_THRESHOLD
-                        else "low"
-                    )
-                    evidence.append("Top fuzzy matches across canonical teams in this sport")
                 else:
-                    evidence.append("No canonical team matched this label in the current database")
+                    if counterpart_resolution.team_id is not None:
+                        slot_candidates = _team_review_slot_candidates(
+                            candidate_slots,
+                            counterpart_team_id=counterpart_resolution.team_id,
+                            raw_team_name=raw_team_name,
+                        )
+                        if len(slot_candidates) == 1:
+                            slot_candidate = next(iter(slot_candidates.values()))
+                            ranked_candidates = _rank_slot_team_review_candidates(
+                                raw_team_name,
+                                list(slot_candidates.values()),
+                            )
+                            suggested_slot_candidate = ranked_candidates[0]
+                            review_kind = "alias_suggestion"
+                            confidence = "high"
+                            canonical_home_team = suggested_slot_candidate.canonical_home_team
+                            canonical_away_team = suggested_slot_candidate.canonical_away_team
+                            evidence.extend(
+                                [
+                                    f"Matched other team: {slot_candidate.counterpart_team}",
+                                    f"Canonical event: {slot_candidate.canonical_home_team} vs {slot_candidate.canonical_away_team}",
+                                    "Unique canonical event found at the same sport and kickoff",
+                                ]
+                            )
+                        elif slot_candidates:
+                            ranked_candidates = _rank_slot_team_review_candidates(
+                                raw_team_name,
+                                list(slot_candidates.values()),
+                                threshold=0.0,
+                            )
+                            review_kind = "candidate_search"
+                            confidence = "medium"
+                            evidence.extend(
+                                [
+                                    f"Matched other team: {counterpart_resolution.team_name}",
+                                    "Multiple canonical events share that team at this exact kickoff",
+                                ]
+                            )
 
-            suggested_candidate = ranked_candidates[0] if ranked_candidates else None
-            if canonical_home_team is None and suggested_candidate is not None:
-                canonical_home_team = suggested_candidate.canonical_home_team
-                canonical_away_team = suggested_candidate.canonical_away_team
-            review_key = (
-                raw.bookmaker_id,
-                raw.sport,
-                normalize_identity_text(raw_team_name),
-                raw.start_time,
-                matched_counterpart_team or "",
-            )
-            if review_key in review_cases:
-                continue
+                    if not ranked_candidates:
+                        ranked_candidates = _search_global_review_candidates(
+                            raw_team_name,
+                            sport=raw.sport,
+                        )
+                        if ranked_candidates:
+                            confidence = (
+                                "medium"
+                                if ranked_candidates[0].score >= TEAM_REVIEW_CANDIDATE_THRESHOLD
+                                else "low"
+                            )
+                            evidence.append(
+                                "Top fuzzy matches across canonical teams in this sport"
+                            )
+                        else:
+                            evidence.append(
+                                "No canonical team matched this label in the current database"
+                            )
 
-            review_cases[review_key] = TeamReviewDiagnostic(
-                bookmaker_id=raw.bookmaker_id,
-                raw_league_id=raw.league_id,
-                normalized_raw_league_id=normalize_identity_text(raw.league_id),
-                sport=raw.sport,
-                scope_league_id=direct_league.league_id,
-                raw_team_name=raw_team_name,
-                normalized_raw_team_name=team_resolution.team_name,
-                suggested_team_id=(
-                    suggested_candidate.team_id if suggested_candidate is not None else None
-                ),
-                suggested_team_name=(
-                    suggested_candidate.team_name
-                    if suggested_candidate is not None
-                    else None
-                ),
-                start_time=raw.start_time,
-                review_kind=review_kind,
-                reason_code=(
-                    "candidate_team_match_same_start_time"
-                    if matched_counterpart_team
-                    else "candidate_team_search"
-                ),
-                confidence=confidence,
-                similarity_score=(
-                    suggested_candidate.score if suggested_candidate is not None else None
-                ),
-                candidate_teams=_to_review_candidates(ranked_candidates),
-                matched_counterpart_team=matched_counterpart_team,
-                canonical_home_team=canonical_home_team,
-                canonical_away_team=canonical_away_team,
-                evidence=evidence,
-            )
+                if not ranked_candidates and team_resolution.team_id is not None:
+                    continue
+                suggested_candidate = ranked_candidates[0] if ranked_candidates else None
+
+                if (
+                    team_resolution.team_id is None
+                    and canonical_home_team is None
+                    and suggested_candidate is not None
+                ):
+                    canonical_home_team = suggested_candidate.canonical_home_team
+                    canonical_away_team = suggested_candidate.canonical_away_team
+
+                if team_resolution.team_id is not None and any(
+                    existing_case.sport == raw.sport
+                    and existing_case.start_time == raw.start_time
+                    and existing_case.matched_counterpart_team == matched_counterpart_team
+                    and existing_case.suggested_team_id == suggested_candidate.team_id
+                    and any(
+                        candidate.team_id == team_resolution.team_id
+                        for candidate in existing_case.candidate_teams
+                    )
+                    for existing_case in review_cases.values()
+                ):
+                    continue
+
+                review_key = (
+                    raw.bookmaker_id,
+                    raw.sport,
+                    normalize_identity_text(raw_team_name),
+                    raw.start_time,
+                    matched_counterpart_team or "",
+                )
+                if review_key in review_cases:
+                    continue
+
+                review_cases[review_key] = TeamReviewDiagnostic(
+                    bookmaker_id=raw.bookmaker_id,
+                    raw_league_id=raw.league_id,
+                    normalized_raw_league_id=normalize_identity_text(raw.league_id),
+                    sport=raw.sport,
+                    scope_league_id=direct_league.league_id,
+                    raw_team_name=raw_team_name,
+                    normalized_raw_team_name=team_resolution.team_name,
+                    suggested_team_id=(
+                        suggested_candidate.team_id
+                        if suggested_candidate is not None
+                        else None
+                    ),
+                    suggested_team_name=(
+                        suggested_candidate.team_name
+                        if suggested_candidate is not None
+                        else None
+                    ),
+                    start_time=raw.start_time,
+                    review_kind=review_kind,
+                    reason_code=(
+                        "candidate_team_match_same_start_time"
+                        if matched_counterpart_team
+                        else "candidate_team_search"
+                    ),
+                    confidence=confidence,
+                    similarity_score=(
+                        suggested_candidate.score
+                        if suggested_candidate is not None
+                        else None
+                    ),
+                    candidate_teams=_to_review_candidates(ranked_candidates),
+                    matched_counterpart_team=matched_counterpart_team,
+                    canonical_home_team=canonical_home_team,
+                    canonical_away_team=canonical_away_team,
+                    evidence=evidence,
+                )
 
     return list(review_cases.values())
 

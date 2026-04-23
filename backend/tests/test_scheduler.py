@@ -13,6 +13,7 @@ from app.services.normalizer import normalize_team_name
 from app.services.notifications import InAppNotificationProvider
 from app.services.team_registry import (
     create_canonical_team,
+    get_canonical_team,
     remember_team_alias,
     resolve_team_alias,
 )
@@ -739,6 +740,75 @@ async def test_scheduler_run_cycle_auto_saves_multiple_anchored_aliases_same_scr
     assert len(approved_cases) == 2
     assert {case.bookmaker_id for case in approved_cases} == {"meridian", "maxbet"}
     assert {case.review_kind for case in approved_cases} == {"auto_alias_suggestion"}
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_auto_merges_weaker_existing_canonical_team():
+    source = create_canonical_team(display_name="NY Knicks")
+    target = create_canonical_team(display_name="New York Knicks")
+
+    _register_test_scrapers(
+        StubScraper(
+            "mozzart",
+            payload_by_league={
+                "euroleague": [
+                    _anchored_team_raw(
+                        "mozzart",
+                        "Atlanta Hawks",
+                        away_team="New York Knicks",
+                        league_id="nba",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "meridian",
+            payload_by_league={
+                "euroleague": [
+                    _anchored_team_raw(
+                        "meridian",
+                        "Atlanta Hawks",
+                        away_team="New York Knicks",
+                        league_id="nba",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "pinnbet",
+            payload_by_league={
+                "euroleague": [
+                    _anchored_team_raw(
+                        "pinnbet",
+                        "Atlanta Hawks",
+                        away_team="NY Knicks",
+                        league_id="nba",
+                    )
+                ]
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+    approved_cases = await odds_store.get_team_review_cases(status="approved")
+    merged_source = get_canonical_team(source.team_id, follow_merge=True)
+
+    assert result["matches_scraped"] == 1
+    assert result["odds_scraped"] == 3
+    assert len(approved_cases) == 1
+    assert approved_cases[0].bookmaker_id == "pinnbet"
+    assert approved_cases[0].raw_team_name == "NY Knicks"
+    assert approved_cases[0].review_kind == "auto_alias_suggestion"
+    assert approved_cases[0].suggested_team_id == target.team_id
+    assert {candidate.team_id for candidate in approved_cases[0].candidate_teams} == {
+        source.team_id,
+        target.team_id,
+    }
+    assert normalize_team_name("NY Knicks", "nba", "pinnbet") == target.team_name
+    assert get_canonical_team(source.team_id) is None
+    assert merged_source is not None
+    assert merged_source.id == target.team_id
+    assert "NY Knicks" in merged_source.aliases
 
 
 @pytest.mark.asyncio

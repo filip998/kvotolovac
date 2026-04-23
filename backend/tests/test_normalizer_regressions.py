@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import app.services.normalizer as normalizer
 from app.scrapers.maxbet_scraper import _parse_game_total_match
 from app.scrapers.mozzart_scraper import _parse_game_total_items
 from app.models.schemas import RawOddsData
@@ -307,6 +308,50 @@ def test_normalize_odds_creates_team_review_candidates_for_same_tipoff(team_regi
     assert team_reviews[0].candidate_teams[0].slot_support == 1
     assert team_reviews[0].candidate_teams[0].canonical_home_team == "Rilski Sportist"
     assert team_reviews[0].candidate_teams[0].canonical_away_team == "Levski Sofia"
+
+
+def test_normalize_odds_keeps_review_case_when_no_candidates_found(
+    monkeypatch,
+    team_registry_file,
+):
+    from app.services.team_registry import create_canonical_team
+
+    opponent = create_canonical_team(display_name="QA No Candidate Opponent")
+    monkeypatch.setattr(
+        normalizer,
+        "_search_global_review_candidates",
+        lambda raw_team_name, *, sport: [],
+    )
+
+    normalized, unresolved, team_reviews = normalizer.normalize_odds_with_diagnostics(
+        [
+            RawOddsData(
+                bookmaker_id="book-a",
+                league_id="NBL",
+                home_team="QA No Candidate Team",
+                away_team=opponent.team_name,
+                market_type="game_total",
+                threshold=161.5,
+                over_odds=1.85,
+                under_odds=1.95,
+                start_time="2026-04-16T17:00:00+00:00",
+            ),
+        ]
+    )
+
+    assert normalized == []
+    assert unresolved == []
+    assert len(team_reviews) == 1
+    review = team_reviews[0]
+    assert review.raw_team_name == "QA No Candidate Team"
+    assert review.suggested_team_id is None
+    assert review.suggested_team_name is None
+    assert review.candidate_teams == []
+    assert review.matched_counterpart_team == opponent.team_name
+    assert review.reason_code == "candidate_team_match_same_start_time"
+    assert review.canonical_home_team is None
+    assert review.canonical_away_team is None
+    assert "No canonical team matched this label in the current database" in review.evidence
 
 
 def test_same_tipoff_candidates_break_ties_by_slot_support(team_registry_file):
