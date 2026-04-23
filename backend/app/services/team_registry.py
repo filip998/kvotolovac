@@ -514,10 +514,7 @@ def remember_team_alias(
             bookmaker_id=bookmaker_key,
         )
         if existing_resolution is not None and existing_resolution.team_id != target_resolution.team_id:
-            if (
-                source == "auto_review"
-                and existing_resolution.bookmaker_id == _GLOBAL_BOOKMAKER_ID
-            ):
+            if source == "auto_review":
                 existing_resolution = None
             else:
                 raise CircularAliasError(
