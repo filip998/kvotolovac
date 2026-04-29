@@ -11,6 +11,7 @@ from app.database import close_db, get_db, init_db
 from app.main import app
 from app.models.schemas import (
     NormalizedOdds,
+    NormalizedOutcomeOffer,
     RawOddsData,
     TeamReviewDiagnostic,
     UnresolvedOddsDiagnostic,
@@ -20,6 +21,7 @@ from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
 from app.services.scheduler import scheduler
 from app.services.normalizer import normalize_team_name
+from app.services.opportunity_analyzer import analyze_outcome_offers
 from app.services.team_registry import create_canonical_team, remember_team_alias
 from app.store import odds_store
 
@@ -176,6 +178,123 @@ async def test_match_odds(client: AsyncClient):
     assert resp.status_code == 200
     assert len(resp.json()) > 0
     assert "source_url" in resp.json()[0]
+
+
+@pytest.mark.asyncio
+async def test_football_market_offers_and_opportunities_api(client: AsyncClient):
+    home = create_canonical_team(display_name="Hatta SC", sport="football")
+    away = create_canonical_team(display_name="Al Urooba UAE", sport="football")
+    match_id = "football-api-match"
+    scraped_at = "2030-01-01T12:00:00"
+
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    await odds_store.upsert_bookmaker("balkanbet", "BalkanBet")
+    await odds_store.upsert_league("uae_2", "UAE 2", "football")
+    await odds_store.upsert_match(
+        id=match_id,
+        league_id="uae_2",
+        sport="football",
+        home_team_id=home.team_id,
+        away_team_id=away.team_id,
+        home_team=home.team_name,
+        away_team=away.team_name,
+        start_time="2030-01-01T20:00:00+00:00",
+    )
+
+    offers = [
+        NormalizedOutcomeOffer(
+            match_id=match_id,
+            bookmaker_id="maxbet",
+            league_id="uae_2",
+            sport="football",
+            home_team_id=home.team_id,
+            away_team_id=away.team_id,
+            home_team=home.team_name,
+            away_team=away.team_name,
+            source_url="https://www.maxbet.rs/sr/pocetna#/sport/event/1",
+            market_type="football_total_goals",
+            outcome_code="under",
+            odds=2.15,
+            line=2.5,
+            raw_label="0-2",
+            start_time="2030-01-01T20:00:00+00:00",
+        ),
+        NormalizedOutcomeOffer(
+            match_id=match_id,
+            bookmaker_id="balkanbet",
+            league_id="uae_2",
+            sport="football",
+            home_team_id=home.team_id,
+            away_team_id=away.team_id,
+            home_team=home.team_name,
+            away_team=away.team_name,
+            source_url="https://sports-sm-web.7platform.net/event/1",
+            market_type="football_total_goals",
+            outcome_code="over",
+            odds=2.85,
+            line=2.5,
+            raw_label="3+",
+            start_time="2030-01-01T20:00:00+00:00",
+        ),
+    ]
+    for offer in offers:
+        await odds_store.upsert_outcome_offer(offer, scraped_at=scraped_at)
+    await odds_store.set_current_snapshot(scraped_at)
+
+    for opportunity in analyze_outcome_offers(offers):
+        await odds_store.insert_opportunity(opportunity, detected_at=scraped_at)
+
+    matches_resp = await client.get("/api/v1/matches", params={"sport": "football"})
+    assert matches_resp.status_code == 200
+    assert matches_resp.json()[0]["id"] == match_id
+    assert {row["id"] for row in matches_resp.json()[0]["available_bookmakers"]} == {
+        "balkanbet",
+        "maxbet",
+    }
+    filtered_matches_resp = await client.get(
+        "/api/v1/matches",
+        params={"sport": "football", "bookmaker_ids": "maxbet"},
+    )
+    assert filtered_matches_resp.status_code == 200
+    assert [row["id"] for row in filtered_matches_resp.json()] == [match_id]
+
+    no_match_matches_resp = await client.get(
+        "/api/v1/matches",
+        params={"sport": "football", "bookmaker_ids": "mozzart"},
+    )
+    assert no_match_matches_resp.status_code == 200
+    assert no_match_matches_resp.json() == []
+
+    offers_resp = await client.get("/api/v1/market-offers", params={"sport": "football"})
+    assert offers_resp.status_code == 200
+    assert {row["outcome_code"] for row in offers_resp.json()} == {"under", "over"}
+
+    opportunities_resp = await client.get("/api/v1/opportunities", params={"sport": "football"})
+    assert opportunities_resp.status_code == 200
+    opportunities = opportunities_resp.json()
+    assert len(opportunities) == 1
+    assert opportunities[0]["market_type"] == "football_total_goals"
+    assert opportunities[0]["profit_margin"] > 0
+    assert {leg["outcome_code"] for leg in opportunities[0]["legs"]} == {"under", "over"}
+    assert {leg["bookmaker_name"] for leg in opportunities[0]["legs"]} == {
+        "BalkanBet",
+        "MaxBet",
+    }
+    assert all(leg["source_url"] for leg in opportunities[0]["legs"])
+
+    filtered_resp = await client.get(
+        "/api/v1/opportunities",
+        params={"sport": "football", "bookmaker_ids": "maxbet"},
+    )
+    assert filtered_resp.status_code == 200
+    assert len(filtered_resp.json()) == 1
+
+    no_match_resp = await client.get(
+        "/api/v1/opportunities",
+        params={"sport": "football", "bookmaker_ids": "bet"},
+    )
+    assert no_match_resp.status_code == 200
+    assert no_match_resp.json() == []
 
 
 @pytest.mark.asyncio

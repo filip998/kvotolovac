@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from .base import BaseScraper
 from .http_client import HttpClient
-from ..models.schemas import RawOddsData
+from ..models.schemas import RawOddsData, RawOutcomeOffer
 from ..services.scrape_window import current_utc_time, lookahead_cutoff
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,23 @@ _BASE_LIST_PARAMS = {
 
 _REQUEST_TIMEZONE = ZoneInfo("Europe/Belgrade")
 _PLAYER_NAME_RE = re.compile(r"^(.+?)\s*\(([^)]+)\)\s*$")
+_FOOTBALL_OUTCOME_SPORT_ID = "18"
+_FOOTBALL_OUTCOME_MARKETS = {
+    6: {
+        "1": ("football_result", "home", None),
+        "X": ("football_result", "draw", None),
+        "2": ("football_result", "away", None),
+    },
+    368: {
+        "1X": ("football_double_chance", "home_or_draw", None),
+        "12": ("football_double_chance", "home_or_away", None),
+        "X2": ("football_double_chance", "draw_or_away", None),
+    },
+    443: {
+        "0-2": ("football_total_goals", "under", 2.5),
+        "3+": ("football_total_goals", "over", 2.5),
+    },
+}
 
 
 # ── Per-sport spec ──────────────────────────────────────────────────────
@@ -214,7 +231,11 @@ def _extract_outcome_price(outcome: dict) -> float | None:
     for key in ("odd", "odds", "g"):
         value = outcome.get(key)
         if value is not None:
-            return value
+            try:
+                odds = float(value)
+            except (TypeError, ValueError):
+                return None
+            return odds if odds > 0 else None
     return None
 
 
@@ -369,6 +390,59 @@ def _parse_game_total_ot_list(
     return results
 
 
+def _parse_football_outcome_list(data: dict) -> list[RawOutcomeOffer]:
+    results: list[RawOutcomeOffer] = []
+    events = data.get("data", {}).get("events", [])
+
+    for event in events:
+        matchup = _split_match_name(event.get("j") or event.get("name") or "")
+        if matchup is None:
+            continue
+
+        home_team, away_team = matchup
+        start_time = _normalize_start_time(event.get("n") or event.get("startsAt"))
+        league_id = _extract_league_id(
+            event.get("c") if event.get("c") is not None else event.get("categoryId"),
+            event.get("f") if event.get("f") is not None else event.get("tournamentId"),
+            {},
+            default="football",
+        )
+
+        for market in _iter_list_markets(event):
+            market_id = _coerce_int(market.get("b") or market.get("marketId"))
+            outcome_map = _FOOTBALL_OUTCOME_MARKETS.get(market_id)
+            if outcome_map is None:
+                continue
+
+            outcomes = market.get("h") or market.get("outcomes") or []
+            for outcome in outcomes:
+                raw_label = (outcome.get("e") or outcome.get("name") or "").strip()
+                mapping = outcome_map.get(raw_label)
+                if mapping is None:
+                    continue
+                odds = _extract_outcome_price(outcome)
+                if odds is None:
+                    continue
+                market_type, outcome_code, line = mapping
+                results.append(
+                    RawOutcomeOffer(
+                        bookmaker_id="balkanbet",
+                        league_id=league_id,
+                        sport="football",
+                        home_team=home_team,
+                        away_team=away_team,
+                        market_type=market_type,
+                        outcome_code=outcome_code,
+                        odds=odds,
+                        line=line,
+                        raw_label=raw_label,
+                        start_time=start_time,
+                    )
+                )
+
+    return results
+
+
 # ── Scraper ─────────────────────────────────────────────────────────────
 
 
@@ -391,6 +465,9 @@ class BalkanBetScraper(BaseScraper):
 
     def get_supported_leagues(self) -> list[str]:
         return list(_SPORT_SPECS.keys())
+
+    def get_supported_outcome_sports(self) -> list[str]:
+        return ["football"]
 
     async def _fetch_list(self, params: dict, label: str) -> dict:
         try:
@@ -439,5 +516,24 @@ class BalkanBetScraper(BaseScraper):
             spec.sport,
             len(totals_results),
             spec.sport,
+        )
+        return results
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        if sport != "football":
+            return []
+
+        now = current_utc_time()
+        params = {
+            **_BASE_LIST_PARAMS,
+            "filter[sportId]": _FOOTBALL_OUTCOME_SPORT_ID,
+            "filter[from]": _format_filter_from(now),
+            "filter[to]": _format_filter_from(lookahead_cutoff(now)),
+        }
+        data = await self._fetch_list(params, "football outcomes")
+        results = _parse_football_outcome_list(data)
+        logger.info(
+            "BalkanBet scraped %d football outcome offers",
+            len(results),
         )
         return results

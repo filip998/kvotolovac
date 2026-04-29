@@ -11,6 +11,10 @@ import type {
   MatchMergeInput,
   MatchMergeResult,
   OddsOffer,
+  Opportunity,
+  OpportunityFilters,
+  OutcomeOffer,
+  OutcomeOfferFilters,
   Discrepancy,
   SystemStatus,
   DiscrepancyFilters,
@@ -28,6 +32,8 @@ import {
   mockMatches,
   mockOddsOffers,
   mockDiscrepancies,
+  mockFootballOpportunities,
+  mockFootballOutcomeOffers,
   mockUnresolvedOdds,
   mockSystemStatus,
   mockCanonicalTeams,
@@ -246,6 +252,130 @@ export function useDiscrepancy(id: number) {
   });
 }
 
+// --- Generic opportunities / outcome offers ---
+
+export function useOpportunities(
+  filters: OpportunityFilters = {},
+  options: { enabled?: boolean } = {}
+) {
+  return useQuery<Opportunity[]>({
+    queryKey: ['opportunities', filters],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        let results = [...mockFootballOpportunities];
+        if (filters.sport) {
+          results = results.filter((row) => row.sport === filters.sport);
+        }
+        if (filters.market_type) {
+          results = results.filter((row) => row.market_type === filters.market_type);
+        }
+        if (filters.bookmaker_ids?.length) {
+          const selected = new Set(filters.bookmaker_ids);
+          results = results.filter((row) =>
+            row.legs.some((leg) => selected.has(leg.bookmaker_id))
+          );
+        }
+        results.sort(
+          (a, b) =>
+            (b.profit_margin ?? Number.NEGATIVE_INFINITY) -
+            (a.profit_margin ?? Number.NEGATIVE_INFINITY)
+        );
+        return results;
+      }
+
+      const { loadAll, ...requestFilters } = filters;
+      const serializedFilters = {
+        ...requestFilters,
+        bookmaker_ids: serializeArrayParam(requestFilters.bookmaker_ids),
+      };
+      if (!loadAll) {
+        const { data } = await client.get<Opportunity[]>('/opportunities', {
+          params: serializedFilters,
+        });
+        return data;
+      }
+
+      const pageSize = requestFilters.limit ?? 200;
+      const initialOffset = requestFilters.offset ?? 0;
+      const allRows: Opportunity[] = [];
+      for (let offset = initialOffset; ; offset += pageSize) {
+        const { data } = await client.get<Opportunity[]>('/opportunities', {
+          params: { ...serializedFilters, limit: pageSize, offset },
+        });
+        allRows.push(...data);
+        if (data.length < pageSize) {
+          break;
+        }
+      }
+      return allRows;
+    },
+    enabled: options.enabled ?? true,
+    placeholderData: (previousData) => previousData,
+    staleTime: 30000,
+    refetchInterval: options.enabled === false ? false : filters.loadAll ? false : 30000,
+  });
+}
+
+export function useOutcomeOffers(
+  filters: OutcomeOfferFilters = {},
+  options: { enabled?: boolean } = {}
+) {
+  return useQuery<OutcomeOffer[]>({
+    queryKey: ['outcomeOffers', filters],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        let results = [...mockFootballOutcomeOffers];
+        if (filters.sport) {
+          results = results.filter((row) => row.match_id.startsWith(`${filters.sport}-`));
+        }
+        if (filters.match_id) {
+          results = results.filter((row) => row.match_id === filters.match_id);
+        }
+        if (filters.market_type) {
+          results = results.filter((row) => row.market_type === filters.market_type);
+        }
+        if (filters.bookmaker_ids?.length) {
+          const selected = new Set(filters.bookmaker_ids);
+          results = results.filter((row) => selected.has(row.bookmaker_id));
+        }
+        return results;
+      }
+
+      const { loadAll, ...requestFilters } = filters;
+      const serializedFilters = {
+        ...requestFilters,
+        bookmaker_ids: serializeArrayParam(requestFilters.bookmaker_ids),
+      };
+      if (!loadAll) {
+        const { data } = await client.get<OutcomeOffer[]>('/market-offers', {
+          params: serializedFilters,
+        });
+        return data;
+      }
+
+      const pageSize = requestFilters.limit ?? 500;
+      const initialOffset = requestFilters.offset ?? 0;
+      const allRows: OutcomeOffer[] = [];
+      for (let offset = initialOffset; ; offset += pageSize) {
+        const { data } = await client.get<OutcomeOffer[]>('/market-offers', {
+          params: { ...serializedFilters, limit: pageSize, offset },
+        });
+        allRows.push(...data);
+        if (data.length < pageSize) {
+          break;
+        }
+      }
+      return allRows;
+    },
+    enabled: options.enabled ?? true,
+    placeholderData: (previousData) => previousData,
+    staleTime: 30000,
+    refetchInterval: options.enabled === false ? false : filters.loadAll ? false : 30000,
+  });
+}
+
 // --- Unresolved odds ---
 
 export function useUnresolvedOdds(
@@ -265,6 +395,9 @@ export function useUnresolvedOdds(
         if (filters.bookmaker_ids?.length) {
           const selected = new Set(filters.bookmaker_ids);
           results = results.filter((row) => selected.has(row.bookmaker_id));
+        }
+        if (filters.sport) {
+          results = results.filter((row) => row.sport === filters.sport);
         }
         if (filters.reason_code) {
           results = results.filter((row) => row.reason_code === filters.reason_code);
@@ -328,6 +461,9 @@ export function useTeamReviewCases(
         if (filters.bookmaker_ids?.length) {
           const selected = new Set(filters.bookmaker_ids);
           results = results.filter((row) => selected.has(row.bookmaker_id));
+        }
+        if (filters.sport) {
+          results = results.filter((row) => row.sport === filters.sport);
         }
         if (filters.status) {
           results = results.filter((row) => row.status === filters.status);
@@ -580,6 +716,7 @@ export function useUnmergeCanonicalTeam() {
 export function useMatches(
   params: {
     league?: string;
+    sport?: string;
     status?: string;
     bookmaker_ids?: string[];
     limit?: number;
@@ -596,6 +733,9 @@ export function useMatches(
         let results = [...mockMatches];
         if (params.league) {
           results = results.filter((m) => m.league_id === params.league);
+        }
+        if (params.sport) {
+          results = results.filter((m) => m.sport === params.sport);
         }
         if (params.status) {
           results = results.filter((m) => m.status === params.status);
@@ -696,7 +836,9 @@ export function useMergeMatches() {
           merged_team_ids: [...payload.team_pairings],
           reassigned_odds: 0,
           reassigned_odds_history: 0,
+          reassigned_outcome_offers: 0,
           reassigned_discrepancies: 0,
+          reassigned_opportunities: 0,
           deleted_source_matches: payload.source_match_ids.length,
         };
       }

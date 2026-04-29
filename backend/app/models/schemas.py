@@ -163,6 +163,84 @@ class NormalizedOdds(BaseModel):
     start_time: Optional[str] = None
 
 
+# ── Generic outcome offers ─────────────────────────────────
+class RawOutcomeOffer(BaseModel):
+    bookmaker_id: str
+    league_id: str
+    sport: str
+    home_team: str
+    away_team: str
+    source_url: Optional[str] = None
+    market_type: str
+    outcome_code: str
+    odds: float
+    line: Optional[float] = None
+    raw_label: Optional[str] = None
+    start_time: Optional[str] = None
+
+
+class NormalizedOutcomeOffer(BaseModel):
+    match_id: str
+    bookmaker_id: str
+    league_id: str
+    sport: str
+    home_team_id: int = 0
+    away_team_id: int = 0
+    home_team: str
+    away_team: str
+    source_url: Optional[str] = None
+    market_type: str
+    outcome_code: str
+    odds: float
+    line: Optional[float] = None
+    raw_label: Optional[str] = None
+    start_time: Optional[str] = None
+
+
+class OutcomeOfferOut(BaseModel):
+    id: int
+    match_id: str
+    bookmaker_id: str
+    bookmaker_name: Optional[str] = None
+    source_url: Optional[str] = None
+    market_type: str
+    outcome_code: str
+    odds: float
+    line: Optional[float] = None
+    raw_label: Optional[str] = None
+    scraped_at: Optional[str] = None
+
+
+class OpportunityLeg(BaseModel):
+    offer_id: Optional[int] = None
+    bookmaker_id: str
+    bookmaker_name: Optional[str] = None
+    source_url: Optional[str] = None
+    market_type: str
+    outcome_code: str
+    odds: float
+    line: Optional[float] = None
+    raw_label: Optional[str] = None
+
+
+class OpportunityOut(BaseModel):
+    id: int
+    sport: str
+    match_id: str
+    home_team: Optional[str] = None
+    away_team: Optional[str] = None
+    league_name: Optional[str] = None
+    start_time: Optional[str] = None
+    opportunity_type: str
+    market_type: str
+    line: Optional[float] = None
+    profit_margin: Optional[float] = None
+    middle_profit_margin: Optional[float] = None
+    legs: list[OpportunityLeg] = Field(default_factory=list)
+    detected_at: Optional[str] = None
+    is_active: bool = True
+
+
 # ── Discrepancy ────────────────────────────────────────────
 class DiscrepancyOut(BaseModel):
     id: int
@@ -321,5 +399,7 @@ class MatchMergeOut(BaseModel):
     merged_team_ids: list[MatchMergeTeamPairing] = Field(default_factory=list)
     reassigned_odds: int = 0
     reassigned_odds_history: int = 0
+    reassigned_outcome_offers: int = 0
     reassigned_discrepancies: int = 0
+    reassigned_opportunities: int = 0
     deleted_source_matches: int = 0

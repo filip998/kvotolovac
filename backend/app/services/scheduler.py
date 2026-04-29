@@ -10,7 +10,7 @@ from datetime import datetime
 from rapidfuzz import fuzz
 
 from ..config import settings
-from ..models.schemas import RawOddsData, TeamReviewDiagnostic
+from ..models.schemas import RawOddsData, RawOutcomeOffer, TeamReviewDiagnostic
 from ..scrapers.base import BaseScraper
 from ..scrapers.registry import registry
 from ..models.schemas import ScanProgressOut
@@ -22,6 +22,8 @@ from ..services.normalizer import (
     resolve_team_name,
 )
 from ..services.analyzer import analyze
+from ..services.opportunity_analyzer import analyze_outcome_offers
+from ..services.outcome_normalizer import normalize_outcome_offers_with_diagnostics
 from ..services.notifications import NotificationService, InAppNotificationProvider
 from ..services.scrape_window import (
     configured_lookahead_hours,
@@ -998,6 +1000,67 @@ class Scheduler:
             )
         return raw
 
+    async def _scrape_outcome_one(
+        self, scraper: BaseScraper, sport: str
+    ) -> list[RawOutcomeOffer]:
+        bookmaker_id = scraper.get_bookmaker_id()
+        started_at = time.perf_counter()
+
+        try:
+            raw = await scraper.scrape_outcome_offers(sport)
+            if not isinstance(raw, list):
+                raise TypeError(
+                    f"Expected list[RawOutcomeOffer], got {type(raw).__name__}"
+                )
+            if not all(isinstance(item, RawOutcomeOffer) for item in raw):
+                raise TypeError("Expected list[RawOutcomeOffer] with valid items")
+        except Exception:
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            self._scan_failed_tasks += 1
+            self._scan_completed_tasks += 1
+            self._scan_active_tasks = max(0, self._scan_active_tasks - 1)
+            benchmark_recorder.record_scrape_task(
+                bookmaker_id=bookmaker_id,
+                duration_ms=duration_ms,
+                raw_items=0,
+                failed=True,
+            )
+            logger.exception(
+                "Outcome scraper %s failed for sport %s after %d ms",
+                bookmaker_id,
+                sport,
+                duration_ms,
+            )
+            return []
+
+        filtered_raw = filter_raw_odds_by_lookahead(raw)
+        dropped_count = len(raw) - len(filtered_raw)
+        raw = filtered_raw
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        self._scan_completed_tasks += 1
+        self._scan_active_tasks = max(0, self._scan_active_tasks - 1)
+        benchmark_recorder.record_scrape_task(
+            bookmaker_id=bookmaker_id,
+            duration_ms=duration_ms,
+            raw_items=len(raw),
+            failed=False,
+        )
+        logger.info(
+            "Outcome scraper %s completed for sport %s in %d ms (%d items)",
+            bookmaker_id,
+            sport,
+            duration_ms,
+            len(raw),
+        )
+        if dropped_count:
+            logger.info(
+                "Outcome scraper %s dropped %d items outside %dh lookahead",
+                bookmaker_id,
+                dropped_count,
+                configured_lookahead_hours(),
+            )
+        return raw
+
     async def _run_cycle_once(self) -> dict:
         """Execute one full scrape → normalize → analyze → store → notify cycle."""
         try:
@@ -1013,22 +1076,42 @@ class Scheduler:
             logger.info("Starting scrape cycle at %s", cycle_started_at_iso)
 
             scrapers = registry.get_all()
+            enabled_sports = set(settings.enabled_sport_list)
             scrape_started_at = time.perf_counter()
-            scrape_tasks = [
-                self._scrape_one(scraper, league_id)
+            scrape_tasks = (
+                [
+                    self._scrape_one(scraper, league_id)
+                    for scraper in scrapers
+                    for league_id in scraper.get_supported_leagues()
+                ]
+                if "basketball" in enabled_sports
+                else []
+            )
+            outcome_scrape_tasks = [
+                self._scrape_outcome_one(scraper, sport)
                 for scraper in scrapers
-                for league_id in scraper.get_supported_leagues()
+                for sport in scraper.get_supported_outcome_sports()
+                if sport in enabled_sports
             ]
             self._scan_phase = "scraping"
-            self._scan_total_tasks = len(scrape_tasks)
-            self._scan_active_tasks = len(scrape_tasks)
+            self._scan_total_tasks = len(scrape_tasks) + len(outcome_scrape_tasks)
+            self._scan_active_tasks = len(scrape_tasks) + len(outcome_scrape_tasks)
             scrape_batches = await asyncio.gather(*scrape_tasks) if scrape_tasks else []
+            outcome_scrape_batches = (
+                await asyncio.gather(*outcome_scrape_tasks)
+                if outcome_scrape_tasks
+                else []
+            )
             all_raw = [item for batch in scrape_batches for item in batch]
+            all_raw_outcome_offers = [
+                item for batch in outcome_scrape_batches for item in batch
+            ]
             scrape_duration_ms = int((time.perf_counter() - scrape_started_at) * 1000)
             logger.info(
-                "Scrape phase complete: %d tasks, %d raw items in %d ms",
-                len(scrape_tasks),
+                "Scrape phase complete: %d tasks, %d raw odds items, %d raw outcome offers in %d ms",
+                len(scrape_tasks) + len(outcome_scrape_tasks),
                 len(all_raw),
+                len(all_raw_outcome_offers),
                 scrape_duration_ms,
             )
 
@@ -1041,8 +1124,10 @@ class Scheduler:
 
             self._scan_phase = "normalizing"
             normalized = []
+            normalized_outcome_offers = []
             seen_matches: set[str] = set()
             discrepancies = []
+            opportunities = []
             notified = 0
             pending_auto_merges: list[tuple[int, int]] = []
             (
@@ -1053,6 +1138,13 @@ class Scheduler:
                 all_raw,
                 log_unresolved_shared_platform=False,
             )
+            (
+                normalized_outcome_offers,
+                unresolved_outcome_offers,
+                outcome_team_review_cases,
+            ) = normalize_outcome_offers_with_diagnostics(all_raw_outcome_offers)
+            unresolved_odds = [*unresolved_odds, *unresolved_outcome_offers]
+            team_review_cases = [*team_review_cases, *outcome_team_review_cases]
             applied_auto_aliases: list[tuple[str, str, str]] = []
             applied_auto_merges: list[tuple[int, int]] = []
             try:
@@ -1086,6 +1178,13 @@ class Scheduler:
                         unresolved_odds,
                         team_review_cases,
                     ) = normalize_odds_with_diagnostics(all_raw)
+                    (
+                        normalized_outcome_offers,
+                        unresolved_outcome_offers,
+                        outcome_team_review_cases,
+                    ) = normalize_outcome_offers_with_diagnostics(all_raw_outcome_offers)
+                    unresolved_odds = [*unresolved_odds, *unresolved_outcome_offers]
+                    team_review_cases = [*team_review_cases, *outcome_team_review_cases]
                 else:
                     log_unresolved_shared_platform_diagnostics(unresolved_odds)
 
@@ -1111,6 +1210,29 @@ class Scheduler:
                         )
                         seen_matches.add(o.match_id)
                     await odds_store.upsert_odds(o, scraped_at=cycle_scraped_at)
+                for offer in normalized_outcome_offers:
+                    if offer.match_id not in seen_matches:
+                        await odds_store.upsert_league(
+                            id=offer.league_id,
+                            name=league_display_name(offer.league_id),
+                            sport=offer.sport,
+                            country=league_country(offer.league_id),
+                        )
+                        await odds_store.upsert_match(
+                            id=offer.match_id,
+                            league_id=offer.league_id,
+                            home_team=offer.home_team,
+                            away_team=offer.away_team,
+                            sport=offer.sport,
+                            home_team_id=offer.home_team_id,
+                            away_team_id=offer.away_team_id,
+                            start_time=offer.start_time,
+                        )
+                        seen_matches.add(offer.match_id)
+                    await odds_store.upsert_outcome_offer(
+                        offer,
+                        scraped_at=cycle_scraped_at,
+                    )
                 for unresolved in unresolved_odds:
                     await odds_store.insert_unresolved_odds(
                         unresolved, scraped_at=cycle_scraped_at
@@ -1129,6 +1251,13 @@ class Scheduler:
                 self._scan_phase = "analyzing"
                 await odds_store.deactivate_all_discrepancies()
                 discrepancies = analyze(normalized)
+                await odds_store.deactivate_opportunities()
+                opportunities = analyze_outcome_offers(normalized_outcome_offers)
+                for opportunity in opportunities:
+                    await odds_store.insert_opportunity(
+                        opportunity,
+                        detected_at=cycle_scraped_at,
+                    )
 
                 for d in discrepancies:
                     await odds_store.insert_discrepancy(
@@ -1169,6 +1298,11 @@ class Scheduler:
                         if o.match_id not in seen_match_per_bm[o.bookmaker_id]:
                             seen_match_per_bm[o.bookmaker_id].add(o.match_id)
                             matches_per_bm[o.bookmaker_id] += 1
+                    for offer in normalized_outcome_offers:
+                        odds_per_bm[offer.bookmaker_id] += 1
+                        if offer.match_id not in seen_match_per_bm[offer.bookmaker_id]:
+                            seen_match_per_bm[offer.bookmaker_id].add(offer.match_id)
+                            matches_per_bm[offer.bookmaker_id] += 1
                     benchmark_recorder.record_phase_durations(
                         scrape_duration_ms=scrape_duration_ms,
                         cycle_duration_ms=int(
@@ -1193,7 +1327,9 @@ class Scheduler:
             result = {
                 "matches_scraped": len(seen_matches),
                 "odds_scraped": len(normalized),
+                "outcome_offers_scraped": len(normalized_outcome_offers),
                 "discrepancies_found": len(discrepancies),
+                "opportunities_found": len(opportunities),
                 "notifications_sent": notified,
                 "scrape_duration_ms": scrape_duration_ms,
                 "cycle_duration_ms": int((time.perf_counter() - cycle_started_at) * 1000),

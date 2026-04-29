@@ -17,6 +17,7 @@ router = APIRouter(prefix="/matches", tags=["matches"])
 @router.get("", response_model=list[MatchOut])
 async def list_matches(
     league_id: Optional[str] = Query(None),
+    sport: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     bookmaker_ids: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
@@ -24,6 +25,7 @@ async def list_matches(
 ):
     return await odds_store.get_matches(
         league_id=league_id,
+        sport=sport,
         status=status,
         bookmaker_ids=parse_csv_query_values(bookmaker_ids),
         limit=limit,
@@ -187,6 +189,8 @@ async def merge_matches(payload: MatchMergeIn) -> MatchMergeOut:
         merged_team_ids=merged_pairings,
         reassigned_odds=counts["reassigned_odds"],
         reassigned_odds_history=counts["reassigned_odds_history"],
+        reassigned_outcome_offers=counts["reassigned_outcome_offers"],
         reassigned_discrepancies=counts["reassigned_discrepancies"],
+        reassigned_opportunities=counts["reassigned_opportunities"],
         deleted_source_matches=counts["deleted_source_matches"],
     )

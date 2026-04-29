@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from .base import BaseScraper
 from .http_client import HttpClient
 from ..config import settings
-from ..models.schemas import RawOddsData
+from ..models.schemas import RawOddsData, RawOutcomeOffer
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +185,20 @@ _PLAYER_LIST_URL = _BASKETBALL_SPEC.player_list_url
 _TOTALS_LIST_URL = _BASKETBALL_SPEC.totals_list_url
 _BULK_DETAIL_URL = _BASKETBALL_SPEC.bulk_detail_url
 _MATCH_PAGE_URL = "https://www.maxbet.rs/sr/pocetna#/sport/event/{match_id}"
+_FOOTBALL_LIST_URL = "https://www.maxbet.rs/restapi/offer/sr/sport/S/mob"
+_FOOTBALL_BULK_DETAIL_URL = "https://www.maxbet.rs/restapi/offer/sr/matches/by-ids"
+_FOOTBALL_OUTCOME_CODES = {
+    "1": ("football_result", "home", None, "1"),
+    "2": ("football_result", "draw", None, "X"),
+    "3": ("football_result", "away", None, "2"),
+    "7": ("football_double_chance", "home_or_draw", None, "1X"),
+    "8": ("football_double_chance", "home_or_away", None, "12"),
+    "9": ("football_double_chance", "draw_or_away", None, "X2"),
+}
+_FOOTBALL_TOTAL_GOALS_CODES = {
+    "227": ("over", "3+"),
+    "228": ("under", "0-2"),
+}
 
 _PLAYER_LEAGUE_PREFIX = _BASKETBALL_SPEC.player_league_prefix
 _BASKETBALL_LEAGUE_PREFIX = _BASKETBALL_SPEC.totals_league_prefix
@@ -231,6 +245,13 @@ def _extract_league_id(league_name: str, spec: SportSpec = _BASKETBALL_SPEC) -> 
     if not normalized:
         return spec.sport
     return spec.canonical_leagues.get(normalized, normalized.replace(" ", "_"))
+
+
+def _extract_plain_league_id(league_name: str, default: str) -> str:
+    normalized = _normalize_league_key(league_name)
+    if not normalized:
+        return default
+    return normalized.replace(" ", "_")
 
 
 def _is_player_match(match: dict, spec: SportSpec) -> bool:
@@ -377,6 +398,95 @@ def _get_player_match_ids_for_spec(matches: list[dict], spec: SportSpec) -> list
     return ids
 
 
+def _get_match_ids(matches: list[dict]) -> list[int]:
+    ids: list[int] = []
+    for match in matches:
+        match_id = match.get("id")
+        if match_id is None:
+            continue
+        try:
+            ids.append(int(match_id))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def _coerce_positive_odds(value) -> float | None:
+    try:
+        odds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if odds <= 0:
+        return None
+    return odds
+
+
+def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return []
+
+    odds = match.get("odds") or {}
+    params = match.get("params") or {}
+    league_id = _extract_plain_league_id(match.get("leagueName", ""), "football")
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    source_url = None
+    match_id = match.get("id")
+    if match_id is not None:
+        source_url = _MATCH_PAGE_URL.format(match_id=match_id)
+
+    results: list[RawOutcomeOffer] = []
+    for code, (market_type, outcome_code, line, raw_label) in _FOOTBALL_OUTCOME_CODES.items():
+        value = _coerce_positive_odds(odds.get(code))
+        if value is None:
+            continue
+        results.append(
+            RawOutcomeOffer(
+                bookmaker_id="maxbet",
+                league_id=league_id,
+                sport="football",
+                home_team=home_team,
+                away_team=away_team,
+                source_url=source_url,
+                market_type=market_type,
+                outcome_code=outcome_code,
+                odds=value,
+                line=line,
+                raw_label=raw_label,
+                start_time=start_time,
+            )
+        )
+
+    try:
+        total_line = float(params.get("overUnder"))
+    except (TypeError, ValueError):
+        total_line = None
+    if total_line == 2.5:
+        for code, (outcome_code, raw_label) in _FOOTBALL_TOTAL_GOALS_CODES.items():
+            value = _coerce_positive_odds(odds.get(code))
+            if value is None:
+                continue
+            results.append(
+                RawOutcomeOffer(
+                    bookmaker_id="maxbet",
+                    league_id=league_id,
+                    sport="football",
+                    home_team=home_team,
+                    away_team=away_team,
+                    source_url=source_url,
+                    market_type="football_total_goals",
+                    outcome_code=outcome_code,
+                    odds=value,
+                    line=2.5,
+                    raw_label=raw_label,
+                    start_time=start_time,
+                )
+            )
+
+    return results
+
+
 # ── Backward-compatible module-level wrappers (basketball-only) ──────────
 
 
@@ -426,6 +536,9 @@ class MaxBetScraper(BaseScraper):
 
     def get_supported_leagues(self) -> list[str]:
         return list(_SPORT_SPECS.keys())
+
+    def get_supported_outcome_sports(self) -> list[str]:
+        return ["football"]
 
     async def _fetch_list(self, url: str, label: str) -> list[dict]:
         try:
@@ -519,6 +632,28 @@ class MaxBetScraper(BaseScraper):
             len(ot_total_results),
             total_match_count,
             len(player_results),
+            len(match_ids),
+        )
+        return results
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        if sport != "football":
+            return []
+
+        list_matches = await self._fetch_list(_FOOTBALL_LIST_URL, "football outcomes")
+        match_ids = _get_match_ids(list_matches)
+        results: list[RawOutcomeOffer] = []
+        for start in range(0, len(match_ids), 100):
+            details = await self._fetch_bulk_details(
+                _FOOTBALL_BULK_DETAIL_URL,
+                match_ids[start : start + 100],
+            )
+            for detail in details:
+                results.extend(_parse_football_outcome_match(detail))
+
+        logger.info(
+            "MaxBet scraped %d football outcome offers from %d matches",
+            len(results),
             len(match_ids),
         )
         return results

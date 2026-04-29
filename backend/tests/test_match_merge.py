@@ -6,9 +6,10 @@ from httpx import ASGITransport, AsyncClient
 from app.config import settings
 from app.database import close_db, init_db
 from app.main import app
-from app.models.schemas import NormalizedOdds
+from app.models.schemas import NormalizedOdds, NormalizedOutcomeOffer, OpportunityLeg
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
+from app.services.opportunity_analyzer import Opportunity
 from app.services.team_registry import create_canonical_team
 from app.store import odds_store
 
@@ -330,3 +331,140 @@ async def test_merge_matches_dedupes_inter_source_collision(client: AsyncClient,
     assert len(rows) == 1, [r.over_odds for r in rows]
     # The newer (source-b) row had over_odds=1.92 and the highest id, so it wins.
     assert rows[0].over_odds == 1.92
+
+
+@pytest.mark.asyncio
+async def test_merge_matches_reassigns_football_outcome_tables(client: AsyncClient, team_registry_file):
+    await odds_store.upsert_league("premier-league", "Premier League", "football")
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    await odds_store.upsert_bookmaker("balkanbet", "BalkanBet")
+    await odds_store.set_current_snapshot(SCRAPED_AT)
+
+    home_target = create_canonical_team(display_name="Arsenal")
+    away_target = create_canonical_team(display_name="Chelsea")
+    home_source = create_canonical_team(display_name="Arsenal FC")
+    away_source = create_canonical_team(display_name="Chelsea FC")
+
+    await odds_store.upsert_match(
+        id="target-football",
+        league_id="premier-league",
+        sport="football",
+        home_team="Arsenal",
+        away_team="Chelsea",
+        home_team_id=home_target.team_id,
+        away_team_id=away_target.team_id,
+        start_time=START_TIME,
+    )
+    await odds_store.upsert_match(
+        id="source-football",
+        league_id="premier-league",
+        sport="football",
+        home_team="Arsenal FC",
+        away_team="Chelsea FC",
+        home_team_id=home_source.team_id,
+        away_team_id=away_source.team_id,
+        start_time=START_TIME,
+    )
+
+    target_collision = NormalizedOutcomeOffer(
+        match_id="target-football",
+        bookmaker_id="maxbet",
+        league_id="premier-league",
+        sport="football",
+        home_team="Arsenal",
+        away_team="Chelsea",
+        home_team_id=home_target.team_id,
+        away_team_id=away_target.team_id,
+        source_url="https://maxbet.test/target",
+        market_type="football_total_goals",
+        outcome_code="under",
+        line=2.5,
+        odds=1.80,
+        raw_label="0-2",
+        start_time=START_TIME,
+    )
+    source_collision = target_collision.model_copy(
+        update={
+            "match_id": "source-football",
+            "home_team": "Arsenal FC",
+            "away_team": "Chelsea FC",
+            "home_team_id": home_source.team_id,
+            "away_team_id": away_source.team_id,
+            "source_url": "https://maxbet.test/source",
+            "odds": 1.95,
+        }
+    )
+    source_other = source_collision.model_copy(
+        update={
+            "bookmaker_id": "balkanbet",
+            "source_url": "https://balkanbet.test/source",
+            "outcome_code": "over",
+            "odds": 2.10,
+            "raw_label": "3+",
+        }
+    )
+
+    for offer in (target_collision, source_collision, source_other):
+        await odds_store.upsert_outcome_offer(offer, scraped_at=SCRAPED_AT)
+
+    await odds_store.insert_opportunity(
+        Opportunity(
+            sport="football",
+            match_id="source-football",
+            opportunity_type="same_line_arbitrage",
+            market_type="football_total_goals",
+            line=2.5,
+            profit_margin=0.02,
+            middle_profit_margin=None,
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id="maxbet",
+                    market_type="football_total_goals",
+                    outcome_code="under",
+                    line=2.5,
+                    odds=1.95,
+                ),
+                OpportunityLeg(
+                    bookmaker_id="balkanbet",
+                    market_type="football_total_goals",
+                    outcome_code="over",
+                    line=2.5,
+                    odds=2.10,
+                ),
+            ],
+        ),
+        detected_at=SCRAPED_AT,
+    )
+
+    resp = await client.post(
+        "/api/v1/matches/merge",
+        json={
+            "target_match_id": "target-football",
+            "source_match_ids": ["source-football"],
+            "team_pairings": [
+                {
+                    "source_team_id": home_source.team_id,
+                    "target_team_id": home_target.team_id,
+                },
+                {
+                    "source_team_id": away_source.team_id,
+                    "target_team_id": away_target.team_id,
+                },
+            ],
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["reassigned_outcome_offers"] == 2
+    assert body["reassigned_opportunities"] == 1
+    assert body["deleted_source_matches"] == 1
+    assert await odds_store.get_match("source-football") is None
+
+    offers = await odds_store.get_outcome_offers(match_id="target-football")
+    assert len(offers) == 2
+    assert {offer.bookmaker_id for offer in offers} == {"maxbet", "balkanbet"}
+    assert [offer.odds for offer in offers if offer.bookmaker_id == "maxbet"] == [1.95]
+
+    opportunities = await odds_store.get_opportunities(sport="football")
+    assert [opportunity.match_id for opportunity in opportunities] == ["target-football"]

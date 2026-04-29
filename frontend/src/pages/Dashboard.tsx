@@ -9,12 +9,15 @@ import {
   useDeclineTeamReviewCase,
   useDiscrepancies,
   useMatches,
+  useOpportunities,
+  useOutcomeOffers,
   useSystemStatus,
   useTeamReviewCases,
   useUnresolvedOdds,
 } from '../api/hooks';
-import type { Discrepancy, DiscrepancyFilters } from '../api/types';
+import type { Discrepancy, DiscrepancyFilters, Match, Opportunity, OutcomeOffer } from '../api/types';
 import {
+  formatDateTime,
   formatGap,
   formatOdds,
   formatPercentage,
@@ -58,8 +61,46 @@ interface LeagueGroup {
   matches: MatchGroup[];
 }
 
-type DashboardTab = 'discrepancies' | 'tracked' | 'teams' | 'canonical' | 'warnings';
+type DashboardTab = 'discrepancies' | 'football' | 'tracked' | 'teams' | 'canonical' | 'warnings';
 type ViewMode = 'by-match' | 'flat';
+
+interface FootballMatchRow {
+  match: Match;
+  offers: OutcomeOffer[];
+  opportunities: Opportunity[];
+}
+
+const FOOTBALL_OUTCOME_LABELS: Record<string, string> = {
+  under: '0-2',
+  over: '3+',
+  home: '1',
+  draw: 'X',
+  away: '2',
+  home_or_draw: '1X',
+  draw_or_away: 'X2',
+  home_or_away: '12',
+};
+function footballOutcomeLabel(code: string) {
+  return FOOTBALL_OUTCOME_LABELS[code] || code;
+}
+
+function marketTypeLabel(marketType: string) {
+  return MARKET_TYPE_LABELS[marketType as keyof typeof MARKET_TYPE_LABELS] || marketType;
+}
+
+function footballOpportunityLabel(opportunity: Opportunity) {
+  if (opportunity.opportunity_type === 'same_line_arbitrage') {
+    return `Total goals ${opportunity.line ?? 2.5}`;
+  }
+  if (opportunity.opportunity_type === 'middle') {
+    return 'Goals middle';
+  }
+  return 'Result combo';
+}
+
+function bookmakerName(bookmakerId: string, fallback?: string | null) {
+  return fallback || bookmakerId;
+}
 
 export default function Dashboard() {
   const queryClient = useQueryClient();
@@ -76,6 +117,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<DashboardTab>('discrepancies');
   const [viewMode, setViewMode] = useState<ViewMode>('flat');
   const [searchQuery, setSearchQuery] = useState('');
+  const [diagnosticsSport, setDiagnosticsSport] = useState<'basketball' | 'football'>('basketball');
   const appliedSearchQuery = useDeferredValue(searchQuery);
   const [collapsedLeagues, setCollapsedLeagues] = useState<Set<string>>(new Set());
   const [expandedFlatCalculatorIds, setExpandedFlatCalculatorIds] = useState<Set<number>>(new Set());
@@ -167,11 +209,55 @@ export default function Dashboard() {
     error: matchesLoadError,
   } = useMatches(
     {
+      sport: 'basketball',
       limit: 200,
       loadAll: true,
       bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
     },
     { enabled: activeTab === 'tracked' }
+  );
+  const {
+    data: footballMatches,
+    isLoading: footballMatchesLoading,
+    isError: footballMatchesError,
+    error: footballMatchesLoadError,
+  } = useMatches(
+    {
+      sport: 'football',
+      limit: 200,
+      loadAll: true,
+      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
+    },
+    { enabled: activeTab === 'football' }
+  );
+  const {
+    data: footballOffers,
+    isLoading: footballOffersLoading,
+    isError: footballOffersError,
+    error: footballOffersLoadError,
+  } = useOutcomeOffers(
+    {
+      sport: 'football',
+      limit: 500,
+      loadAll: true,
+      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
+    },
+    { enabled: activeTab === 'football' }
+  );
+  const {
+    data: footballOpportunities,
+    isLoading: footballOpportunitiesLoading,
+    isError: footballOpportunitiesError,
+    error: footballOpportunitiesLoadError,
+    refetch: refetchFootballOpportunities,
+  } = useOpportunities(
+    {
+      sport: 'football',
+      limit: 200,
+      loadAll: true,
+      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
+    },
+    { enabled: activeTab === 'football' }
   );
   const {
     data: unresolvedOdds,
@@ -181,6 +267,7 @@ export default function Dashboard() {
     refetch: refetchUnresolvedOdds,
   } = useUnresolvedOdds(
     {
+      sport: diagnosticsSport,
       limit: 200,
       loadAll: true,
       bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
@@ -195,6 +282,7 @@ export default function Dashboard() {
     refetch: refetchTeamReviewCases,
   } = useTeamReviewCases(
     {
+      sport: diagnosticsSport,
       limit: 200,
       loadAll: true,
       bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
@@ -209,7 +297,7 @@ export default function Dashboard() {
     refetch: refetchCanonicalTeams,
   } = useCanonicalTeams(
     {
-      sport: 'basketball',
+      sport: diagnosticsSport,
       limit: 300,
       include_merged: true,
     },
@@ -239,6 +327,12 @@ export default function Dashboard() {
       void queryClient.invalidateQueries({ queryKey: ['unresolvedOdds'] });
       void refetchUnresolvedOdds();
     }
+    if (scanJustFinished && activeTab === 'football') {
+      void queryClient.invalidateQueries({ queryKey: ['matches'] });
+      void queryClient.invalidateQueries({ queryKey: ['outcomeOffers'] });
+      void queryClient.invalidateQueries({ queryKey: ['opportunities'] });
+      void refetchFootballOpportunities();
+    }
     if (scanJustFinished && activeTab === 'teams') {
       void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
       void refetchTeamReviewCases();
@@ -253,6 +347,7 @@ export default function Dashboard() {
     activeTab,
     queryClient,
     refetchDiscrepancies,
+    refetchFootballOpportunities,
     refetchCanonicalTeams,
     refetchTeamReviewCases,
     refetchUnresolvedOdds,
@@ -311,9 +406,64 @@ export default function Dashboard() {
     () => groupUnresolvedOdds(unresolvedOdds ?? []),
     [unresolvedOdds]
   );
+  const footballOpportunitiesByMatch = useMemo(() => {
+    const byMatch = new Map<string, Opportunity[]>();
+    for (const opportunity of footballOpportunities ?? []) {
+      const list = byMatch.get(opportunity.match_id) ?? [];
+      list.push(opportunity);
+      byMatch.set(opportunity.match_id, list);
+    }
+    for (const list of byMatch.values()) {
+      list.sort(
+        (left, right) =>
+          (right.profit_margin ?? Number.NEGATIVE_INFINITY) -
+          (left.profit_margin ?? Number.NEGATIVE_INFINITY)
+      );
+    }
+    return byMatch;
+  }, [footballOpportunities]);
+  const footballOffersByMatch = useMemo(() => {
+    const byMatch = new Map<string, OutcomeOffer[]>();
+    for (const offer of footballOffers ?? []) {
+      const list = byMatch.get(offer.match_id) ?? [];
+      list.push(offer);
+      byMatch.set(offer.match_id, list);
+    }
+    return byMatch;
+  }, [footballOffers]);
+  const footballRows = useMemo<FootballMatchRow[]>(() => {
+    const rows = (footballMatches ?? []).map((match) => ({
+      match,
+      offers: footballOffersByMatch.get(match.id) ?? [],
+      opportunities: footballOpportunitiesByMatch.get(match.id) ?? [],
+    }));
+    rows.sort((left, right) => {
+      const leftMargin = left.opportunities[0]?.profit_margin ?? Number.NEGATIVE_INFINITY;
+      const rightMargin = right.opportunities[0]?.profit_margin ?? Number.NEGATIVE_INFINITY;
+      if (leftMargin !== rightMargin) return rightMargin - leftMargin;
+      return (left.match.start_time ?? '').localeCompare(right.match.start_time ?? '');
+    });
+    return rows;
+  }, [footballMatches, footballOffersByMatch, footballOpportunitiesByMatch]);
+  const footballSearchIndex = useMemo(
+    () =>
+      buildSearchIndex(footballRows, (row) => [
+        row.match.home_team,
+        row.match.away_team,
+        row.match.league_name,
+        ...row.match.available_bookmakers.map((bookmaker) => bookmaker.name),
+      ]),
+    [footballRows]
+  );
+  const filteredFootballRows = useMemo(
+    () => filterSearchIndex(footballSearchIndex, appliedSearchQuery),
+    [appliedSearchQuery, footballSearchIndex]
+  );
 
   const discrepancyCount = discrepancies?.length ?? 0;
+  const footballOpportunityCount = footballOpportunities?.length ?? 0;
   const filteredDiscrepancyCount = filteredDiscrepancies.length;
+  const filteredFootballCount = filteredFootballRows.length;
   const unresolvedCount = unresolvedWarningGroups.length;
   const teamReviewCount = teamReviewCases?.filter((row) => row.status === 'pending').length ?? 0;
   const canonicalTeamCount =
@@ -657,12 +807,185 @@ export default function Dashboard() {
     viewMode,
   ]);
 
+  const footballContent = useMemo(() => {
+    const isFootballLoading =
+      footballMatchesLoading || footballOffersLoading || footballOpportunitiesLoading;
+    const footballError =
+      (footballMatchesError ? (footballMatchesLoadError as Error)?.message : null) ||
+      (footballOffersError ? (footballOffersLoadError as Error)?.message : null) ||
+      (footballOpportunitiesError ? (footballOpportunitiesLoadError as Error)?.message : null);
+
+    if (isFootballLoading) {
+      return <LoadingSpinner />;
+    }
+
+    if (footballError) {
+      return (
+        <div className="rounded-lg border border-danger/30 bg-danger/10 p-6 text-center">
+          <p className="text-sm text-danger">Failed to load football board: {footballError}</p>
+        </div>
+      );
+    }
+
+    if (!footballRows.length) {
+      return (
+        <EmptyState
+          title="No football games in the current snapshot"
+          message="Enable football in the backend config and run a scrape to populate MaxBet and BalkanBet football markets."
+        />
+      );
+    }
+
+    if (hasSearchQuery && filteredFootballCount === 0) {
+      return (
+        <EmptyState
+          title={`No football games match "${activeSearchLabel}"`}
+          message="Search checks team, league, and bookmaker names after your current bookmaker filter."
+        />
+      );
+    }
+
+    return (
+      <div className="space-y-3">
+        {filteredFootballRows.map((row) => {
+          const marketLabels = Array.from(
+            new Set(row.offers.map((offer) => marketTypeLabel(offer.market_type)))
+          ).sort((left, right) => left.localeCompare(right));
+          const topOpportunity = row.opportunities[0];
+
+          return (
+            <section
+              key={row.match.id}
+              className={`rounded-lg border p-4 ${
+                topOpportunity?.profit_margin != null
+                  ? 'border-accent/25 bg-accent/[0.04]'
+                  : 'border-border bg-surface'
+              }`}
+            >
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
+                    <span>{row.match.league_name || row.match.league_id}</span>
+                    <span>·</span>
+                    <span>{formatDateTime(row.match.start_time)}</span>
+                  </div>
+                  <h3 className="mt-1 text-lg font-semibold text-text">
+                    {row.match.home_team} <span className="text-text-muted">vs</span>{' '}
+                    {row.match.away_team}
+                  </h3>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {row.match.available_bookmakers.map((bookmaker) => (
+                      <BookmakerBadge key={bookmaker.id} name={bookmaker.name} />
+                    ))}
+                    {marketLabels.map((label) => (
+                      <span
+                        key={label}
+                        className="rounded-full border border-border bg-bg px-2 py-0.5 text-[11px] font-medium text-text-secondary"
+                      >
+                        {label}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-border bg-bg px-3 py-2 text-right">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-text-muted">
+                    Best edge
+                  </div>
+                  <div
+                    className={`mt-1 font-mono text-lg font-semibold ${
+                      topOpportunity?.profit_margin != null
+                        ? profitColor(topOpportunity.profit_margin)
+                        : 'text-text-muted'
+                    }`}
+                  >
+                    {topOpportunity?.profit_margin != null
+                      ? formatPercentage(topOpportunity.profit_margin)
+                      : '—'}
+                  </div>
+                </div>
+              </div>
+
+              {row.opportunities.length > 0 ? (
+                <div className="mt-4 space-y-2">
+                  {row.opportunities.map((opportunity) => (
+                    <div
+                      key={opportunity.id}
+                      className="rounded-md border border-border bg-bg p-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div className="font-medium text-text">
+                            {footballOpportunityLabel(opportunity)}
+                          </div>
+                          <div className="text-xs text-text-muted">
+                            {opportunity.opportunity_type === 'same_line_arbitrage'
+                              ? 'Both sides cover the same 2.5 goals line.'
+                              : 'Exact result paired with the complementary double chance.'}
+                          </div>
+                        </div>
+                        {opportunity.profit_margin != null && (
+                          <span className={`font-mono text-sm font-semibold ${profitColor(opportunity.profit_margin)}`}>
+                            {formatPercentage(opportunity.profit_margin)}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-3 grid gap-2 md:grid-cols-2">
+                        {opportunity.legs.map((leg) => (
+                          <div
+                            key={`${opportunity.id}-${leg.bookmaker_id}-${leg.market_type}-${leg.outcome_code}`}
+                            className="flex items-center justify-between rounded border border-border bg-surface px-3 py-2"
+                          >
+                            <div className="min-w-0">
+                              <BookmakerBadge name={bookmakerName(leg.bookmaker_id, leg.bookmaker_name)} />
+                              <div className="mt-1 text-xs text-text-muted">
+                                {marketTypeLabel(leg.market_type)} · {footballOutcomeLabel(leg.outcome_code)}
+                              </div>
+                            </div>
+                            <div className="font-mono text-base font-semibold text-text">
+                              {formatOdds(leg.odds)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-4 rounded-md border border-border bg-bg px-3 py-2 text-sm text-text-secondary">
+                  No positive football opportunity on this game yet; offers are still tracked for coverage.
+                </p>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    );
+  }, [
+    activeSearchLabel,
+    filteredFootballCount,
+    filteredFootballRows,
+    footballMatchesError,
+    footballMatchesLoadError,
+    footballMatchesLoading,
+    footballOffersError,
+    footballOffersLoadError,
+    footballOffersLoading,
+    footballOpportunitiesError,
+    footballOpportunitiesLoadError,
+    footballOpportunitiesLoading,
+    footballRows.length,
+    hasSearchQuery,
+  ]);
+
   return (
     <PageShell
       eyebrow="Live board"
         title={
           activeTab === 'discrepancies'
             ? 'Find exploitable line gaps before the market closes.'
+            : activeTab === 'football'
+              ? 'Track football outcome opportunities across the fastest books.'
             : activeTab === 'tracked'
               ? 'Inspect the stored board even when no gap is flashing.'
               : activeTab === 'teams'
@@ -674,6 +997,8 @@ export default function Dashboard() {
         description={
           activeTab === 'discrepancies'
             ? 'Snapshot grouped by league and matchup. Work downward from the highest-margin thresholds.'
+            : activeTab === 'football'
+              ? 'All supported football games with MaxBet/BalkanBet coverage, 2.5 goals, match result, and double-chance pairs.'
             : activeTab === 'tracked'
               ? 'Open tracked matches to review player markets, bookmaker prices, and discrepancy-linked lines.'
               : activeTab === 'teams'
@@ -713,6 +1038,21 @@ export default function Dashboard() {
                 }`}
               >
                 Tracked odds
+              </button>
+              <button
+                onClick={() => switchTab('football')}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                  activeTab === 'football'
+                    ? 'bg-surface-raised text-text'
+                    : 'text-text-muted hover:text-text'
+                }`}
+              >
+                Football
+                {activeTab === 'football' && footballOpportunityCount > 0 && (
+                  <span className="ml-1.5 font-mono text-xs text-accent">
+                    {footballOpportunityCount}
+                  </span>
+                )}
               </button>
               <button
                 onClick={() => switchTab('teams')}
@@ -857,10 +1197,42 @@ export default function Dashboard() {
               />
             </>
           )}
+          {activeTab === 'football' && (
+            <OfferSearchStrip
+              value={searchQuery}
+              onChange={setSearchQuery}
+              scopeLabel="Football"
+              placeholder="Search team, league, or bookmaker names"
+              resultCount={filteredFootballCount}
+              totalCount={footballRows.length}
+            />
+          )}
+          {(activeTab === 'teams' || activeTab === 'canonical' || activeTab === 'warnings') && (
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-muted">
+                Sport
+              </span>
+              {(['basketball', 'football'] as const).map((sport) => (
+                <button
+                  key={sport}
+                  onClick={() => setDiagnosticsSport(sport)}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                    diagnosticsSport === sport
+                      ? 'bg-surface-raised text-text'
+                      : 'text-text-muted hover:text-text'
+                  }`}
+                >
+                  {sport === 'basketball' ? 'Basketball' : 'Football'}
+                </button>
+              ))}
+            </div>
+          )}
         </section>
 
         {activeTab === 'discrepancies' ? (
           discrepancyContent
+        ) : activeTab === 'football' ? (
+          footballContent
         ) : activeTab === 'tracked' ? (
           <TrackedMatchesPanel
             matches={matches || []}

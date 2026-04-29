@@ -6,8 +6,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.config import settings
-from app.models.schemas import NormalizedOdds, RawOddsData, TeamReviewDiagnostic
+from app.models.schemas import NormalizedOdds, OpportunityLeg, RawOddsData, TeamReviewDiagnostic
 from app.scrapers.base import BaseScraper
+from app.services.opportunity_analyzer import Opportunity
 from app.services.scheduler import Scheduler, _normalize_merge_pairings
 from app.services.normalizer import normalize_team_name
 from app.services.notifications import InAppNotificationProvider
@@ -186,6 +187,57 @@ async def test_scheduler_run_cycle_overlaps_scraper_tasks():
     assert result["matches_scraped"] == 0
     assert result["odds_scraped"] == 0
     assert result["discrepancies_found"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_deactivates_stale_opportunities_when_football_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "enabled_sports", "basketball")
+    await odds_store.upsert_league("premier-league", "Premier League", "football")
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    await odds_store.upsert_bookmaker("balkanbet", "BalkanBet")
+    await odds_store.upsert_match(
+        id="football-match",
+        league_id="premier-league",
+        sport="football",
+        home_team="Arsenal",
+        away_team="Chelsea",
+        start_time="2030-01-01T20:00:00+00:00",
+    )
+    await odds_store.insert_opportunity(
+        Opportunity(
+            sport="football",
+            match_id="football-match",
+            opportunity_type="same_line_arbitrage",
+            market_type="football_total_goals",
+            line=2.5,
+            profit_margin=0.02,
+            middle_profit_margin=None,
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id="maxbet",
+                    market_type="football_total_goals",
+                    outcome_code="under",
+                    line=2.5,
+                    odds=1.95,
+                ),
+                OpportunityLeg(
+                    bookmaker_id="balkanbet",
+                    market_type="football_total_goals",
+                    outcome_code="over",
+                    line=2.5,
+                    odds=2.10,
+                ),
+            ],
+        ),
+        detected_at="2030-01-01T20:01:00+00:00",
+    )
+    assert await odds_store.get_opportunities(sport="football")
+
+    _register_test_scrapers(StubScraper("alpha", leagues=()))
+
+    await Scheduler(interval_minutes=1).run_cycle()
+
+    assert await odds_store.get_opportunities(sport="football") == []
 
 
 @pytest.mark.asyncio

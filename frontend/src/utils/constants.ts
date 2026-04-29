@@ -15,6 +15,10 @@ export const MARKET_TYPES: readonly MarketType[] = [
   'player_points_rebounds_assists',
   'game_total',
   'game_total_ot',
+  'football_total_goals',
+  'football_result',
+  'football_double_chance',
+  'football_result_double_chance',
 ];
 
 export const MARKET_TYPE_LABELS: Record<MarketType, string> = {
@@ -32,10 +36,15 @@ export const MARKET_TYPE_LABELS: Record<MarketType, string> = {
   player_points_rebounds_assists: 'Points + Rebounds + Assists',
   game_total: 'Game Total',
   game_total_ot: 'Game Total (+OT)',
+  football_total_goals: 'Total Goals 2.5',
+  football_result: 'Match Result',
+  football_double_chance: 'Double Chance',
+  football_result_double_chance: 'Result + Double Chance',
 };
 
 export const SPORT_LABELS: Record<string, string> = {
   basketball: 'Basketball',
+  football: 'Football',
 };
 
 export const STATUS_LABELS: Record<string, string> = {

@@ -46,7 +46,17 @@ export type MarketType =
   | 'player_rebounds_assists'
   | 'player_points_rebounds_assists'
   | 'game_total'
-  | 'game_total_ot';
+  | 'game_total_ot'
+  | 'football_total_goals'
+  | 'football_result'
+  | 'football_double_chance'
+  | 'football_result_double_chance';
+
+export type OutcomeMarketType =
+  | 'football_total_goals'
+  | 'football_result'
+  | 'football_double_chance'
+  | 'football_result_double_chance';
 
 export interface OddsOffer {
   id: number;
@@ -84,6 +94,50 @@ export interface Discrepancy {
   profit_margin: number;
   middle_profit_margin?: number | null;
   detected_at: string;
+  is_active: boolean;
+}
+
+export interface OutcomeOffer {
+  id: number;
+  match_id: string;
+  bookmaker_id: string;
+  bookmaker_name: string | null;
+  source_url?: string | null;
+  market_type: OutcomeMarketType;
+  outcome_code: string;
+  odds: number;
+  line: number | null;
+  raw_label: string | null;
+  scraped_at: string | null;
+}
+
+export interface OpportunityLeg {
+  offer_id?: number | null;
+  bookmaker_id: string;
+  bookmaker_name?: string | null;
+  source_url?: string | null;
+  market_type: OutcomeMarketType;
+  outcome_code: string;
+  odds: number;
+  line: number | null;
+  raw_label: string | null;
+}
+
+export interface Opportunity {
+  id: number;
+  sport: string;
+  match_id: string;
+  home_team: string | null;
+  away_team: string | null;
+  league_name: string | null;
+  start_time: string | null;
+  opportunity_type: string;
+  market_type: OutcomeMarketType;
+  line: number | null;
+  profit_margin: number | null;
+  middle_profit_margin: number | null;
+  legs: OpportunityLeg[];
+  detected_at: string | null;
   is_active: boolean;
 }
 
@@ -206,9 +260,29 @@ export interface DiscrepancyFilters {
   loadAll?: boolean;
 }
 
+export interface OpportunityFilters {
+  sport?: string;
+  bookmaker_ids?: string[];
+  market_type?: OutcomeMarketType;
+  limit?: number;
+  offset?: number;
+  loadAll?: boolean;
+}
+
+export interface OutcomeOfferFilters {
+  sport?: string;
+  match_id?: string;
+  bookmaker_ids?: string[];
+  market_type?: OutcomeMarketType;
+  limit?: number;
+  offset?: number;
+  loadAll?: boolean;
+}
+
 export interface UnresolvedOddsFilters {
   bookmaker_id?: string;
   bookmaker_ids?: string[];
+  sport?: string;
   reason_code?: string;
   market_type?: string;
   league_id?: string;
@@ -220,6 +294,7 @@ export interface UnresolvedOddsFilters {
 export interface TeamReviewFilters {
   bookmaker_id?: string;
   bookmaker_ids?: string[];
+  sport?: string;
   status?: 'pending' | 'approved' | 'declined';
   limit?: number;
   offset?: number;
@@ -280,6 +355,8 @@ export interface MatchMergeResult {
   merged_team_ids: MatchMergeTeamPairing[];
   reassigned_odds: number;
   reassigned_odds_history: number;
+  reassigned_outcome_offers: number;
   reassigned_discrepancies: number;
+  reassigned_opportunities: number;
   deleted_source_matches: number;
 }

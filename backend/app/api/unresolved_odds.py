@@ -16,6 +16,7 @@ async def list_unresolved_odds(
     bookmaker_id: Optional[str] = Query(default=None),
     bookmaker_ids: Optional[str] = Query(default=None),
     reason_code: Optional[str] = Query(default=None),
+    sport: Optional[str] = Query(default=None),
     market_type: Optional[str] = Query(default=None),
     league_id: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
@@ -28,6 +29,7 @@ async def list_unresolved_odds(
     return await odds_store.get_unresolved_odds(
         bookmaker_ids=selected_bookmakers or None,
         reason_code=reason_code,
+        sport=sport,
         market_type=market_type,
         league_id=league_id,
         limit=limit,

@@ -15,11 +15,12 @@ from app.scrapers.balkanbet_scraper import (
     _extract_league_id,
     _format_filter_from,
     _normalize_start_time,
+    _parse_football_outcome_list,
     _parse_game_total_ot_list,
     _parse_player_name,
     _parse_player_props_list,
 )
-from app.models.schemas import RawOddsData
+from app.models.schemas import RawOddsData, RawOutcomeOffer
 
 PLAYER_LIST_FIXTURE = Path(__file__).parent / "fixtures" / "balkanbet_player_list.json"
 GAME_TOTAL_OT_LIST_FIXTURE = (
@@ -176,6 +177,65 @@ def test_parse_player_props_list_empty():
     assert _parse_player_props_list({}, _BASKETBALL_SPEC) == []
     assert _parse_player_props_list({"data": {}}, _BASKETBALL_SPEC) == []
     assert _parse_player_props_list({"data": {"events": []}}, _BASKETBALL_SPEC) == []
+
+
+def test_parse_football_outcome_list_emits_mvp_markets():
+    data = {
+        "data": {
+            "events": [
+                {
+                    "j": "Hatta SC - Al Urooba UAE",
+                    "n": "2026-04-29T13:55:00.000Z",
+                    "c": 633,
+                    "f": 29749,
+                    "o": {
+                        "6": {
+                            "b": 6,
+                            "h": [
+                                {"e": "1", "g": 2.4},
+                                {"e": "X", "g": 3.2},
+                                {"e": "2", "g": 2.55},
+                            ],
+                        },
+                        "368": {
+                            "b": 368,
+                            "h": [
+                                {"e": "1X", "g": 1.37},
+                                {"e": "12", "g": 1.24},
+                                {"e": "X2", "g": 1.42},
+                            ],
+                        },
+                        "443": {
+                            "b": 443,
+                            "h": [
+                                {"e": "0-2", "g": 1.78},
+                                {"e": "2+", "g": 1.28},
+                                {"e": "3+", "g": 1.82},
+                                {"e": "4+", "g": 3.1},
+                            ],
+                        },
+                    },
+                }
+            ]
+        }
+    }
+
+    results = _parse_football_outcome_list(data)
+
+    assert len(results) == 8
+    assert all(isinstance(row, RawOutcomeOffer) for row in results)
+    assert {row.sport for row in results} == {"football"}
+    assert {row.start_time for row in results} == {"2026-04-29T13:55:00+00:00"}
+    assert {(row.market_type, row.outcome_code, row.line, row.raw_label) for row in results} >= {
+        ("football_result", "home", None, "1"),
+        ("football_result", "draw", None, "X"),
+        ("football_result", "away", None, "2"),
+        ("football_double_chance", "home_or_draw", None, "1X"),
+        ("football_double_chance", "home_or_away", None, "12"),
+        ("football_double_chance", "draw_or_away", None, "X2"),
+        ("football_total_goals", "under", 2.5, "0-2"),
+        ("football_total_goals", "over", 2.5, "3+"),
+    }
 
 
 def test_parse_player_props_list_skips_unparseable_name():

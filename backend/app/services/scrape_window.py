@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import TypeVar
 
 from ..config import settings
-from ..models.schemas import RawOddsData
+from ..models.schemas import RawOddsData, RawOutcomeOffer
+
+_RawScrapeRow = TypeVar("_RawScrapeRow", RawOddsData, RawOutcomeOffer)
 
 
 def current_utc_time() -> datetime:
@@ -36,12 +39,12 @@ def parse_raw_start_time(start_time: str | None) -> datetime | None:
 
 
 def filter_raw_odds_by_lookahead(
-    rows: list[RawOddsData],
+    rows: list[_RawScrapeRow],
     *,
     now: datetime | None = None,
-) -> list[RawOddsData]:
+) -> list[_RawScrapeRow]:
     cutoff = lookahead_cutoff(now)
-    filtered: list[RawOddsData] = []
+    filtered: list[_RawScrapeRow] = []
     for row in rows:
         start_dt = parse_raw_start_time(row.start_time)
         if start_dt is not None and start_dt > cutoff:

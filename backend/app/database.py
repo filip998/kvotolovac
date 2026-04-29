@@ -67,6 +67,47 @@ CREATE TABLE IF NOT EXISTS odds_history (
     scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS outcome_offers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id TEXT REFERENCES matches(id),
+    bookmaker_id TEXT REFERENCES bookmakers(id),
+    market_type TEXT NOT NULL,
+    outcome_code TEXT NOT NULL,
+    line REAL,
+    odds REAL NOT NULL,
+    raw_label TEXT,
+    scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outcome_offers_unique_line
+ON outcome_offers (
+    match_id,
+    bookmaker_id,
+    market_type,
+    outcome_code,
+    COALESCE(line, -999999.0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_outcome_offers_snapshot
+ON outcome_offers (scraped_at, match_id, bookmaker_id);
+
+CREATE TABLE IF NOT EXISTS opportunities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sport TEXT NOT NULL,
+    match_id TEXT REFERENCES matches(id),
+    opportunity_type TEXT NOT NULL,
+    market_type TEXT NOT NULL,
+    line REAL,
+    profit_margin REAL,
+    middle_profit_margin REAL,
+    legs TEXT NOT NULL DEFAULT '[]',
+    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_opportunities_active_sport
+ON opportunities (is_active, sport, detected_at);
+
 CREATE TABLE IF NOT EXISTS unresolved_odds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     bookmaker_id TEXT REFERENCES bookmakers(id),
@@ -408,6 +449,53 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
     existing = {row[1] for row in columns}
     if "middle_profit_margin" not in existing:
         await conn.execute("ALTER TABLE discrepancies ADD COLUMN middle_profit_margin REAL")
+
+    await conn.execute(
+        """CREATE TABLE IF NOT EXISTS outcome_offers (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               match_id TEXT REFERENCES matches(id),
+               bookmaker_id TEXT REFERENCES bookmakers(id),
+               market_type TEXT NOT NULL,
+               outcome_code TEXT NOT NULL,
+               line REAL,
+               odds REAL NOT NULL,
+               raw_label TEXT,
+               scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+           )"""
+    )
+    await conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_outcome_offers_unique_line
+           ON outcome_offers (
+               match_id,
+               bookmaker_id,
+               market_type,
+               outcome_code,
+               COALESCE(line, -999999.0)
+           )"""
+    )
+    await conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_outcome_offers_snapshot
+           ON outcome_offers (scraped_at, match_id, bookmaker_id)"""
+    )
+    await conn.execute(
+        """CREATE TABLE IF NOT EXISTS opportunities (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               sport TEXT NOT NULL,
+               match_id TEXT REFERENCES matches(id),
+               opportunity_type TEXT NOT NULL,
+               market_type TEXT NOT NULL,
+               line REAL,
+               profit_margin REAL,
+               middle_profit_margin REAL,
+               legs TEXT NOT NULL DEFAULT '[]',
+               detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+               is_active BOOLEAN DEFAULT TRUE
+           )"""
+    )
+    await conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_opportunities_active_sport
+           ON opportunities (is_active, sport, detected_at)"""
+    )
 
     team_review_columns = await conn.execute_fetchall("PRAGMA table_info(team_review_cases)")
     existing_team_review = {row[1] for row in team_review_columns}

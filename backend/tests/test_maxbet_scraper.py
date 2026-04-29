@@ -12,11 +12,12 @@ from app.scrapers.maxbet_scraper import (
     _extract_league_id,
     _parse_game_total_match,
     _parse_game_total_ot_match,
+    _parse_football_outcome_match,
     _parse_match_detail,
     _get_player_match_ids,
     _parse_start_time,
 )
-from app.models.schemas import RawOddsData
+from app.models.schemas import RawOddsData, RawOutcomeOffer
 
 SPECIALS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "maxbet_specials.json"
 TOTALS_FIXTURE_PATH = (
@@ -126,6 +127,48 @@ def test_parse_game_total_ot_match_returns_ot_only_lines(basketball_fixture_data
         1.83,
         1.92,
     )
+
+
+def test_parse_football_outcome_match_emits_mvp_markets():
+    match = {
+        "id": 23337789,
+        "leagueName": "UAE 2",
+        "home": "Hatta",
+        "away": "Al Urooba",
+        "kickOffTime": 1777470900000,
+        "params": {"overUnder": "2.5"},
+        "odds": {
+            "1": 2.5,
+            "2": 3.15,
+            "3": 2.55,
+            "7": 1.42,
+            "8": 1.27,
+            "9": 1.42,
+            "227": 1.73,
+            "228": 2.12,
+        },
+    }
+
+    results = _parse_football_outcome_match(match)
+
+    assert len(results) == 8
+    assert all(isinstance(row, RawOutcomeOffer) for row in results)
+    assert {row.sport for row in results} == {"football"}
+    assert {row.market_type for row in results} == {
+        "football_result",
+        "football_double_chance",
+        "football_total_goals",
+    }
+    assert {(row.market_type, row.outcome_code, row.line, row.raw_label) for row in results} >= {
+        ("football_result", "home", None, "1"),
+        ("football_result", "draw", None, "X"),
+        ("football_result", "away", None, "2"),
+        ("football_double_chance", "home_or_draw", None, "1X"),
+        ("football_double_chance", "home_or_away", None, "12"),
+        ("football_double_chance", "draw_or_away", None, "X2"),
+        ("football_total_goals", "over", 2.5, "3+"),
+        ("football_total_goals", "under", 2.5, "0-2"),
+    }
 
 
 def test_parse_game_total_ot_match_ignores_first_half_total_codes():

@@ -27,6 +27,7 @@ router = APIRouter(prefix="/team-review", tags=["team-review"])
 async def list_team_review_cases(
     bookmaker_id: Optional[str] = Query(default=None),
     bookmaker_ids: Optional[str] = Query(default=None),
+    sport: Optional[str] = Query(default=None),
     status: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -37,6 +38,7 @@ async def list_team_review_cases(
 
     return await odds_store.get_team_review_cases(
         bookmaker_ids=selected_bookmakers or None,
+        sport=sport,
         status=status,
         limit=limit,
         offset=offset,

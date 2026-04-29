@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import abc
-from ..models.schemas import RawOddsData
+from ..models.schemas import RawOddsData, RawOutcomeOffer
 
 
 class BaseScraper(abc.ABC):
@@ -26,3 +26,12 @@ class BaseScraper(abc.ABC):
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         """Scrape odds for a given league and return raw data."""
         ...
+
+    def get_supported_outcome_sports(self) -> list[str]:
+        """Return sports supported by the generic outcome-offer scraper lane."""
+        return []
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        """Scrape generic outcome offers for sports that do not fit RawOddsData."""
+        del sport
+        return []

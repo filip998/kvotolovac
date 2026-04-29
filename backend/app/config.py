@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     cors_origins: str = "*"
     bookmakers: str = "mozzart,meridian,maxbet,oktagonbet,admiralbet,balkanbet,merkurxtip,pinnbet,soccerbet,superbet,betole,365,volcanobet"
+    enabled_sports: str = "basketball"
     notification_gap_threshold: float = 1.5
     persist_inapp_notifications: bool = False
     notification_retention_days: int = 3
@@ -38,6 +39,10 @@ class Settings(BaseSettings):
     @property
     def bookmaker_list(self) -> list[str]:
         return [b.strip() for b in self.bookmakers.split(",") if b.strip()]
+
+    @property
+    def enabled_sport_list(self) -> list[str]:
+        return [s.strip() for s in self.enabled_sports.split(",") if s.strip()]
 
     @property
     def proxy_url_list(self) -> list[str]:
