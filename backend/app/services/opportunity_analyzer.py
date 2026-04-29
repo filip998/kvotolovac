@@ -23,6 +23,7 @@ _COMPLEMENTARY_RESULT_PAIRS = {
     ("football_result", "away"): ("football_double_chance", "home_or_draw"),
     ("football_result", "draw"): ("football_double_chance", "home_or_away"),
 }
+_FOOTBALL_MIDDLE_OUTSIDE_MARGIN_FLOOR = -0.05
 
 
 def _implied_probability(odds: float) -> float:
@@ -140,6 +141,8 @@ def _analyze_total_goals(group: list[NormalizedOutcomeOffer]) -> list[Opportunit
         middle_margin = _middle_profit_margin(low.odds, high.odds)
         if middle_margin is None or middle_margin <= 0:
             continue
+        if margin is None or margin < _FOOTBALL_MIDDLE_OUTSIDE_MARGIN_FLOOR:
+            continue
         opportunities.append(
             Opportunity(
                 sport=low.sport,
@@ -178,4 +181,3 @@ def analyze_outcome_offers(offers: list[NormalizedOutcomeOffer]) -> list[Opportu
             item.market_type,
         ),
     )
-

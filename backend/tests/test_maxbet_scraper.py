@@ -171,6 +171,44 @@ def test_parse_football_outcome_match_emits_mvp_markets():
     }
 
 
+def test_parse_football_outcome_match_emits_bookmaker_provided_total_line():
+    match = {
+        "id": 23337790,
+        "leagueName": "England Premier League",
+        "home": "Arsenal",
+        "away": "Chelsea",
+        "kickOffTime": 1777470900000,
+        "params": {"overUnder": "3.5"},
+        "odds": {
+            "227": 2.25,
+            "228": 1.70,
+        },
+    }
+
+    results = _parse_football_outcome_match(match)
+
+    assert {(row.market_type, row.outcome_code, row.line, row.raw_label) for row in results} == {
+        ("football_total_goals", "over", 3.5, "4+"),
+        ("football_total_goals", "under", 3.5, "0-3"),
+    }
+
+
+@pytest.mark.parametrize("line", ["0", "2", "not-a-number", None])
+def test_parse_football_outcome_match_ignores_unsupported_total_lines(line):
+    match = {
+        "leagueName": "England Premier League",
+        "home": "Arsenal",
+        "away": "Chelsea",
+        "params": {"overUnder": line},
+        "odds": {
+            "227": 2.25,
+            "228": 1.70,
+        },
+    }
+
+    assert _parse_football_outcome_match(match) == []
+
+
 def test_parse_game_total_ot_match_ignores_first_half_total_codes():
     match = {
         "home": "Lyon-Villeurb.",

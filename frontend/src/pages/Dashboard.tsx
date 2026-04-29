@@ -80,7 +80,24 @@ const FOOTBALL_OUTCOME_LABELS: Record<string, string> = {
   draw_or_away: 'X2',
   home_or_away: '12',
 };
-function footballOutcomeLabel(code: string) {
+function footballTotalGoalsLabel(outcomeCode: string, line?: number | null) {
+  if (line == null || !Number.isFinite(line)) {
+    return outcomeCode;
+  }
+  const boundary = Math.floor(line);
+  if (outcomeCode === 'under') {
+    return `0-${boundary}`;
+  }
+  if (outcomeCode === 'over') {
+    return `${boundary + 1}+`;
+  }
+  return outcomeCode;
+}
+
+function footballOutcomeLabel(code: string, marketType?: string, line?: number | null) {
+  if (marketType === 'football_total_goals') {
+    return footballTotalGoalsLabel(code, line);
+  }
   return FOOTBALL_OUTCOME_LABELS[code] || code;
 }
 
@@ -88,14 +105,42 @@ function marketTypeLabel(marketType: string) {
   return MARKET_TYPE_LABELS[marketType as keyof typeof MARKET_TYPE_LABELS] || marketType;
 }
 
+function footballMiddleWindowLabel(opportunity: Opportunity) {
+  const overLeg = opportunity.legs.find(
+    (leg) => leg.market_type === 'football_total_goals' && leg.outcome_code === 'over'
+  );
+  const underLeg = opportunity.legs.find(
+    (leg) => leg.market_type === 'football_total_goals' && leg.outcome_code === 'under'
+  );
+  if (overLeg?.line == null || underLeg?.line == null) {
+    return 'middle window';
+  }
+  const firstGoal = Math.floor(overLeg.line) + 1;
+  const lastGoal = Math.floor(underLeg.line);
+  if (firstGoal === lastGoal) {
+    return `exactly ${firstGoal} goals`;
+  }
+  return `${firstGoal}-${lastGoal} goals`;
+}
+
 function footballOpportunityLabel(opportunity: Opportunity) {
   if (opportunity.opportunity_type === 'same_line_arbitrage') {
     return `Total goals ${opportunity.line ?? 2.5}`;
   }
   if (opportunity.opportunity_type === 'middle') {
-    return 'Goals middle';
+    return `Goals middle: ${footballMiddleWindowLabel(opportunity)}`;
   }
   return 'Result combo';
+}
+
+function footballOpportunityDescription(opportunity: Opportunity) {
+  if (opportunity.opportunity_type === 'same_line_arbitrage') {
+    return `Both sides cover the same ${opportunity.line ?? 2.5} goals line.`;
+  }
+  if (opportunity.opportunity_type === 'middle') {
+    return 'Both tickets win in the middle window; outside ROI is shown separately.';
+  }
+  return 'Exact result paired with the complementary double chance.';
 }
 
 function bookmakerName(bookmakerId: string, fallback?: string | null) {
@@ -919,16 +964,25 @@ export default function Dashboard() {
                             {footballOpportunityLabel(opportunity)}
                           </div>
                           <div className="text-xs text-text-muted">
-                            {opportunity.opportunity_type === 'same_line_arbitrage'
-                              ? 'Both sides cover the same 2.5 goals line.'
-                              : 'Exact result paired with the complementary double chance.'}
+                            {footballOpportunityDescription(opportunity)}
                           </div>
                         </div>
-                        {opportunity.profit_margin != null && (
-                          <span className={`font-mono text-sm font-semibold ${profitColor(opportunity.profit_margin)}`}>
-                            {formatPercentage(opportunity.profit_margin)}
-                          </span>
-                        )}
+                        <div className="text-right">
+                          {opportunity.profit_margin != null && (
+                            <div className={`font-mono text-sm font-semibold ${profitColor(opportunity.profit_margin)}`}>
+                              {formatPercentage(opportunity.profit_margin)}
+                            </div>
+                          )}
+                          {opportunity.opportunity_type === 'middle' &&
+                            opportunity.middle_profit_margin != null && (
+                              <div className="mt-0.5 text-[11px] text-text-muted">
+                                Middle{' '}
+                                <span className={profitColor(opportunity.middle_profit_margin)}>
+                                  {formatPercentage(opportunity.middle_profit_margin)}
+                                </span>
+                              </div>
+                            )}
+                        </div>
                       </div>
                       <div className="mt-3 grid gap-2 md:grid-cols-2">
                         {opportunity.legs.map((leg) => (
@@ -939,7 +993,8 @@ export default function Dashboard() {
                             <div className="min-w-0">
                               <BookmakerBadge name={bookmakerName(leg.bookmaker_id, leg.bookmaker_name)} />
                               <div className="mt-1 text-xs text-text-muted">
-                                {marketTypeLabel(leg.market_type)} · {footballOutcomeLabel(leg.outcome_code)}
+                                {marketTypeLabel(leg.market_type)} ·{' '}
+                                {footballOutcomeLabel(leg.outcome_code, leg.market_type, leg.line)}
                               </div>
                             </div>
                             <div className="font-mono text-base font-semibold text-text">

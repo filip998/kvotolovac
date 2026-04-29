@@ -196,8 +196,8 @@ _FOOTBALL_OUTCOME_CODES = {
     "9": ("football_double_chance", "draw_or_away", None, "X2"),
 }
 _FOOTBALL_TOTAL_GOALS_CODES = {
-    "227": ("over", "3+"),
-    "228": ("under", "0-2"),
+    "227": "over",
+    "228": "under",
 }
 
 _PLAYER_LEAGUE_PREFIX = _BASKETBALL_SPEC.player_league_prefix
@@ -421,6 +421,20 @@ def _coerce_positive_odds(value) -> float | None:
     return odds
 
 
+def _is_supported_football_total_line(value: float | None) -> bool:
+    if value is None or value <= 0:
+        return False
+    doubled = value * 2
+    return doubled.is_integer() and int(doubled) % 2 == 1
+
+
+def _football_total_raw_label(outcome_code: str, line: float) -> str:
+    boundary = int(line)
+    if outcome_code == "under":
+        return f"0-{boundary}"
+    return f"{boundary + 1}+"
+
+
 def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
     home_team = (match.get("home") or "").strip()
     away_team = (match.get("away") or "").strip()
@@ -462,8 +476,8 @@ def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
         total_line = float(params.get("overUnder"))
     except (TypeError, ValueError):
         total_line = None
-    if total_line == 2.5:
-        for code, (outcome_code, raw_label) in _FOOTBALL_TOTAL_GOALS_CODES.items():
+    if _is_supported_football_total_line(total_line):
+        for code, outcome_code in _FOOTBALL_TOTAL_GOALS_CODES.items():
             value = _coerce_positive_odds(odds.get(code))
             if value is None:
                 continue
@@ -478,8 +492,8 @@ def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
                     market_type="football_total_goals",
                     outcome_code=outcome_code,
                     odds=value,
-                    line=2.5,
-                    raw_label=raw_label,
+                    line=total_line,
+                    raw_label=_football_total_raw_label(outcome_code, total_line),
                     start_time=start_time,
                 )
             )

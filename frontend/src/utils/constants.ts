@@ -36,7 +36,7 @@ export const MARKET_TYPE_LABELS: Record<MarketType, string> = {
   player_points_rebounds_assists: 'Points + Rebounds + Assists',
   game_total: 'Game Total',
   game_total_ot: 'Game Total (+OT)',
-  football_total_goals: 'Total Goals 2.5',
+  football_total_goals: 'Total Goals',
   football_result: 'Match Result',
   football_double_chance: 'Double Chance',
   football_result_double_chance: 'Result + Double Chance',

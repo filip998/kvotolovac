@@ -222,7 +222,7 @@ def test_parse_football_outcome_list_emits_mvp_markets():
 
     results = _parse_football_outcome_list(data)
 
-    assert len(results) == 8
+    assert len(results) == 10
     assert all(isinstance(row, RawOutcomeOffer) for row in results)
     assert {row.sport for row in results} == {"football"}
     assert {row.start_time for row in results} == {"2026-04-29T13:55:00+00:00"}
@@ -234,7 +234,9 @@ def test_parse_football_outcome_list_emits_mvp_markets():
         ("football_double_chance", "home_or_away", None, "12"),
         ("football_double_chance", "draw_or_away", None, "X2"),
         ("football_total_goals", "under", 2.5, "0-2"),
+        ("football_total_goals", "over", 1.5, "2+"),
         ("football_total_goals", "over", 2.5, "3+"),
+        ("football_total_goals", "over", 3.5, "4+"),
     }
 
 

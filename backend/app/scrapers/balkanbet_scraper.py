@@ -67,7 +67,9 @@ _FOOTBALL_OUTCOME_MARKETS = {
     },
     443: {
         "0-2": ("football_total_goals", "under", 2.5),
+        "2+": ("football_total_goals", "over", 1.5),
         "3+": ("football_total_goals", "over", 2.5),
+        "4+": ("football_total_goals", "over", 3.5),
     },
 }
 
