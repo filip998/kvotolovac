@@ -810,7 +810,12 @@ async def get_team_review_case_history_summary(
     rows = await db.execute_fetchall(
         """SELECT bookmaker_id, status
            FROM team_review_cases
-           WHERE review_kind IN ('alias_suggestion', 'auto_alias_suggestion')
+           WHERE review_kind IN (
+                'alias_suggestion',
+                'candidate_search',
+                'auto_alias_suggestion',
+                'auto_canonical_merge_suggestion'
+           )
              AND sport = ?
              AND normalized_raw_team_name = ?
              AND suggested_team_id = ?

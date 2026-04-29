@@ -158,6 +158,42 @@ def _query_any_team_by_id(conn: sqlite3.Connection, team_id: int) -> sqlite3.Row
     ).fetchone()
 
 
+def _query_any_team_by_display_name(
+    conn: sqlite3.Connection,
+    *,
+    sport: str,
+    normalized_display_name: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT id, sport, display_name, normalized_display_name, is_active, merged_into_team_id
+        FROM canonical_teams
+        WHERE sport = ? AND normalized_display_name = ?
+        """,
+        (sport, normalized_display_name),
+    ).fetchone()
+
+
+def _resolve_active_team_row(
+    conn: sqlite3.Connection,
+    team_row: sqlite3.Row,
+) -> sqlite3.Row | None:
+    current_row: sqlite3.Row | None = team_row
+    visited_team_ids: set[int] = set()
+    while current_row is not None:
+        current_team_id = int(current_row["id"])
+        if current_team_id in visited_team_ids:
+            return None
+        visited_team_ids.add(current_team_id)
+        if bool(current_row["is_active"]):
+            return current_row
+        merged_into_team_id = current_row["merged_into_team_id"]
+        if merged_into_team_id is None:
+            return None
+        current_row = _query_any_team_by_id(conn, int(merged_into_team_id))
+    return None
+
+
 def _query_team_by_display_name(
     conn: sqlite3.Connection,
     *,
@@ -227,13 +263,19 @@ def _create_canonical_team(
     source: str,
 ) -> TeamAliasResolution:
     normalized_display_name = normalize_identity_text(display_name)
-    existing = _query_team_by_display_name(
+    existing = _query_any_team_by_display_name(
         conn, sport=sport, normalized_display_name=normalized_display_name
     )
     if existing is not None:
+        active_team = _resolve_active_team_row(conn, existing)
+        if active_team is None:
+            raise RuntimeError(
+                f"Canonical team '{display_name.strip()}' already exists for sport "
+                f"'{sport}' but does not resolve to an active team"
+            )
         return TeamAliasResolution(
-            team_id=int(existing["id"]),
-            team_name=str(existing["display_name"]),
+            team_id=int(active_team["id"]),
+            team_name=str(active_team["display_name"]),
             source="canonical",
             sport=sport,
             bookmaker_id=_GLOBAL_BOOKMAKER_ID,

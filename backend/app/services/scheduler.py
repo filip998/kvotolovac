@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 
 AUTO_ALIAS_REVIEW_KIND = "auto_alias_suggestion"
+AUTO_CANONICAL_MERGE_REVIEW_KIND = "auto_canonical_merge_suggestion"
+CONTEXTUAL_CANONICAL_MERGE_THRESHOLD = 80
 
 
 def _is_auto_alias_candidate(case) -> bool:
@@ -64,6 +66,68 @@ def _candidate_merge_source_ids(case) -> set[int]:
             and candidate.score >= ANCHORED_AUTO_APPLY_THRESHOLD
         )
     }
+
+
+def _candidate_event_teams(candidate) -> set[str] | None:
+    if not candidate.canonical_home_team or not candidate.canonical_away_team:
+        return None
+    return {candidate.canonical_home_team, candidate.canonical_away_team}
+
+
+def _contextual_merge_source_ids(case) -> set[int]:
+    if (
+        case.reason_code != "candidate_team_match_same_start_time"
+        or case.suggested_team_id is None
+        or case.suggested_team_name is None
+        or case.start_time is None
+        or case.matched_counterpart_team is None
+        or case.canonical_home_team is None
+        or case.canonical_away_team is None
+        or case.similarity_score is None
+        or case.similarity_score < CONTEXTUAL_CANONICAL_MERGE_THRESHOLD
+    ):
+        return set()
+
+    target_candidate = next(
+        (
+            candidate
+            for candidate in case.candidate_teams
+            if candidate.team_id == case.suggested_team_id
+        ),
+        None,
+    )
+    if (
+        target_candidate is None
+        or target_candidate.score is None
+        or target_candidate.score < CONTEXTUAL_CANONICAL_MERGE_THRESHOLD
+        or target_candidate.slot_support is None
+    ):
+        return set()
+
+    target_event_teams = _candidate_event_teams(target_candidate)
+    if target_event_teams is None:
+        return set()
+
+    source_team_ids: set[int] = set()
+    for candidate in case.candidate_teams:
+        if (
+            candidate.team_id == case.suggested_team_id
+            or candidate.score is None
+            or candidate.score < CONTEXTUAL_CANONICAL_MERGE_THRESHOLD
+            or candidate.slot_support is None
+            or target_candidate.slot_support <= candidate.slot_support
+        ):
+            continue
+
+        candidate_event_teams = _candidate_event_teams(candidate)
+        if candidate_event_teams is None:
+            continue
+        if len(target_event_teams & candidate_event_teams) != 1:
+            continue
+
+        source_team_ids.add(candidate.team_id)
+
+    return source_team_ids
 
 
 def _normalize_merge_pairings(
@@ -267,7 +331,9 @@ class Scheduler:
 
         try:
             for case in team_review_cases:
-                if not _is_auto_alias_candidate(case):
+                is_auto_alias_candidate = _is_auto_alias_candidate(case)
+                contextual_merge_source_ids = _contextual_merge_source_ids(case)
+                if not is_auto_alias_candidate and not contextual_merge_source_ids:
                     continue
 
                 _, has_declined = await odds_store.get_team_review_case_history_summary(
@@ -279,6 +345,30 @@ class Scheduler:
                     canonical_away_team=case.canonical_away_team,
                 )
                 if has_declined:
+                    continue
+
+                if not is_auto_alias_candidate:
+                    evidence = list(case.evidence)
+                    evidence.append(
+                        "Auto-approved canonical merge from exact event context "
+                        f"(score {case.similarity_score:g}, threshold {CONTEXTUAL_CANONICAL_MERGE_THRESHOLD})"
+                    )
+                    evidence.append(
+                        "Same sport, exact kickoff, shared canonical counterpart, and stronger target support"
+                    )
+                    auto_approved_cases.append(
+                        case.model_copy(
+                            update={
+                                "review_kind": AUTO_CANONICAL_MERGE_REVIEW_KIND,
+                                "status": "approved",
+                                "evidence": evidence,
+                            },
+                        )
+                    )
+                    pending_merge_pairings.extend(
+                        (source_team_id, case.suggested_team_id)
+                        for source_team_id in contextual_merge_source_ids
+                    )
                     continue
 
                 case_applied_aliases: list[tuple[str, str, str]] = []
@@ -350,7 +440,8 @@ class Scheduler:
                     "Auto-approved in the same scrape after anchored fuzzy match "
                     f"(score {case.similarity_score:g}, threshold {ANCHORED_AUTO_APPLY_THRESHOLD})"
                 )
-                if len(_candidate_merge_source_ids(case)) > 0:
+                merge_source_ids = _candidate_merge_source_ids(case) | contextual_merge_source_ids
+                if merge_source_ids:
                     evidence.append(
                         "Applied same-scrape bookmaker overrides for competing canonical labels"
                     )
@@ -368,7 +459,7 @@ class Scheduler:
                 )
                 pending_merge_pairings.extend(
                     (source_team_id, resolution.team_id)
-                    for source_team_id in _candidate_merge_source_ids(case)
+                    for source_team_id in merge_source_ids
                 )
         except Exception:
             if applied_aliases:
@@ -400,7 +491,8 @@ class Scheduler:
     async def _apply_canonical_merges(
         self,
         pending_merge_pairings: list[tuple[int, int]],
-    ) -> None:
+    ) -> list[tuple[int, int]]:
+        applied_pairings: list[tuple[int, int]] = []
         normalized_pairings, conflicts = _normalize_merge_pairings(pending_merge_pairings)
         for source_team_id in sorted(conflicts):
             logger.warning(
@@ -425,12 +517,14 @@ class Scheduler:
                     source_team_id=source_team.id,
                     target_team_id=target_team.id,
                 )
+                applied_pairings.append((source_team.id, target_team.id))
             except ValueError:
                 logger.exception(
                     "Failed auto-merging canonical team %s into %s",
                     source_team.id,
                     target_team.id,
                 )
+        return applied_pairings
 
     async def start(self) -> None:
         if self._running:
@@ -588,7 +682,12 @@ class Scheduler:
                     team_review_cases,
                     all_raw,
                 )
-                if auto_approved_team_reviews:
+                applied_auto_merges: list[tuple[int, int]] = []
+                if pending_auto_merges:
+                    applied_auto_merges = await self._apply_canonical_merges(
+                        pending_auto_merges
+                    )
+                if auto_approved_team_reviews or applied_auto_merges:
                     (
                         normalized,
                         unresolved_odds,
@@ -693,12 +792,6 @@ class Scheduler:
                 logger.info("Retention cleanup complete: %s", cleanup_counts)
             except Exception:
                 logger.exception("Retention cleanup failed after a successful scrape cycle")
-
-            if pending_auto_merges:
-                try:
-                    await self._apply_canonical_merges(pending_auto_merges)
-                except Exception:
-                    logger.exception("Automatic canonical merges failed after a successful scrape cycle")
 
             result = {
                 "matches_scraped": len(seen_matches),
