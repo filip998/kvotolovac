@@ -16,10 +16,48 @@
     "systemStatus": 1,
     "bets": [
       {
-        "id": 395921243,
+        "betTypeId": 1200,
+        "betTypeName": "Ukupno poena",
+        "sBV": "12.5",
         "eventId": 2160799,
-        "competitionId": 22317,
-        "regionId": 464
+        "feedStatus": true,
+        "systemStatus": true,
+        "betOutcomes": [
+          {
+            "betTypeId": 1200,
+            "betTypeOutcomeId": 3929,
+            "name": "manje",
+            "sBV": "12.5",
+            "odd": 2.40,
+            "isPlayable": true
+          },
+          {
+            "betTypeId": 1200,
+            "betTypeOutcomeId": 3928,
+            "name": "više",
+            "sBV": "12.5",
+            "odd": 1.50,
+            "isPlayable": true
+          }
+        ]
+      },
+      {
+        "betTypeId": 1301,
+        "betTypeName": "Nešto drugo",
+        "sBV": "5.5",
+        "eventId": 2160799,
+        "feedStatus": true,
+        "systemStatus": true,
+        "betOutcomes": [
+          {
+            "betTypeId": 1201,
+            "betTypeOutcomeId": 4000,
+            "name": "više",
+            "sBV": "5.5",
+            "odd": 1.80,
+            "isPlayable": true
+          }
+        ]
       }
     ]
   },
@@ -38,7 +76,34 @@
     "betsCount": 2,
     "isPlayable": true,
     "systemStatus": 1,
-    "bets": []
+    "bets": [
+      {
+        "betTypeId": 1200,
+        "betTypeName": "Ukupno poena",
+        "sBV": "10.5",
+        "eventId": 2160800,
+        "feedStatus": true,
+        "systemStatus": true,
+        "betOutcomes": [
+          {
+            "betTypeId": 1200,
+            "betTypeOutcomeId": 3929,
+            "name": "manje",
+            "sBV": "10.5",
+            "odd": 1.75,
+            "isPlayable": true
+          },
+          {
+            "betTypeId": 1200,
+            "betTypeOutcomeId": 3928,
+            "name": "više",
+            "sBV": "10.5",
+            "odd": 1.95,
+            "isPlayable": true
+          }
+        ]
+      }
+    ]
   },
   {
     "id": 2160801,

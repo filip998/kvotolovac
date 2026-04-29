@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -13,15 +12,12 @@ from ..services.scrape_window import (
 )
 from ..models.schemas import RawOddsData
 from ..services.normalizer import normalize_team_name
+from ..services.text_normalizer import normalize_identity_text
 
 logger = logging.getLogger(__name__)
 
 _BASE_LIST_URL = (
     "https://sportweb.pinnbet.rs/SportBookCacheWeb/api/offer/getWebEventsSelections"
-)
-_DETAIL_URL = (
-    "https://sportweb.pinnbet.rs/SportBookCacheWeb/api/offer/betsAndGroups"
-    "/{sport_id}/{region_id}/{competition_id}/{event_id}"
 )
 
 _PLAYER_SPORT_ID = 3
@@ -98,9 +94,6 @@ _COMPETITION_ID_LEAGUE_MAP: dict[int, str] = {
     13981: "nba",
     22317: "aba_liga",
 }
-
-_DETAIL_CONCURRENCY = 5
-
 
 def _build_list_url(
     sport_id: int,
@@ -237,6 +230,15 @@ def _resolve_matchup_from_short_name(
     return best_match
 
 
+def _matchup_contains_player(matchup: tuple[str, str] | None, player_name: str) -> bool:
+    if matchup is None:
+        return False
+    player_key = normalize_identity_text(player_name)
+    if not player_key:
+        return False
+    return any(normalize_identity_text(team_name) == player_key for team_name in matchup)
+
+
 def _get_player_event_ids(events: list[dict]) -> list[dict]:
     """Return full event dicts whose ``mappingTypeId`` equals 5 (player specials)."""
     return [e for e in events if e.get("mappingTypeId") == _MAPPING_TYPE_PLAYER]
@@ -312,7 +314,7 @@ def _parse_event_detail(
     bets_data: dict,
     league_id: str | None = None,
 ) -> list[RawOddsData]:
-    """Combine a list-endpoint event with its detail bets into *RawOddsData*."""
+    """Parse a player-prop event and its embedded or detail-shaped bets."""
     results: list[RawOddsData] = []
 
     name = event.get("name", "")
@@ -327,6 +329,8 @@ def _parse_event_detail(
         team,
         effective_league_id,
     )
+    if _matchup_contains_player(resolved_matchup, player_name):
+        resolved_matchup = None
     home_team = resolved_matchup[0] if resolved_matchup else (team or "")
     away_team = resolved_matchup[1] if resolved_matchup else player_name
 
@@ -391,39 +395,6 @@ class PinnBetScraper(BaseScraper):
     def get_supported_leagues(self) -> list[str]:
         return ["basketball"]
 
-    async def _fetch_event_detail(
-        self,
-        event: dict,
-        semaphore: asyncio.Semaphore,
-        league_id: str | None = None,
-    ) -> list[RawOddsData]:
-        sport_id = event.get("sportId", _PLAYER_SPORT_ID)
-        region_id = event.get("regionId")
-        competition_id = event.get("competitionId")
-        event_id = event.get("id")
-
-        url = _DETAIL_URL.format(
-            sport_id=sport_id,
-            region_id=region_id,
-            competition_id=competition_id,
-            event_id=event_id,
-        )
-
-        async with semaphore:
-            try:
-                detail = await self._http.get_json(
-                    url,
-                    headers=_DEFAULT_HEADERS,
-                )
-            except Exception:
-                logger.warning(
-                    "PinnBet: failed to fetch detail for event %s",
-                    event_id,
-                )
-                return []
-
-        return _parse_event_detail(event, detail, league_id=league_id)
-
     async def _fetch_game_total_events(self) -> list[dict]:
         url = _build_list_url(
             _GAME_TOTAL_SPORT_ID,
@@ -477,20 +448,14 @@ class PinnBetScraper(BaseScraper):
         player_results: list[RawOddsData] = []
         total_results: list[RawOddsData] = []
         player_events = await self._fetch_player_events()
-        if player_events:
-            semaphore = asyncio.Semaphore(_DETAIL_CONCURRENCY)
-            detail_results = await asyncio.gather(
-                *(
-                    self._fetch_event_detail(
-                        ev,
-                        semaphore,
-                        league_id=_extract_league_id(ev),
-                    )
-                    for ev in player_events
+        for event in player_events:
+            player_results.extend(
+                _parse_event_detail(
+                    event,
+                    event,
+                    league_id=_extract_league_id(event),
                 )
             )
-            for batch in detail_results:
-                player_results.extend(batch)
 
         basketball_events = await self._fetch_game_total_events()
         for event in basketball_events:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +23,33 @@ from app.models.schemas import RawOddsData
 EVENTS_FIXTURE = Path(__file__).parent / "fixtures" / "pinnbet_events.json"
 BETS_FIXTURE = Path(__file__).parent / "fixtures" / "pinnbet_bets.json"
 TOTALS_FIXTURE = Path(__file__).parent / "fixtures" / "pinnbet_game_totals.json"
+
+
+def _player_threshold_bet(
+    bet_type_id: int,
+    bet_type_name: str,
+    threshold: float,
+    over: float,
+    under: float,
+) -> dict:
+    threshold_text = str(threshold)
+    return {
+        "betTypeId": bet_type_id,
+        "betTypeName": bet_type_name,
+        "sBV": threshold_text,
+        "isPlayable": True,
+        "betOutcomes": [
+            {"name": "više", "odd": over, "isPlayable": True},
+            {"name": "manje", "odd": under, "isPlayable": True},
+        ],
+    }
+
+
+def _odds_signature(rows: list[RawOddsData]) -> list[tuple[str, float, float | None, float | None]]:
+    return [
+        (row.market_type, row.threshold, row.over_odds, row.under_odds)
+        for row in rows
+    ]
 
 
 @pytest.fixture
@@ -226,6 +252,16 @@ def test_parse_event_detail_only_bet_type_1200(events_data, bets_data):
     results = _parse_event_detail(event, bets_data)
     assert len(results) == 1
     assert results[0].threshold == 12.5
+
+
+def test_parse_event_detail_inline_event_bets_match_detail_shape(events_data, bets_data):
+    event = {**events_data[0], "bets": bets_data["bets"]}
+
+    inline_results = _parse_event_detail(event, event)
+    detail_results = _parse_event_detail(event, bets_data)
+
+    assert _odds_signature(inline_results) == _odds_signature(detail_results)
+    assert len(inline_results) == 1
 
 
 def test_parse_event_detail_empty_bets(events_data):
@@ -457,6 +493,81 @@ def test_parse_event_detail_resolves_matchup_from_short_name_aliases():
     assert results[0].away_team == "Cluj Napoc"
 
 
+def test_parse_event_detail_rejects_player_team_short_name_as_matchup():
+    event = {
+        "name": "Sargiunas I. - Rytas",
+        "shortName": "Sargiunas I.-Rytas",
+        "competitionName": "Litvanija 1 plej of",
+        "dateTime": "2026-04-29T15:30:00",
+    }
+    detail = {
+        "bets": [
+            _player_threshold_bet(1200, "Ukupno poena", 8.5, 1.8, 1.9),
+        ]
+    }
+
+    results = _parse_event_detail(event, detail)
+
+    assert len(results) == 1
+    assert results[0].player_name == "Sargiunas I."
+    assert results[0].home_team == "Rytas"
+    assert results[0].away_team == "Sargiunas I."
+
+
+def test_parse_event_detail_cade_cunningham_inline_nba_rows_match_detail_shape():
+    event = {
+        "id": 2216025,
+        "name": "Cade Cunningham - Detroit Pistons",
+        "shortName": "Detroit Pistons-New York Knicks",
+        "competitionId": 13981,
+        "competitionName": "NBA - plej of",
+        "regionId": 462,
+        "sportId": 3,
+        "mappingTypeId": 5,
+        "dateTime": "2026-04-29T23:00:00",
+        "bets": [
+            _player_threshold_bet(1195, "Ukupno postignutih trojki", 1.5, 1.48, 2.6),
+            _player_threshold_bet(1201, "Ukupno asistencija", 9.5, 2.0, 1.72),
+            _player_threshold_bet(1200, "Ukupno poena", 26.5, 1.55, 2.2),
+            _player_threshold_bet(1200, "Ukupno poena", 28.5, 1.89, 1.91),
+            _player_threshold_bet(1200, "Ukupno poena", 30.5, 2.25, 1.55),
+            _player_threshold_bet(1203, "Ukupno poena+asistencija", 37.5, 1.8, 1.9),
+            _player_threshold_bet(1204, "Ukupno poena+skokova", 34.5, 1.87, 1.83),
+            _player_threshold_bet(
+                1206,
+                "Ukupno poena+asistencija+skokova",
+                43.5,
+                1.8,
+                1.88,
+            ),
+            _player_threshold_bet(1202, "Ukupno skokova", 5.5, 1.78, 1.9),
+            _player_threshold_bet(1205, "Ukupno asistencija+skokova", 15.5, 1.95, 1.75),
+        ],
+    }
+    detail = {"bets": event["bets"]}
+
+    inline_results = _parse_event_detail(event, event)
+    detail_results = _parse_event_detail(event, detail)
+
+    assert _odds_signature(inline_results) == _odds_signature(detail_results)
+    assert _odds_signature(inline_results) == [
+        ("player_3points", 1.5, 1.48, 2.6),
+        ("player_assists", 9.5, 2.0, 1.72),
+        ("player_points", 26.5, 1.55, 2.2),
+        ("player_points", 28.5, 1.89, 1.91),
+        ("player_points", 30.5, 2.25, 1.55),
+        ("player_points_assists", 37.5, 1.8, 1.9),
+        ("player_points_rebounds", 34.5, 1.87, 1.83),
+        ("player_points_rebounds_assists", 43.5, 1.8, 1.88),
+        ("player_rebounds", 5.5, 1.78, 1.9),
+        ("player_rebounds_assists", 15.5, 1.95, 1.75),
+    ]
+    assert {row.league_id for row in inline_results} == {"nba"}
+    assert {row.player_name for row in inline_results} == {"Cade Cunningham"}
+    assert {row.home_team for row in inline_results} == {"Detroit Pistons"}
+    assert {row.away_team for row in inline_results} == {"New York Knicks"}
+
+
 def test_resolve_matchup_from_short_name_prefers_full_team_over_internal_hyphen_split():
     assert _resolve_matchup_from_short_name(
         "Maccabi Tel-Aviv-Partizan",
@@ -570,7 +681,7 @@ async def test_scraper_integration(events_data, bets_data, totals_data):
                 return totals_data
             player_urls.append(url)
             return events_data
-        return bets_data
+        raise AssertionError(f"Unexpected PinnBet detail call: {url}")
 
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
         results = await scraper.scrape_odds("basketball")
@@ -591,55 +702,55 @@ async def test_scraper_integration(events_data, bets_data, totals_data):
 
 
 @pytest.mark.asyncio
-async def test_scraper_detail_failure_skipped(events_data, bets_data, totals_data):
-    """If one detail fetch fails, others still succeed."""
+async def test_scraper_uses_only_list_endpoints_for_inline_player_bets(
+    events_data,
+    totals_data,
+):
     scraper = PinnBetScraper()
-    call_count = 0
-    player_list_call_count = 0
+    captured_urls: list[str] = []
 
     async def mock_get(url, **kwargs):
-        nonlocal call_count, player_list_call_count
+        captured_urls.append(url)
         if "getWebEventsSelections" in url:
             if "pageId=35&sportId=2" in url:
                 return totals_data
-            player_list_call_count += 1
             return events_data
-        call_count += 1
-        if call_count == 1:
-            raise Exception("detail failed")
-        return bets_data
+        raise AssertionError(f"Unexpected PinnBet detail call: {url}")
 
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
         results = await scraper.scrape_odds("basketball")
 
-    assert len(results) == 12
-    assert player_list_call_count == 1
+    assert len(results) == 13
+    assert len(captured_urls) == 2
+    assert all("getWebEventsSelections" in url for url in captured_urls)
+    assert any("pageId=3&sportId=3" in url for url in captured_urls)
+    assert any("pageId=35&sportId=2" in url for url in captured_urls)
 
 
 @pytest.mark.asyncio
-async def test_scraper_concurrent_detail_fetches(events_data, bets_data, totals_data):
-    """Detail fetches run concurrently via semaphore."""
+async def test_scraper_skips_stub_player_bets_without_detail_fallback(
+    events_data,
+    totals_data,
+):
     scraper = PinnBetScraper()
-    active = 0
-    max_active = 0
-    player_list_call_count = 0
+    stub_events = [
+        {**event, "bets": [{"id": 1, "eventId": event["id"]}]}
+        for event in events_data
+        if event.get("mappingTypeId") == 5
+    ]
+    captured_urls: list[str] = []
 
     async def mock_get(url, **kwargs):
-        nonlocal active, max_active, player_list_call_count
+        captured_urls.append(url)
         if "getWebEventsSelections" in url:
             if "pageId=35&sportId=2" in url:
                 return totals_data
-            player_list_call_count += 1
-            return events_data
-        active += 1
-        max_active = max(max_active, active)
-        await asyncio.sleep(0.02)
-        active -= 1
-        return bets_data
+            return stub_events
+        raise AssertionError(f"Unexpected PinnBet detail call: {url}")
 
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
         results = await scraper.scrape_odds("basketball")
 
-    assert max_active >= 2
-    assert len(results) == 13
-    assert player_list_call_count == 1
+    assert len(results) == 11
+    assert all(result.market_type == "game_total_ot" for result in results)
+    assert len(captured_urls) == 2
