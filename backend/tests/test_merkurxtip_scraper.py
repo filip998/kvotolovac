@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -11,7 +10,7 @@ from app.scrapers.merkurxtip_scraper import (
     MerkurXTipScraper,
     _parse_match_detail,
     _parse_game_total_ot_match,
-    _get_player_match_ids,
+    _get_player_matches,
     _get_total_match_ids,
     _parse_start_time,
     _extract_league_id,
@@ -100,70 +99,81 @@ def test_extract_league_id_case_insensitive():
     assert _extract_league_id("ACB IGRAČI") == "acb"
 
 
-# ── _get_player_match_ids ─────────────────────────────────
+# ── _get_player_matches ─────────────────────────────────
 
 
-def test_get_player_match_ids(league_data):
-    ids = _get_player_match_ids(league_data["esMatches"])
-    assert len(ids) > 0
-    assert all(isinstance(i, int) for i in ids)
+def test_get_player_matches(league_data):
+    matches = _get_player_matches(league_data["esMatches"])
+    assert [m["id"] for m in matches] == [132935920, 132935921]
 
 
-def test_get_player_match_ids_filters_non_player():
+def test_get_player_matches_filters_non_player_and_empty_odds():
     matches = [
         {
             "id": 1,
             "leagueName": "ACB Igrači",
             "params": {"ouPlPoints": "18.5"},
+            "odds": {"51679": 1.9, "51681": 1.9},
         },
         {
             "id": 2,
             "leagueName": "ACB Liga",
             "params": {"ouPlPoints": "18.5"},
+            "odds": {"51679": 1.9, "51681": 1.9},
         },
         {
             "id": 3,
             "leagueName": "ACB Igrači",
             "params": {"unrelated": "1.5"},
+            "odds": {"51679": 1.9, "51681": 1.9},
+        },
+        {
+            "id": 4,
+            "leagueName": "ACB Igrači",
+            "params": {"ouPlPoints": "18.5"},
+            "odds": {},
         },
     ]
-    assert _get_player_match_ids(matches) == [1]
+    assert [m["id"] for m in _get_player_matches(matches)] == [1]
 
 
-def test_get_player_match_ids_empty():
-    assert _get_player_match_ids([]) == []
+def test_get_player_matches_empty():
+    assert _get_player_matches([]) == []
 
 
-def test_get_player_match_ids_no_id():
+def test_get_player_matches_does_not_require_id():
     matches = [
         {
             "leagueName": "ACB Igrači",
             "params": {"ouPlPoints": "18.5"},
+            "odds": {"51679": 1.9, "51681": 1.9},
         },
     ]
-    assert _get_player_match_ids(matches) == []
+    assert _get_player_matches(matches) == matches
 
 
-def test_get_player_match_ids_includes_non_points_markets():
+def test_get_player_matches_includes_non_points_markets():
     matches = [
         {
             "id": 1,
             "leagueName": "ACB Igrači",
             "params": {"ouPlTPRA": "45.5"},
+            "odds": {"55215": 1.9, "55217": 1.9},
         },
         {
             "id": 2,
             "leagueName": "ACB Igrači",
             "params": {"ouPlRebounds": "5.5"},
+            "odds": {"51685": 1.9, "51687": 1.9},
         },
     ]
-    assert _get_player_match_ids(matches) == [1, 2]
+    assert [m["id"] for m in _get_player_matches(matches)] == [1, 2]
 
 
-def test_get_player_match_ids_skips_no_odds_params(league_data):
-    """Match 132935923 has ouPlPoints but empty odds — still has param, so included."""
-    ids = _get_player_match_ids(league_data["esMatches"])
-    assert 132935923 in ids
+def test_get_player_matches_skips_no_odds_params(league_data):
+    """List-only player parsing cannot recover rows that are missing inline odds."""
+    ids = [m["id"] for m in _get_player_matches(league_data["esMatches"])]
+    assert 132935923 not in ids
 
 
 def test_get_total_match_ids(totals_data):
@@ -319,6 +329,44 @@ def test_parse_match_detail_fixture_all_threshold_lines(match_data):
     assert len(threshold_results) == 12
 
 
+def test_parse_list_player_match_documents_fast_coverage():
+    match = {
+        "home": "Jokic N.",
+        "away": "Denver Nuggets",
+        "leagueName": "NBA Igrači",
+        "kickOffTime": 1775923200000,
+        "params": {
+            "ouPlPoints": "28.5",
+            "ouPlRebounds": "12.5",
+            "ouPlAssists": "8.5",
+            "ouPl3Points": "1.5",
+            "ouPlTPRA": "49.5",
+        },
+        "odds": {
+            "51679": 1.91,
+            "51681": 1.89,
+            "51685": 1.82,
+            "51687": 1.98,
+            "51682": 1.77,
+            "51684": 2.05,
+            "51688": 1.7,
+            "51690": 2.0,
+            "55215": 1.76,
+            "55217": 2.04,
+        },
+    }
+
+    results = _parse_match_detail(match)
+
+    assert {(r.market_type, r.threshold) for r in results} == {
+        ("player_points", 28.5),
+        ("player_rebounds", 12.5),
+        ("player_assists", 8.5),
+        ("player_3points", 1.5),
+        ("player_points_rebounds_assists", 49.5),
+    }
+
+
 def test_parse_match_detail_missing_threshold():
     match = {
         "home": "Player1",
@@ -417,20 +465,25 @@ def test_parse_game_total_ot_match_skips_player_market():
 @pytest.mark.asyncio
 async def test_scraper_returns_data_from_bulk_listing(match_data, league_data):
     scraper = MerkurXTipScraper()
+    match_detail_calls: list[str] = []
 
     async def mock_get(url, **kwargs):
-        if url.endswith("/sport/SK/mob"):
+        if url.endswith("/league-group/166/mob"):
             return league_data
         if url.endswith("/sport/B/mob"):
             return {"esMatches": []}
         if "/league/" in url:
             pytest.fail("legacy league fallback should not run when bulk listing has player matches")
+        if "/match/" in url:
+            match_detail_calls.append(url)
+            pytest.fail("player detail calls should not run for list-parseable player props")
         return match_data
 
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
         results = await scraper.scrape_odds("basketball")
 
-    assert len(results) > 0
+    assert len(results) == 3
+    assert match_detail_calls == []
     assert all(isinstance(r, RawOddsData) for r in results)
 
 
@@ -452,7 +505,7 @@ async def test_list_requests_use_configured_lookahead_hours(monkeypatch):
         return {"esMatches": []}
 
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
-        await scraper._fetch_bulk_match_ids()
+        await scraper._fetch_bulk_player_matches()
         await scraper._fetch_total_matches()
 
     assert len(captured_params) == 2
@@ -494,28 +547,26 @@ async def test_scraper_falls_back_to_legacy_leagues_when_bulk_listing_empty():
     league_matches = [
         {
             "id": 201,
+            "home": "Player One",
+            "away": "Team One",
             "leagueName": "ACB Igrači",
+            "kickOffTime": 1775923200000,
             "params": {"ouPlPoints": "26.5"},
+            "odds": {"51679": 1.9, "51681": 1.9},
         },
     ]
-    detail_match = {
-        "home": "Player One",
-        "away": "Team One",
-        "leagueName": "ACB Igrači",
-        "kickOffTime": 1775923200000,
-        "params": {"ouPlPoints": "26.5"},
-        "odds": {"51679": 1.9, "51681": 1.9},
-    }
 
     async def mock_get(url, **kwargs):
         calls.append(url)
-        if url.endswith("/sport/SK/mob"):
+        if url.endswith("/league-group/166/mob"):
             return {"esMatches": []}
         if url.endswith("/sport/B/mob"):
             return {"esMatches": []}
         if "/league/" in url:
             return {"esMatches": league_matches}
-        return detail_match
+        if "/match/" in url:
+            pytest.fail("legacy player fallback should parse list odds without detail calls")
+        raise AssertionError(f"Unexpected URL: {url}")
 
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
         results = await scraper.scrape_odds("basketball")
@@ -525,26 +576,10 @@ async def test_scraper_falls_back_to_legacy_leagues_when_bulk_listing_empty():
 
 
 @pytest.mark.asyncio
-async def test_scraper_fetches_details_concurrently_and_skips_failures():
+async def test_scraper_parses_player_list_without_detail_calls():
     league_matches = [
         {
             "id": 201,
-            "leagueName": "ACB Igrači",
-            "params": {"ouPlPoints": "26.5"},
-        },
-        {
-            "id": 202,
-            "leagueName": "ACB Igrači",
-            "params": {"ouPlPoints": "18.5"},
-        },
-        {
-            "id": 203,
-            "leagueName": "ACB Igrači",
-            "params": {"ouPlTPRA": "34.5"},
-        },
-    ]
-    detail_matches = {
-        201: {
             "home": "Player One",
             "away": "Team One",
             "leagueName": "ACB Igrači",
@@ -552,7 +587,17 @@ async def test_scraper_fetches_details_concurrently_and_skips_failures():
             "params": {"ouPlPoints": "26.5"},
             "odds": {"51679": 1.9, "51681": 1.9},
         },
-        203: {
+        {
+            "id": 202,
+            "home": "Player Two",
+            "away": "Team Two",
+            "leagueName": "ACB Igrači",
+            "kickOffTime": 1775923200000,
+            "params": {"ouPlPoints": "18.5"},
+            "odds": {"51679": 1.8, "51681": 2.0},
+        },
+        {
+            "id": 203,
             "home": "Player Three",
             "away": "Team Three",
             "leagueName": "ACB Igrači",
@@ -560,46 +605,39 @@ async def test_scraper_fetches_details_concurrently_and_skips_failures():
             "params": {"ouPlTPRA": "34.5"},
             "odds": {"55215": 1.87, "55217": 1.93},
         },
-    }
+    ]
 
     class StubHttpClient:
         def __init__(self) -> None:
             self.rate_limit_per_second = 4.0
-            self.active_details = 0
-            self.max_active_details = 0
+            self.match_detail_calls: list[str] = []
 
         async def get_json(self, url: str, **kwargs):
-            if url.endswith("/sport/SK/mob"):
+            if url.endswith("/league-group/166/mob"):
                 return {"esMatches": league_matches}
             if url.endswith("/sport/B/mob"):
                 return {"esMatches": []}
-
-            match_id = int(url.rsplit("/", 1)[-1])
-            self.active_details += 1
-            self.max_active_details = max(self.max_active_details, self.active_details)
-            await asyncio.sleep(0.02)
-            self.active_details -= 1
-
-            if match_id == 202:
-                raise Exception("detail failed")
-
-            return detail_matches[match_id]
+            if "/match/" in url:
+                self.match_detail_calls.append(url)
+                raise Exception("player detail should not be fetched")
+            raise AssertionError(f"Unexpected URL: {url}")
 
     http_client = StubHttpClient()
     scraper = MerkurXTipScraper(http_client=http_client)
 
     results = await scraper.scrape_odds("basketball")
 
-    assert http_client.max_active_details > 1
+    assert http_client.match_detail_calls == []
     assert {(r.player_name, r.market_type) for r in results} == {
         ("Player One", "player_points"),
+        ("Player Two", "player_points"),
         ("Player Three", "player_points_rebounds_assists"),
     }
 
 
 @pytest.mark.asyncio
-async def test_scraper_detail_failure_does_not_crash():
-    """If all detail fetches fail, we get empty results, not an exception."""
+async def test_scraper_player_list_missing_inline_odds_does_not_fetch_detail():
+    """If player list rows lack inline odds, skip them instead of fetching detail."""
     league_matches = [
         {
             "id": 301,
@@ -607,12 +645,18 @@ async def test_scraper_detail_failure_does_not_crash():
             "params": {"ouPlPoints": "18.5"},
         },
     ]
+    detail_calls: list[str] = []
 
     async def mock_get(url, **kwargs):
-        if url.endswith("/sport/SK/mob"):
+        if url.endswith("/league-group/166/mob"):
             return {"esMatches": league_matches}
         if url.endswith("/sport/B/mob"):
             return {"esMatches": []}
+        if "/league/" in url:
+            return {"esMatches": []}
+        if "/match/" in url:
+            detail_calls.append(url)
+            pytest.fail("player detail should not be fetched when inline odds are missing")
         raise Exception("detail failed")
 
     scraper = MerkurXTipScraper()
@@ -620,6 +664,7 @@ async def test_scraper_detail_failure_does_not_crash():
         results = await scraper.scrape_odds("basketball")
 
     assert results == []
+    assert detail_calls == []
 
 
 @pytest.mark.asyncio
@@ -627,7 +672,7 @@ async def test_scraper_returns_ot_totals(totals_data):
     scraper = MerkurXTipScraper()
 
     async def mock_get(url, **kwargs):
-        if url.endswith("/sport/SK/mob"):
+        if url.endswith("/league-group/166/mob"):
             return {"esMatches": []}
         if url.endswith("/sport/B/mob"):
             return totals_data["list"]
@@ -665,7 +710,7 @@ async def test_scraper_detail_replaces_list_total_line_when_same_threshold(total
     detail_data["kickOffTime"] = list_data["esMatches"][0]["kickOffTime"] + 300000
 
     async def mock_get(url, **kwargs):
-        if url.endswith("/sport/SK/mob"):
+        if url.endswith("/league-group/166/mob"):
             return {"esMatches": []}
         if url.endswith("/sport/B/mob"):
             return list_data

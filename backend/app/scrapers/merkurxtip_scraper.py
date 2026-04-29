@@ -14,7 +14,7 @@ from ..models.schemas import RawOddsData
 
 logger = logging.getLogger(__name__)
 
-_PLAYER_LIST_URL = "https://www.merkurxtip.rs/restapi/offer/sr/sport/SK/mob"
+_PLAYER_LIST_URL = "https://www.merkurxtip.rs/restapi/offer/sr/sport/SK/league-group/166/mob"
 _TOTALS_LIST_URL = "https://www.merkurxtip.rs/restapi/offer/sr/sport/B/mob"
 _LEAGUE_URL = "https://www.merkurxtip.rs/restapi/offer/sr/sport/SK/league/{league_id}/mob"
 _MATCH_URL = "https://www.merkurxtip.rs/restapi/offer/sr/match/{match_id}"
@@ -312,19 +312,34 @@ def _parse_game_total_ot_match(match: dict) -> list[RawOddsData]:
     return results
 
 
-def _get_player_match_ids(matches: list[dict]) -> list[int]:
-    """Extract supported player-props match IDs from a league listing."""
-    ids: list[int] = []
-    for m in matches:
-        if "igrači" not in m.get("leagueName", "").lower():
+def _get_player_matches(matches: list[dict]) -> list[dict]:
+    """Extract player-prop matches whose list payload already contains parseable odds."""
+    player_matches: list[dict] = []
+    for match in matches:
+        if "igrači" not in match.get("leagueName", "").lower():
             continue
-        params = m.get("params", {})
+        params = match.get("params", {})
         if not any(params.get(param_key) for param_key in _LIST_MATCH_PARAM_KEYS):
             continue
-        match_id = m.get("id")
-        if match_id:
-            ids.append(match_id)
-    return ids
+        if not _parse_match_detail(match):
+            continue
+        player_matches.append(match)
+    return player_matches
+
+
+def _dedupe_matches_by_id(matches: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen: set[int] = set()
+    for match in matches:
+        match_id = match.get("id")
+        if not isinstance(match_id, int):
+            deduped.append(match)
+            continue
+        if match_id in seen:
+            continue
+        seen.add(match_id)
+        deduped.append(match)
+    return deduped
 
 
 def _get_total_match_ids(matches: list[dict]) -> list[int]:
@@ -387,8 +402,8 @@ class MerkurXTipScraper(BaseScraper):
 
         return parser(detail)
 
-    async def _fetch_bulk_match_ids(self) -> list[int]:
-        """Fetch the bulk basketball listing and extract player match IDs."""
+    async def _fetch_bulk_player_matches(self) -> list[dict]:
+        """Fetch the basketball player-special group listing."""
         try:
             data = await self._http.get_json(
                 _PLAYER_LIST_URL,
@@ -400,7 +415,7 @@ class MerkurXTipScraper(BaseScraper):
             return []
 
         matches = data.get("esMatches", [])
-        return _get_player_match_ids(matches)
+        return _get_player_matches(matches)
 
     async def _fetch_total_matches(self) -> list[dict]:
         try:
@@ -415,8 +430,8 @@ class MerkurXTipScraper(BaseScraper):
 
         return data.get("esMatches", [])
 
-    async def _fetch_league(self, league_id: int) -> list[int]:
-        """Fetch a legacy league listing and return player match IDs."""
+    async def _fetch_league(self, league_id: int) -> list[dict]:
+        """Fetch a legacy league listing and return list-parseable player matches."""
         try:
             data = await self._http.get_json(
                 _LEAGUE_URL.format(league_id=league_id),
@@ -428,7 +443,7 @@ class MerkurXTipScraper(BaseScraper):
             return []
 
         matches = data.get("esMatches", [])
-        return _get_player_match_ids(matches)
+        return _get_player_matches(matches)
 
     @staticmethod
     def _dedupe_raw_odds(rows: list[RawOddsData]) -> list[RawOddsData]:
@@ -453,17 +468,22 @@ class MerkurXTipScraper(BaseScraper):
         if league_id != "basketball":
             return []
 
-        player_match_ids = await self._fetch_bulk_match_ids()
+        player_matches = await self._fetch_bulk_player_matches()
         total_matches = await self._fetch_total_matches()
-        source = "bulk listing"
+        source = "group listing"
 
-        if not player_match_ids:
+        if not player_matches:
             source = "legacy league listing"
             for known_league in _KNOWN_LEAGUE_IDS:
-                match_ids = await self._fetch_league(known_league)
-                player_match_ids.extend(match_ids)
+                matches = await self._fetch_league(known_league)
+                player_matches.extend(matches)
 
-        player_match_ids = list(dict.fromkeys(player_match_ids))
+        player_matches = _dedupe_matches_by_id(player_matches)
+        player_results = [
+            result
+            for match in player_matches
+            for result in _parse_match_detail(match)
+        ]
         total_results = [
             result
             for match in total_matches
@@ -471,47 +491,38 @@ class MerkurXTipScraper(BaseScraper):
         ]
         total_match_ids = list(dict.fromkeys(_get_total_match_ids(total_matches)))
 
-        if not player_match_ids and not total_match_ids:
+        if not player_results and not total_match_ids:
             logger.warning(
                 (
-                    "MerkurXTip: no player matches found in bulk listing or %d fallback leagues, "
+                    "MerkurXTip: no list-parseable player odds found in group listing or "
+                    "%d fallback leagues, "
                     "and no OT total matches found in basketball listing"
                 ),
                 len(_KNOWN_LEAGUE_IDS),
             )
             return []
 
-        detail_count = len(player_match_ids) + len(total_match_ids)
-        concurrency = _get_detail_fetch_concurrency(self._http, detail_count)
-        semaphore = asyncio.Semaphore(concurrency)
-        player_detail_results, total_detail_results = await asyncio.gather(
-            asyncio.gather(
-                *(
-                    self._fetch_match_detail(mid, semaphore, _parse_match_detail)
-                    for mid in player_match_ids
-                )
-            ),
-            asyncio.gather(
+        concurrency = _get_detail_fetch_concurrency(self._http, len(total_match_ids))
+        if total_match_ids:
+            semaphore = asyncio.Semaphore(concurrency)
+            total_detail_results = await asyncio.gather(
                 *(
                     self._fetch_match_detail(mid, semaphore, _parse_game_total_ot_match)
                     for mid in total_match_ids
                 )
-            ),
-        )
-
-        player_results = [item for batch in player_detail_results for item in batch]
-        total_results.extend(item for batch in total_detail_results for item in batch)
+            )
+            total_results.extend(item for batch in total_detail_results for item in batch)
         total_results = self._dedupe_raw_odds(total_results)
         results = [*player_results, *total_results]
 
         logger.info(
             (
-                "MerkurXTip scraped %d player odds from %d players via %s "
+                "MerkurXTip scraped %d player odds from %d player list matches via %s "
                 "and %d OT total odds from %d basketball matches "
-                "(detail concurrency=%d)"
+                "(total detail concurrency=%d)"
             ),
             len(player_results),
-            len(player_match_ids),
+            len(player_matches),
             source,
             len(total_results),
             len(total_match_ids),
