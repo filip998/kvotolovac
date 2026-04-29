@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import {
   useCanonicalTeams,
   useMergeCanonicalTeam,
+  useUnmergeCanonicalTeam,
   useApproveTeamReviewCase,
   useDeclineTeamReviewCase,
   useDiscrepancies,
@@ -210,6 +211,7 @@ export default function Dashboard() {
     {
       sport: 'basketball',
       limit: 300,
+      include_merged: true,
     },
     { enabled: activeTab === 'canonical' }
   );
@@ -217,6 +219,7 @@ export default function Dashboard() {
   const approveTeamReviewCase = useApproveTeamReviewCase();
   const declineTeamReviewCase = useDeclineTeamReviewCase();
   const mergeCanonicalTeam = useMergeCanonicalTeam();
+  const unmergeCanonicalTeam = useUnmergeCanonicalTeam();
 
   const isInitialScanInProgress =
     activeTab === 'discrepancies' && !!status?.scan.in_progress && !status.last_scrape_at;
@@ -313,7 +316,8 @@ export default function Dashboard() {
   const filteredDiscrepancyCount = filteredDiscrepancies.length;
   const unresolvedCount = unresolvedWarningGroups.length;
   const teamReviewCount = teamReviewCases?.filter((row) => row.status === 'pending').length ?? 0;
-  const canonicalTeamCount = canonicalTeams?.length ?? 0;
+  const canonicalTeamCount =
+    canonicalTeams?.filter((team) => team.merged_into_team_id == null).length ?? 0;
   const teamApproveCaseId =
     approveTeamReviewCase.isPending ? approveTeamReviewCase.variables?.caseId ?? null : null;
   const teamDeclineCaseId =
@@ -322,6 +326,8 @@ export default function Dashboard() {
     mergeCanonicalTeam.isPending ? mergeCanonicalTeam.variables?.sourceTeamId ?? null : null;
   const canonicalMergeTargetId =
     mergeCanonicalTeam.isPending ? mergeCanonicalTeam.variables?.targetTeamId ?? null : null;
+  const canonicalUnmergeTeamId =
+    unmergeCanonicalTeam.isPending ? unmergeCanonicalTeam.variables?.sourceTeamId ?? null : null;
 
   const handleApproveTeamCase = (
     caseId: number,
@@ -386,6 +392,27 @@ export default function Dashboard() {
         },
         onError: (mutationError) => {
           setCanonicalTeamMessage(`Failed to merge canonical teams: ${mutationError.message}`);
+        },
+      }
+    );
+  };
+
+  const handleUnmergeCanonicalTeam = (sourceTeamId: number) => {
+    setCanonicalTeamMessage(null);
+    unmergeCanonicalTeam.mutate(
+      { sourceTeamId },
+      {
+        onSuccess: (result) => {
+          setCanonicalTeamMessage(
+            `Restored ${result.restored_team_name} as a standalone canonical team. Run the next scrape to apply the split everywhere.`
+          );
+          setSelectedCanonicalMergeSourceId(null);
+          void queryClient.invalidateQueries({ queryKey: ['canonicalTeams'] });
+          void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
+          void refetchCanonicalTeams();
+        },
+        onError: (mutationError) => {
+          setCanonicalTeamMessage(`Failed to unmerge canonical team: ${mutationError.message}`);
         },
       }
     );
@@ -868,8 +895,10 @@ export default function Dashboard() {
             selectedSourceTeamId={selectedCanonicalMergeSourceId}
             onSelectSource={setSelectedCanonicalMergeSourceId}
             onMerge={handleMergeCanonicalTeam}
+            onUnmerge={handleUnmergeCanonicalTeam}
             mergingSourceTeamId={canonicalMergeSourceId}
             mergingTargetTeamId={canonicalMergeTargetId}
+            unmergingTeamId={canonicalUnmergeTeamId}
             actionMessage={canonicalTeamMessage}
           />
         ) : (

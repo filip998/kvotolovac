@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS team_merge_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_team_id INTEGER NOT NULL REFERENCES canonical_teams(id),
     target_team_id INTEGER NOT NULL REFERENCES canonical_teams(id),
+    alias_snapshot TEXT,
+    review_case_snapshot TEXT,
+    unmerged_at TIMESTAMP,
     merged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """
@@ -92,6 +95,13 @@ class CanonicalTeamSummary:
     merged_into_team_id: int | None = None
 
 
+@dataclass(frozen=True)
+class CanonicalTeamUnmergeResult:
+    source_team_id: int
+    target_team_id: int
+    source_team_name: str
+
+
 def _registry_path() -> Path:
     return Path(settings.team_registry_path)
 
@@ -110,6 +120,16 @@ def _connect() -> sqlite3.Connection:
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_TEAM_REGISTRY_SCHEMA)
+    merge_columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(team_merge_history)").fetchall()
+    }
+    if merge_columns and "alias_snapshot" not in merge_columns:
+        conn.execute("ALTER TABLE team_merge_history ADD COLUMN alias_snapshot TEXT")
+    if merge_columns and "review_case_snapshot" not in merge_columns:
+        conn.execute("ALTER TABLE team_merge_history ADD COLUMN review_case_snapshot TEXT")
+    if merge_columns and "unmerged_at" not in merge_columns:
+        conn.execute("ALTER TABLE team_merge_history ADD COLUMN unmerged_at TIMESTAMP")
 
 
 def _default_registry_payload() -> dict[str, Any]:
@@ -480,6 +500,7 @@ def clear_team_registry_cache(*, reset_bootstrap: bool = True) -> None:
         _bootstrap_db_path = None
         _schema_db_path = None
     _load_team_search_rows.cache_clear()
+    _load_canonical_team_list_rows.cache_clear()
 
 
 def resolve_team_alias(
@@ -680,6 +701,64 @@ def _load_team_search_rows(
     )
 
 
+@lru_cache(maxsize=32)
+def _load_canonical_team_list_rows(
+    db_path: str,
+    sport: str,
+    include_merged: bool,
+) -> tuple[tuple[int, str, tuple[str, ...], int | None], ...]:
+    del db_path
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                ct.id AS team_id,
+                ct.display_name AS team_name,
+                ct.merged_into_team_id AS merged_into_team_id,
+                ta.alias AS alias
+            FROM canonical_teams ct
+            LEFT JOIN team_aliases ta ON ta.canonical_team_id = ct.id
+            WHERE ct.sport = ?
+              AND (
+                ct.is_active = TRUE
+                OR (? = TRUE AND ct.merged_into_team_id IS NOT NULL)
+              )
+            ORDER BY ct.is_active DESC, ct.display_name ASC, ta.alias ASC
+            """,
+            (sport, include_merged),
+        ).fetchall()
+
+    aliases_by_team: dict[int, set[str]] = {}
+    team_names: dict[int, str] = {}
+    merged_targets: dict[int, int | None] = {}
+    for row in rows:
+        team_id = int(row["team_id"])
+        team_names[team_id] = str(row["team_name"])
+        merged_into_team_id = row["merged_into_team_id"]
+        merged_targets[team_id] = (
+            int(merged_into_team_id) if merged_into_team_id is not None else None
+        )
+        aliases_by_team.setdefault(team_id, set())
+        if row["alias"]:
+            aliases_by_team[team_id].add(str(row["alias"]))
+
+    return tuple(
+        (
+            team_id,
+            team_names[team_id],
+            tuple(sorted(aliases_by_team.get(team_id, set()))),
+            merged_targets.get(team_id),
+        )
+        for team_id in sorted(
+            team_names,
+            key=lambda item: (
+                merged_targets.get(item) is not None,
+                team_names[item],
+            ),
+        )
+    )
+
+
 def search_canonical_team_candidates(
     raw_team_name: str,
     *,
@@ -782,15 +861,13 @@ def _candidate_score(candidate: dict[str, Any]) -> float:
     return 0.0
 
 
-def _reassign_pending_team_review_cases(
+def _pending_team_review_case_rows(
     conn: sqlite3.Connection,
     *,
     source_team_id: int,
-    target_team_id: int,
     source_team_name: str,
-    target_team_name: str,
-) -> None:
-    rows = conn.execute(
+) -> list[sqlite3.Row]:
+    return conn.execute(
         """
         SELECT
             id,
@@ -817,6 +894,88 @@ def _reassign_pending_team_review_cases(
             source_team_name,
         ),
     ).fetchall()
+
+
+def _team_review_case_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    source_team_id: int,
+    source_team_name: str,
+) -> list[dict[str, Any]]:
+    rows = _pending_team_review_case_rows(
+        conn,
+        source_team_id=source_team_id,
+        source_team_name=source_team_name,
+    )
+    return [
+        {
+            "id": int(row["id"]),
+            "suggested_team_id": row["suggested_team_id"],
+            "suggested_team_name": row["suggested_team_name"],
+            "candidate_teams": row["candidate_teams"],
+            "canonical_home_team": row["canonical_home_team"],
+            "canonical_away_team": row["canonical_away_team"],
+        }
+        for row in rows
+    ]
+
+
+def _restore_pending_team_review_cases(
+    conn: sqlite3.Connection,
+    review_case_snapshot: list[Any],
+) -> None:
+    for item in review_case_snapshot:
+        if not isinstance(item, dict):
+            raise ValueError("Stored merge review-case rollback metadata is invalid")
+        case_id = item.get("id")
+        if not isinstance(case_id, int):
+            raise ValueError("Stored merge review-case rollback metadata is invalid")
+
+        current_row = conn.execute(
+            """
+            SELECT status
+            FROM team_review_cases
+            WHERE id = ?
+            """,
+            (case_id,),
+        ).fetchone()
+        if current_row is None or current_row["status"] != "pending":
+            continue
+
+        conn.execute(
+            """
+            UPDATE team_review_cases
+            SET suggested_team_id = ?,
+                suggested_team_name = ?,
+                candidate_teams = ?,
+                canonical_home_team = ?,
+                canonical_away_team = ?
+            WHERE id = ?
+            """,
+            (
+                item.get("suggested_team_id"),
+                item.get("suggested_team_name"),
+                item.get("candidate_teams") or "[]",
+                item.get("canonical_home_team"),
+                item.get("canonical_away_team"),
+                case_id,
+            ),
+        )
+
+
+def _reassign_pending_team_review_cases(
+    conn: sqlite3.Connection,
+    *,
+    source_team_id: int,
+    target_team_id: int,
+    source_team_name: str,
+    target_team_name: str,
+) -> None:
+    rows = _pending_team_review_case_rows(
+        conn,
+        source_team_id=source_team_id,
+        source_team_name=source_team_name,
+    )
 
     for row in rows:
         suggested_team_id = row["suggested_team_id"]
@@ -899,12 +1058,13 @@ def list_canonical_teams(
     search: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    include_merged: bool = False,
 ) -> list[CanonicalTeamSummary]:
     _ensure_bootstrapped()
     search_key = normalize_identity_text(search)
-    rows = _load_team_search_rows(settings.db_path, sport)
+    rows = _load_canonical_team_list_rows(settings.db_path, sport, include_merged)
     summaries: list[CanonicalTeamSummary] = []
-    for team_id, team_name, aliases in rows:
+    for team_id, team_name, aliases, merged_into_team_id in rows:
         haystack = " ".join((team_name, *aliases))
         if search_key and search_key not in normalize_identity_text(haystack):
             continue
@@ -915,9 +1075,63 @@ def list_canonical_teams(
                 display_name=team_name,
                 aliases=aliases,
                 alias_count=len(aliases),
+                merged_into_team_id=merged_into_team_id,
             )
         )
     return summaries[offset : offset + limit]
+
+
+def _team_alias_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    source_team_id: int,
+    target_team_id: int,
+) -> list[dict[str, Any]]:
+    conflict_rows = conn.execute(
+        """
+        SELECT normalized_alias, bookmaker_id
+        FROM team_aliases
+        WHERE canonical_team_id = ?
+        INTERSECT
+        SELECT normalized_alias, bookmaker_id
+        FROM team_aliases
+        WHERE canonical_team_id = ?
+        """,
+        (source_team_id, target_team_id),
+    ).fetchall()
+    conflicts = {
+        (str(row["normalized_alias"]), str(row["bookmaker_id"]))
+        for row in conflict_rows
+    }
+    alias_rows = conn.execute(
+        """
+        SELECT
+            alias,
+            normalized_alias,
+            bookmaker_id,
+            source,
+            legacy_competition_id
+        FROM team_aliases
+        WHERE canonical_team_id = ?
+        ORDER BY normalized_alias ASC, bookmaker_id ASC
+        """,
+        (source_team_id,),
+    ).fetchall()
+    return [
+        {
+            "alias": str(row["alias"]),
+            "normalized_alias": str(row["normalized_alias"]),
+            "bookmaker_id": str(row["bookmaker_id"]),
+            "source": str(row["source"]),
+            "legacy_competition_id": row["legacy_competition_id"],
+            "was_conflict": (
+                str(row["normalized_alias"]),
+                str(row["bookmaker_id"]),
+            )
+            in conflicts,
+        }
+        for row in alias_rows
+    ]
 
 
 def merge_canonical_teams(
@@ -938,6 +1152,16 @@ def merge_canonical_teams(
         if str(source_row["sport"]) != str(target_row["sport"]):
             raise ValueError("Only canonical teams from the same sport can be merged")
 
+        alias_snapshot = _team_alias_snapshot(
+            conn,
+            source_team_id=source_team_id,
+            target_team_id=target_team_id,
+        )
+        review_case_snapshot = _team_review_case_snapshot(
+            conn,
+            source_team_id=source_team_id,
+            source_team_name=str(source_row["display_name"]),
+        )
         conflict_rows = conn.execute(
             """
             SELECT normalized_alias, bookmaker_id
@@ -993,10 +1217,20 @@ def merge_canonical_teams(
         )
         conn.execute(
             """
-            INSERT INTO team_merge_history (source_team_id, target_team_id)
-            VALUES (?, ?)
+            INSERT INTO team_merge_history (
+                source_team_id,
+                target_team_id,
+                alias_snapshot,
+                review_case_snapshot
+            )
+            VALUES (?, ?, ?, ?)
             """,
-            (source_team_id, target_team_id),
+            (
+                source_team_id,
+                target_team_id,
+                json.dumps(alias_snapshot),
+                json.dumps(review_case_snapshot),
+            ),
         )
         _reassign_pending_team_review_cases(
             conn,
@@ -1012,3 +1246,146 @@ def merge_canonical_teams(
     if merged is None:
         raise RuntimeError("Merged canonical team could not be reloaded")
     return merged
+
+
+def unmerge_canonical_team(
+    *,
+    source_team_id: int,
+) -> CanonicalTeamUnmergeResult:
+    _ensure_bootstrapped()
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        history_row = conn.execute(
+            """
+            SELECT
+                id,
+                source_team_id,
+                target_team_id,
+                alias_snapshot,
+                review_case_snapshot
+            FROM team_merge_history
+            WHERE source_team_id = ? AND unmerged_at IS NULL
+            ORDER BY merged_at DESC, id DESC
+            LIMIT 1
+            """,
+            (source_team_id,),
+        ).fetchone()
+        if history_row is None:
+            raise ValueError("No active merge history exists for this canonical team")
+        if not history_row["alias_snapshot"]:
+            raise ValueError(
+                "This merge cannot be unmerged safely because it was recorded before alias rollback metadata existed"
+            )
+        if history_row["review_case_snapshot"] is None:
+            raise ValueError(
+                "This merge cannot be unmerged safely because it was recorded before review-case rollback metadata existed"
+            )
+
+        target_team_id = int(history_row["target_team_id"])
+        source_row = _query_any_team_by_id(conn, source_team_id)
+        target_row = _query_any_team_by_id(conn, target_team_id)
+        if source_row is None or target_row is None:
+            raise ValueError("Both canonical teams must exist before unmerging")
+        if bool(source_row["is_active"]):
+            raise ValueError("Canonical team is already active")
+        if source_row["merged_into_team_id"] != target_team_id:
+            raise ValueError("Canonical team is not currently merged into the recorded target")
+
+        try:
+            alias_snapshot = json.loads(str(history_row["alias_snapshot"]))
+        except json.JSONDecodeError as exc:
+            raise ValueError("Stored merge rollback metadata is invalid") from exc
+        if not isinstance(alias_snapshot, list):
+            raise ValueError("Stored merge rollback metadata is invalid")
+        try:
+            review_case_snapshot = json.loads(str(history_row["review_case_snapshot"]))
+        except json.JSONDecodeError as exc:
+            raise ValueError("Stored merge review-case rollback metadata is invalid") from exc
+        if not isinstance(review_case_snapshot, list):
+            raise ValueError("Stored merge review-case rollback metadata is invalid")
+
+        for item in alias_snapshot:
+            if not isinstance(item, dict) or item.get("was_conflict"):
+                continue
+            normalized_alias = str(item.get("normalized_alias") or "")
+            bookmaker_id = str(item.get("bookmaker_id") or _GLOBAL_BOOKMAKER_ID)
+            existing_alias = conn.execute(
+                """
+                SELECT canonical_team_id
+                FROM team_aliases
+                WHERE sport = ? AND normalized_alias = ? AND bookmaker_id = ?
+                """,
+                (str(source_row["sport"]), normalized_alias, bookmaker_id),
+            ).fetchone()
+            if (
+                existing_alias is not None
+                and int(existing_alias["canonical_team_id"]) not in {target_team_id, source_team_id}
+            ):
+                raise ValueError(
+                    "Cannot unmerge safely because an alias from the merge snapshot now belongs to another canonical team"
+                )
+
+        source_display_key = str(source_row["normalized_display_name"])
+        snapshot_keys = {
+            (str(item.get("normalized_alias") or ""), str(item.get("bookmaker_id") or _GLOBAL_BOOKMAKER_ID))
+            for item in alias_snapshot
+            if isinstance(item, dict) and not item.get("was_conflict")
+        }
+        if (source_display_key, _GLOBAL_BOOKMAKER_ID) not in snapshot_keys:
+            conn.execute(
+                """
+                DELETE FROM team_aliases
+                WHERE canonical_team_id = ?
+                  AND sport = ?
+                  AND normalized_alias = ?
+                  AND bookmaker_id = ?
+                  AND source = 'merge'
+                """,
+                (
+                    target_team_id,
+                    str(source_row["sport"]),
+                    source_display_key,
+                    _GLOBAL_BOOKMAKER_ID,
+                ),
+            )
+
+        for item in alias_snapshot:
+            if not isinstance(item, dict) or item.get("was_conflict"):
+                continue
+            _upsert_alias(
+                conn,
+                sport=str(source_row["sport"]),
+                alias=str(item.get("alias") or ""),
+                canonical_team_id=source_team_id,
+                bookmaker_id=str(item.get("bookmaker_id") or _GLOBAL_BOOKMAKER_ID),
+                source=str(item.get("source") or "manual_review"),
+                legacy_competition_id=item.get("legacy_competition_id"),
+            )
+
+        conn.execute(
+            """
+            UPDATE canonical_teams
+            SET is_active = TRUE,
+                merged_into_team_id = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (source_team_id,),
+        )
+        _restore_pending_team_review_cases(conn, review_case_snapshot)
+        conn.execute(
+            """
+            UPDATE team_merge_history
+            SET unmerged_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (int(history_row["id"]),),
+        )
+        conn.commit()
+
+    clear_team_registry_cache(reset_bootstrap=False)
+    return CanonicalTeamUnmergeResult(
+        source_team_id=source_team_id,
+        target_team_id=target_team_id,
+        source_team_name=str(source_row["display_name"]),
+    )

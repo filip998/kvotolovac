@@ -4,10 +4,13 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 
+from rapidfuzz import fuzz
+
 from ..config import settings
-from ..models.schemas import RawOddsData
+from ..models.schemas import RawOddsData, TeamReviewDiagnostic
 from ..scrapers.base import BaseScraper
 from ..scrapers.registry import registry
 from ..models.schemas import ScanProgressOut
@@ -31,7 +34,9 @@ from ..services.team_registry import (
     get_canonical_team,
     merge_canonical_teams,
     remember_team_alias,
+    unmerge_canonical_team,
 )
+from ..services.text_normalizer import normalize_identity_text
 from ..store import odds_store
 
 logger = logging.getLogger(__name__)
@@ -40,6 +45,46 @@ logger = logging.getLogger(__name__)
 AUTO_ALIAS_REVIEW_KIND = "auto_alias_suggestion"
 AUTO_CANONICAL_MERGE_REVIEW_KIND = "auto_canonical_merge_suggestion"
 CONTEXTUAL_CANONICAL_MERGE_THRESHOLD = 80
+SAME_TIME_CANONICAL_MERGE_THRESHOLD = 88
+SAME_TIME_MIN_TARGET_SUPPORT = 2
+_LOW_SIGNAL_TEAM_TOKENS = {
+    "bc",
+    "bk",
+    "kk",
+    "fc",
+    "fk",
+    "club",
+    "team",
+}
+
+
+@dataclass(frozen=True)
+class _SameTimeSlot:
+    sport: str
+    start_time: str
+    home_team_id: int
+    away_team_id: int
+    home_team: str
+    away_team: str
+    support_bookmakers: frozenset[str]
+    raw_league_id: str
+
+
+@dataclass(frozen=True)
+class _SameTimeMergeProposal:
+    source_team_id: int
+    target_team_id: int
+    source_team_name: str
+    target_team_name: str
+    source_support: int
+    target_support: int
+    sport: str
+    start_time: str
+    bookmaker_id: str
+    raw_league_id: str
+    canonical_home_team: str
+    canonical_away_team: str
+    score: float
 
 
 def _is_auto_alias_candidate(case) -> bool:
@@ -65,6 +110,11 @@ def _candidate_merge_source_ids(case) -> set[int]:
             candidate.team_id != case.suggested_team_id
             and candidate.score is not None
             and candidate.score >= ANCHORED_AUTO_APPLY_THRESHOLD
+            and case.suggested_team_name is not None
+            and not _is_unsafe_compound_subset_match(
+                candidate.team_name,
+                case.suggested_team_name,
+            )
         )
     }
 
@@ -73,6 +123,117 @@ def _candidate_event_teams(candidate) -> set[str] | None:
     if not candidate.canonical_home_team or not candidate.canonical_away_team:
         return None
     return {candidate.canonical_home_team, candidate.canonical_away_team}
+
+
+def _significant_team_tokens(team_name: str) -> set[str]:
+    return {
+        token
+        for token in normalize_identity_text(team_name).split()
+        if token not in _LOW_SIGNAL_TEAM_TOKENS
+    }
+
+
+def _symmetric_canonical_team_score(left_name: str, right_name: str) -> float:
+    left_key = normalize_identity_text(left_name)
+    right_key = normalize_identity_text(right_name)
+    if not left_key or not right_key:
+        return 0.0
+    if left_key == right_key:
+        return 100.0
+
+    left_tokens = _significant_team_tokens(left_name)
+    right_tokens = _significant_team_tokens(right_name)
+    if not left_tokens or not right_tokens:
+        return 0.0
+    if left_tokens == right_tokens:
+        return 100.0
+    if left_tokens < right_tokens or right_tokens < left_tokens:
+        # Allow harmless club-prefix differences (BC/KK/etc.), but do not let
+        # token-set substring scoring merge compound names such as
+        # "BC Chelbasket Chelyabinsk" into either "Chelbasket" or "Chelyabinsk".
+        return float(
+            min(
+                fuzz.ratio(left_key, right_key),
+                fuzz.token_sort_ratio(left_key, right_key),
+            )
+        )
+
+    return float(
+        min(
+            fuzz.ratio(left_key, right_key),
+            fuzz.token_sort_ratio(left_key, right_key),
+        )
+    )
+
+
+def _is_unsafe_compound_subset_match(left_name: str, right_name: str) -> bool:
+    left_tokens = _significant_team_tokens(left_name)
+    right_tokens = _significant_team_tokens(right_name)
+    return bool(left_tokens and right_tokens and (left_tokens < right_tokens or right_tokens < left_tokens))
+
+
+def _same_time_slot_orientation(
+    source_slot: _SameTimeSlot,
+    target_slot: _SameTimeSlot,
+) -> tuple[tuple[int, int, str, str, float], tuple[int, int, str, str, float]] | None:
+    if (
+        _is_unsafe_compound_subset_match(source_slot.home_team, target_slot.home_team)
+        or _is_unsafe_compound_subset_match(source_slot.away_team, target_slot.away_team)
+    ):
+        same_orientation = None
+    else:
+        same_orientation = (
+            (
+                source_slot.home_team_id,
+                target_slot.home_team_id,
+                source_slot.home_team,
+                target_slot.home_team,
+                _symmetric_canonical_team_score(source_slot.home_team, target_slot.home_team),
+            ),
+            (
+                source_slot.away_team_id,
+                target_slot.away_team_id,
+                source_slot.away_team,
+                target_slot.away_team,
+                _symmetric_canonical_team_score(source_slot.away_team, target_slot.away_team),
+            ),
+        )
+    if (
+        _is_unsafe_compound_subset_match(source_slot.home_team, target_slot.away_team)
+        or _is_unsafe_compound_subset_match(source_slot.away_team, target_slot.home_team)
+    ):
+        cross_orientation = None
+    else:
+        cross_orientation = (
+            (
+                source_slot.home_team_id,
+                target_slot.away_team_id,
+                source_slot.home_team,
+                target_slot.away_team,
+                _symmetric_canonical_team_score(source_slot.home_team, target_slot.away_team),
+            ),
+            (
+                source_slot.away_team_id,
+                target_slot.home_team_id,
+                source_slot.away_team,
+                target_slot.home_team,
+                _symmetric_canonical_team_score(source_slot.away_team, target_slot.home_team),
+            ),
+        )
+    candidates = [
+        orientation
+        for orientation in (same_orientation, cross_orientation)
+        if orientation is not None
+        and min(orientation[0][4], orientation[1][4]) >= SAME_TIME_CANONICAL_MERGE_THRESHOLD
+    ]
+    if not candidates:
+        return None
+    if len(candidates) == 2:
+        same_score = same_orientation[0][4] + same_orientation[1][4]
+        cross_score = cross_orientation[0][4] + cross_orientation[1][4]
+        if same_score == cross_score:
+            return None
+    return max(candidates, key=lambda item: item[0][4] + item[1][4])
 
 
 def _contextual_merge_source_ids(case) -> set[int]:
@@ -117,6 +278,10 @@ def _contextual_merge_source_ids(case) -> set[int]:
             or candidate.score < CONTEXTUAL_CANONICAL_MERGE_THRESHOLD
             or candidate.slot_support is None
             or target_candidate.slot_support <= candidate.slot_support
+            or _is_unsafe_compound_subset_match(
+                candidate.team_name,
+                case.suggested_team_name,
+            )
         ):
             continue
 
@@ -241,6 +406,192 @@ class Scheduler:
         self._scan_failed_tasks = 0
         self._scan_active_tasks = 0
 
+    async def _same_time_canonical_merge_candidates(
+        self,
+        raw_rows: list[RawOddsData],
+    ) -> tuple[list[TeamReviewDiagnostic], list[tuple[int, int]]]:
+        slot_bookmakers: dict[
+            tuple[str, str, tuple[int, int]],
+            set[str],
+        ] = defaultdict(set)
+        slot_examples: dict[tuple[str, str, tuple[int, int]], _SameTimeSlot] = {}
+
+        for raw in raw_rows:
+            if raw.start_time is None:
+                continue
+            home_resolution = resolve_team_name(
+                raw.home_team,
+                bookmaker_id=raw.bookmaker_id,
+                sport=raw.sport,
+            )
+            away_resolution = resolve_team_name(
+                raw.away_team,
+                bookmaker_id=raw.bookmaker_id,
+                sport=raw.sport,
+            )
+            if (
+                home_resolution.team_id is None
+                or away_resolution.team_id is None
+                or home_resolution.team_id == away_resolution.team_id
+            ):
+                continue
+            home_team = get_canonical_team(home_resolution.team_id)
+            away_team = get_canonical_team(away_resolution.team_id)
+            if (
+                home_team is None
+                or away_team is None
+                or home_team.sport != raw.sport
+                or away_team.sport != raw.sport
+            ):
+                continue
+
+            key = (
+                raw.sport,
+                raw.start_time,
+                tuple(sorted((home_team.id, away_team.id))),
+            )
+            slot_bookmakers[key].add(raw.bookmaker_id)
+            slot_examples.setdefault(
+                key,
+                _SameTimeSlot(
+                    sport=raw.sport,
+                    start_time=raw.start_time,
+                    home_team_id=home_team.id,
+                    away_team_id=away_team.id,
+                    home_team=home_team.display_name,
+                    away_team=away_team.display_name,
+                    support_bookmakers=frozenset({raw.bookmaker_id}),
+                    raw_league_id=raw.league_id,
+                ),
+            )
+
+        supported_slots = [
+            _SameTimeSlot(
+                sport=slot.sport,
+                start_time=slot.start_time,
+                home_team_id=slot.home_team_id,
+                away_team_id=slot.away_team_id,
+                home_team=slot.home_team,
+                away_team=slot.away_team,
+                support_bookmakers=frozenset(slot_bookmakers[key]),
+                raw_league_id=slot.raw_league_id,
+            )
+            for key, slot in slot_examples.items()
+        ]
+        slots_by_time: dict[tuple[str, str], list[_SameTimeSlot]] = defaultdict(list)
+        for slot in supported_slots:
+            slots_by_time[(slot.sport, slot.start_time)].append(slot)
+
+        proposals_by_source: dict[int, list[_SameTimeMergeProposal]] = defaultdict(list)
+        for same_time_slots in slots_by_time.values():
+            for index, left_slot in enumerate(same_time_slots):
+                for right_slot in same_time_slots[index + 1 :]:
+                    if len(left_slot.support_bookmakers) == len(right_slot.support_bookmakers):
+                        continue
+                    target_slot, source_slot = (
+                        (left_slot, right_slot)
+                        if len(left_slot.support_bookmakers) > len(right_slot.support_bookmakers)
+                        else (right_slot, left_slot)
+                    )
+                    if (
+                        len(target_slot.support_bookmakers)
+                        < SAME_TIME_MIN_TARGET_SUPPORT
+                    ):
+                        continue
+                    orientation = _same_time_slot_orientation(source_slot, target_slot)
+                    if orientation is None:
+                        continue
+                    for (
+                        source_team_id,
+                        target_team_id,
+                        source_team_name,
+                        target_team_name,
+                        score,
+                    ) in orientation:
+                        if source_team_id == target_team_id:
+                            continue
+                        proposals_by_source[source_team_id].append(
+                            _SameTimeMergeProposal(
+                                source_team_id=source_team_id,
+                                target_team_id=target_team_id,
+                                source_team_name=source_team_name,
+                                target_team_name=target_team_name,
+                                source_support=len(source_slot.support_bookmakers),
+                                target_support=len(target_slot.support_bookmakers),
+                                sport=source_slot.sport,
+                                start_time=source_slot.start_time,
+                                bookmaker_id=sorted(source_slot.support_bookmakers)[0],
+                                raw_league_id=source_slot.raw_league_id,
+                                canonical_home_team=target_slot.home_team,
+                                canonical_away_team=target_slot.away_team,
+                                score=score,
+                            )
+                        )
+
+        approved_cases: list[TeamReviewDiagnostic] = []
+        pairings: list[tuple[int, int]] = []
+        for source_team_id, proposals in proposals_by_source.items():
+            targets = {proposal.target_team_id for proposal in proposals}
+            if len(targets) != 1:
+                logger.warning(
+                    "Skipping same-time canonical auto-merge for team %s due to multiple possible targets",
+                    source_team_id,
+                )
+                continue
+            proposal = max(
+                proposals,
+                key=lambda item: (item.target_support, item.score),
+            )
+            _, has_declined = await odds_store.get_team_review_case_history_summary(
+                sport=proposal.sport,
+                normalized_raw_team_name=normalize_identity_text(proposal.source_team_name),
+                suggested_team_id=proposal.target_team_id,
+                start_time=proposal.start_time,
+                canonical_home_team=proposal.canonical_home_team,
+                canonical_away_team=proposal.canonical_away_team,
+            )
+            if has_declined:
+                continue
+            approved_cases.append(
+                TeamReviewDiagnostic(
+                    bookmaker_id=proposal.bookmaker_id,
+                    raw_league_id=proposal.raw_league_id,
+                    normalized_raw_league_id=normalize_identity_text(
+                        proposal.raw_league_id
+                    ),
+                    sport=proposal.sport,
+                    raw_team_name=proposal.source_team_name,
+                    normalized_raw_team_name=normalize_identity_text(
+                        proposal.source_team_name
+                    ),
+                    suggested_team_id=proposal.target_team_id,
+                    suggested_team_name=proposal.target_team_name,
+                    start_time=proposal.start_time,
+                    review_kind=AUTO_CANONICAL_MERGE_REVIEW_KIND,
+                    reason_code="same_time_both_sides_canonical_merge",
+                    confidence="high",
+                    similarity_score=proposal.score,
+                    matched_counterpart_team=proposal.target_team_name,
+                    canonical_home_team=proposal.canonical_home_team,
+                    canonical_away_team=proposal.canonical_away_team,
+                    evidence=[
+                        f"Exact start time: {proposal.start_time}",
+                        "Auto-approved guarded same-time canonical merge",
+                        (
+                            "Stronger same-slot support: "
+                            f"target x{proposal.target_support}, source x{proposal.source_support}"
+                        ),
+                        (
+                            "Strict symmetric team similarity "
+                            f"{proposal.score:g} >= {SAME_TIME_CANONICAL_MERGE_THRESHOLD}"
+                        ),
+                    ],
+                )
+            )
+            pairings.append((proposal.source_team_id, proposal.target_team_id))
+
+        return approved_cases, pairings
+
     def _build_case_alias_requests(
         self,
         case,
@@ -346,6 +697,15 @@ class Scheduler:
                     canonical_away_team=case.canonical_away_team,
                 )
                 if has_declined:
+                    continue
+                if (
+                    is_auto_alias_candidate
+                    and case.suggested_team_name is not None
+                    and _is_unsafe_compound_subset_match(
+                        case.raw_team_name,
+                        case.suggested_team_name,
+                    )
+                ):
                     continue
 
                 if not is_auto_alias_candidate:
@@ -487,6 +847,23 @@ class Scheduler:
                     "Failed rolling back auto-saved alias %s for bookmaker %s",
                     raw_team_name,
                     bookmaker_id,
+                )
+
+    async def _rollback_auto_applied_merges(
+        self,
+        applied_merges: list[tuple[int, int]],
+    ) -> None:
+        for source_team_id, target_team_id in reversed(applied_merges):
+            try:
+                await asyncio.to_thread(
+                    unmerge_canonical_team,
+                    source_team_id=source_team_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed rolling back auto-merged canonical team %s from %s",
+                    source_team_id,
+                    target_team_id,
                 )
 
     async def _apply_canonical_merges(
@@ -677,7 +1054,12 @@ class Scheduler:
                 log_unresolved_shared_platform=False,
             )
             applied_auto_aliases: list[tuple[str, str, str]] = []
+            applied_auto_merges: list[tuple[int, int]] = []
             try:
+                (
+                    same_time_auto_reviews,
+                    same_time_auto_merges,
+                ) = await self._same_time_canonical_merge_candidates(all_raw)
                 (
                     auto_approved_team_reviews,
                     applied_auto_aliases,
@@ -686,7 +1068,14 @@ class Scheduler:
                     team_review_cases,
                     all_raw,
                 )
-                applied_auto_merges: list[tuple[int, int]] = []
+                auto_approved_team_reviews = [
+                    *same_time_auto_reviews,
+                    *auto_approved_team_reviews,
+                ]
+                pending_auto_merges = [
+                    *same_time_auto_merges,
+                    *pending_auto_merges,
+                ]
                 if pending_auto_merges:
                     applied_auto_merges = await self._apply_canonical_merges(
                         pending_auto_merges
@@ -762,6 +1151,8 @@ class Scheduler:
                     discrepancies
                 )
             except Exception:
+                if applied_auto_merges:
+                    await self._rollback_auto_applied_merges(applied_auto_merges)
                 if applied_auto_aliases:
                     await self._rollback_auto_applied_aliases(applied_auto_aliases)
                 raise

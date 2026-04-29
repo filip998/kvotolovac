@@ -5,6 +5,7 @@ import type {
   CanonicalTeam,
   CanonicalTeamFilters,
   CanonicalTeamMerge,
+  CanonicalTeamUnmerge,
   League,
   Match,
   MatchMergeInput,
@@ -66,6 +67,12 @@ function appendMockCanonicalAlias(team: CanonicalTeam, alias: string) {
 function nextMockCanonicalTeamId() {
   return Math.max(0, ...mockCanonicalTeams.map((team) => team.id)) + 1;
 }
+
+const mockCanonicalTeamMergeHistory: {
+  sourceTeam: CanonicalTeam;
+  targetTeamId: number;
+  targetAliasesBefore: string[];
+}[] = [];
 
 function resolveMockTeamReviewApproval(
   caseItem: TeamReviewCase,
@@ -429,6 +436,19 @@ export function useCanonicalTeams(
         await delay();
         const search = filters.search?.trim().toLowerCase();
         let results = [...mockCanonicalTeams];
+        if (filters.include_merged) {
+          const activeTeamIds = new Set(results.map((team) => team.id));
+          results = [
+            ...results,
+            ...mockCanonicalTeamMergeHistory
+              .filter((history) => !activeTeamIds.has(history.sourceTeam.id))
+              .map((history) => ({
+                ...history.sourceTeam,
+                aliases: [...history.sourceTeam.aliases],
+                merged_into_team_id: history.targetTeamId,
+              })),
+          ];
+        }
         if (filters.sport) {
           results = results.filter((team) => team.sport === filters.sport);
         }
@@ -471,7 +491,17 @@ export function useMergeCanonicalTeam() {
           throw new Error('Canonical team not found');
         }
 
+        const targetAliasesBefore = [...targetTeam.aliases];
         const [sourceTeam] = mockCanonicalTeams.splice(sourceIndex, 1);
+        mockCanonicalTeamMergeHistory.push({
+          sourceTeam: {
+            ...sourceTeam,
+            aliases: [...sourceTeam.aliases],
+            merged_into_team_id: targetTeamId,
+          },
+          targetTeamId,
+          targetAliasesBefore,
+        });
         targetTeam.aliases = Array.from(
           new Set([sourceTeam.display_name, ...sourceTeam.aliases, ...targetTeam.aliases])
         ).sort((left, right) => left.localeCompare(right));
@@ -490,6 +520,55 @@ export function useMergeCanonicalTeam() {
       const { data } = await client.post<CanonicalTeamMerge>(
         `/canonical-teams/${sourceTeamId}/merge`,
         { target_team_id: targetTeamId }
+      );
+      return data;
+    },
+  });
+}
+
+export function useUnmergeCanonicalTeam() {
+  return useMutation<
+    CanonicalTeamUnmerge,
+    Error,
+    { sourceTeamId: number }
+  >({
+    mutationFn: async ({ sourceTeamId }) => {
+      if (USE_MOCK) {
+        await delay();
+        const historyIndex = mockCanonicalTeamMergeHistory
+          .map((history) => history.sourceTeam.id)
+          .lastIndexOf(sourceTeamId);
+        if (historyIndex === -1) {
+          throw new Error('No active merge history exists for this canonical team');
+        }
+
+        const [history] = mockCanonicalTeamMergeHistory.splice(historyIndex, 1);
+        if (mockCanonicalTeams.some((team) => team.id === sourceTeamId)) {
+          throw new Error('Canonical team is already active');
+        }
+
+        const targetTeam = mockCanonicalTeams.find((team) => team.id === history.targetTeamId);
+        if (targetTeam) {
+          targetTeam.aliases = [...history.targetAliasesBefore];
+          targetTeam.alias_count = targetTeam.aliases.length;
+        }
+
+        mockCanonicalTeams.push({
+          ...history.sourceTeam,
+          aliases: [...history.sourceTeam.aliases],
+          merged_into_team_id: null,
+        });
+        mockCanonicalTeams.sort((left, right) => left.display_name.localeCompare(right.display_name));
+
+        return {
+          source_team_id: sourceTeamId,
+          target_team_id: history.targetTeamId,
+          restored_team_name: history.sourceTeam.display_name,
+        };
+      }
+
+      const { data } = await client.post<CanonicalTeamUnmerge>(
+        `/canonical-teams/${sourceTeamId}/unmerge`
       );
       return data;
     },

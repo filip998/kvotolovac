@@ -245,6 +245,7 @@ export interface CanonicalTeamFilters {
   search?: string;
   limit?: number;
   offset?: number;
+  include_merged?: boolean;
 }
 
 export interface CanonicalTeamMerge {
@@ -254,6 +255,12 @@ export interface CanonicalTeamMerge {
   matches_scraped: number;
   odds_scraped: number;
   discrepancies_found: number;
+}
+
+export interface CanonicalTeamUnmerge {
+  source_team_id: number;
+  target_team_id: number;
+  restored_team_name: string;
 }
 
 export interface MatchMergeTeamPairing {

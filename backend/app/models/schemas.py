@@ -297,6 +297,12 @@ class CanonicalTeamMergeOut(BaseModel):
     discrepancies_found: int = 0
 
 
+class CanonicalTeamUnmergeOut(BaseModel):
+    source_team_id: int
+    target_team_id: int
+    restored_team_name: str
+
+
 # ── Manual match merge ─────────────────────────────────────
 class MatchMergeTeamPairing(BaseModel):
     source_team_id: int

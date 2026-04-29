@@ -351,6 +351,37 @@ async def test_merge_canonical_teams_reassigns_aliases(
 
 
 @pytest.mark.asyncio
+async def test_canonical_teams_can_include_merged_sources(
+    client: AsyncClient,
+    team_registry_file,
+):
+    source = create_canonical_team(display_name="QA Listed Merged Source")
+    target = create_canonical_team(display_name="QA Listed Merged Target")
+    merge_resp = await client.post(
+        f"/api/v1/canonical-teams/{source.team_id}/merge",
+        json={"target_team_id": target.team_id},
+    )
+
+    active_resp = await client.get("/api/v1/canonical-teams?search=QA%20Listed%20Merged")
+    merged_resp = await client.get(
+        "/api/v1/canonical-teams?search=QA%20Listed%20Merged&include_merged=true"
+    )
+
+    assert merge_resp.status_code == 200
+    assert active_resp.status_code == 200
+    assert [team["display_name"] for team in active_resp.json()] == [
+        "QA Listed Merged Target"
+    ]
+    assert merged_resp.status_code == 200
+    rows_by_name = {team["display_name"]: team for team in merged_resp.json()}
+    assert rows_by_name["QA Listed Merged Target"]["merged_into_team_id"] is None
+    assert (
+        rows_by_name["QA Listed Merged Source"]["merged_into_team_id"]
+        == target.team_id
+    )
+
+
+@pytest.mark.asyncio
 async def test_merge_canonical_teams_rewrites_pending_team_review_cases(
     client: AsyncClient,
     team_registry_file,
@@ -502,6 +533,70 @@ async def test_merge_canonical_teams_rejects_missing_target(
 
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Both canonical teams must exist before merging"
+
+
+@pytest.mark.asyncio
+async def test_unmerge_canonical_teams_restores_aliases(
+    client: AsyncClient,
+    team_registry_file,
+):
+    source = create_canonical_team(display_name="QA API Unmerge Source")
+    target = create_canonical_team(display_name="QA API Unmerge Target")
+    remember_team_alias(
+        bookmaker_id="maxbet",
+        raw_team_name="QA API Unmerge Alias",
+        team_name=source.team_name,
+    )
+
+    merge_resp = await client.post(
+        f"/api/v1/canonical-teams/{source.team_id}/merge",
+        json={"target_team_id": target.team_id},
+    )
+    unmerge_resp = await client.post(
+        f"/api/v1/canonical-teams/{source.team_id}/unmerge",
+    )
+    list_resp = await client.get("/api/v1/canonical-teams?search=QA%20API%20Unmerge")
+
+    assert merge_resp.status_code == 200
+    assert unmerge_resp.status_code == 200
+    assert unmerge_resp.json() == {
+        "source_team_id": source.team_id,
+        "target_team_id": target.team_id,
+        "restored_team_name": source.team_name,
+    }
+    assert normalize_team_name("QA API Unmerge Alias", None, "maxbet") == source.team_name
+    assert {team["display_name"] for team in list_resp.json()} == {
+        source.team_name,
+        target.team_name,
+    }
+
+
+@pytest.mark.asyncio
+async def test_unmerge_canonical_teams_rejects_during_scrape_cycle(
+    client: AsyncClient,
+    team_registry_file,
+):
+    source = create_canonical_team(display_name="QA Busy Unmerge Source")
+    target = create_canonical_team(display_name="QA Busy Unmerge Target")
+    await client.post(
+        f"/api/v1/canonical-teams/{source.team_id}/merge",
+        json={"target_team_id": target.team_id},
+    )
+    scheduler._cycle_task = asyncio.create_task(asyncio.sleep(0.1))
+    try:
+        resp = await client.post(f"/api/v1/canonical-teams/{source.team_id}/unmerge")
+    finally:
+        scheduler._cycle_task.cancel()
+        try:
+            await scheduler._cycle_task
+        except asyncio.CancelledError:
+            pass
+        scheduler._cycle_task = None
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == (
+        "Cannot unmerge canonical teams while a scrape cycle is in progress; try again shortly"
+    )
 
 
 @pytest.mark.asyncio

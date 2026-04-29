@@ -812,6 +812,212 @@ async def test_scheduler_run_cycle_auto_merges_weaker_existing_canonical_team():
 
 
 @pytest.mark.asyncio
+async def test_scheduler_run_cycle_auto_merges_same_time_both_sides_when_strong_and_unambiguous():
+    source_home = create_canonical_team(display_name="Novosibirsk")
+    source_away = create_canonical_team(display_name="Chelyabinsk")
+    target_home = create_canonical_team(display_name="BC Novosibirsk")
+    target_away = create_canonical_team(display_name="BC Chelyabinsk")
+
+    _register_test_scrapers(
+        StubScraper(
+            "book-a",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-a",
+                        "BC Novosibirsk",
+                        away_team="BC Chelyabinsk",
+                        league_id="VTB Liga",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "book-b",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-b",
+                        "BC Novosibirsk",
+                        away_team="BC Chelyabinsk",
+                        league_id="VTB Liga",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "book-c",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-c",
+                        "Novosibirsk",
+                        away_team="Chelyabinsk",
+                        league_id="VTB Liga",
+                    )
+                ]
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+    approved_cases = await odds_store.get_team_review_cases(status="approved")
+
+    assert result["matches_scraped"] == 1
+    assert result["odds_scraped"] == 3
+    assert {case.review_kind for case in approved_cases} == {
+        "auto_canonical_merge_suggestion"
+    }
+    assert get_canonical_team(source_home.team_id) is None
+    assert get_canonical_team(source_away.team_id) is None
+    assert get_canonical_team(source_home.team_id, follow_merge=True).id == target_home.team_id
+    assert get_canonical_team(source_away.team_id, follow_merge=True).id == target_away.team_id
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_skips_same_time_both_sides_auto_merge_when_compound_side_is_ambiguous():
+    source_home = create_canonical_team(display_name="Novosibirsk")
+    source_away = create_canonical_team(display_name="Chelyabinsk")
+    target_home = create_canonical_team(display_name="BC Novosibirsk")
+    target_away = create_canonical_team(display_name="BC Chelbasket Chelyabinsk")
+    extra_away = create_canonical_team(display_name="Chelbasket")
+
+    _register_test_scrapers(
+        StubScraper(
+            "book-a",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-a",
+                        "BC Novosibirsk",
+                        away_team="BC Chelbasket Chelyabinsk",
+                        league_id="VTB Liga",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "book-b",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-b",
+                        "BC Novosibirsk",
+                        away_team="BC Chelbasket Chelyabinsk",
+                        league_id="VTB Liga",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "book-c",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-c",
+                        "Novosibirsk",
+                        away_team="Chelyabinsk",
+                        league_id="VTB Liga",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "book-d",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-d",
+                        "BC Novosibirsk",
+                        away_team="Chelbasket",
+                        league_id="VTB Liga",
+                    )
+                ]
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+    approved_cases = await odds_store.get_team_review_cases(status="approved")
+
+    assert result["matches_scraped"] == 3
+    assert approved_cases == []
+    assert get_canonical_team(source_home.team_id) is not None
+    assert get_canonical_team(source_away.team_id) is not None
+    assert get_canonical_team(target_home.team_id) is not None
+    assert get_canonical_team(target_away.team_id) is not None
+    assert get_canonical_team(extra_away.team_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_skips_same_time_auto_merge_for_b_team_subset_names():
+    senior_home = create_canonical_team(display_name="Real Madrid")
+    senior_away = create_canonical_team(display_name="Barcelona")
+    reserve_home = create_canonical_team(display_name="Real Madrid B")
+    reserve_away = create_canonical_team(display_name="Barcelona B")
+
+    _register_test_scrapers(
+        StubScraper(
+            "book-a",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-a",
+                        senior_home.team_name,
+                        away_team=senior_away.team_name,
+                        league_id="ACB",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "book-b",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-b",
+                        senior_home.team_name,
+                        away_team=senior_away.team_name,
+                        league_id="ACB",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "book-c",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-c",
+                        reserve_home.team_name,
+                        away_team=reserve_away.team_name,
+                        league_id="ACB",
+                    )
+                ]
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+    approved_cases = await odds_store.get_team_review_cases(status="approved")
+
+    assert result["matches_scraped"] == 2
+    assert approved_cases == []
+    assert get_canonical_team(reserve_home.team_id) is not None
+    assert get_canonical_team(reserve_away.team_id) is not None
+
+
+@pytest.mark.asyncio
 async def test_auto_apply_anchored_aliases_skips_declined_history(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1208,6 +1414,81 @@ async def test_scheduler_run_cycle_rolls_back_auto_saved_alias_if_store_fails(
     assert pending_cases == []
     assert approved_cases == []
     assert normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian") == "Rilski Sport."
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_rolls_back_auto_merge_if_store_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source_home = create_canonical_team(display_name="QA Rollback City")
+    source_away = create_canonical_team(display_name="QA Rollback United")
+    target_home = create_canonical_team(display_name="BC QA Rollback City")
+    target_away = create_canonical_team(display_name="BC QA Rollback United")
+
+    _register_test_scrapers(
+        StubScraper(
+            "book-a",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-a",
+                        target_home.team_name,
+                        away_team=target_away.team_name,
+                        league_id="Rollback Liga",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "book-b",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-b",
+                        target_home.team_name,
+                        away_team=target_away.team_name,
+                        league_id="Rollback Liga",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "book-c",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-c",
+                        source_home.team_name,
+                        away_team=source_away.team_name,
+                        league_id="Rollback Liga",
+                    )
+                ]
+            },
+        ),
+    )
+
+    original_upsert_odds = odds_store.upsert_odds
+    call_count = 0
+
+    async def failing_upsert_odds(odds, *, scraped_at):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise RuntimeError("simulated store failure")
+        return await original_upsert_odds(odds, scraped_at=scraped_at)
+
+    monkeypatch.setattr(odds_store, "upsert_odds", failing_upsert_odds)
+
+    with pytest.raises(RuntimeError, match="simulated store failure"):
+        await Scheduler(interval_minutes=1).run_cycle()
+
+    assert get_canonical_team(source_home.team_id) is not None
+    assert get_canonical_team(source_away.team_id) is not None
+    assert get_canonical_team(target_home.team_id) is not None
+    assert get_canonical_team(target_away.team_id) is not None
 
 
 @pytest.mark.asyncio

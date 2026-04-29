@@ -151,6 +151,9 @@ CREATE TABLE IF NOT EXISTS team_merge_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_team_id INTEGER NOT NULL REFERENCES canonical_teams(id),
     target_team_id INTEGER NOT NULL REFERENCES canonical_teams(id),
+    alias_snapshot TEXT,
+    review_case_snapshot TEXT,
+    unmerged_at TIMESTAMP,
     merged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -453,6 +456,17 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
             target_table="canonical_teams",
         ):
             await _rebuild_team_review_cases(conn)
+
+    team_merge_history_columns = await conn.execute_fetchall(
+        "PRAGMA table_info(team_merge_history)"
+    )
+    existing_team_merge_history = {row[1] for row in team_merge_history_columns}
+    if team_merge_history_columns and "alias_snapshot" not in existing_team_merge_history:
+        await conn.execute("ALTER TABLE team_merge_history ADD COLUMN alias_snapshot TEXT")
+    if team_merge_history_columns and "review_case_snapshot" not in existing_team_merge_history:
+        await conn.execute("ALTER TABLE team_merge_history ADD COLUMN review_case_snapshot TEXT")
+    if team_merge_history_columns and "unmerged_at" not in existing_team_merge_history:
+        await conn.execute("ALTER TABLE team_merge_history ADD COLUMN unmerged_at TIMESTAMP")
 
 
 async def get_db() -> aiosqlite.Connection:
