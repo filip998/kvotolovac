@@ -7,6 +7,8 @@ import pytest
 
 from app.scrapers.soccerbet_scraper import (
     SoccerBetScraper,
+    _ALL_GAMES_URL,
+    _ALL_PLAYERS_URL,
     _DETAIL_URL,
     _GROUPS_URL,
     _GROUP_LEAGUES_URL,
@@ -89,6 +91,35 @@ PLAYER_PREVIEW_MATCH = {
         "55217": _group(55217, ("total=38.5", 1.92)),
         "55831": _group(55831, ("NULL", 2.25)),
         "55832": _group(55832, ("NULL", 1.55)),
+    },
+}
+
+EUROLEAGUE_REGULAR_PREVIEW_MATCH = {
+    "id": 514392890,
+    "matchCode": 79149,
+    "home": "Monaco",
+    "away": "Olympiacos",
+    "kickOffTime": KICKOFF_MS,
+    "leagueName": "Evroliga Play off",
+    "betMap": {
+        "50445": _group(50445, ("total=164.5", 1.90)),
+        "50444": _group(50444, ("total=164.5", 1.90)),
+    },
+}
+
+EUROLEAGUE_PLAYER_PREVIEW_MATCH = {
+    "id": 514398867,
+    "matchCode": 81539,
+    "superCode": 79149,
+    "home": "Mike James",
+    "away": "Monaco",
+    "kickOffTime": KICKOFF_MS,
+    "leagueName": "Evroliga Play off Igrači",
+    "betMap": {
+        "51679": _group(51679, ("total=16.5", 1.86)),
+        "51681": _group(51681, ("total=16.5", 1.92)),
+        "55215": _group(55215, ("total=24.5", 1.88)),
+        "55217": _group(55217, ("total=24.5", 1.88)),
     },
 }
 
@@ -178,17 +209,23 @@ def test_parse_player_match_detail_adds_detail_only_supported_markets():
 
 
 @pytest.mark.asyncio
-async def test_scrape_odds_partial_mode_uses_preview_feeds_only():
+async def test_scrape_odds_partial_mode_uses_broad_preview_feeds_only():
     async def fake_get_json(url: str, *, params=None, headers=None):
         del params, headers
-        if url == _GROUPS_URL:
-            return GROUPS_RESPONSE
-        if url == _GROUP_LEAGUES_URL.format(group_id="2495"):
-            return GROUP_LEAGUES_RESPONSE
-        if url == _LEAGUE_PREVIEW_URL.format(league_id="2516034"):
-            return {"esMatches": [REGULAR_PREVIEW_MATCH]}
-        if url == _PLAYER_PREVIEW_URL.format(league_id="2516034"):
-            return {"esMatches": [PLAYER_PREVIEW_MATCH]}
+        if url == _ALL_GAMES_URL:
+            return {
+                "esMatches": [
+                    REGULAR_PREVIEW_MATCH,
+                    EUROLEAGUE_REGULAR_PREVIEW_MATCH,
+                ]
+            }
+        if url == _ALL_PLAYERS_URL:
+            return {
+                "esMatches": [
+                    PLAYER_PREVIEW_MATCH,
+                    EUROLEAGUE_PLAYER_PREVIEW_MATCH,
+                ]
+            }
         raise AssertionError(f"Unexpected URL: {url}")
 
     http_client = AsyncMock()
@@ -203,7 +240,12 @@ async def test_scrape_odds_partial_mode_uses_preview_feeds_only():
     assert "player_turnovers" not in market_types
     assert "player_steals" not in market_types
     assert any(row.player_name == "Jalen Brunson" for row in results)
-    assert not any("/match-by-code/" in str(call) for call in http_client.get_json.call_args_list)
+    assert any(row.player_name == "Mike James" for row in results)
+    assert {row.home_team for row in results if row.player_name == "Mike James"} == {"Monaco"}
+    assert {row.away_team for row in results if row.player_name == "Mike James"} == {"Olympiacos"}
+    called_urls = [call.args[0] for call in http_client.get_json.call_args_list]
+    assert set(called_urls) == {_ALL_GAMES_URL, _ALL_PLAYERS_URL}
+    assert len(called_urls) == 2
 
 
 @pytest.mark.asyncio

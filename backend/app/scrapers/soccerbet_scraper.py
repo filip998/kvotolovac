@@ -25,6 +25,8 @@ _LEAGUE_PREVIEW_URL = (
 _PLAYER_PREVIEW_URL = (
     "https://www.soccerbet.rs/restapi/offer/sr/ext/sport/B/league/{league_id}/PL/mob"
 )
+_ALL_GAMES_URL = "https://www.soccerbet.rs/restapi/offer/sr/sport/B/mob"
+_ALL_PLAYERS_URL = "https://www.soccerbet.rs/restapi/offer/sr/ext/sport/B/PL/mob"
 _DETAIL_URL = "https://www.soccerbet.rs/restapi/offer/sr/match-by-code/{match_code}"
 
 _DEFAULT_HEADERS: dict[str, str] = {
@@ -470,6 +472,12 @@ class SoccerBetScraper(BaseScraper):
             _PLAYER_PREVIEW_URL.format(league_id=league.league_id)
         )
 
+    async def _fetch_all_regular_preview(self) -> list[dict]:
+        return await self._fetch_preview_rows(_ALL_GAMES_URL)
+
+    async def _fetch_all_player_preview(self) -> list[dict]:
+        return await self._fetch_preview_rows(_ALL_PLAYERS_URL)
+
     async def _fetch_detail(self, match_code: int, semaphore: asyncio.Semaphore) -> dict | None:
         async with semaphore:
             try:
@@ -489,24 +497,40 @@ class SoccerBetScraper(BaseScraper):
         if league_id != "basketball":
             return []
 
-        leagues = await self._discover_leagues()
-        if not leagues:
-            logger.warning("SoccerBet: no basketball leagues discovered")
-            return []
-
-        regular_batches, player_batches = await asyncio.gather(
-            asyncio.gather(*(self._fetch_regular_preview(league) for league in leagues)),
-            asyncio.gather(*(self._fetch_player_preview(league) for league in leagues)),
-        )
-
-        regular_matches = [match for batch in regular_batches for match in batch]
-        player_matches = [match for batch in player_batches for match in batch]
-        matchup_by_super_code = _build_matchup_index(regular_matches)
-
         regular_results: list[RawOddsData] = []
         player_results: list[RawOddsData] = []
 
-        if self._detail_mode == "full":
+        if self._detail_mode == "partial":
+            regular_matches, player_matches = await asyncio.gather(
+                self._fetch_all_regular_preview(),
+                self._fetch_all_player_preview(),
+            )
+            matchup_by_super_code = _build_matchup_index(regular_matches)
+            for match in regular_matches:
+                regular_results.extend(_parse_regular_match(match))
+            for match in player_matches:
+                parsed = _parse_player_match(match, matchup_by_super_code)
+                if not parsed:
+                    logger.warning(
+                        "SoccerBet: dropped partial-mode player row for match code %s",
+                        match.get("matchCode"),
+                    )
+                    continue
+                player_results.extend(parsed)
+        else:
+            leagues = await self._discover_leagues()
+            if not leagues:
+                logger.warning("SoccerBet: no basketball leagues discovered")
+                return []
+
+            regular_batches, player_batches = await asyncio.gather(
+                asyncio.gather(*(self._fetch_regular_preview(league) for league in leagues)),
+                asyncio.gather(*(self._fetch_player_preview(league) for league in leagues)),
+            )
+
+            regular_matches = [match for batch in regular_batches for match in batch]
+            player_matches = [match for batch in player_batches for match in batch]
+            matchup_by_super_code = _build_matchup_index(regular_matches)
             detail_semaphore = asyncio.Semaphore(_DETAIL_CONCURRENCY)
             regular_detail_targets = [
                 match_code
@@ -554,18 +578,6 @@ class SoccerBetScraper(BaseScraper):
                     logger.warning(
                         "SoccerBet: dropped full-mode player row for match code %s",
                         preview_match.get("matchCode"),
-                    )
-                    continue
-                player_results.extend(parsed)
-        else:
-            for match in regular_matches:
-                regular_results.extend(_parse_regular_match(match))
-            for match in player_matches:
-                parsed = _parse_player_match(match, matchup_by_super_code)
-                if not parsed:
-                    logger.warning(
-                        "SoccerBet: dropped partial-mode player row for match code %s",
-                        match.get("matchCode"),
                     )
                     continue
                 player_results.extend(parsed)
