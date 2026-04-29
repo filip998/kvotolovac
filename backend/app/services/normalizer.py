@@ -1455,13 +1455,6 @@ def _resolve_shared_platform_matchups(
                     ],
                 )
             )
-            logger.warning(
-                "Dropping unresolved shared-platform prop for %s (%s, %s, %s)",
-                raw.player_name,
-                raw.bookmaker_id,
-                known_team.team_name,
-                reason_code,
-            )
             continue
 
         selected = candidates[0]
@@ -1485,8 +1478,52 @@ def _resolve_shared_platform_matchups(
     return resolved, unresolved
 
 
+def log_unresolved_shared_platform_diagnostics(
+    unresolved: list[UnresolvedOddsDiagnostic],
+) -> None:
+    grouped: dict[tuple[str, str, str, str | None], list[UnresolvedOddsDiagnostic]] = defaultdict(list)
+    for row in unresolved:
+        if row.reason_code not in {
+            "no_canonical_matchup_for_team_at_slot",
+            "ambiguous_multiple_matchups_for_team_at_slot",
+        }:
+            continue
+        grouped[
+            (
+                row.bookmaker_id,
+                row.normalized_team_name,
+                row.reason_code,
+                row.start_time,
+            )
+        ].append(row)
+
+    for (
+        bookmaker_id,
+        normalized_team_name,
+        reason_code,
+        start_time,
+    ), rows in sorted(grouped.items()):
+        player_examples = ", ".join(
+            sorted({row.player_name for row in rows if row.player_name})[:5]
+        )
+        logger.warning(
+            (
+                "Dropping %d unresolved shared-platform props for %s "
+                "(%s, %s, start=%s%s)"
+            ),
+            len(rows),
+            normalized_team_name,
+            bookmaker_id,
+            reason_code,
+            start_time or "unknown",
+            f", players={player_examples}" if player_examples else "",
+        )
+
+
 def normalize_odds_with_diagnostics(
     raw_list: list[RawOddsData],
+    *,
+    log_unresolved_shared_platform: bool = True,
 ) -> tuple[
     list[NormalizedOdds],
     list[UnresolvedOddsDiagnostic],
@@ -1498,6 +1535,8 @@ def normalize_odds_with_diagnostics(
     resolved_shared_platform, unresolved_shared_platform = _resolve_shared_platform_matchups(
         timed_raw_list
     )
+    if log_unresolved_shared_platform:
+        log_unresolved_shared_platform_diagnostics(unresolved_shared_platform)
     resolved_raw_list = _resolve_contextual_player_names(resolved_shared_platform)
     slot_resolutions = _build_event_slot_resolutions(resolved_raw_list)
 

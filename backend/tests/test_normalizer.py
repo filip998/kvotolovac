@@ -10,6 +10,7 @@ from app.services.normalizer import (
     normalize_league_id,
     normalize_market_type,
     normalize_odds,
+    normalize_odds_with_diagnostics,
     normalize_odds_with_issues,
     normalize_player_name,
     normalize_team_name,
@@ -412,6 +413,58 @@ def test_normalize_odds_with_issues_reports_unresolved_shared_platform_rows():
     assert len(unresolved) == 1
     assert unresolved[0].reason_code == "no_canonical_matchup_for_team_at_slot"
     assert unresolved[0].raw_team_name == "Borac Cacak"
+
+
+def test_normalize_odds_with_diagnostics_can_suppress_shared_platform_logs(caplog):
+    normalized, unresolved, _team_reviews = normalize_odds_with_diagnostics(
+        [
+            RawOddsData(
+                bookmaker_id="admiralbet",
+                league_id="aba_liga",
+                home_team="Borac Cacak",
+                away_team="P. Nikolic",
+                market_type="player_points",
+                player_name="P. Nikolic",
+                threshold=10.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-13T16:00:00+00:00",
+            )
+        ],
+        log_unresolved_shared_platform=False,
+    )
+
+    assert normalized == []
+    assert len(unresolved) == 1
+    assert "Dropping" not in caplog.text
+
+
+def test_normalize_odds_logs_grouped_shared_platform_warnings(caplog):
+    raw = [
+        RawOddsData(
+            bookmaker_id="admiralbet",
+            league_id="aba_liga",
+            home_team="Borac Cacak",
+            away_team=player_name,
+            market_type="player_points",
+            player_name=player_name,
+            threshold=threshold,
+            over_odds=1.8,
+            under_odds=2.0,
+            start_time="2026-04-13T16:00:00+00:00",
+        )
+        for player_name, threshold in (("P. Nikolic", 10.5), ("P. Nikolic", 12.5))
+    ]
+
+    normalize_odds_with_diagnostics(raw)
+
+    warning_messages = [
+        record.message
+        for record in caplog.records
+        if "unresolved shared-platform props" in record.message
+    ]
+    assert len(warning_messages) == 1
+    assert "Dropping 2 unresolved shared-platform props for Borac Cacak" in warning_messages[0]
 
 
 def test_normalize_odds_with_issues_infers_two_team_shared_platform_slot():

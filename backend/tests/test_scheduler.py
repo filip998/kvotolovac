@@ -1004,7 +1004,8 @@ async def test_auto_apply_contextual_merge_keeps_low_score_pending():
 
 
 @pytest.mark.asyncio
-async def test_scheduler_run_cycle_applies_contextual_merge_before_storage():
+async def test_scheduler_run_cycle_applies_contextual_merge_before_storage(caplog):
+    caplog.set_level("WARNING", logger="app.services.normalizer")
     winner = create_canonical_team(display_name="CSKA Moscow")
     runner_up = create_canonical_team(display_name="CSKA Moskva")
     opponent = create_canonical_team(display_name="Enisey")
@@ -1047,7 +1048,19 @@ async def test_scheduler_run_cycle_applies_contextual_merge_before_storage():
                         runner_up.team_name,
                         away_team=opponent.team_name,
                         league_id="VTB Liga",
-                    )
+                    ),
+                    RawOddsData(
+                        bookmaker_id="superbet",
+                        league_id="VTB Liga",
+                        home_team=runner_up.team_name,
+                        away_team="D.Artis",
+                        market_type="player_points",
+                        player_name="D.Artis",
+                        threshold=11.5,
+                        over_odds=1.8,
+                        under_odds=1.9,
+                        start_time="2030-01-01T20:00:00+00:00",
+                    ),
                 ]
             },
         ),
@@ -1065,6 +1078,7 @@ async def test_scheduler_run_cycle_applies_contextual_merge_before_storage():
     assert get_canonical_team(runner_up.team_id) is None
     assert merged_runner_up is not None
     assert merged_runner_up.id == winner.team_id
+    assert "Dropping" not in caplog.text
 
 
 @pytest.mark.asyncio

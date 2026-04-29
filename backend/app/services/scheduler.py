@@ -14,6 +14,7 @@ from ..models.schemas import ScanProgressOut
 from ..services.league_registry import league_country, league_display_name
 from ..services.normalizer import (
     ANCHORED_AUTO_APPLY_THRESHOLD,
+    log_unresolved_shared_platform_diagnostics,
     normalize_odds_with_diagnostics,
     resolve_team_name,
 )
@@ -671,7 +672,10 @@ class Scheduler:
                 normalized,
                 unresolved_odds,
                 team_review_cases,
-            ) = normalize_odds_with_diagnostics(all_raw)
+            ) = normalize_odds_with_diagnostics(
+                all_raw,
+                log_unresolved_shared_platform=False,
+            )
             applied_auto_aliases: list[tuple[str, str, str]] = []
             try:
                 (
@@ -693,6 +697,8 @@ class Scheduler:
                         unresolved_odds,
                         team_review_cases,
                     ) = normalize_odds_with_diagnostics(all_raw)
+                else:
+                    log_unresolved_shared_platform_diagnostics(unresolved_odds)
 
                 self._scan_phase = "storing"
                 cycle_scraped_at = datetime.utcnow().isoformat()
