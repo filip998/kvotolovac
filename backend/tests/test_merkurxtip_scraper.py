@@ -668,8 +668,33 @@ async def test_scraper_player_list_missing_inline_odds_does_not_fetch_detail():
 
 
 @pytest.mark.asyncio
-async def test_scraper_returns_ot_totals(totals_data):
+async def test_scraper_partial_mode_returns_list_ot_total_only(totals_data):
     scraper = MerkurXTipScraper()
+
+    async def mock_get(url, **kwargs):
+        if url.endswith("/league-group/166/mob"):
+            return {"esMatches": []}
+        if url.endswith("/sport/B/mob"):
+            return totals_data["list"]
+        if "/league/" in url:
+            return {"esMatches": []}
+        if "/match/132948727" in url:
+            pytest.fail("partial mode should not fetch total detail")
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_odds("basketball")
+
+    assert len(results) == 1
+    assert {r.market_type for r in results} == {"game_total_ot"}
+    assert [(r.threshold, r.over_odds, r.under_odds) for r in results] == [
+        (222.5, 1.9, 1.9)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scraper_full_mode_returns_detail_ot_totals(totals_data):
+    scraper = MerkurXTipScraper(detail_mode="full")
 
     async def mock_get(url, **kwargs):
         if url.endswith("/league-group/166/mob"):
@@ -702,7 +727,7 @@ async def test_scraper_returns_ot_totals(totals_data):
 
 @pytest.mark.asyncio
 async def test_scraper_detail_replaces_list_total_line_when_same_threshold(totals_data):
-    scraper = MerkurXTipScraper()
+    scraper = MerkurXTipScraper(detail_mode="full")
     list_data = json.loads(json.dumps(totals_data["list"]))
     detail_data = json.loads(json.dumps(totals_data["detail"]))
     list_data["esMatches"][0]["odds"]["50444"] = 1.83

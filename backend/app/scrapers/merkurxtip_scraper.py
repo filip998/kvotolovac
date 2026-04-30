@@ -6,6 +6,7 @@ import math
 import re
 from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Literal
 
 from .base import BaseScraper
 from .http_client import HttpClient
@@ -371,8 +372,14 @@ class MerkurXTipScraper(BaseScraper):
     league-specific listing endpoints instead of a bulk sport listing.
     """
 
-    def __init__(self, http_client: HttpClient | None = None) -> None:
+    def __init__(
+        self,
+        http_client: HttpClient | None = None,
+        *,
+        detail_mode: Literal["partial", "full"] | None = None,
+    ) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
+        self._detail_mode = detail_mode or settings.merkurxtip_detail_mode
 
     def get_bookmaker_id(self) -> str:
         return "merkurxtip"
@@ -491,7 +498,7 @@ class MerkurXTipScraper(BaseScraper):
         ]
         total_match_ids = list(dict.fromkeys(_get_total_match_ids(total_matches)))
 
-        if not player_results and not total_match_ids:
+        if not player_results and not total_results:
             logger.warning(
                 (
                     "MerkurXTip: no list-parseable player odds found in group listing or "
@@ -502,8 +509,9 @@ class MerkurXTipScraper(BaseScraper):
             )
             return []
 
-        concurrency = _get_detail_fetch_concurrency(self._http, len(total_match_ids))
-        if total_match_ids:
+        concurrency = 0
+        if self._detail_mode == "full" and total_match_ids:
+            concurrency = _get_detail_fetch_concurrency(self._http, len(total_match_ids))
             semaphore = asyncio.Semaphore(concurrency)
             total_detail_results = await asyncio.gather(
                 *(
@@ -519,13 +527,14 @@ class MerkurXTipScraper(BaseScraper):
             (
                 "MerkurXTip scraped %d player odds from %d player list matches via %s "
                 "and %d OT total odds from %d basketball matches "
-                "(total detail concurrency=%d)"
+                "(total detail mode=%s concurrency=%d)"
             ),
             len(player_results),
             len(player_matches),
             source,
             len(total_results),
             len(total_match_ids),
+            self._detail_mode,
             concurrency,
         )
         return results
