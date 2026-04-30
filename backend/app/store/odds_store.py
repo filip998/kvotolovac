@@ -520,11 +520,11 @@ async def link_resolved_event_member(member: ResolvedEventMemberIn) -> int:
                    evidence,
                    metadata
                )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(match_id, bookmaker_id) DO UPDATE SET
-                   resolved_event_id = excluded.resolved_event_id,
-                   orientation = excluded.orientation,
-                   confidence = excluded.confidence,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(match_id, bookmaker_id) DO UPDATE SET
+                    resolved_event_id = excluded.resolved_event_id,
+                    orientation = excluded.orientation,
+                    confidence = excluded.confidence,
                    status = excluded.status,
                    source_url = COALESCE(excluded.source_url, resolved_event_members.source_url),
                    source_league_id = COALESCE(
@@ -546,10 +546,25 @@ async def link_resolved_event_member(member: ResolvedEventMemberIn) -> int:
                    source_start_time = COALESCE(
                        excluded.source_start_time,
                        resolved_event_members.source_start_time
-                   ),
-                   evidence = excluded.evidence,
-                   metadata = excluded.metadata,
-                   updated_at = CURRENT_TIMESTAMP""",
+                    ),
+                    evidence = excluded.evidence,
+                    metadata = excluded.metadata,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE NOT (
+                    EXISTS (
+                        SELECT 1
+                        FROM resolved_events existing_event
+                        WHERE existing_event.id = resolved_event_members.resolved_event_id
+                          AND existing_event.status = 'active'
+                          AND existing_event.method IN ('manual', 'manual_review')
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM resolved_events incoming_event
+                        WHERE incoming_event.id = excluded.resolved_event_id
+                          AND incoming_event.method IN ('manual', 'manual_review')
+                    )
+                )""",
             (
                 member.resolved_event_id,
                 member.match_id,
@@ -2126,16 +2141,20 @@ async def insert_discrepancy(
     profit_margin: float | None,
     middle_profit_margin: float | None = None,
     resolved_event_id: str | None = None,
+    bookmaker_a_match_id: str | None = None,
+    bookmaker_b_match_id: str | None = None,
 ) -> int:
     db = await get_db()
     cursor = await db.execute(
         """INSERT INTO discrepancies
-           (match_id, resolved_event_id, market_type, player_name, bookmaker_a_id, bookmaker_b_id,
+           (match_id, resolved_event_id, market_type, player_name,
+            bookmaker_a_id, bookmaker_a_match_id, bookmaker_b_id, bookmaker_b_match_id,
             threshold_a, threshold_b, odds_a, odds_b, gap, profit_margin, middle_profit_margin)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             match_id, resolved_event_id, market_type, player_name,
-            bookmaker_a_id, bookmaker_b_id,
+            bookmaker_a_id, bookmaker_a_match_id or match_id,
+            bookmaker_b_id, bookmaker_b_match_id or match_id,
             threshold_a, threshold_b,
             odds_a, odds_b, gap, profit_margin, middle_profit_margin,
         ),
@@ -2169,12 +2188,14 @@ async def get_discrepancies(
            FROM discrepancies d
            LEFT JOIN matches m ON d.match_id = m.id
            LEFT JOIN leagues l ON m.league_id = l.id
-           LEFT JOIN bookmakers ba ON d.bookmaker_a_id = ba.id
-           LEFT JOIN bookmakers bb ON d.bookmaker_b_id = bb.id
-           LEFT JOIN match_bookmaker_sources sa
-             ON sa.match_id = d.match_id AND sa.bookmaker_id = d.bookmaker_a_id
-           LEFT JOIN match_bookmaker_sources sb
-             ON sb.match_id = d.match_id AND sb.bookmaker_id = d.bookmaker_b_id"""
+            LEFT JOIN bookmakers ba ON d.bookmaker_a_id = ba.id
+            LEFT JOIN bookmakers bb ON d.bookmaker_b_id = bb.id
+            LEFT JOIN match_bookmaker_sources sa
+              ON sa.match_id = COALESCE(d.bookmaker_a_match_id, d.match_id)
+             AND sa.bookmaker_id = d.bookmaker_a_id
+            LEFT JOIN match_bookmaker_sources sb
+              ON sb.match_id = COALESCE(d.bookmaker_b_match_id, d.match_id)
+             AND sb.bookmaker_id = d.bookmaker_b_id"""
     conditions = []
     params: list = []
 
@@ -2221,13 +2242,15 @@ async def get_discrepancy(disc_id: int) -> DiscrepancyDetail | None:
                   bb.name as bookmaker_b_name, sb.source_url as bookmaker_b_source_url
            FROM discrepancies d
            LEFT JOIN matches m ON d.match_id = m.id
-           LEFT JOIN bookmakers ba ON d.bookmaker_a_id = ba.id
-           LEFT JOIN bookmakers bb ON d.bookmaker_b_id = bb.id
-           LEFT JOIN match_bookmaker_sources sa
-             ON sa.match_id = d.match_id AND sa.bookmaker_id = d.bookmaker_a_id
-           LEFT JOIN match_bookmaker_sources sb
-             ON sb.match_id = d.match_id AND sb.bookmaker_id = d.bookmaker_b_id
-           WHERE d.id = ?""",
+            LEFT JOIN bookmakers ba ON d.bookmaker_a_id = ba.id
+            LEFT JOIN bookmakers bb ON d.bookmaker_b_id = bb.id
+            LEFT JOIN match_bookmaker_sources sa
+              ON sa.match_id = COALESCE(d.bookmaker_a_match_id, d.match_id)
+             AND sa.bookmaker_id = d.bookmaker_a_id
+            LEFT JOIN match_bookmaker_sources sb
+              ON sb.match_id = COALESCE(d.bookmaker_b_match_id, d.match_id)
+             AND sb.bookmaker_id = d.bookmaker_b_id
+            WHERE d.id = ?""",
         (disc_id,),
     )
     if not rows:

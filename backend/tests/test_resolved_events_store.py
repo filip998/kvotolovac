@@ -220,6 +220,63 @@ async def test_event_review_cases_persist_fingerprint_decisions():
 
 
 @pytest.mark.asyncio
+async def test_auto_event_link_does_not_steal_manual_member():
+    await _seed_matches()
+    manual_event_id = await odds_store.upsert_resolved_event(
+        ResolvedEventIn(
+            id="evt-manual-partizan-zvezda",
+            sport="basketball",
+            start_time=START_TIME,
+            primary_match_id="match-mozzart",
+            method="manual",
+        )
+    )
+    auto_event_id = await odds_store.upsert_resolved_event(
+        ResolvedEventIn(
+            id="evt-auto-partizan-zvezda",
+            sport="basketball",
+            start_time=START_TIME,
+            primary_match_id="match-mozzart",
+            method="exact",
+        )
+    )
+    await odds_store.link_resolved_event_member(
+        ResolvedEventMemberIn(
+            resolved_event_id=manual_event_id,
+            match_id="match-mozzart",
+            bookmaker_id="mozzart",
+            evidence=["operator accepted event merge"],
+        )
+    )
+
+    await odds_store.link_resolved_event_member(
+        ResolvedEventMemberIn(
+            resolved_event_id=auto_event_id,
+            match_id="match-mozzart",
+            bookmaker_id="mozzart",
+            evidence=["next scrape exact resolver"],
+        )
+    )
+
+    member = await odds_store.get_resolved_event_member(
+        match_id="match-mozzart",
+        bookmaker_id="mozzart",
+    )
+    manual_event = await odds_store.get_resolved_event(manual_event_id)
+    auto_event = await odds_store.get_resolved_event(auto_event_id)
+
+    assert member is not None
+    assert member.resolved_event_id == manual_event_id
+    assert member.evidence == ["operator accepted event merge"]
+    assert manual_event is not None
+    assert [(row.match_id, row.bookmaker_id) for row in manual_event.members] == [
+        ("match-mozzart", "mozzart")
+    ]
+    assert auto_event is not None
+    assert auto_event.members == []
+
+
+@pytest.mark.asyncio
 async def test_eligible_resolved_event_members_filter_player_resolution_scope():
     await odds_store.upsert_league("euroleague", "Euroleague", "basketball", "Europe")
     event_specs = [

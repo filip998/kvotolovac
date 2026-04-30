@@ -1031,6 +1031,8 @@ class Scheduler:
                         profit_margin=d.profit_margin,
                         middle_profit_margin=d.middle_profit_margin,
                         resolved_event_id=d.resolved_event_id,
+                        bookmaker_a_match_id=d.bookmaker_a_match_id,
+                        bookmaker_b_match_id=d.bookmaker_b_match_id,
                     )
 
                 self._scan_phase = "notifying"

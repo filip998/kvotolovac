@@ -371,7 +371,9 @@ class DiscrepancyOut(BaseModel):
     market_type: str
     player_name: Optional[str] = None
     bookmaker_a_id: str
+    bookmaker_a_match_id: Optional[str] = None
     bookmaker_b_id: str
+    bookmaker_b_match_id: Optional[str] = None
     threshold_a: float
     threshold_b: float
     odds_a: Optional[float] = None

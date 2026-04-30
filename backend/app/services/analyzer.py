@@ -26,6 +26,8 @@ class Discrepancy:
     profit_margin: float | None
     middle_profit_margin: float | None = None
     resolved_event_id: str | None = None
+    bookmaker_a_match_id: str | None = None
+    bookmaker_b_match_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -246,6 +248,8 @@ def find_threshold_gaps(
                         best_under = b.over_odds
                         best_a_id = a.bookmaker_id
                         best_b_id = b.bookmaker_id
+                        best_a_match_id = a.match_id
+                        best_b_match_id = b.match_id
 
                         if margin_ab is not None and margin_ab > 0:
                             best_margin = margin_ab
@@ -253,6 +257,8 @@ def find_threshold_gaps(
                             best_under = b.under_odds
                             best_a_id = a.bookmaker_id
                             best_b_id = b.bookmaker_id
+                            best_a_match_id = a.match_id
+                            best_b_match_id = b.match_id
 
                         if margin_ba is not None and margin_ba > 0 and (best_margin is None or margin_ba > best_margin):
                             best_margin = margin_ba
@@ -260,6 +266,8 @@ def find_threshold_gaps(
                             best_under = a.under_odds
                             best_a_id = b.bookmaker_id
                             best_b_id = a.bookmaker_id
+                            best_a_match_id = b.match_id
+                            best_b_match_id = a.match_id
 
                         if best_margin is not None and best_margin > 0:
                             discrepancies.append(
@@ -277,6 +285,8 @@ def find_threshold_gaps(
                                     profit_margin=best_margin,
                                     middle_profit_margin=None,
                                     resolved_event_id=group.resolved_event_id,
+                                    bookmaker_a_match_id=best_a_match_id,
+                                    bookmaker_b_match_id=best_b_match_id,
                                 )
                             )
                 continue
@@ -306,6 +316,8 @@ def find_threshold_gaps(
                     profit_margin=margin,
                     middle_profit_margin=middle_margin,
                     resolved_event_id=group.resolved_event_id,
+                    bookmaker_a_match_id=a.match_id,
+                    bookmaker_b_match_id=b.match_id,
                 )
             )
 

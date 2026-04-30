@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 
 import pytest
 
 from app.config import settings
-from app.database import get_db
+from app.database import close_db, get_db, init_db
 from app.models.schemas import NormalizedOdds, TeamReviewDiagnostic, UnresolvedOddsDiagnostic
 from app.store import odds_store
 
@@ -475,6 +476,43 @@ async def test_insert_and_get_discrepancy():
     assert len(discs) == 1
     assert discs[0].gap == 2.0
     assert discs[0].middle_profit_margin == 0.96
+
+
+@pytest.mark.asyncio
+async def test_discrepancy_leg_match_id_migration_preserves_foreign_keys(
+    tmp_path,
+    monkeypatch,
+):
+    await close_db()
+    legacy_db_path = tmp_path / "legacy.db"
+    with sqlite3.connect(legacy_db_path) as conn:
+        conn.execute(
+            """CREATE TABLE discrepancies (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   match_id TEXT REFERENCES matches(id),
+                   market_type TEXT NOT NULL,
+                   player_name TEXT,
+                   bookmaker_a_id TEXT,
+                   bookmaker_b_id TEXT,
+                   threshold_a REAL,
+                   threshold_b REAL,
+                   odds_a REAL,
+                   odds_b REAL,
+                   gap REAL,
+                   profit_margin REAL,
+                   detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                   is_active BOOLEAN DEFAULT TRUE
+               )"""
+        )
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{legacy_db_path}")
+
+    await init_db(str(legacy_db_path))
+    db = await get_db()
+    rows = await db.execute_fetchall("PRAGMA foreign_key_list(discrepancies)")
+    foreign_keys = {(row[3], row[2]) for row in rows}
+
+    assert ("bookmaker_a_match_id", "matches") in foreign_keys
+    assert ("bookmaker_b_match_id", "matches") in foreign_keys
 
 
 @pytest.mark.asyncio

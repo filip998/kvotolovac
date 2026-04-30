@@ -120,6 +120,8 @@ def test_basketball_player_props_compare_by_resolved_event_and_player_key():
     assert discrepancy.player_name == "Nikola Jokić"
     assert discrepancy.bookmaker_a_id == "mozzart"
     assert discrepancy.bookmaker_b_id == "meridian"
+    assert discrepancy.bookmaker_a_match_id == "match-mozzart"
+    assert discrepancy.bookmaker_b_match_id == "match-meridian"
     assert discrepancy.gap == 2.0
 
 
@@ -314,6 +316,65 @@ async def test_store_helpers_exclude_non_eligible_event_methods_from_analysis():
 
     assert members == []
     assert analyze(odds, event_members=members) == []
+
+
+@pytest.mark.asyncio
+async def test_discrepancy_storage_uses_leg_match_ids_for_source_urls():
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_match(
+        "match-mozzart",
+        "euroleague",
+        "Partizan",
+        "Crvena Zvezda",
+        sport="basketball",
+        start_time=START_TIME,
+    )
+    await odds_store.upsert_match(
+        "match-meridian",
+        "euroleague",
+        "KK Partizan",
+        "Crvena Zvezda",
+        sport="basketball",
+        start_time=START_TIME,
+    )
+    await odds_store.upsert_match_bookmaker_source(
+        match_id="match-mozzart",
+        bookmaker_id="mozzart",
+        source_url="https://mozzart.example/event",
+    )
+    await odds_store.upsert_match_bookmaker_source(
+        match_id="match-meridian",
+        bookmaker_id="meridian",
+        source_url="https://meridian.example/event",
+    )
+
+    await odds_store.insert_discrepancy(
+        match_id="match-mozzart",
+        resolved_event_id=None,
+        market_type="player_points",
+        player_name="Nikola Jokić",
+        bookmaker_a_id="mozzart",
+        bookmaker_a_match_id="match-mozzart",
+        bookmaker_b_id="meridian",
+        bookmaker_b_match_id="match-meridian",
+        threshold_a=12.5,
+        threshold_b=14.5,
+        odds_a=2.05,
+        odds_b=2.05,
+        gap=2.0,
+        profit_margin=0.025,
+    )
+
+    stored = await odds_store.get_discrepancies()
+
+    assert len(stored) == 1
+    assert stored[0].match_id == "match-mozzart"
+    assert stored[0].bookmaker_a_match_id == "match-mozzart"
+    assert stored[0].bookmaker_b_match_id == "match-meridian"
+    assert stored[0].bookmaker_a_source_url == "https://mozzart.example/event"
+    assert stored[0].bookmaker_b_source_url == "https://meridian.example/event"
 
 
 @pytest.mark.asyncio

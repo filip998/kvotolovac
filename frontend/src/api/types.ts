@@ -82,9 +82,11 @@ export interface Discrepancy {
   market_type: MarketType;
   player_name: string | null;
   bookmaker_a_id: string;
+  bookmaker_a_match_id?: string | null;
   bookmaker_a_name: string;
   bookmaker_a_source_url?: string | null;
   bookmaker_b_id: string;
+  bookmaker_b_match_id?: string | null;
   bookmaker_b_name: string;
   bookmaker_b_source_url?: string | null;
   threshold_a: number;

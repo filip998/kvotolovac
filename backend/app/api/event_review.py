@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -29,6 +30,10 @@ def _manual_event_merge_fingerprint(
 ) -> str:
     match_key = "|".join(sorted(match_ids))
     return f"manual_event_merge:{sport}:{start_time or ''}:{match_key}"
+
+
+def _manual_event_merge_resolved_event_id(fingerprint: str) -> str:
+    return "evt_manual_" + hashlib.md5(fingerprint.encode()).hexdigest()[:20]
 
 
 @router.get("/cases", response_model=list[EventReviewCaseOut])
@@ -140,9 +145,13 @@ async def accept_event_review_case(
             detail="Event review case has no bookmaker source variants to link",
         )
 
+    target_resolved_event_id = case.resolved_event_id or case.candidate_resolved_event_id
+    if target_resolved_event_id is None and case.reason_code == "manual_event_merge":
+        target_resolved_event_id = _manual_event_merge_resolved_event_id(case.fingerprint)
+
     resolved_event_id = await odds_store.upsert_resolved_event(
         ResolvedEventIn(
-            id=case.resolved_event_id or case.candidate_resolved_event_id,
+            id=target_resolved_event_id,
             sport=primary_match.sport,
             start_time=primary_match.start_time or case.start_time,
             primary_match_id=primary_match_id,
@@ -213,6 +222,11 @@ async def merge_events(payload: EventMergeIn) -> EventMergeOut:
             status_code=404,
             detail=f"Primary match {primary_match_id} not found",
         )
+    if not primary_match.start_time:
+        raise HTTPException(
+            status_code=400,
+            detail="Primary match must have a start_time for manual event merge",
+        )
 
     candidate_match_ids = [primary_match_id, *source_match_ids]
     source_league_labels = [
@@ -238,13 +252,14 @@ async def merge_events(payload: EventMergeIn) -> EventMergeOut:
         if match.league_name or match.league_id:
             source_league_labels.append(match.league_name or match.league_id or "")
 
+    fingerprint = _manual_event_merge_fingerprint(
+        sport=primary_match.sport,
+        start_time=primary_match.start_time,
+        match_ids=candidate_match_ids,
+    )
     case_id = await odds_store.upsert_event_review_case(
         EventReviewCaseIn(
-            fingerprint=_manual_event_merge_fingerprint(
-                sport=primary_match.sport,
-                start_time=primary_match.start_time,
-                match_ids=candidate_match_ids,
-            ),
+            fingerprint=fingerprint,
             sport=primary_match.sport,
             start_time=primary_match.start_time or "",
             primary_match_id=primary_match_id,

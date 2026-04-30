@@ -190,9 +190,6 @@ CREATE TABLE IF NOT EXISTS opportunities (
 CREATE INDEX IF NOT EXISTS idx_opportunities_active_sport
 ON opportunities (is_active, sport, detected_at);
 
-CREATE INDEX IF NOT EXISTS idx_opportunities_resolved_event_active
-ON opportunities (resolved_event_id, is_active);
-
 CREATE TABLE IF NOT EXISTS unresolved_odds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     bookmaker_id TEXT REFERENCES bookmakers(id),
@@ -290,7 +287,9 @@ CREATE TABLE IF NOT EXISTS discrepancies (
     market_type TEXT NOT NULL,
     player_name TEXT,
     bookmaker_a_id TEXT,
+    bookmaker_a_match_id TEXT REFERENCES matches(id),
     bookmaker_b_id TEXT,
+    bookmaker_b_match_id TEXT REFERENCES matches(id),
     threshold_a REAL,
     threshold_b REAL,
     odds_a REAL,
@@ -301,9 +300,6 @@ CREATE TABLE IF NOT EXISTS discrepancies (
     detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_active BOOLEAN DEFAULT TRUE
 );
-
-CREATE INDEX IF NOT EXISTS idx_discrepancies_resolved_event_active
-ON discrepancies (resolved_event_id, is_active);
 
 CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -540,6 +536,14 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
         await conn.execute("ALTER TABLE discrepancies ADD COLUMN middle_profit_margin REAL")
     if columns and "resolved_event_id" not in existing:
         await conn.execute("ALTER TABLE discrepancies ADD COLUMN resolved_event_id TEXT")
+    if columns and "bookmaker_a_match_id" not in existing:
+        await conn.execute(
+            "ALTER TABLE discrepancies ADD COLUMN bookmaker_a_match_id TEXT REFERENCES matches(id)"
+        )
+    if columns and "bookmaker_b_match_id" not in existing:
+        await conn.execute(
+            "ALTER TABLE discrepancies ADD COLUMN bookmaker_b_match_id TEXT REFERENCES matches(id)"
+        )
     await conn.execute(
         """CREATE INDEX IF NOT EXISTS idx_discrepancies_resolved_event_active
            ON discrepancies (resolved_event_id, is_active)"""

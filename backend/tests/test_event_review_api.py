@@ -214,6 +214,89 @@ async def test_manual_event_merge_requires_exact_start_time(client: AsyncClient)
 
 
 @pytest.mark.asyncio
+async def test_manual_event_merge_rejects_missing_start_time_before_creating_case(
+    client: AsyncClient,
+):
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball", "Europe")
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_match(
+        id="match-no-time-primary",
+        league_id="euroleague",
+        sport="basketball",
+        home_team="Partizan",
+        away_team="Crvena Zvezda",
+        start_time=None,
+    )
+    await odds_store.upsert_match(
+        id="match-no-time-source",
+        league_id="euroleague",
+        sport="basketball",
+        home_team="KK Partizan",
+        away_team="Crvena Zvezda",
+        start_time=None,
+    )
+
+    response = await client.post(
+        "/api/v1/event-review/merge",
+        json={
+            "primary_match_id": "match-no-time-primary",
+            "source_match_ids": ["match-no-time-source"],
+        },
+    )
+    pending_cases = await odds_store.list_event_review_cases(status="pending")
+
+    assert response.status_code == 400
+    assert "start_time" in response.json()["detail"]
+    assert pending_cases == []
+
+
+@pytest.mark.asyncio
+async def test_manual_event_merge_reuses_resolved_event_after_decline_and_remerge(
+    client: AsyncClient,
+):
+    await _seed_event_review_case()
+
+    first_response = await client.post(
+        "/api/v1/event-review/merge",
+        json={
+            "primary_match_id": "match-mozzart",
+            "source_match_ids": ["match-meridian"],
+        },
+    )
+    accepted_cases = await odds_store.list_event_review_cases(
+        status="accepted",
+        include_variants=False,
+    )
+    assert first_response.status_code == 200
+    assert len(accepted_cases) == 1
+
+    decline_response = await client.post(
+        f"/api/v1/event-review/cases/{accepted_cases[0].id}/decline"
+    )
+    second_response = await client.post(
+        "/api/v1/event-review/merge",
+        json={
+            "primary_match_id": "match-mozzart",
+            "source_match_ids": ["match-meridian"],
+        },
+    )
+
+    first_event_id = first_response.json()["resolved_event_id"]
+    second_event_id = second_response.json()["resolved_event_id"]
+    manual_events = [
+        event
+        for event in await odds_store.list_resolved_events(sport="basketball")
+        if event.method == "manual"
+    ]
+
+    assert decline_response.status_code == 200
+    assert second_response.status_code == 200
+    assert second_event_id == first_event_id
+    assert [event.id for event in manual_events] == [first_event_id]
+
+
+@pytest.mark.asyncio
 async def test_event_review_decline_suppresses_same_fingerprint(client: AsyncClient):
     case_id = await _seed_event_review_case()
 
