@@ -109,7 +109,7 @@ async def test_event_review_accept_persists_resolved_event_members(client: Async
     assert accept_resp.status_code == 200
     payload = accept_resp.json()
     assert payload["status"] == "accepted"
-    assert payload["resolved_event_id"].startswith("evt_")
+    assert payload["resolved_event_id"].startswith("evt_review_")
 
     accepted_cases = accepted_resp.json()
     assert [case["id"] for case in accepted_cases] == [case_id]

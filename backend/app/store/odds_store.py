@@ -190,6 +190,11 @@ def _sql_placeholders(values: list[object]) -> str:
     return ", ".join("?" for _ in values)
 
 
+async def rollback_pending_transaction() -> None:
+    db = await get_db()
+    await db.rollback()
+
+
 # ── Bookmakers ─────────────────────────────────────────────
 
 async def upsert_bookmaker(id: str, name: str, website_url: str | None = None) -> None:
@@ -819,61 +824,65 @@ async def list_resolved_events(
 
 async def upsert_event_review_case(case: EventReviewCaseIn) -> int:
     db = await get_db()
-    await db.execute(
-        """INSERT INTO event_review_cases (
-               fingerprint,
-               sport,
-               start_time,
-               primary_match_id,
-               candidate_resolved_event_id,
-               candidate_match_ids,
-               reason_code,
-               confidence,
-               method,
-               source_bookmaker_ids,
-               source_league_labels,
-               evidence,
-               metadata,
-               status
-           )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(fingerprint) DO UPDATE SET
-               sport = excluded.sport,
-               start_time = excluded.start_time,
-               primary_match_id = excluded.primary_match_id,
-               candidate_resolved_event_id = excluded.candidate_resolved_event_id,
-               candidate_match_ids = excluded.candidate_match_ids,
-               reason_code = excluded.reason_code,
-               confidence = excluded.confidence,
-               method = excluded.method,
-               source_bookmaker_ids = excluded.source_bookmaker_ids,
-               source_league_labels = excluded.source_league_labels,
-               evidence = excluded.evidence,
-               metadata = excluded.metadata,
-               status = CASE
-                   WHEN event_review_cases.status IN ('accepted', 'declined')
-                   THEN event_review_cases.status
-                   ELSE excluded.status
-               END,
-               updated_at = CURRENT_TIMESTAMP""",
-        (
-            case.fingerprint,
-            case.sport,
-            case.start_time,
-            case.primary_match_id,
-            case.candidate_resolved_event_id,
-            json.dumps(case.candidate_match_ids),
-            case.reason_code,
-            case.confidence,
-            case.method,
-            json.dumps(case.source_bookmaker_ids),
-            json.dumps(case.source_league_labels),
-            json.dumps(case.evidence),
-            json.dumps(case.metadata),
-            case.status,
-        ),
-    )
-    await db.commit()
+    try:
+        await db.execute(
+            """INSERT INTO event_review_cases (
+                   fingerprint,
+                   sport,
+                   start_time,
+                   primary_match_id,
+                   candidate_resolved_event_id,
+                   candidate_match_ids,
+                   reason_code,
+                   confidence,
+                   method,
+                   source_bookmaker_ids,
+                   source_league_labels,
+                   evidence,
+                   metadata,
+                   status
+               )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(fingerprint) DO UPDATE SET
+                   sport = excluded.sport,
+                   start_time = excluded.start_time,
+                   primary_match_id = excluded.primary_match_id,
+                   candidate_resolved_event_id = excluded.candidate_resolved_event_id,
+                   candidate_match_ids = excluded.candidate_match_ids,
+                   reason_code = excluded.reason_code,
+                   confidence = excluded.confidence,
+                   method = excluded.method,
+                   source_bookmaker_ids = excluded.source_bookmaker_ids,
+                   source_league_labels = excluded.source_league_labels,
+                   evidence = excluded.evidence,
+                   metadata = excluded.metadata,
+                   status = CASE
+                       WHEN event_review_cases.status IN ('accepted', 'declined')
+                       THEN event_review_cases.status
+                       ELSE excluded.status
+                   END,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (
+                case.fingerprint,
+                case.sport,
+                case.start_time,
+                case.primary_match_id,
+                case.candidate_resolved_event_id,
+                json.dumps(case.candidate_match_ids),
+                case.reason_code,
+                case.confidence,
+                case.method,
+                json.dumps(case.source_bookmaker_ids),
+                json.dumps(case.source_league_labels),
+                json.dumps(case.evidence),
+                json.dumps(case.metadata),
+                case.status,
+            ),
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
     rows = await db.execute_fetchall(
         "SELECT id FROM event_review_cases WHERE fingerprint = ?",
         (case.fingerprint,),

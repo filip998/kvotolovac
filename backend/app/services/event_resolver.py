@@ -946,7 +946,6 @@ def _event_review_case(
         sport=primary.sport,
         start_time=primary.start_time,
         primary_match_id=primary.match_id,
-        candidate_resolved_event_id=_stable_event_id(primary.match_id),
         candidate_match_ids=match_ids,
         reason_code=pair.reason_code,
         confidence=pair.confidence,

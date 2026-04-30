@@ -100,6 +100,7 @@ def test_event_review_case_metadata_records_exact_source_variant_pairs():
         {"match_id": "match-a", "bookmaker_id": "book-a"},
         {"match_id": "match-z", "bookmaker_id": "book-z"},
     ]
+    assert review_case.candidate_resolved_event_id is None
 
 
 async def _seed_bookmakers(*bookmaker_ids: str) -> None:

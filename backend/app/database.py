@@ -858,6 +858,7 @@ async def init_db(db_path: str = ":memory:") -> aiosqlite.Connection:
     global _db_connection
     _db_connection = await aiosqlite.connect(db_path)
     _db_connection.row_factory = aiosqlite.Row
+    await _db_connection.execute("PRAGMA busy_timeout = 5000")
     await _db_connection.execute("PRAGMA foreign_keys = OFF")
     await _db_connection.executescript(_SCHEMA)
     await _ensure_schema_compatibility(_db_connection)

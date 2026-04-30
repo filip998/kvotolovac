@@ -36,6 +36,10 @@ def _manual_event_merge_resolved_event_id(fingerprint: str) -> str:
     return "evt_manual_" + hashlib.md5(fingerprint.encode()).hexdigest()[:20]
 
 
+def _accepted_event_review_resolved_event_id(fingerprint: str) -> str:
+    return "evt_review_" + hashlib.md5(fingerprint.encode()).hexdigest()[:20]
+
+
 @router.get("/cases", response_model=list[EventReviewCaseOut])
 async def list_event_review_cases(
     bookmaker_id: Optional[str] = Query(default=None),
@@ -151,6 +155,8 @@ async def accept_event_review_case(
     target_resolved_event_id = case.resolved_event_id or case.candidate_resolved_event_id
     if target_resolved_event_id is None and case.reason_code == "manual_event_merge":
         target_resolved_event_id = _manual_event_merge_resolved_event_id(case.fingerprint)
+    elif target_resolved_event_id is None:
+        target_resolved_event_id = _accepted_event_review_resolved_event_id(case.fingerprint)
 
     resolved_event_id = await odds_store.upsert_resolved_event(
         ResolvedEventIn(

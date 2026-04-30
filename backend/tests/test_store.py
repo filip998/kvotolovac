@@ -8,7 +8,12 @@ import pytest
 
 from app.config import settings
 from app.database import close_db, get_db, init_db
-from app.models.schemas import NormalizedOdds, TeamReviewDiagnostic, UnresolvedOddsDiagnostic
+from app.models.schemas import (
+    EventReviewCaseIn,
+    NormalizedOdds,
+    TeamReviewDiagnostic,
+    UnresolvedOddsDiagnostic,
+)
 from app.store import odds_store
 
 
@@ -664,6 +669,47 @@ async def test_resolved_event_id_migration_preserves_foreign_keys(
         )
         await db.commit()
     await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_event_review_case_fk_failure_rolls_back_connection():
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match(
+        "match-1",
+        "euroleague",
+        "Partizan",
+        "Crvena Zvezda",
+        sport="basketball",
+        start_time="2030-01-01T20:00:00+00:00",
+    )
+
+    with pytest.raises(aiosqlite.IntegrityError):
+        await odds_store.upsert_event_review_case(
+            EventReviewCaseIn(
+                fingerprint="bad-candidate-event",
+                sport="basketball",
+                start_time="2030-01-01T20:00:00+00:00",
+                primary_match_id="match-1",
+                candidate_resolved_event_id="missing-event",
+                candidate_match_ids=["match-1"],
+                reason_code="candidate_event_equivalence",
+                source_bookmaker_ids=[],
+            )
+        )
+
+    case_id = await odds_store.upsert_event_review_case(
+        EventReviewCaseIn(
+            fingerprint="good-candidate-event",
+            sport="basketball",
+            start_time="2030-01-01T20:00:00+00:00",
+            primary_match_id="match-1",
+            candidate_match_ids=["match-1"],
+            reason_code="candidate_event_equivalence",
+            source_bookmaker_ids=[],
+        )
+    )
+
+    assert case_id > 0
 
 
 @pytest.mark.asyncio

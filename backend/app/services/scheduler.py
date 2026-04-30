@@ -1040,6 +1040,7 @@ class Scheduler:
                     discrepancies
                 )
             except Exception:
+                await odds_store.rollback_pending_transaction()
                 if applied_auto_merges:
                     await self._rollback_auto_applied_merges(applied_auto_merges)
                 if applied_auto_aliases:
