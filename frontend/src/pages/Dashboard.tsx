@@ -180,6 +180,7 @@ export default function Dashboard() {
     [appliedSearchQuery]
   );
   const hasSearchQuery = normalizedAppliedSearchQuery.length > 0;
+  const activeSearchLabel = appliedSearchQuery.trim();
 
   const switchTab = useCallback((nextTab: DashboardTab) => {
     if (nextTab !== activeTab) {
@@ -203,9 +204,6 @@ export default function Dashboard() {
       return next;
     });
   }, []);
-
-  const shouldLoadAllDiscrepancies =
-    activeTab === 'discrepancies' && hasSearchQuery;
 
   const toggleFlatCalculator = useCallback((discrepancyId: number) => {
     setExpandedFlatCalculatorIds((prev) => {
@@ -234,10 +232,10 @@ export default function Dashboard() {
   const discrepancyFilters = useMemo(
     () => ({
       ...filters,
-      loadAll: shouldLoadAllDiscrepancies,
+      search: activeSearchLabel || undefined,
       bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
     }),
-    [filters, selectedBookmakerIds, shouldLoadAllDiscrepancies]
+    [activeSearchLabel, filters, selectedBookmakerIds]
   );
 
   const {
@@ -414,8 +412,6 @@ export default function Dashboard() {
     () => filterSearchIndex(discrepancySearchIndex, appliedSearchQuery),
     [appliedSearchQuery, discrepancySearchIndex]
   );
-  const activeSearchLabel = appliedSearchQuery.trim();
-
   const grouped = useMemo<LeagueGroup[]>(() => {
     if (!filteredDiscrepancies) return [];
 
@@ -655,20 +651,20 @@ export default function Dashboard() {
       );
     }
 
+    if (hasSearchQuery && (!discrepancies || filteredDiscrepancyCount === 0)) {
+      return (
+        <EmptyState
+          title={`No discrepancy rows match "${activeSearchLabel}"`}
+          message="Search checks matchup and player names after your current bookmaker, market, and gap filters."
+        />
+      );
+    }
+
     if (!discrepancies || discrepancies.length === 0) {
       return (
         <EmptyState
           title="No discrepancies right now"
           message="Scraping may still be working normally. Switch to tracked odds to inspect upcoming matches and player markets."
-        />
-      );
-    }
-
-    if (hasSearchQuery && filteredDiscrepancyCount === 0) {
-      return (
-        <EmptyState
-          title={`No discrepancy rows match "${activeSearchLabel}"`}
-          message="Search checks matchup and player names after your current bookmaker, market, and gap filters."
         />
       );
     }

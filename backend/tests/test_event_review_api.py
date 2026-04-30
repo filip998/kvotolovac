@@ -127,6 +127,93 @@ async def test_event_review_accept_persists_resolved_event_members(client: Async
 
 
 @pytest.mark.asyncio
+async def test_event_review_accept_rejects_unreviewed_primary_match(client: AsyncClient):
+    case_id = await _seed_event_review_case()
+    await odds_store.upsert_match(
+        id="match-unreviewed",
+        league_id="euroleague",
+        sport="basketball",
+        home_team="Partizan II",
+        away_team="Crvena Zvezda II",
+        start_time=START_TIME,
+    )
+
+    response = await client.post(
+        f"/api/v1/event-review/cases/{case_id}/accept",
+        json={"primary_match_id": "match-unreviewed"},
+    )
+
+    assert response.status_code == 400
+    assert "reviewed candidate" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_event_review_metadata_pairs_fallback_variants_without_source_rows(
+    client: AsyncClient,
+):
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball", "Europe")
+    await odds_store.upsert_bookmaker("book-a", "Book A")
+    await odds_store.upsert_bookmaker("book-z", "Book Z")
+    await odds_store.upsert_match(
+        id="match-z",
+        league_id="euroleague",
+        sport="basketball",
+        home_team="Z Home",
+        away_team="Z Away",
+        start_time=START_TIME,
+    )
+    await odds_store.upsert_match(
+        id="match-a",
+        league_id="euroleague",
+        sport="basketball",
+        home_team="A Home",
+        away_team="A Away",
+        start_time=START_TIME,
+    )
+    case_id = await odds_store.upsert_event_review_case(
+        EventReviewCaseIn(
+            fingerprint="basketball:metadata-pairs:v1",
+            sport="basketball",
+            start_time=START_TIME,
+            primary_match_id="match-z",
+            candidate_match_ids=["match-z", "match-a"],
+            reason_code="possible_event_equivalence_low_confidence",
+            confidence=0.8,
+            method="auto_candidate",
+            source_bookmaker_ids=["book-a", "book-z"],
+            metadata={
+                "source_variants": [
+                    {"match_id": "match-z", "bookmaker_id": "book-z"},
+                    {"match_id": "match-a", "bookmaker_id": "book-a"},
+                ]
+            },
+        )
+    )
+
+    cases_response = await client.get("/api/v1/event-review/cases?status=pending")
+    accept_response = await client.post(f"/api/v1/event-review/cases/{case_id}/accept")
+
+    assert cases_response.status_code == 200
+    case_payload = cases_response.json()[0]
+    source_pairs = [
+        (variant["match_id"], variant["bookmaker_id"])
+        for variant in case_payload["variants"]
+        if variant["bookmaker_id"] is not None
+    ]
+    assert source_pairs == [
+        ("match-z", "book-z"),
+        ("match-a", "book-a"),
+    ]
+    assert accept_response.status_code == 200
+    event = await odds_store.get_resolved_event(accept_response.json()["resolved_event_id"])
+    assert event is not None
+    assert [(member.match_id, member.bookmaker_id) for member in event.members] == [
+        ("match-z", "book-z"),
+        ("match-a", "book-a"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_manual_event_merge_links_resolved_event_without_deleting_or_merging_teams(
     client: AsyncClient,
 ):

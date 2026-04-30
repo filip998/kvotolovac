@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -63,6 +64,18 @@ def _json_dict(value: object) -> dict:
     if isinstance(value, dict):
         return value
     return {}
+
+
+def _normalize_search_text(value: object) -> str:
+    if value is None:
+        return ""
+    decomposed = unicodedata.normalize("NFD", str(value))
+    chars = [
+        char.lower() if char.isalnum() else " "
+        for char in decomposed
+        if unicodedata.category(char) != "Mn"
+    ]
+    return " ".join("".join(chars).split())
 
 
 def _row_to_unresolved_odds(row: aiosqlite.Row) -> UnresolvedOddsOut:
@@ -147,6 +160,30 @@ def _row_to_event_review_variant(row: aiosqlite.Row) -> EventReviewVariantOut:
         confidence=data.get("member_confidence", data.get("confidence")),
         evidence=_json_list(evidence),
     )
+
+
+def _event_review_source_variant_pairs(case: EventReviewCaseOut) -> list[tuple[str, str]]:
+    raw_variants = case.metadata.get("source_variants")
+    if not isinstance(raw_variants, list):
+        return []
+
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_variant in raw_variants:
+        if not isinstance(raw_variant, dict):
+            continue
+        match_id = raw_variant.get("match_id")
+        bookmaker_id = raw_variant.get("bookmaker_id")
+        if not isinstance(match_id, str) or not isinstance(bookmaker_id, str):
+            continue
+        if not match_id or not bookmaker_id:
+            continue
+        key = (match_id, bookmaker_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append(key)
+    return pairs
 
 
 def _sql_placeholders(values: list[object]) -> str:
@@ -978,15 +1015,29 @@ async def _get_event_review_case_variants_tx(
             seen.add(key)
             variants.append(_row_to_event_review_variant(row))
 
-        # Pending candidates may be written before odds/source rows are available.
-        # Keep the bookmaker evidence visible by pairing recorded source bookmaker
-        # ids with candidate matches when no richer source variant exists yet.
         source_bookmaker_ids = list(dict.fromkeys(case.source_bookmaker_ids))
-        if source_bookmaker_ids:
-            bookmaker_placeholders = _sql_placeholders(source_bookmaker_ids)
+        metadata_pairs = [
+            pair
+            for pair in _event_review_source_variant_pairs(case)
+            if pair[0] in candidate_match_ids
+        ]
+        fallback_pairs: list[tuple[str, str]] = []
+        if metadata_pairs:
+            fallback_pairs = metadata_pairs
+        elif len(candidate_match_ids) == 1:
+            fallback_pairs = [
+                (candidate_match_ids[0], bookmaker_id)
+                for bookmaker_id in source_bookmaker_ids
+            ]
+
+        if fallback_pairs:
+            fallback_bookmaker_ids = list(
+                dict.fromkeys([bookmaker_id for _, bookmaker_id in fallback_pairs])
+            )
+            bookmaker_placeholders = _sql_placeholders(fallback_bookmaker_ids)
             bookmaker_rows = await db.execute_fetchall(
                 f"SELECT id, name FROM bookmakers WHERE id IN ({bookmaker_placeholders})",
-                source_bookmaker_ids,
+                fallback_bookmaker_ids,
             )
             bookmaker_names = {row["id"]: row["name"] for row in bookmaker_rows}
             match_rows = await db.execute_fetchall(
@@ -1002,15 +1053,6 @@ async def _get_event_review_case_variants_tx(
                 candidate_match_ids,
             )
             match_map = {row["match_id"]: _row_to_dict(row) for row in match_rows}
-
-            fallback_pairs: list[tuple[str, str]] = []
-            if len(source_bookmaker_ids) == len(candidate_match_ids):
-                fallback_pairs = list(zip(candidate_match_ids, source_bookmaker_ids))
-            elif len(candidate_match_ids) == 1:
-                fallback_pairs = [
-                    (candidate_match_ids[0], bookmaker_id)
-                    for bookmaker_id in source_bookmaker_ids
-                ]
 
             for match_id, bookmaker_id in fallback_pairs:
                 key = (match_id, bookmaker_id)
@@ -2174,6 +2216,7 @@ async def get_discrepancies(
     league_id: str | None = None,
     bookmaker_ids: list[str] | None = None,
     market_type: str | None = None,
+    search: str | None = None,
     min_gap: float | None = None,
     sort_by: str = "profit_margin",
     sort_order: str = "desc",
@@ -2220,6 +2263,20 @@ async def get_discrepancies(
     if sport:
         conditions.append("l.sport = ?")
         params.append(sport)
+    normalized_search = _normalize_search_text(search)
+    if normalized_search:
+        await db.create_function("normalize_search_text", 1, _normalize_search_text)
+        search_like = f"%{normalized_search}%"
+        conditions.append(
+            """normalize_search_text(printf(
+                '%s %s %s %s',
+                COALESCE(m.home_team, ''),
+                COALESCE(m.away_team, ''),
+                printf('%s %s', COALESCE(m.home_team, ''), COALESCE(m.away_team, '')),
+                COALESCE(d.player_name, '')
+            )) LIKE ?"""
+        )
+        params.append(search_like)
 
     if conditions:
         q += " WHERE " + " AND ".join(conditions)

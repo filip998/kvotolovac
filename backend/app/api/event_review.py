@@ -102,7 +102,10 @@ async def accept_event_review_case(
             detail="Event review case has no candidate matches to accept",
         )
     if primary_match_id not in candidate_match_ids:
-        candidate_match_ids.insert(0, primary_match_id)
+        raise HTTPException(
+            status_code=400,
+            detail="primary_match_id must be one of the reviewed candidate matches",
+        )
 
     primary_match = await odds_store.get_match(primary_match_id)
     if primary_match is None:

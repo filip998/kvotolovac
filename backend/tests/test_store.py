@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 
+import aiosqlite
 import pytest
 
 from app.config import settings
@@ -479,6 +480,47 @@ async def test_insert_and_get_discrepancy():
 
 
 @pytest.mark.asyncio
+async def test_get_discrepancies_filters_by_search_before_pagination():
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("m1", "euroleague", "Partizan", "Crvena Zvezda")
+    await odds_store.upsert_match("m2", "euroleague", "Monaco", "Barcelona")
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+
+    await odds_store.insert_discrepancy(
+        match_id="m2",
+        market_type="player_points",
+        player_name="Mike James",
+        bookmaker_a_id="mozzart",
+        bookmaker_b_id="meridian",
+        threshold_a=16.5,
+        threshold_b=18.5,
+        odds_a=1.85,
+        odds_b=2.00,
+        gap=2.0,
+        profit_margin=0.20,
+    )
+    await odds_store.insert_discrepancy(
+        match_id="m1",
+        market_type="player_points",
+        player_name="Kendrick Nunn",
+        bookmaker_a_id="mozzart",
+        bookmaker_b_id="meridian",
+        threshold_a=14.5,
+        threshold_b=16.5,
+        odds_a=1.85,
+        odds_b=2.00,
+        gap=2.0,
+        profit_margin=0.01,
+    )
+
+    discs = await odds_store.get_discrepancies(search="nunn", limit=1)
+
+    assert len(discs) == 1
+    assert discs[0].player_name == "Kendrick Nunn"
+
+
+@pytest.mark.asyncio
 async def test_discrepancy_leg_match_id_migration_preserves_foreign_keys(
     tmp_path,
     monkeypatch,
@@ -513,6 +555,115 @@ async def test_discrepancy_leg_match_id_migration_preserves_foreign_keys(
 
     assert ("bookmaker_a_match_id", "matches") in foreign_keys
     assert ("bookmaker_b_match_id", "matches") in foreign_keys
+
+
+@pytest.mark.asyncio
+async def test_resolved_event_id_migration_preserves_foreign_keys(
+    tmp_path,
+    monkeypatch,
+):
+    await close_db()
+    legacy_db_path = tmp_path / "legacy_resolved_event_fk.db"
+    with sqlite3.connect(legacy_db_path) as conn:
+        conn.executescript(
+            """CREATE TABLE discrepancies (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   match_id TEXT REFERENCES matches(id),
+                   resolved_event_id TEXT,
+                   market_type TEXT NOT NULL,
+                   player_name TEXT,
+                   bookmaker_a_id TEXT,
+                   bookmaker_a_match_id TEXT,
+                   bookmaker_b_id TEXT,
+                   bookmaker_b_match_id TEXT,
+                   threshold_a REAL,
+                   threshold_b REAL,
+                   odds_a REAL,
+                   odds_b REAL,
+                   gap REAL,
+                   profit_margin REAL,
+                   detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                   is_active BOOLEAN DEFAULT TRUE
+               );
+               INSERT INTO discrepancies (resolved_event_id, market_type)
+               VALUES ('missing-event', 'player_points');
+               CREATE TABLE opportunities (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   sport TEXT NOT NULL,
+                   match_id TEXT REFERENCES matches(id),
+                   resolved_event_id TEXT,
+                   opportunity_type TEXT NOT NULL,
+                   market_type TEXT NOT NULL,
+                   line REAL,
+                   profit_margin REAL,
+                   legs TEXT NOT NULL DEFAULT '[]',
+                   detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                   is_active BOOLEAN DEFAULT TRUE
+               );
+               INSERT INTO opportunities (
+                   sport,
+                   resolved_event_id,
+                   opportunity_type,
+                   market_type,
+                   legs
+               )
+               VALUES (
+                   'basketball',
+                   'missing-event',
+                   'cross_bookmaker_arbitrage',
+                   'player_points',
+                   '[]'
+               );"""
+        )
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{legacy_db_path}")
+
+    await init_db(str(legacy_db_path))
+    db = await get_db()
+    discrepancy_fks = await db.execute_fetchall("PRAGMA foreign_key_list(discrepancies)")
+    opportunity_fks = await db.execute_fetchall("PRAGMA foreign_key_list(opportunities)")
+
+    assert ("resolved_event_id", "resolved_events") in {
+        (row[3], row[2]) for row in discrepancy_fks
+    }
+    assert ("resolved_event_id", "resolved_events") in {
+        (row[3], row[2]) for row in opportunity_fks
+    }
+    discrepancy_stale_rows = await db.execute_fetchall(
+        "SELECT COUNT(*) AS count FROM discrepancies WHERE resolved_event_id IS NULL"
+    )
+    opportunity_stale_rows = await db.execute_fetchall(
+        "SELECT COUNT(*) AS count FROM opportunities WHERE resolved_event_id IS NULL"
+    )
+    assert discrepancy_stale_rows[0]["count"] == 1
+    assert opportunity_stale_rows[0]["count"] == 1
+
+    with pytest.raises(aiosqlite.IntegrityError):
+        await db.execute(
+            "INSERT INTO discrepancies (resolved_event_id, market_type) VALUES (?, ?)",
+            ("still-missing-event", "player_points"),
+        )
+        await db.commit()
+    await db.rollback()
+
+    with pytest.raises(aiosqlite.IntegrityError):
+        await db.execute(
+            """INSERT INTO opportunities (
+                   sport,
+                   resolved_event_id,
+                   opportunity_type,
+                   market_type,
+                   legs
+               ) VALUES (?, ?, ?, ?, ?)""",
+            (
+                "basketball",
+                "still-missing-event",
+                "cross_bookmaker_arbitrage",
+                "player_points",
+                "[]",
+            ),
+        )
+        await db.commit()
+    await db.rollback()
 
 
 @pytest.mark.asyncio

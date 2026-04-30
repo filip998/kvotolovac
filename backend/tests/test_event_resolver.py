@@ -7,6 +7,10 @@ import pytest
 from app.config import settings
 from app.models.schemas import NormalizedOdds, NormalizedOutcomeOffer, RawOddsData, RawOutcomeOffer
 from app.services.event_resolver import (
+    EventCandidate,
+    _CandidateGroup,
+    _PairResolution,
+    _event_review_case,
     SameTimeCanonicalSlot,
     _same_time_slot_orientation,
     resolve_and_persist_events,
@@ -56,6 +60,46 @@ def test_team_auto_merge_guardrails_require_qualifier_compatibility():
     )
 
     assert _same_time_slot_orientation(source_slot, target_slot) is None
+
+
+def test_event_review_case_metadata_records_exact_source_variant_pairs():
+    left_candidate = EventCandidate(
+        match_id="match-z",
+        bookmaker_id="book-z",
+        sport="basketball",
+        start_time=START_TIME,
+        home_team_id=1,
+        away_team_id=2,
+        home_team="Z Home",
+        away_team="Z Away",
+    )
+    right_candidate = EventCandidate(
+        match_id="match-a",
+        bookmaker_id="book-a",
+        sport="basketball",
+        start_time=START_TIME,
+        home_team_id=3,
+        away_team_id=4,
+        home_team="A Home",
+        away_team="A Away",
+    )
+
+    review_case = _event_review_case(
+        _CandidateGroup(index=1, candidates=(left_candidate,)),
+        _CandidateGroup(index=2, candidates=(right_candidate,)),
+        _PairResolution(
+            confidence=0.8,
+            score=80.0,
+            orientation="as_listed",
+            reason_code="possible_event_equivalence_low_confidence",
+            evidence=("fuzzy team label match",),
+        ),
+    )
+
+    assert review_case.metadata["source_variants"] == [
+        {"match_id": "match-a", "bookmaker_id": "book-a"},
+        {"match_id": "match-z", "bookmaker_id": "book-z"},
+    ]
 
 
 async def _seed_bookmakers(*bookmaker_ids: str) -> None:

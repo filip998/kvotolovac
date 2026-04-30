@@ -1,5 +1,6 @@
 import { useQuery, useMutation } from '@tanstack/react-query';
 import client from './client';
+import { normalizeSearchText } from '../utils/search';
 import type {
   Bookmaker,
   CanonicalTeam,
@@ -214,6 +215,21 @@ export function useDiscrepancies(
         }
         if (filters.market_type) {
           results = results.filter((d) => d.market_type === filters.market_type);
+        }
+        if (filters.search) {
+          const normalizedQuery = normalizeSearchText(filters.search);
+          results = results.filter((d) =>
+            normalizeSearchText(
+              [
+                d.home_team,
+                d.away_team,
+                `${d.home_team} ${d.away_team}`,
+                d.player_name,
+              ]
+                .filter(Boolean)
+                .join(' ')
+            ).includes(normalizedQuery)
+          );
         }
         if (filters.min_gap !== undefined && filters.min_gap > 0) {
           results = results.filter((d) => d.gap >= filters.min_gap!);

@@ -958,6 +958,16 @@ def _event_review_case(
             "resolver": _RESOLVER_VERSION,
             "orientation": pair.orientation,
             "score": round(pair.score, 2),
+            "source_variants": [
+                {
+                    "match_id": candidate.match_id,
+                    "bookmaker_id": candidate.bookmaker_id,
+                }
+                for candidate in sorted(
+                    candidates,
+                    key=lambda item: (item.match_id, item.bookmaker_id),
+                )
+            ],
         },
     )
 

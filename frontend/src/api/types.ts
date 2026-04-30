@@ -313,6 +313,7 @@ export interface DiscrepancyFilters {
   bookmaker_ids?: string[];
   min_gap?: number;
   market_type?: MarketType;
+  search?: string;
   sort_by?: string;
   sort_order?: 'asc' | 'desc';
   limit?: number;
