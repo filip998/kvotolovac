@@ -9,10 +9,8 @@ import pytest
 
 from app.scrapers.betole_scraper import (
     BetOleScraper,
-    _PLAYER_LEAGUES_URL,
-    _PLAYER_LEAGUE_PREVIEW_URL,
-    _REGULAR_LEAGUES_URL,
-    _REGULAR_LEAGUE_PREVIEW_URL,
+    _PLAYER_FEED_URL,
+    _REGULAR_FEED_URL,
     _build_matchup_index,
     _extract_league_id,
     _parse_player_match,
@@ -21,36 +19,6 @@ from app.scrapers.betole_scraper import (
 
 REGULAR_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "betole_regular_league.json"
 PLAYER_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "betole_players_league.json"
-
-REGULAR_LEAGUES_RESPONSE = {
-    "categories": [
-        {
-            "id": "2257173",
-            "name": "USA, NBA - Play Offs",
-            "type": "LEAGUE",
-            "url": "B",
-            "count": 8,
-        }
-    ]
-}
-PLAYER_LEAGUES_RESPONSE = {
-    "categories": [
-        {
-            "id": "2300270",
-            "name": "USA, NBA - Play Offs,Players Duel",
-            "type": "LEAGUE",
-            "url": "SK",
-            "count": 5,
-        },
-        {
-            "id": "2266084",
-            "name": "USA, NBA - Play Offs,Players",
-            "type": "LEAGUE",
-            "url": "SK",
-            "count": 29,
-        },
-    ]
-}
 
 EXTRA_REGULAR_LEAGUE = {
     "id": "2265038",
@@ -123,7 +91,7 @@ def test_parse_player_match_falls_back_to_team_and_kickoff(player_preview_data, 
 
 
 @pytest.mark.asyncio
-async def test_scrape_odds_keeps_all_regular_leagues_while_matching_player_props(
+async def test_scrape_odds_uses_broad_feeds_while_matching_player_props(
     monkeypatch: pytest.MonkeyPatch,
     regular_preview_data,
     player_preview_data,
@@ -150,22 +118,29 @@ async def test_scrape_odds_keeps_all_regular_leagues_while_matching_player_props
             }
         ]
     }
-    regular_leagues_response = {
-        "categories": [*REGULAR_LEAGUES_RESPONSE["categories"], EXTRA_REGULAR_LEAGUE]
+    regular_feed_response = {
+        "esMatches": [*regular_preview_data["esMatches"], *extra_regular_preview["esMatches"]]
+    }
+    player_feed_response = {
+        "esMatches": [
+            {
+                **player_preview_data["esMatches"][0],
+                "id": 90240000,
+                "matchCode": 4000,
+                "leagueName": "USA, NBA - Play Offs,Players Duel",
+                "params": {},
+                "odds": {},
+            },
+            *player_preview_data["esMatches"],
+        ]
     }
 
     async def fake_get_json(url: str, *, params=None, headers=None):
         del params, headers
-        if url == _REGULAR_LEAGUES_URL:
-            return regular_leagues_response
-        if url == _PLAYER_LEAGUES_URL:
-            return PLAYER_LEAGUES_RESPONSE
-        if url == _REGULAR_LEAGUE_PREVIEW_URL.format(league_id="2257173"):
-            return regular_preview_data
-        if url == _REGULAR_LEAGUE_PREVIEW_URL.format(league_id=EXTRA_REGULAR_LEAGUE["id"]):
-            return extra_regular_preview
-        if url == _PLAYER_LEAGUE_PREVIEW_URL.format(league_id="2266084"):
-            return player_preview_data
+        if url == _REGULAR_FEED_URL:
+            return regular_feed_response
+        if url == _PLAYER_FEED_URL:
+            return player_feed_response
         raise AssertionError(f"Unexpected URL: {url}")
 
     http_client = AsyncMock()
@@ -188,8 +163,7 @@ async def test_scrape_odds_keeps_all_regular_leagues_while_matching_player_props
     assert {row.away_team for row in results if row.player_name} == {"Orlando Magic"}
 
     requested_urls = {call.args[0] for call in http_client.get_json.call_args_list}
-    assert _REGULAR_LEAGUE_PREVIEW_URL.format(league_id=EXTRA_REGULAR_LEAGUE["id"]) in requested_urls
-    assert _PLAYER_LEAGUE_PREVIEW_URL.format(league_id="2300270") not in requested_urls
+    assert requested_urls == {_REGULAR_FEED_URL, _PLAYER_FEED_URL}
 
     regular_matchups = {
         (row.home_team, row.away_team, row.league_id)
@@ -219,12 +193,10 @@ async def test_scrape_odds_returns_regular_results_when_player_leagues_are_missi
 
     async def fake_get_json(url: str, *, params=None, headers=None):
         del params, headers
-        if url == _REGULAR_LEAGUES_URL:
-            return REGULAR_LEAGUES_RESPONSE
-        if url == _PLAYER_LEAGUES_URL:
-            return {"categories": []}
-        if url == _REGULAR_LEAGUE_PREVIEW_URL.format(league_id="2257173"):
+        if url == _REGULAR_FEED_URL:
             return regular_preview_data
+        if url == _PLAYER_FEED_URL:
+            return {"esMatches": []}
         raise AssertionError(f"Unexpected URL: {url}")
 
     http_client = AsyncMock()
@@ -237,7 +209,7 @@ async def test_scrape_odds_returns_regular_results_when_player_leagues_are_missi
     assert all(row.player_name is None for row in results)
 
     requested_urls = {call.args[0] for call in http_client.get_json.call_args_list}
-    assert _PLAYER_LEAGUE_PREVIEW_URL.format(league_id="2266084") not in requested_urls
+    assert requested_urls == {_REGULAR_FEED_URL, _PLAYER_FEED_URL}
 
 
 @pytest.mark.asyncio
@@ -268,8 +240,11 @@ async def test_scrape_odds_builds_player_matchups_from_matched_regular_leagues(
             }
         ]
     }
-    regular_leagues_response = {
-        "categories": [*REGULAR_LEAGUES_RESPONSE["categories"], EXTRA_REGULAR_LEAGUE]
+    regular_feed_response = {
+        "esMatches": [
+            *regular_preview_data["esMatches"],
+            *colliding_regular_preview["esMatches"],
+        ]
     }
     player_preview_without_super_code = {
         "esMatches": [
@@ -283,15 +258,9 @@ async def test_scrape_odds_builds_player_matchups_from_matched_regular_leagues(
 
     async def fake_get_json(url: str, *, params=None, headers=None):
         del params, headers
-        if url == _REGULAR_LEAGUES_URL:
-            return regular_leagues_response
-        if url == _PLAYER_LEAGUES_URL:
-            return PLAYER_LEAGUES_RESPONSE
-        if url == _REGULAR_LEAGUE_PREVIEW_URL.format(league_id="2257173"):
-            return regular_preview_data
-        if url == _REGULAR_LEAGUE_PREVIEW_URL.format(league_id=EXTRA_REGULAR_LEAGUE["id"]):
-            return colliding_regular_preview
-        if url == _PLAYER_LEAGUE_PREVIEW_URL.format(league_id="2266084"):
+        if url == _REGULAR_FEED_URL:
+            return regular_feed_response
+        if url == _PLAYER_FEED_URL:
             return player_preview_without_super_code
         raise AssertionError(f"Unexpected URL: {url}")
 
