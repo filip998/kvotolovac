@@ -6,6 +6,11 @@ import type {
   CanonicalTeamFilters,
   CanonicalTeamMerge,
   CanonicalTeamUnmerge,
+  EventMergeInput,
+  EventMergeResult,
+  EventReviewAction,
+  EventReviewCase,
+  EventReviewFilters,
   League,
   Match,
   MatchMergeInput,
@@ -37,6 +42,7 @@ import {
   mockUnresolvedOdds,
   mockSystemStatus,
   mockCanonicalTeams,
+  mockEventReviewCases,
   mockTeamReviewCases,
 } from './mockData';
 
@@ -56,6 +62,29 @@ function updateMockTeamReviewCaseStatus(caseId: number, status: TeamReviewCase['
     throw new Error('Team review case not found');
   }
   caseItem.status = status;
+  return caseItem;
+}
+
+function updateMockEventReviewCaseStatus(
+  caseId: number,
+  status: EventReviewCase['status']
+): EventReviewCase {
+  const caseItem = mockEventReviewCases.find((item) => item.id === caseId);
+  if (!caseItem) {
+    throw new Error('Event review case not found');
+  }
+  caseItem.status = status;
+  caseItem.updated_at = new Date().toISOString();
+  if (status === 'accepted') {
+    caseItem.accepted_at = caseItem.accepted_at ?? caseItem.updated_at;
+    caseItem.declined_at = null;
+    caseItem.resolved_event_id = caseItem.resolved_event_id ?? `evt_mock_${caseItem.id}`;
+  }
+  if (status === 'declined') {
+    caseItem.declined_at = caseItem.declined_at ?? caseItem.updated_at;
+    caseItem.accepted_at = null;
+    caseItem.resolved_event_id = null;
+  }
   return caseItem;
 }
 
@@ -561,6 +590,122 @@ export function useDeclineTeamReviewCase() {
   });
 }
 
+export function useEventReviewCases(
+  filters: EventReviewFilters = {},
+  options: { enabled?: boolean } = {}
+) {
+  return useQuery<EventReviewCase[]>({
+    queryKey: ['eventReviewCases', filters],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        let results = [...mockEventReviewCases];
+        if (filters.bookmaker_id) {
+          results = results.filter(
+            (row) =>
+              row.source_bookmaker_ids.includes(filters.bookmaker_id!) ||
+              row.variants.some((variant) => variant.bookmaker_id === filters.bookmaker_id)
+          );
+        }
+        if (filters.bookmaker_ids?.length) {
+          const selected = new Set(filters.bookmaker_ids);
+          results = results.filter(
+            (row) =>
+              row.source_bookmaker_ids.some((bookmakerId) => selected.has(bookmakerId)) ||
+              row.variants.some((variant) => variant.bookmaker_id != null && selected.has(variant.bookmaker_id))
+          );
+        }
+        if (filters.sport) {
+          results = results.filter((row) => row.sport === filters.sport);
+        }
+        if (filters.status) {
+          results = results.filter((row) => row.status === filters.status);
+        }
+        const offset = filters.offset ?? 0;
+        const limit = filters.limit ?? results.length;
+        return results.slice(offset, offset + limit);
+      }
+
+      const { loadAll, ...requestFilters } = filters;
+      const serializedFilters = {
+        ...requestFilters,
+        bookmaker_ids: serializeArrayParam(requestFilters.bookmaker_ids),
+      };
+      if (!loadAll) {
+        const { data } = await client.get<EventReviewCase[]>('/event-review/cases', {
+          params: serializedFilters,
+        });
+        return data;
+      }
+
+      const pageSize = requestFilters.limit ?? 200;
+      const initialOffset = requestFilters.offset ?? 0;
+      const allRows: EventReviewCase[] = [];
+
+      for (let offset = initialOffset; ; offset += pageSize) {
+        const { data } = await client.get<EventReviewCase[]>('/event-review/cases', {
+          params: { ...serializedFilters, limit: pageSize, offset },
+        });
+        allRows.push(...data);
+        if (data.length < pageSize) {
+          break;
+        }
+      }
+
+      return allRows;
+    },
+    enabled: options.enabled ?? true,
+    refetchInterval: options.enabled === false ? false : 30000,
+  });
+}
+
+export function useAcceptEventReviewCase() {
+  return useMutation<EventReviewAction, Error, { caseId: number; primaryMatchId?: string }>({
+    mutationFn: async ({ caseId, primaryMatchId }) => {
+      if (USE_MOCK) {
+        await delay();
+        const updatedCase = updateMockEventReviewCaseStatus(caseId, 'accepted');
+        if (primaryMatchId) {
+          updatedCase.primary_match_id = primaryMatchId;
+        }
+        return {
+          case_id: caseId,
+          status: 'accepted',
+          resolved_event_id: updatedCase.resolved_event_id,
+        };
+      }
+
+      const payload = primaryMatchId ? { primary_match_id: primaryMatchId } : {};
+      const { data } = await client.post<EventReviewAction>(
+        `/event-review/cases/${caseId}/accept`,
+        payload
+      );
+      return data;
+    },
+  });
+}
+
+export function useDeclineEventReviewCase() {
+  return useMutation<EventReviewAction, Error, { caseId: number }>({
+    mutationFn: async ({ caseId }) => {
+      if (USE_MOCK) {
+        await delay();
+        updateMockEventReviewCaseStatus(caseId, 'declined');
+        return {
+          case_id: caseId,
+          status: 'declined',
+          resolved_event_id: null,
+        };
+      }
+
+      const { data } = await client.post<EventReviewAction>(
+        `/event-review/cases/${caseId}/decline`
+      );
+      return data;
+    },
+  });
+}
+
 export function useCanonicalTeams(
   filters: CanonicalTeamFilters = {},
   options: { enabled?: boolean } = {}
@@ -843,6 +988,49 @@ export function useMergeMatches() {
         };
       }
       const { data } = await client.post<MatchMergeResult>('/matches/merge', payload);
+      return data;
+    },
+  });
+}
+
+export function useMergeEvents() {
+  return useMutation<EventMergeResult, Error, EventMergeInput>({
+    mutationFn: async (payload) => {
+      if (USE_MOCK) {
+        await delay();
+        if (!payload.source_match_ids.length) {
+          throw new Error('source_match_ids must not be empty');
+        }
+        if (payload.source_match_ids.includes(payload.primary_match_id)) {
+          throw new Error('primary_match_id must not appear in source_match_ids');
+        }
+        const primary = mockMatches.find((m) => m.id === payload.primary_match_id);
+        if (!primary) throw new Error(`Primary match ${payload.primary_match_id} not found`);
+        for (const sid of payload.source_match_ids) {
+          const source = mockMatches.find((m) => m.id === sid);
+          if (!source) throw new Error(`Source match ${sid} not found`);
+          if (source.sport !== primary.sport) {
+            throw new Error(`Source match ${sid} sport differs from primary match`);
+          }
+          if ((source.start_time ?? '') !== (primary.start_time ?? '')) {
+            throw new Error(`Source match ${sid} start_time differs from primary`);
+          }
+        }
+        const linkedMatchIds = [payload.primary_match_id, ...payload.source_match_ids];
+        return {
+          resolved_event_id: `evt_manual_${linkedMatchIds.slice().sort().join('_')}`,
+          primary_match_id: payload.primary_match_id,
+          linked_match_ids: linkedMatchIds,
+          linked_member_count: linkedMatchIds.reduce((count, matchId) => {
+            const match = mockMatches.find((m) => m.id === matchId);
+            return count + (match?.available_bookmakers.length ?? 0);
+          }, 0),
+          discrepancies_rebuilt: 0,
+          opportunities_rebuilt: 0,
+        };
+      }
+
+      const { data } = await client.post<EventMergeResult>('/event-review/merge', payload);
       return data;
     },
   });

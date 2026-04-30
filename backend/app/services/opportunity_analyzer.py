@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import combinations
 
-from ..models.schemas import NormalizedOutcomeOffer, OpportunityLeg
+from ..models.schemas import NormalizedOutcomeOffer, OpportunityLeg, ResolvedEventMemberOut
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,13 @@ class Opportunity:
     profit_margin: float | None
     middle_profit_margin: float | None
     legs: list[OpportunityLeg]
+    resolved_event_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _OfferAnalysisItem:
+    offer: NormalizedOutcomeOffer
+    resolved_event_id: str | None = None
 
 
 _COMPLEMENTARY_RESULT_PAIRS = {
@@ -48,6 +56,7 @@ def _middle_profit_margin(odds_a: float, odds_b: float) -> float | None:
 
 def _leg(offer: NormalizedOutcomeOffer) -> OpportunityLeg:
     return OpportunityLeg(
+        match_id=offer.match_id,
         bookmaker_id=offer.bookmaker_id,
         source_url=offer.source_url,
         market_type=offer.market_type,
@@ -63,6 +72,7 @@ def _dedupe_key(opportunity: Opportunity) -> tuple:
         sorted(
             (
                 leg.bookmaker_id,
+                leg.match_id,
                 leg.market_type,
                 leg.outcome_code,
                 leg.line,
@@ -72,6 +82,7 @@ def _dedupe_key(opportunity: Opportunity) -> tuple:
         )
     )
     return (
+        opportunity.resolved_event_id,
         opportunity.match_id,
         opportunity.opportunity_type,
         opportunity.market_type,
@@ -80,15 +91,25 @@ def _dedupe_key(opportunity: Opportunity) -> tuple:
     )
 
 
-def _analyze_complementary_pairs(group: list[NormalizedOutcomeOffer]) -> list[Opportunity]:
-    by_key: dict[tuple[str, str], list[NormalizedOutcomeOffer]] = {}
-    for offer in group:
-        by_key.setdefault((offer.market_type, offer.outcome_code), []).append(offer)
+def _analyze_complementary_pairs(
+    group: list[_OfferAnalysisItem],
+    *,
+    match_id: str,
+    resolved_event_id: str | None,
+) -> list[Opportunity]:
+    by_key: dict[tuple[str, str], list[_OfferAnalysisItem]] = {}
+    for item in group:
+        by_key.setdefault(
+            (item.offer.market_type, item.offer.outcome_code),
+            [],
+        ).append(item)
 
     opportunities: list[Opportunity] = []
     for result_key, double_chance_key in _COMPLEMENTARY_RESULT_PAIRS.items():
-        for result_offer in by_key.get(result_key, []):
-            for dc_offer in by_key.get(double_chance_key, []):
+        for result_item in by_key.get(result_key, []):
+            for dc_item in by_key.get(double_chance_key, []):
+                result_offer = result_item.offer
+                dc_offer = dc_item.offer
                 if result_offer.bookmaker_id == dc_offer.bookmaker_id:
                     continue
                 margin = _profit_margin(result_offer.odds, dc_offer.odds)
@@ -97,20 +118,30 @@ def _analyze_complementary_pairs(group: list[NormalizedOutcomeOffer]) -> list[Op
                 opportunities.append(
                     Opportunity(
                         sport=result_offer.sport,
-                        match_id=result_offer.match_id,
+                        match_id=match_id,
                         opportunity_type="complementary_outcomes",
                         market_type="football_result_double_chance",
                         line=None,
                         profit_margin=margin,
                         middle_profit_margin=None,
                         legs=[_leg(result_offer), _leg(dc_offer)],
+                        resolved_event_id=resolved_event_id,
                     )
                 )
     return opportunities
 
 
-def _analyze_total_goals(group: list[NormalizedOutcomeOffer]) -> list[Opportunity]:
-    totals = [offer for offer in group if offer.market_type == "football_total_goals"]
+def _analyze_total_goals(
+    group: list[_OfferAnalysisItem],
+    *,
+    match_id: str,
+    resolved_event_id: str | None,
+) -> list[Opportunity]:
+    totals = [
+        item.offer
+        for item in group
+        if item.offer.market_type == "football_total_goals"
+    ]
     opportunities: list[Opportunity] = []
 
     for a, b in combinations(totals, 2):
@@ -123,13 +154,14 @@ def _analyze_total_goals(group: list[NormalizedOutcomeOffer]) -> list[Opportunit
                 opportunities.append(
                     Opportunity(
                         sport=a.sport,
-                        match_id=a.match_id,
+                        match_id=match_id,
                         opportunity_type="same_line_arbitrage",
                         market_type="football_total_goals",
                         line=a.line,
                         profit_margin=margin,
                         middle_profit_margin=None,
                         legs=[_leg(a), _leg(b)],
+                        resolved_event_id=resolved_event_id,
                     )
                 )
             continue
@@ -146,29 +178,89 @@ def _analyze_total_goals(group: list[NormalizedOutcomeOffer]) -> list[Opportunit
         opportunities.append(
             Opportunity(
                 sport=low.sport,
-                match_id=low.match_id,
+                match_id=match_id,
                 opportunity_type="middle",
                 market_type="football_total_goals",
                 line=low.line,
                 profit_margin=margin,
                 middle_profit_margin=middle_margin,
                 legs=[_leg(low), _leg(high)],
+                resolved_event_id=resolved_event_id,
             )
         )
 
     return opportunities
 
 
-def analyze_outcome_offers(offers: list[NormalizedOutcomeOffer]) -> list[Opportunity]:
-    groups: dict[tuple[str, str], list[NormalizedOutcomeOffer]] = {}
+def _active_member_event_lookup(
+    event_members: list[ResolvedEventMemberOut],
+) -> dict[tuple[str, str], str]:
+    lookup: dict[tuple[str, str], str] = {}
+    for member in sorted(
+        event_members,
+        key=lambda item: (item.resolved_event_id, item.id, item.match_id, item.bookmaker_id),
+    ):
+        if member.status != "active":
+            continue
+        lookup.setdefault((member.match_id, member.bookmaker_id), member.resolved_event_id)
+    return lookup
+
+
+def _group_match_id(
+    group: list[_OfferAnalysisItem],
+    *,
+    resolved_event_id: str | None,
+    event_primary_match_ids: Mapping[str, str] | None,
+) -> str:
+    if resolved_event_id is None:
+        return group[0].offer.match_id
+    if event_primary_match_ids and resolved_event_id in event_primary_match_ids:
+        return event_primary_match_ids[resolved_event_id]
+    return min(item.offer.match_id for item in group)
+
+
+def analyze_outcome_offers(
+    offers: list[NormalizedOutcomeOffer],
+    *,
+    event_members: list[ResolvedEventMemberOut] | None = None,
+    event_primary_match_ids: Mapping[str, str] | None = None,
+) -> list[Opportunity]:
+    event_by_member = (
+        _active_member_event_lookup(event_members)
+        if event_members
+        else {}
+    )
+
+    groups: dict[tuple[str, str], list[_OfferAnalysisItem]] = {}
     for offer in offers:
-        groups.setdefault((offer.sport, offer.match_id), []).append(offer)
+        resolved_event_id = event_by_member.get((offer.match_id, offer.bookmaker_id))
+        group_id = resolved_event_id or offer.match_id
+        groups.setdefault((offer.sport, group_id), []).append(
+            _OfferAnalysisItem(
+                offer=offer,
+                resolved_event_id=resolved_event_id,
+            )
+        )
 
     deduped: dict[tuple, Opportunity] = {}
     for group in groups.values():
+        resolved_event_id = group[0].resolved_event_id
+        match_id = _group_match_id(
+            group,
+            resolved_event_id=resolved_event_id,
+            event_primary_match_ids=event_primary_match_ids,
+        )
         for opportunity in [
-            *_analyze_complementary_pairs(group),
-            *_analyze_total_goals(group),
+            *_analyze_complementary_pairs(
+                group,
+                match_id=match_id,
+                resolved_event_id=resolved_event_id,
+            ),
+            *_analyze_total_goals(
+                group,
+                match_id=match_id,
+                resolved_event_id=resolved_event_id,
+            ),
         ]:
             deduped[_dedupe_key(opportunity)] = opportunity
 

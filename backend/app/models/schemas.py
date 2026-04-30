@@ -43,6 +43,126 @@ class MatchOut(BaseModel):
     available_bookmakers: list[MatchBookmakerOut] = Field(default_factory=list)
 
 
+# ── Resolved events ─────────────────────────────────────────
+class ResolvedEventIn(BaseModel):
+    id: Optional[str] = None
+    sport: str = "basketball"
+    start_time: str
+    primary_match_id: str
+    status: str = "active"
+    confidence: Optional[float] = None
+    method: str = "manual"
+    display_home_team: Optional[str] = None
+    display_away_team: Optional[str] = None
+    display_league_name: Optional[str] = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class ResolvedEventMemberIn(BaseModel):
+    resolved_event_id: str
+    match_id: str
+    bookmaker_id: str
+    orientation: str = "as_listed"
+    confidence: Optional[float] = None
+    status: str = "active"
+    source_url: Optional[str] = None
+    source_league_id: Optional[str] = None
+    source_league_name: Optional[str] = None
+    source_home_team: Optional[str] = None
+    source_away_team: Optional[str] = None
+    source_start_time: Optional[str] = None
+    evidence: list[str] = Field(default_factory=list)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class ResolvedEventMemberOut(ResolvedEventMemberIn):
+    id: int
+    bookmaker_name: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class ResolvedEventOut(ResolvedEventIn):
+    id: str
+    members: list[ResolvedEventMemberOut] = Field(default_factory=list)
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class EventReviewCaseIn(BaseModel):
+    fingerprint: str
+    sport: str = "basketball"
+    start_time: str
+    primary_match_id: Optional[str] = None
+    candidate_resolved_event_id: Optional[str] = None
+    candidate_match_ids: list[str] = Field(default_factory=list)
+    reason_code: str
+    confidence: Optional[float] = None
+    method: str = "auto_candidate"
+    source_bookmaker_ids: list[str] = Field(default_factory=list)
+    source_league_labels: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    metadata: dict[str, object] = Field(default_factory=dict)
+    status: str = "pending"
+
+
+class EventReviewVariantOut(BaseModel):
+    match_id: str
+    bookmaker_id: Optional[str] = None
+    bookmaker_name: Optional[str] = None
+    league_id: Optional[str] = None
+    league_name: Optional[str] = None
+    home_team: str
+    away_team: str
+    start_time: Optional[str] = None
+    source_url: Optional[str] = None
+    source_league_id: Optional[str] = None
+    source_league_name: Optional[str] = None
+    source_home_team: Optional[str] = None
+    source_away_team: Optional[str] = None
+    source_start_time: Optional[str] = None
+    orientation: str = "as_listed"
+    confidence: Optional[float] = None
+    evidence: list[str] = Field(default_factory=list)
+
+
+class EventReviewCaseOut(EventReviewCaseIn):
+    id: int
+    resolved_event_id: Optional[str] = None
+    primary_home_team: Optional[str] = None
+    primary_away_team: Optional[str] = None
+    primary_league_name: Optional[str] = None
+    variants: list[EventReviewVariantOut] = Field(default_factory=list)
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    accepted_at: Optional[str] = None
+    declined_at: Optional[str] = None
+
+
+class EventReviewActionOut(BaseModel):
+    case_id: int
+    status: str
+    resolved_event_id: Optional[str] = None
+
+
+class EventReviewAcceptanceIn(BaseModel):
+    primary_match_id: Optional[str] = None
+
+
+class EventMergeIn(BaseModel):
+    primary_match_id: str
+    source_match_ids: list[str] = Field(default_factory=list)
+
+
+class EventMergeOut(BaseModel):
+    resolved_event_id: str
+    primary_match_id: str
+    linked_match_ids: list[str]
+    linked_member_count: int
+    discrepancies_rebuilt: int = 0
+    opportunities_rebuilt: int = 0
+
+
 # ── Odds ───────────────────────────────────────────────────
 class OddsOut(BaseModel):
     id: int
@@ -213,6 +333,7 @@ class OutcomeOfferOut(BaseModel):
 
 class OpportunityLeg(BaseModel):
     offer_id: Optional[int] = None
+    match_id: Optional[str] = None
     bookmaker_id: str
     bookmaker_name: Optional[str] = None
     source_url: Optional[str] = None
@@ -227,6 +348,7 @@ class OpportunityOut(BaseModel):
     id: int
     sport: str
     match_id: str
+    resolved_event_id: Optional[str] = None
     home_team: Optional[str] = None
     away_team: Optional[str] = None
     league_name: Optional[str] = None
@@ -245,6 +367,7 @@ class OpportunityOut(BaseModel):
 class DiscrepancyOut(BaseModel):
     id: int
     match_id: str
+    resolved_event_id: Optional[str] = None
     market_type: str
     player_name: Optional[str] = None
     bookmaker_a_id: str

@@ -795,7 +795,7 @@ async def test_scheduler_run_cycle_auto_saves_multiple_anchored_aliases_same_scr
 
 
 @pytest.mark.asyncio
-async def test_scheduler_run_cycle_auto_merges_weaker_existing_canonical_team():
+async def test_scheduler_run_cycle_auto_saves_alias_without_merging_low_strict_similarity_team():
     source = create_canonical_team(display_name="NY Knicks")
     target = create_canonical_team(display_name="New York Knicks")
 
@@ -857,9 +857,10 @@ async def test_scheduler_run_cycle_auto_merges_weaker_existing_canonical_team():
         target.team_id,
     }
     assert normalize_team_name("NY Knicks", "nba", "pinnbet") == target.team_name
-    assert get_canonical_team(source.team_id) is None
+    assert get_canonical_team(source.team_id) is not None
+    assert get_canonical_team(target.team_id) is not None
     assert merged_source is not None
-    assert merged_source.id == target.team_id
+    assert merged_source.id == source.team_id
     assert "NY Knicks" in merged_source.aliases
 
 
@@ -1146,7 +1147,7 @@ async def test_auto_apply_anchored_aliases_respects_threshold():
 
 
 @pytest.mark.asyncio
-async def test_auto_apply_contextual_merge_uses_lower_threshold_for_same_event():
+async def test_auto_apply_contextual_merge_requires_very_high_team_evidence():
     winner = create_canonical_team(display_name="CSKA Moscow")
     runner_up = create_canonical_team(display_name="CSKA Moskva")
     opponent = create_canonical_team(display_name="Enisey")
@@ -1192,10 +1193,64 @@ async def test_auto_apply_contextual_merge_uses_lower_threshold_for_same_event()
 
     approved_cases, applied_aliases, pending_merge_pairings = await scheduler._auto_apply_anchored_aliases(cases)
 
+    assert approved_cases == []
+    assert applied_aliases == []
+    assert pending_merge_pairings == []
+    assert get_canonical_team(runner_up.team_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_auto_apply_contextual_merge_allows_very_high_team_evidence():
+    winner = create_canonical_team(display_name="BC Novosibirsk")
+    runner_up = create_canonical_team(display_name="Novosibirsk")
+    opponent = create_canonical_team(display_name="BC Chelyabinsk")
+    scheduler = Scheduler(interval_minutes=1)
+    cases = [
+        TeamReviewDiagnostic(
+            bookmaker_id="superbet",
+            raw_league_id="VTB Liga",
+            normalized_raw_league_id="vtb liga",
+            sport="basketball",
+            raw_team_name=runner_up.team_name,
+            normalized_raw_team_name="novosibirsk",
+            suggested_team_id=winner.team_id,
+            suggested_team_name=winner.team_name,
+            start_time="2030-01-01T20:00:00+00:00",
+            review_kind="canonical_merge_candidate",
+            reason_code="candidate_team_match_same_start_time",
+            confidence="very_high",
+            similarity_score=100,
+            matched_counterpart_team=opponent.team_name,
+            canonical_home_team=winner.team_name,
+            canonical_away_team=opponent.team_name,
+            candidate_teams=[
+                {
+                    "team_id": winner.team_id,
+                    "team_name": winner.team_name,
+                    "score": 100,
+                    "slot_support": 3,
+                    "canonical_home_team": winner.team_name,
+                    "canonical_away_team": opponent.team_name,
+                },
+                {
+                    "team_id": runner_up.team_id,
+                    "team_name": runner_up.team_name,
+                    "score": 100,
+                    "slot_support": 1,
+                    "canonical_home_team": runner_up.team_name,
+                    "canonical_away_team": opponent.team_name,
+                },
+            ],
+        )
+    ]
+
+    approved_cases, applied_aliases, pending_merge_pairings = await scheduler._auto_apply_anchored_aliases(cases)
+
     assert applied_aliases == []
     assert pending_merge_pairings == [(runner_up.team_id, winner.team_id)]
     assert len(approved_cases) == 1
     assert approved_cases[0].review_kind == "auto_canonical_merge_suggestion"
+    assert approved_cases[0].confidence == "very_high"
     assert approved_cases[0].status == "approved"
 
     applied_pairings = await scheduler._apply_canonical_merges(pending_merge_pairings)
@@ -1205,7 +1260,6 @@ async def test_auto_apply_contextual_merge_uses_lower_threshold_for_same_event()
     assert get_canonical_team(runner_up.team_id) is None
     assert merged_runner_up is not None
     assert merged_runner_up.id == winner.team_id
-    assert normalize_team_name("CSKA Moskva") == winner.team_name
 
 
 @pytest.mark.asyncio
@@ -1262,7 +1316,7 @@ async def test_auto_apply_contextual_merge_keeps_low_score_pending():
 
 
 @pytest.mark.asyncio
-async def test_scheduler_run_cycle_applies_contextual_merge_before_storage(caplog):
+async def test_scheduler_run_cycle_does_not_contextual_merge_without_very_high_team_evidence(caplog):
     caplog.set_level("WARNING", logger="app.services.normalizer")
     winner = create_canonical_team(display_name="CSKA Moscow")
     runner_up = create_canonical_team(display_name="CSKA Moskva")
@@ -1329,18 +1383,17 @@ async def test_scheduler_run_cycle_applies_contextual_merge_before_storage(caplo
     approved_cases = await odds_store.get_team_review_cases(status="approved")
     merged_runner_up = get_canonical_team(runner_up.team_id, follow_merge=True)
 
-    assert result["matches_scraped"] == 1
-    assert pending_cases == []
-    assert len(approved_cases) == 1
-    assert approved_cases[0].review_kind == "auto_canonical_merge_suggestion"
-    assert get_canonical_team(runner_up.team_id) is None
+    assert result["matches_scraped"] == 2
+    assert pending_cases
+    assert approved_cases == []
+    assert get_canonical_team(runner_up.team_id) is not None
     assert merged_runner_up is not None
-    assert merged_runner_up.id == winner.team_id
+    assert merged_runner_up.id == runner_up.team_id
     assert "Dropping" not in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_auto_apply_anchored_aliases_overrides_losing_label_and_merges_canonical_team():
+async def test_auto_apply_anchored_aliases_does_not_merge_without_very_high_team_evidence():
     winner = create_canonical_team(display_name="QA Winner Team")
     runner_up = create_canonical_team(display_name="QA Runner Team")
     opponent = create_canonical_team(display_name="QA Opponent Team")
@@ -1419,15 +1472,10 @@ async def test_auto_apply_anchored_aliases_overrides_losing_label_and_merges_can
     assert approved_cases[0].review_kind == "auto_alias_suggestion"
     assert set(applied_aliases) == {
         ("book-c", "QA Fresh Label", "basketball"),
-        ("book-b", runner_up.team_name, "basketball"),
     }
-    assert pending_merge_pairings == [(runner_up.team_id, winner.team_id)]
+    assert pending_merge_pairings == []
     assert normalize_team_name("QA Fresh Label", "NBL", "book-c") == winner.team_name
-    assert normalize_team_name(runner_up.team_name, "NBL", "book-b") == winner.team_name
-
-    await scheduler._apply_canonical_merges(pending_merge_pairings)
-
-    assert normalize_team_name("QA Runner Team", "NBL", "book-b") == winner.team_name
+    assert normalize_team_name(runner_up.team_name, "NBL", "book-b") == runner_up.team_name
 
 
 @pytest.mark.asyncio

@@ -4,10 +4,7 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
-from dataclasses import dataclass
 from datetime import datetime
-
-from rapidfuzz import fuzz
 
 from ..config import settings
 from ..models.schemas import RawOddsData, RawOutcomeOffer, TeamReviewDiagnostic
@@ -22,6 +19,16 @@ from ..services.normalizer import (
     resolve_team_name,
 )
 from ..services.analyzer import analyze
+from ..services.event_resolver import (
+    CANONICAL_TEAM_AUTO_MERGE_THRESHOLD,
+    SameTimeCanonicalMergeProposal as _SameTimeMergeProposal,
+    SameTimeCanonicalSlot as _SameTimeSlot,
+    _contextual_merge_source_ids,
+    _is_unsafe_compound_subset_match,
+    _normalize_merge_pairings,
+    _same_time_slot_orientation,
+    resolve_and_persist_events,
+)
 from ..services.opportunity_analyzer import analyze_outcome_offers
 from ..services.outcome_normalizer import normalize_outcome_offers_with_diagnostics
 from ..services.notifications import NotificationService, InAppNotificationProvider
@@ -46,47 +53,7 @@ logger = logging.getLogger(__name__)
 
 AUTO_ALIAS_REVIEW_KIND = "auto_alias_suggestion"
 AUTO_CANONICAL_MERGE_REVIEW_KIND = "auto_canonical_merge_suggestion"
-CONTEXTUAL_CANONICAL_MERGE_THRESHOLD = 80
-SAME_TIME_CANONICAL_MERGE_THRESHOLD = 88
 SAME_TIME_MIN_TARGET_SUPPORT = 2
-_LOW_SIGNAL_TEAM_TOKENS = {
-    "bc",
-    "bk",
-    "kk",
-    "fc",
-    "fk",
-    "club",
-    "team",
-}
-
-
-@dataclass(frozen=True)
-class _SameTimeSlot:
-    sport: str
-    start_time: str
-    home_team_id: int
-    away_team_id: int
-    home_team: str
-    away_team: str
-    support_bookmakers: frozenset[str]
-    raw_league_id: str
-
-
-@dataclass(frozen=True)
-class _SameTimeMergeProposal:
-    source_team_id: int
-    target_team_id: int
-    source_team_name: str
-    target_team_name: str
-    source_support: int
-    target_support: int
-    sport: str
-    start_time: str
-    bookmaker_id: str
-    raw_league_id: str
-    canonical_home_team: str
-    canonical_away_team: str
-    score: float
 
 
 def _is_auto_alias_candidate(case) -> bool:
@@ -105,258 +72,7 @@ def _is_auto_alias_candidate(case) -> bool:
 
 
 def _candidate_merge_source_ids(case) -> set[int]:
-    return {
-        candidate.team_id
-        for candidate in case.candidate_teams
-        if (
-            candidate.team_id != case.suggested_team_id
-            and candidate.score is not None
-            and candidate.score >= ANCHORED_AUTO_APPLY_THRESHOLD
-            and case.suggested_team_name is not None
-            and not _is_unsafe_compound_subset_match(
-                candidate.team_name,
-                case.suggested_team_name,
-            )
-        )
-    }
-
-
-def _candidate_event_teams(candidate) -> set[str] | None:
-    if not candidate.canonical_home_team or not candidate.canonical_away_team:
-        return None
-    return {candidate.canonical_home_team, candidate.canonical_away_team}
-
-
-def _significant_team_tokens(team_name: str) -> set[str]:
-    return {
-        token
-        for token in normalize_identity_text(team_name).split()
-        if token not in _LOW_SIGNAL_TEAM_TOKENS
-    }
-
-
-def _symmetric_canonical_team_score(left_name: str, right_name: str) -> float:
-    left_key = normalize_identity_text(left_name)
-    right_key = normalize_identity_text(right_name)
-    if not left_key or not right_key:
-        return 0.0
-    if left_key == right_key:
-        return 100.0
-
-    left_tokens = _significant_team_tokens(left_name)
-    right_tokens = _significant_team_tokens(right_name)
-    if not left_tokens or not right_tokens:
-        return 0.0
-    if left_tokens == right_tokens:
-        return 100.0
-    if left_tokens < right_tokens or right_tokens < left_tokens:
-        # Allow harmless club-prefix differences (BC/KK/etc.), but do not let
-        # token-set substring scoring merge compound names such as
-        # "BC Chelbasket Chelyabinsk" into either "Chelbasket" or "Chelyabinsk".
-        return float(
-            min(
-                fuzz.ratio(left_key, right_key),
-                fuzz.token_sort_ratio(left_key, right_key),
-            )
-        )
-
-    return float(
-        min(
-            fuzz.ratio(left_key, right_key),
-            fuzz.token_sort_ratio(left_key, right_key),
-        )
-    )
-
-
-def _is_unsafe_compound_subset_match(left_name: str, right_name: str) -> bool:
-    left_tokens = _significant_team_tokens(left_name)
-    right_tokens = _significant_team_tokens(right_name)
-    return bool(left_tokens and right_tokens and (left_tokens < right_tokens or right_tokens < left_tokens))
-
-
-def _same_time_slot_orientation(
-    source_slot: _SameTimeSlot,
-    target_slot: _SameTimeSlot,
-) -> tuple[tuple[int, int, str, str, float], tuple[int, int, str, str, float]] | None:
-    if (
-        _is_unsafe_compound_subset_match(source_slot.home_team, target_slot.home_team)
-        or _is_unsafe_compound_subset_match(source_slot.away_team, target_slot.away_team)
-    ):
-        same_orientation = None
-    else:
-        same_orientation = (
-            (
-                source_slot.home_team_id,
-                target_slot.home_team_id,
-                source_slot.home_team,
-                target_slot.home_team,
-                _symmetric_canonical_team_score(source_slot.home_team, target_slot.home_team),
-            ),
-            (
-                source_slot.away_team_id,
-                target_slot.away_team_id,
-                source_slot.away_team,
-                target_slot.away_team,
-                _symmetric_canonical_team_score(source_slot.away_team, target_slot.away_team),
-            ),
-        )
-    if (
-        _is_unsafe_compound_subset_match(source_slot.home_team, target_slot.away_team)
-        or _is_unsafe_compound_subset_match(source_slot.away_team, target_slot.home_team)
-    ):
-        cross_orientation = None
-    else:
-        cross_orientation = (
-            (
-                source_slot.home_team_id,
-                target_slot.away_team_id,
-                source_slot.home_team,
-                target_slot.away_team,
-                _symmetric_canonical_team_score(source_slot.home_team, target_slot.away_team),
-            ),
-            (
-                source_slot.away_team_id,
-                target_slot.home_team_id,
-                source_slot.away_team,
-                target_slot.home_team,
-                _symmetric_canonical_team_score(source_slot.away_team, target_slot.home_team),
-            ),
-        )
-    candidates = [
-        orientation
-        for orientation in (same_orientation, cross_orientation)
-        if orientation is not None
-        and min(orientation[0][4], orientation[1][4]) >= SAME_TIME_CANONICAL_MERGE_THRESHOLD
-    ]
-    if not candidates:
-        return None
-    if len(candidates) == 2:
-        same_score = same_orientation[0][4] + same_orientation[1][4]
-        cross_score = cross_orientation[0][4] + cross_orientation[1][4]
-        if same_score == cross_score:
-            return None
-    return max(candidates, key=lambda item: item[0][4] + item[1][4])
-
-
-def _contextual_merge_source_ids(case) -> set[int]:
-    if (
-        case.reason_code != "candidate_team_match_same_start_time"
-        or case.suggested_team_id is None
-        or case.suggested_team_name is None
-        or case.start_time is None
-        or case.matched_counterpart_team is None
-        or case.canonical_home_team is None
-        or case.canonical_away_team is None
-        or case.similarity_score is None
-        or case.similarity_score < CONTEXTUAL_CANONICAL_MERGE_THRESHOLD
-    ):
-        return set()
-
-    target_candidate = next(
-        (
-            candidate
-            for candidate in case.candidate_teams
-            if candidate.team_id == case.suggested_team_id
-        ),
-        None,
-    )
-    if (
-        target_candidate is None
-        or target_candidate.score is None
-        or target_candidate.score < CONTEXTUAL_CANONICAL_MERGE_THRESHOLD
-        or target_candidate.slot_support is None
-    ):
-        return set()
-
-    target_event_teams = _candidate_event_teams(target_candidate)
-    if target_event_teams is None:
-        return set()
-
-    source_team_ids: set[int] = set()
-    for candidate in case.candidate_teams:
-        if (
-            candidate.team_id == case.suggested_team_id
-            or candidate.score is None
-            or candidate.score < CONTEXTUAL_CANONICAL_MERGE_THRESHOLD
-            or candidate.slot_support is None
-            or target_candidate.slot_support <= candidate.slot_support
-            or _is_unsafe_compound_subset_match(
-                candidate.team_name,
-                case.suggested_team_name,
-            )
-        ):
-            continue
-
-        candidate_event_teams = _candidate_event_teams(candidate)
-        if candidate_event_teams is None:
-            continue
-        if len(target_event_teams & candidate_event_teams) != 1:
-            continue
-
-        source_team_ids.add(candidate.team_id)
-
-    return source_team_ids
-
-
-def _normalize_merge_pairings(
-    pairings: list[tuple[int, int]],
-) -> tuple[dict[int, int], set[int]]:
-    normalized: dict[int, int] = {}
-    conflicts: set[int] = set()
-
-    for source_team_id, target_team_id in pairings:
-        if source_team_id <= 0 or target_team_id <= 0 or source_team_id == target_team_id:
-            continue
-        existing_target = normalized.get(source_team_id)
-        if existing_target is not None and existing_target != target_team_id:
-            conflicts.add(source_team_id)
-            continue
-        normalized[source_team_id] = target_team_id
-
-    for source_team_id in conflicts:
-        normalized.pop(source_team_id, None)
-
-    resolved: dict[int, int] = {}
-    cycle_conflicts: set[int] = set()
-
-    for source_team_id in list(normalized):
-        if source_team_id in resolved or source_team_id in cycle_conflicts:
-            continue
-
-        path: list[int] = []
-        visited: dict[int, int] = {}
-        current_team_id = source_team_id
-
-        while True:
-            if current_team_id in cycle_conflicts:
-                cycle_conflicts.update(path)
-                break
-            if current_team_id in resolved:
-                final_target = resolved[current_team_id]
-                for path_team_id in path:
-                    resolved[path_team_id] = final_target
-                break
-            if current_team_id not in normalized:
-                for path_team_id in path:
-                    resolved[path_team_id] = current_team_id
-                break
-            if current_team_id in visited:
-                cycle_conflicts.update(path)
-                break
-
-            visited[current_team_id] = len(path)
-            path.append(current_team_id)
-            current_team_id = normalized[current_team_id]
-
-    conflicts.update(cycle_conflicts)
-    return (
-        {
-            source_team_id: target_team_id
-            for source_team_id, target_team_id in resolved.items()
-            if source_team_id not in conflicts and source_team_id in normalized
-        },
-        conflicts,
-    )
+    return _contextual_merge_source_ids(case)
 
 
 class Scheduler:
@@ -571,7 +287,7 @@ class Scheduler:
                     start_time=proposal.start_time,
                     review_kind=AUTO_CANONICAL_MERGE_REVIEW_KIND,
                     reason_code="same_time_both_sides_canonical_merge",
-                    confidence="high",
+                    confidence="very_high",
                     similarity_score=proposal.score,
                     matched_counterpart_team=proposal.target_team_name,
                     canonical_home_team=proposal.canonical_home_team,
@@ -585,7 +301,7 @@ class Scheduler:
                         ),
                         (
                             "Strict symmetric team similarity "
-                            f"{proposal.score:g} >= {SAME_TIME_CANONICAL_MERGE_THRESHOLD}"
+                            f"{proposal.score:g} >= {CANONICAL_TEAM_AUTO_MERGE_THRESHOLD:g}"
                         ),
                     ],
                 )
@@ -714,16 +430,17 @@ class Scheduler:
                     evidence = list(case.evidence)
                     evidence.append(
                         "Auto-approved canonical merge from exact event context "
-                        f"(score {case.similarity_score:g}, threshold {CONTEXTUAL_CANONICAL_MERGE_THRESHOLD})"
+                        f"(score {case.similarity_score:g}, threshold {CANONICAL_TEAM_AUTO_MERGE_THRESHOLD:g})"
                     )
                     evidence.append(
-                        "Same sport, exact kickoff, shared canonical counterpart, and stronger target support"
+                        "Very-high team evidence: exact kickoff, shared canonical counterpart, strict team similarity, and stronger target support"
                     )
                     auto_approved_cases.append(
                         case.model_copy(
                             update={
                                 "review_kind": AUTO_CANONICAL_MERGE_REVIEW_KIND,
                                 "status": "approved",
+                                "confidence": "very_high",
                                 "evidence": evidence,
                             },
                         )
@@ -1233,6 +950,12 @@ class Scheduler:
                         offer,
                         scraped_at=cycle_scraped_at,
                     )
+                await resolve_and_persist_events(
+                    raw_odds=all_raw,
+                    raw_outcome_offers=all_raw_outcome_offers,
+                    normalized_odds=normalized,
+                    normalized_outcome_offers=normalized_outcome_offers,
+                )
                 for unresolved in unresolved_odds:
                     await odds_store.insert_unresolved_odds(
                         unresolved, scraped_at=cycle_scraped_at
@@ -1250,9 +973,43 @@ class Scheduler:
 
                 self._scan_phase = "analyzing"
                 await odds_store.deactivate_all_discrepancies()
-                discrepancies = analyze(normalized)
+                discrepancy_event_members = (
+                    await odds_store.get_eligible_resolved_event_members_for_odds(
+                        normalized
+                    )
+                )
+                discrepancy_event_primary_match_ids = (
+                    await odds_store.get_resolved_event_primary_match_ids(
+                        [
+                            member.resolved_event_id
+                            for member in discrepancy_event_members
+                        ]
+                    )
+                )
+                discrepancies = analyze(
+                    normalized,
+                    event_members=discrepancy_event_members,
+                    event_primary_match_ids=discrepancy_event_primary_match_ids,
+                )
                 await odds_store.deactivate_opportunities()
-                opportunities = analyze_outcome_offers(normalized_outcome_offers)
+                opportunity_event_members = (
+                    await odds_store.get_eligible_resolved_event_members_for_outcome_offers(
+                        normalized_outcome_offers
+                    )
+                )
+                opportunity_event_primary_match_ids = (
+                    await odds_store.get_resolved_event_primary_match_ids(
+                        [
+                            member.resolved_event_id
+                            for member in opportunity_event_members
+                        ]
+                    )
+                )
+                opportunities = analyze_outcome_offers(
+                    normalized_outcome_offers,
+                    event_members=opportunity_event_members,
+                    event_primary_match_ids=opportunity_event_primary_match_ids,
+                )
                 for opportunity in opportunities:
                     await odds_store.insert_opportunity(
                         opportunity,
@@ -1273,6 +1030,7 @@ class Scheduler:
                         gap=d.gap,
                         profit_margin=d.profit_margin,
                         middle_profit_margin=d.middle_profit_margin,
+                        resolved_event_id=d.resolved_event_id,
                     )
 
                 self._scan_phase = "notifying"

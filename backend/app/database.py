@@ -42,6 +42,87 @@ CREATE TABLE IF NOT EXISTS match_bookmaker_sources (
     UNIQUE(match_id, bookmaker_id)
 );
 
+CREATE TABLE IF NOT EXISTS resolved_events (
+    id TEXT PRIMARY KEY,
+    sport TEXT NOT NULL,
+    start_time TIMESTAMP NOT NULL,
+    primary_match_id TEXT NOT NULL REFERENCES matches(id),
+    status TEXT NOT NULL DEFAULT 'active',
+    confidence REAL,
+    method TEXT NOT NULL DEFAULT 'manual',
+    display_home_team TEXT,
+    display_away_team TEXT,
+    display_league_name TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_resolved_events_slot
+ON resolved_events (sport, start_time, status);
+
+CREATE INDEX IF NOT EXISTS idx_resolved_events_primary_match
+ON resolved_events (primary_match_id);
+
+CREATE TABLE IF NOT EXISTS resolved_event_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resolved_event_id TEXT NOT NULL REFERENCES resolved_events(id),
+    match_id TEXT NOT NULL REFERENCES matches(id),
+    bookmaker_id TEXT NOT NULL REFERENCES bookmakers(id),
+    orientation TEXT NOT NULL DEFAULT 'as_listed',
+    confidence REAL,
+    status TEXT NOT NULL DEFAULT 'active',
+    source_url TEXT,
+    source_league_id TEXT,
+    source_league_name TEXT,
+    source_home_team TEXT,
+    source_away_team TEXT,
+    source_start_time TIMESTAMP,
+    evidence TEXT NOT NULL DEFAULT '[]',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(match_id, bookmaker_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_resolved_event_members_event
+ON resolved_event_members (resolved_event_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_resolved_event_members_match
+ON resolved_event_members (match_id, bookmaker_id);
+
+CREATE TABLE IF NOT EXISTS event_review_cases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint TEXT NOT NULL UNIQUE,
+    sport TEXT NOT NULL DEFAULT 'basketball',
+    start_time TIMESTAMP NOT NULL,
+    primary_match_id TEXT REFERENCES matches(id),
+    candidate_resolved_event_id TEXT REFERENCES resolved_events(id),
+    resolved_event_id TEXT REFERENCES resolved_events(id),
+    candidate_match_ids TEXT NOT NULL DEFAULT '[]',
+    reason_code TEXT NOT NULL,
+    confidence REAL,
+    method TEXT NOT NULL DEFAULT 'auto_candidate',
+    source_bookmaker_ids TEXT NOT NULL DEFAULT '[]',
+    source_league_labels TEXT NOT NULL DEFAULT '[]',
+    evidence TEXT NOT NULL DEFAULT '[]',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    accepted_at TIMESTAMP,
+    declined_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_review_cases_status
+ON event_review_cases (status, sport, start_time);
+
+CREATE INDEX IF NOT EXISTS idx_event_review_cases_candidate_event
+ON event_review_cases (candidate_resolved_event_id);
+
+CREATE INDEX IF NOT EXISTS idx_event_review_cases_resolved_event
+ON event_review_cases (resolved_event_id);
+
 CREATE TABLE IF NOT EXISTS odds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     match_id TEXT REFERENCES matches(id),
@@ -95,6 +176,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sport TEXT NOT NULL,
     match_id TEXT REFERENCES matches(id),
+    resolved_event_id TEXT REFERENCES resolved_events(id),
     opportunity_type TEXT NOT NULL,
     market_type TEXT NOT NULL,
     line REAL,
@@ -107,6 +189,9 @@ CREATE TABLE IF NOT EXISTS opportunities (
 
 CREATE INDEX IF NOT EXISTS idx_opportunities_active_sport
 ON opportunities (is_active, sport, detected_at);
+
+CREATE INDEX IF NOT EXISTS idx_opportunities_resolved_event_active
+ON opportunities (resolved_event_id, is_active);
 
 CREATE TABLE IF NOT EXISTS unresolved_odds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -201,6 +286,7 @@ CREATE TABLE IF NOT EXISTS team_merge_history (
 CREATE TABLE IF NOT EXISTS discrepancies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     match_id TEXT REFERENCES matches(id),
+    resolved_event_id TEXT REFERENCES resolved_events(id),
     market_type TEXT NOT NULL,
     player_name TEXT,
     bookmaker_a_id TEXT,
@@ -215,6 +301,9 @@ CREATE TABLE IF NOT EXISTS discrepancies (
     detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_active BOOLEAN DEFAULT TRUE
 );
+
+CREATE INDEX IF NOT EXISTS idx_discrepancies_resolved_event_active
+ON discrepancies (resolved_event_id, is_active);
 
 CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -449,6 +538,12 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
     existing = {row[1] for row in columns}
     if "middle_profit_margin" not in existing:
         await conn.execute("ALTER TABLE discrepancies ADD COLUMN middle_profit_margin REAL")
+    if columns and "resolved_event_id" not in existing:
+        await conn.execute("ALTER TABLE discrepancies ADD COLUMN resolved_event_id TEXT")
+    await conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_discrepancies_resolved_event_active
+           ON discrepancies (resolved_event_id, is_active)"""
+    )
 
     await conn.execute(
         """CREATE TABLE IF NOT EXISTS outcome_offers (
@@ -482,6 +577,7 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
                id INTEGER PRIMARY KEY AUTOINCREMENT,
                sport TEXT NOT NULL,
                match_id TEXT REFERENCES matches(id),
+               resolved_event_id TEXT REFERENCES resolved_events(id),
                opportunity_type TEXT NOT NULL,
                market_type TEXT NOT NULL,
                line REAL,
@@ -495,6 +591,14 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
     await conn.execute(
         """CREATE INDEX IF NOT EXISTS idx_opportunities_active_sport
            ON opportunities (is_active, sport, detected_at)"""
+    )
+    opportunity_columns = await conn.execute_fetchall("PRAGMA table_info(opportunities)")
+    existing_opportunities = {row[1] for row in opportunity_columns}
+    if opportunity_columns and "resolved_event_id" not in existing_opportunities:
+        await conn.execute("ALTER TABLE opportunities ADD COLUMN resolved_event_id TEXT")
+    await conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_opportunities_resolved_event_active
+           ON opportunities (resolved_event_id, is_active)"""
     )
 
     team_review_columns = await conn.execute_fetchall("PRAGMA table_info(team_review_cases)")

@@ -75,6 +75,7 @@ export interface OddsOffer {
 export interface Discrepancy {
   id: number;
   match_id: string;
+  resolved_event_id?: string | null;
   home_team: string;
   away_team: string;
   league_name: string;
@@ -113,6 +114,7 @@ export interface OutcomeOffer {
 
 export interface OpportunityLeg {
   offer_id?: number | null;
+  match_id?: string | null;
   bookmaker_id: string;
   bookmaker_name?: string | null;
   source_url?: string | null;
@@ -127,6 +129,7 @@ export interface Opportunity {
   id: number;
   sport: string;
   match_id: string;
+  resolved_event_id?: string | null;
   home_team: string | null;
   away_team: string | null;
   league_name: string | null;
@@ -215,6 +218,61 @@ export interface TeamReviewAction {
   status: 'declined';
 }
 
+export type EventReviewStatus = 'pending' | 'accepted' | 'declined';
+
+export interface EventReviewVariant {
+  match_id: string;
+  bookmaker_id: string | null;
+  bookmaker_name: string | null;
+  league_id: string | null;
+  league_name: string | null;
+  home_team: string;
+  away_team: string;
+  start_time: string | null;
+  source_url: string | null;
+  source_league_id: string | null;
+  source_league_name: string | null;
+  source_home_team: string | null;
+  source_away_team: string | null;
+  source_start_time: string | null;
+  orientation: string;
+  confidence: number | null;
+  evidence: string[];
+}
+
+export interface EventReviewCase {
+  id: number;
+  fingerprint: string;
+  sport: string;
+  start_time: string;
+  primary_match_id: string | null;
+  candidate_resolved_event_id: string | null;
+  candidate_match_ids: string[];
+  reason_code: string;
+  confidence: number | null;
+  method: string;
+  source_bookmaker_ids: string[];
+  source_league_labels: string[];
+  evidence: string[];
+  metadata: Record<string, unknown>;
+  status: EventReviewStatus;
+  resolved_event_id: string | null;
+  primary_home_team: string | null;
+  primary_away_team: string | null;
+  primary_league_name: string | null;
+  variants: EventReviewVariant[];
+  created_at: string | null;
+  updated_at: string | null;
+  accepted_at: string | null;
+  declined_at: string | null;
+}
+
+export interface EventReviewAction {
+  case_id: number;
+  status: EventReviewStatus;
+  resolved_event_id: string | null;
+}
+
 export interface BookmakerStatus {
   id: string;
   name: string;
@@ -301,6 +359,16 @@ export interface TeamReviewFilters {
   loadAll?: boolean;
 }
 
+export interface EventReviewFilters {
+  bookmaker_id?: string;
+  bookmaker_ids?: string[];
+  sport?: string;
+  status?: EventReviewStatus;
+  limit?: number;
+  offset?: number;
+  loadAll?: boolean;
+}
+
 export interface TeamReviewApprovalInput {
   team_id?: number;
   create_team_name?: string;
@@ -359,4 +427,18 @@ export interface MatchMergeResult {
   reassigned_discrepancies: number;
   reassigned_opportunities: number;
   deleted_source_matches: number;
+}
+
+export interface EventMergeInput {
+  primary_match_id: string;
+  source_match_ids: string[];
+}
+
+export interface EventMergeResult {
+  resolved_event_id: string;
+  primary_match_id: string;
+  linked_match_ids: string[];
+  linked_member_count: number;
+  discrepancies_rebuilt: number;
+  opportunities_rebuilt: number;
 }

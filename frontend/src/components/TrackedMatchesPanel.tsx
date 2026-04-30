@@ -149,7 +149,7 @@ export default function TrackedMatchesPanel({
                 {mergeMode && (
                   <input
                     type="checkbox"
-                    aria-label={`Select ${match.home_team} vs ${match.away_team} for merge`}
+                    aria-label={`Select ${match.home_team} vs ${match.away_team} for event merge`}
                     className="mt-1 h-4 w-4 cursor-pointer accent-accent"
                     checked={checked}
                     onChange={(e) => {
@@ -274,7 +274,7 @@ export default function TrackedMatchesPanel({
                 : 'border-border text-text-muted hover:text-text'
             }`}
           >
-            {mergeMode ? 'Done selecting' : 'Select to merge'}
+            {mergeMode ? 'Done selecting' : 'Select events'}
           </button>
           <span className="font-mono text-xs text-text-muted">
             {hasSearchQuery ? `${sortedMatches.length} of ${upcomingMatches.length}` : sortedMatches.length}{' '}
@@ -297,7 +297,7 @@ export default function TrackedMatchesPanel({
       {mergeMode && selectedMatches.length >= 2 && (
         <div className="sticky bottom-4 z-30 flex items-center justify-between gap-3 rounded-lg border border-accent/60 bg-surface/95 px-4 py-3 shadow-lg backdrop-blur">
           <div className="text-sm text-text">
-            <span className="font-semibold">{selectedMatches.length}</span> matches selected
+            <span className="font-semibold">{selectedMatches.length}</span> events selected
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -312,7 +312,7 @@ export default function TrackedMatchesPanel({
               onClick={() => setMergeModalOpen(true)}
               className="rounded-md border border-accent bg-accent px-3 py-1.5 text-xs font-semibold text-bg"
             >
-              Merge matches…
+              Merge events…
             </button>
           </div>
         </div>

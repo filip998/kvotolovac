@@ -14,6 +14,9 @@ from ..models.schemas import (
     CanonicalTeamOut,
     DiscrepancyDetail,
     DiscrepancyOut,
+    EventReviewCaseIn,
+    EventReviewCaseOut,
+    EventReviewVariantOut,
     LeagueOut,
     MatchBookmakerOut,
     MatchOut,
@@ -24,6 +27,10 @@ from ..models.schemas import (
     OpportunityLeg,
     OpportunityOut,
     OutcomeOfferOut,
+    ResolvedEventIn,
+    ResolvedEventMemberIn,
+    ResolvedEventMemberOut,
+    ResolvedEventOut,
     ScanProgressOut,
     SystemStatus,
     TeamReviewCandidate,
@@ -36,6 +43,26 @@ from ..models.schemas import (
 
 def _row_to_dict(row: aiosqlite.Row) -> dict:
     return dict(row)
+
+
+def _json_list(value: object) -> list:
+    if not value:
+        return []
+    if isinstance(value, str):
+        return json.loads(value)
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def _json_dict(value: object) -> dict:
+    if not value:
+        return {}
+    if isinstance(value, str):
+        return json.loads(value)
+    if isinstance(value, dict):
+        return value
+    return {}
 
 
 def _row_to_unresolved_odds(row: aiosqlite.Row) -> UnresolvedOddsOut:
@@ -65,6 +92,61 @@ def _row_to_team_review(row: aiosqlite.Row) -> TeamReviewOut:
             TeamReviewCandidate(**item) for item in json.loads(candidate_value)
         ]
     return TeamReviewOut(**data)
+
+
+def _row_to_resolved_event_member(row: aiosqlite.Row) -> ResolvedEventMemberOut:
+    data = _row_to_dict(row)
+    data["evidence"] = _json_list(data.get("evidence"))
+    data["metadata"] = _json_dict(data.get("metadata"))
+    return ResolvedEventMemberOut(**data)
+
+
+def _row_to_resolved_event(
+    row: aiosqlite.Row,
+    *,
+    members: list[ResolvedEventMemberOut] | None = None,
+) -> ResolvedEventOut:
+    data = _row_to_dict(row)
+    data["metadata"] = _json_dict(data.get("metadata"))
+    data["members"] = members or []
+    return ResolvedEventOut(**data)
+
+
+def _row_to_event_review_case(row: aiosqlite.Row) -> EventReviewCaseOut:
+    data = _row_to_dict(row)
+    for field in (
+        "candidate_match_ids",
+        "source_bookmaker_ids",
+        "source_league_labels",
+        "evidence",
+    ):
+        data[field] = _json_list(data.get(field))
+    data["metadata"] = _json_dict(data.get("metadata"))
+    return EventReviewCaseOut(**data)
+
+
+def _row_to_event_review_variant(row: aiosqlite.Row) -> EventReviewVariantOut:
+    data = _row_to_dict(row)
+    evidence = data.get("member_evidence", data.get("evidence"))
+    return EventReviewVariantOut(
+        match_id=data["match_id"],
+        bookmaker_id=data.get("bookmaker_id"),
+        bookmaker_name=data.get("bookmaker_name"),
+        league_id=data.get("league_id"),
+        league_name=data.get("league_name"),
+        home_team=data.get("home_team") or data.get("source_home_team") or "Unknown",
+        away_team=data.get("away_team") or data.get("source_away_team") or "Unknown",
+        start_time=data.get("start_time"),
+        source_url=data.get("source_url"),
+        source_league_id=data.get("source_league_id"),
+        source_league_name=data.get("source_league_name") or data.get("league_name"),
+        source_home_team=data.get("source_home_team") or data.get("home_team"),
+        source_away_team=data.get("source_away_team") or data.get("away_team"),
+        source_start_time=data.get("source_start_time") or data.get("start_time"),
+        orientation=data.get("orientation") or "as_listed",
+        confidence=data.get("member_confidence", data.get("confidence")),
+        evidence=_json_list(evidence),
+    )
 
 
 def _sql_placeholders(values: list[object]) -> str:
@@ -169,6 +251,21 @@ async def _get_team_review_snapshot_at(db: aiosqlite.Connection) -> str | None:
     if snapshot_at is not None:
         return snapshot_at
     return await _get_latest_team_review_snapshot_at(db)
+
+
+async def _current_or_legacy_snapshot_filter(
+    db: aiosqlite.Connection,
+    alias: str,
+) -> tuple[str | None, list[object]]:
+    current_snapshot_at = await _get_current_snapshot_at(db)
+    if current_snapshot_at is not None:
+        return f"{alias}.scraped_at = ?", [current_snapshot_at]
+
+    legacy_window = await _get_legacy_snapshot_cutoff(db)
+    if legacy_window is None:
+        return None, []
+    _, cutoff_at = legacy_window
+    return f"{alias}.scraped_at >= ?", [cutoff_at]
 
 
 # ── Matches ────────────────────────────────────────────────
@@ -350,6 +447,683 @@ async def get_match(match_id: str) -> MatchOut | None:
     if not row:
         return None
     return MatchOut(**_row_to_dict(row[0]))
+
+
+# ── Resolved events ─────────────────────────────────────────
+
+async def upsert_resolved_event(event: ResolvedEventIn) -> str:
+    db = await get_db()
+    event_id = event.id or f"evt_{uuid.uuid4().hex}"
+    await db.execute(
+        """INSERT INTO resolved_events (
+               id,
+               sport,
+               start_time,
+               primary_match_id,
+               status,
+               confidence,
+               method,
+               display_home_team,
+               display_away_team,
+               display_league_name,
+               metadata
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+               sport = excluded.sport,
+               start_time = excluded.start_time,
+               primary_match_id = excluded.primary_match_id,
+               status = excluded.status,
+               confidence = excluded.confidence,
+               method = excluded.method,
+               display_home_team = excluded.display_home_team,
+               display_away_team = excluded.display_away_team,
+               display_league_name = excluded.display_league_name,
+               metadata = excluded.metadata,
+               updated_at = CURRENT_TIMESTAMP""",
+        (
+            event_id,
+            event.sport,
+            event.start_time,
+            event.primary_match_id,
+            event.status,
+            event.confidence,
+            event.method,
+            event.display_home_team,
+            event.display_away_team,
+            event.display_league_name,
+            json.dumps(event.metadata),
+        ),
+    )
+    await db.commit()
+    return event_id
+
+
+async def link_resolved_event_member(member: ResolvedEventMemberIn) -> int:
+    db = await get_db()
+    await db.execute("BEGIN IMMEDIATE")
+    try:
+        await db.execute(
+            """INSERT INTO resolved_event_members (
+                   resolved_event_id,
+                   match_id,
+                   bookmaker_id,
+                   orientation,
+                   confidence,
+                   status,
+                   source_url,
+                   source_league_id,
+                   source_league_name,
+                   source_home_team,
+                   source_away_team,
+                   source_start_time,
+                   evidence,
+                   metadata
+               )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(match_id, bookmaker_id) DO UPDATE SET
+                   resolved_event_id = excluded.resolved_event_id,
+                   orientation = excluded.orientation,
+                   confidence = excluded.confidence,
+                   status = excluded.status,
+                   source_url = COALESCE(excluded.source_url, resolved_event_members.source_url),
+                   source_league_id = COALESCE(
+                       excluded.source_league_id,
+                       resolved_event_members.source_league_id
+                   ),
+                   source_league_name = COALESCE(
+                       excluded.source_league_name,
+                       resolved_event_members.source_league_name
+                   ),
+                   source_home_team = COALESCE(
+                       excluded.source_home_team,
+                       resolved_event_members.source_home_team
+                   ),
+                   source_away_team = COALESCE(
+                       excluded.source_away_team,
+                       resolved_event_members.source_away_team
+                   ),
+                   source_start_time = COALESCE(
+                       excluded.source_start_time,
+                       resolved_event_members.source_start_time
+                   ),
+                   evidence = excluded.evidence,
+                   metadata = excluded.metadata,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (
+                member.resolved_event_id,
+                member.match_id,
+                member.bookmaker_id,
+                member.orientation,
+                member.confidence,
+                member.status,
+                member.source_url,
+                member.source_league_id,
+                member.source_league_name,
+                member.source_home_team,
+                member.source_away_team,
+                member.source_start_time,
+                json.dumps(member.evidence),
+                json.dumps(member.metadata),
+            ),
+        )
+        await _upsert_match_bookmaker_source_tx(
+            db,
+            match_id=member.match_id,
+            bookmaker_id=member.bookmaker_id,
+            source_url=member.source_url,
+        )
+        rows = await db.execute_fetchall(
+            """SELECT id
+               FROM resolved_event_members
+               WHERE match_id = ? AND bookmaker_id = ?""",
+            (member.match_id, member.bookmaker_id),
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    return int(rows[0]["id"]) if rows else 0
+
+
+async def get_resolved_event_members(
+    resolved_event_id: str,
+    *,
+    status: str | None = None,
+) -> list[ResolvedEventMemberOut]:
+    db = await get_db()
+    q = """SELECT m.*, b.name AS bookmaker_name
+           FROM resolved_event_members m
+           LEFT JOIN bookmakers b ON b.id = m.bookmaker_id
+           WHERE m.resolved_event_id = ?"""
+    params: list[object] = [resolved_event_id]
+    if status:
+        q += " AND m.status = ?"
+        params.append(status)
+    q += " ORDER BY m.id ASC"
+    rows = await db.execute_fetchall(q, params)
+    return [_row_to_resolved_event_member(row) for row in rows]
+
+
+async def get_eligible_resolved_event_members_for_matches(
+    match_ids: list[str],
+    *,
+    bookmaker_ids: list[str] | None = None,
+    event_methods: tuple[str, ...] = (
+        "exact",
+        "auto_fuzzy_high",
+        "manual",
+        "manual_review",
+    ),
+) -> list[ResolvedEventMemberOut]:
+    if not match_ids or not event_methods:
+        return []
+
+    db = await get_db()
+    match_placeholders = _sql_placeholders(match_ids)
+    method_placeholders = _sql_placeholders(list(event_methods))
+    q = f"""SELECT rem.*, b.name AS bookmaker_name
+            FROM resolved_event_members rem
+            JOIN resolved_events re ON re.id = rem.resolved_event_id
+            LEFT JOIN bookmakers b ON b.id = rem.bookmaker_id
+            WHERE rem.match_id IN ({match_placeholders})
+              AND rem.status = 'active'
+              AND re.status = 'active'
+              AND re.method IN ({method_placeholders})"""
+    params: list[object] = [*match_ids, *event_methods]
+
+    if bookmaker_ids:
+        bookmaker_placeholders = _sql_placeholders(bookmaker_ids)
+        q += f" AND rem.bookmaker_id IN ({bookmaker_placeholders})"
+        params.extend(bookmaker_ids)
+
+    q += " ORDER BY re.start_time ASC, rem.resolved_event_id ASC, rem.id ASC"
+    rows = await db.execute_fetchall(q, params)
+    return [_row_to_resolved_event_member(row) for row in rows]
+
+
+async def get_eligible_resolved_event_members_for_odds(
+    odds_list: list[NormalizedOdds],
+    *,
+    event_methods: tuple[str, ...] = (
+        "exact",
+        "auto_fuzzy_high",
+        "manual",
+        "manual_review",
+    ),
+) -> list[ResolvedEventMemberOut]:
+    match_ids = sorted({odds.match_id for odds in odds_list})
+    bookmaker_ids = sorted({odds.bookmaker_id for odds in odds_list})
+    return await get_eligible_resolved_event_members_for_matches(
+        match_ids,
+        bookmaker_ids=bookmaker_ids,
+        event_methods=event_methods,
+    )
+
+
+async def get_eligible_resolved_event_members_for_outcome_offers(
+    offers: list[NormalizedOutcomeOffer],
+    *,
+    event_methods: tuple[str, ...] = (
+        "exact",
+        "auto_fuzzy_high",
+        "manual",
+        "manual_review",
+    ),
+) -> list[ResolvedEventMemberOut]:
+    match_ids = sorted({offer.match_id for offer in offers})
+    bookmaker_ids = sorted({offer.bookmaker_id for offer in offers})
+    return await get_eligible_resolved_event_members_for_matches(
+        match_ids,
+        bookmaker_ids=bookmaker_ids,
+        event_methods=event_methods,
+    )
+
+
+async def get_resolved_event_primary_match_ids(
+    resolved_event_ids: list[str],
+) -> dict[str, str]:
+    event_ids = sorted(set(resolved_event_ids))
+    if not event_ids:
+        return {}
+
+    db = await get_db()
+    placeholders = _sql_placeholders(event_ids)
+    rows = await db.execute_fetchall(
+        f"""SELECT id, primary_match_id
+            FROM resolved_events
+            WHERE id IN ({placeholders})""",
+        event_ids,
+    )
+    return {row["id"]: row["primary_match_id"] for row in rows}
+
+
+async def get_resolved_event_member(
+    *,
+    match_id: str,
+    bookmaker_id: str,
+) -> ResolvedEventMemberOut | None:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT m.*, b.name AS bookmaker_name
+           FROM resolved_event_members m
+           LEFT JOIN bookmakers b ON b.id = m.bookmaker_id
+           WHERE m.match_id = ? AND m.bookmaker_id = ?""",
+        (match_id, bookmaker_id),
+    )
+    if not rows:
+        return None
+    return _row_to_resolved_event_member(rows[0])
+
+
+async def get_resolved_event(
+    resolved_event_id: str,
+    *,
+    include_members: bool = True,
+) -> ResolvedEventOut | None:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT * FROM resolved_events WHERE id = ?",
+        (resolved_event_id,),
+    )
+    if not rows:
+        return None
+    members = (
+        await get_resolved_event_members(resolved_event_id)
+        if include_members
+        else []
+    )
+    return _row_to_resolved_event(rows[0], members=members)
+
+
+async def list_resolved_events(
+    *,
+    sport: str | None = None,
+    status: str | None = None,
+    start_time: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[ResolvedEventOut]:
+    db = await get_db()
+    q = "SELECT * FROM resolved_events"
+    conditions: list[str] = []
+    params: list[object] = []
+    if sport:
+        conditions.append("sport = ?")
+        params.append(sport)
+    if status:
+        conditions.append("status = ?")
+        params.append(status)
+    if start_time:
+        conditions.append("start_time = ?")
+        params.append(start_time)
+    if conditions:
+        q += " WHERE " + " AND ".join(conditions)
+    q += " ORDER BY start_time ASC, id ASC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    rows = await db.execute_fetchall(q, params)
+    return [_row_to_resolved_event(row, members=[]) for row in rows]
+
+
+async def upsert_event_review_case(case: EventReviewCaseIn) -> int:
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO event_review_cases (
+               fingerprint,
+               sport,
+               start_time,
+               primary_match_id,
+               candidate_resolved_event_id,
+               candidate_match_ids,
+               reason_code,
+               confidence,
+               method,
+               source_bookmaker_ids,
+               source_league_labels,
+               evidence,
+               metadata,
+               status
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(fingerprint) DO UPDATE SET
+               sport = excluded.sport,
+               start_time = excluded.start_time,
+               primary_match_id = excluded.primary_match_id,
+               candidate_resolved_event_id = excluded.candidate_resolved_event_id,
+               candidate_match_ids = excluded.candidate_match_ids,
+               reason_code = excluded.reason_code,
+               confidence = excluded.confidence,
+               method = excluded.method,
+               source_bookmaker_ids = excluded.source_bookmaker_ids,
+               source_league_labels = excluded.source_league_labels,
+               evidence = excluded.evidence,
+               metadata = excluded.metadata,
+               status = CASE
+                   WHEN event_review_cases.status IN ('accepted', 'declined')
+                   THEN event_review_cases.status
+                   ELSE excluded.status
+               END,
+               updated_at = CURRENT_TIMESTAMP""",
+        (
+            case.fingerprint,
+            case.sport,
+            case.start_time,
+            case.primary_match_id,
+            case.candidate_resolved_event_id,
+            json.dumps(case.candidate_match_ids),
+            case.reason_code,
+            case.confidence,
+            case.method,
+            json.dumps(case.source_bookmaker_ids),
+            json.dumps(case.source_league_labels),
+            json.dumps(case.evidence),
+            json.dumps(case.metadata),
+            case.status,
+        ),
+    )
+    await db.commit()
+    rows = await db.execute_fetchall(
+        "SELECT id FROM event_review_cases WHERE fingerprint = ?",
+        (case.fingerprint,),
+    )
+    return int(rows[0]["id"]) if rows else 0
+
+
+async def get_event_review_case(
+    case_id: int,
+    *,
+    include_variants: bool = False,
+) -> EventReviewCaseOut | None:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT * FROM event_review_cases WHERE id = ?",
+        (case_id,),
+    )
+    if not rows:
+        return None
+    case = _row_to_event_review_case(rows[0])
+    if include_variants:
+        return await _hydrate_event_review_case(db, case)
+    return case
+
+
+async def get_event_review_case_by_fingerprint(
+    fingerprint: str,
+    *,
+    statuses: list[str] | None = None,
+) -> EventReviewCaseOut | None:
+    db = await get_db()
+    q = "SELECT * FROM event_review_cases WHERE fingerprint = ?"
+    params: list[object] = [fingerprint]
+    if statuses:
+        placeholders = _sql_placeholders(statuses)
+        q += f" AND status IN ({placeholders})"
+        params.extend(statuses)
+    rows = await db.execute_fetchall(q, params)
+    if not rows:
+        return None
+    return _row_to_event_review_case(rows[0])
+
+
+async def get_event_review_case_variants(
+    case: EventReviewCaseOut,
+) -> list[EventReviewVariantOut]:
+    db = await get_db()
+    return await _get_event_review_case_variants_tx(db, case)
+
+
+async def _get_event_review_case_variants_tx(
+    db: aiosqlite.Connection,
+    case: EventReviewCaseOut,
+) -> list[EventReviewVariantOut]:
+    variants: list[EventReviewVariantOut] = []
+    seen: set[tuple[str, str | None]] = set()
+
+    resolved_event_ids = list(
+        dict.fromkeys(
+            event_id
+            for event_id in (case.resolved_event_id, case.candidate_resolved_event_id)
+            if event_id
+        )
+    )
+    for resolved_event_id in resolved_event_ids:
+        rows = await db.execute_fetchall(
+            """SELECT rem.match_id,
+                      rem.bookmaker_id,
+                      b.name AS bookmaker_name,
+                      m.league_id,
+                      l.name AS league_name,
+                      m.home_team,
+                      m.away_team,
+                      m.start_time,
+                      rem.source_url,
+                      rem.source_league_id,
+                      rem.source_league_name,
+                      rem.source_home_team,
+                      rem.source_away_team,
+                      rem.source_start_time,
+                      rem.orientation,
+                      rem.confidence AS member_confidence,
+                      rem.evidence AS member_evidence
+               FROM resolved_event_members rem
+               LEFT JOIN bookmakers b ON b.id = rem.bookmaker_id
+               LEFT JOIN matches m ON m.id = rem.match_id
+               LEFT JOIN leagues l ON l.id = m.league_id
+               WHERE rem.resolved_event_id = ?
+               ORDER BY rem.id ASC""",
+            (resolved_event_id,),
+        )
+        for row in rows:
+            key = (row["match_id"], row["bookmaker_id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            variants.append(_row_to_event_review_variant(row))
+
+    candidate_match_ids = list(
+        dict.fromkeys(
+            match_id
+            for match_id in ([case.primary_match_id] if case.primary_match_id else [])
+            + case.candidate_match_ids
+            if match_id
+        )
+    )
+    if candidate_match_ids:
+        placeholders = _sql_placeholders(candidate_match_ids)
+        rows = await db.execute_fetchall(
+            f"""SELECT m.id AS match_id,
+                       s.bookmaker_id,
+                       b.name AS bookmaker_name,
+                       m.league_id,
+                       l.name AS league_name,
+                       m.home_team,
+                       m.away_team,
+                       m.start_time,
+                       s.source_url,
+                       NULL AS source_league_id,
+                       l.name AS source_league_name,
+                       m.home_team AS source_home_team,
+                       m.away_team AS source_away_team,
+                       m.start_time AS source_start_time,
+                       'as_listed' AS orientation,
+                       NULL AS member_confidence,
+                       '[]' AS member_evidence
+                FROM matches m
+                LEFT JOIN leagues l ON l.id = m.league_id
+                LEFT JOIN match_bookmaker_sources s ON s.match_id = m.id
+                LEFT JOIN bookmakers b ON b.id = s.bookmaker_id
+                WHERE m.id IN ({placeholders})
+                ORDER BY m.start_time ASC, m.id ASC, s.bookmaker_id ASC""",
+            candidate_match_ids,
+        )
+        for row in rows:
+            key = (row["match_id"], row["bookmaker_id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            variants.append(_row_to_event_review_variant(row))
+
+        # Pending candidates may be written before odds/source rows are available.
+        # Keep the bookmaker evidence visible by pairing recorded source bookmaker
+        # ids with candidate matches when no richer source variant exists yet.
+        source_bookmaker_ids = list(dict.fromkeys(case.source_bookmaker_ids))
+        if source_bookmaker_ids:
+            bookmaker_placeholders = _sql_placeholders(source_bookmaker_ids)
+            bookmaker_rows = await db.execute_fetchall(
+                f"SELECT id, name FROM bookmakers WHERE id IN ({bookmaker_placeholders})",
+                source_bookmaker_ids,
+            )
+            bookmaker_names = {row["id"]: row["name"] for row in bookmaker_rows}
+            match_rows = await db.execute_fetchall(
+                f"""SELECT m.id AS match_id,
+                           m.league_id,
+                           l.name AS league_name,
+                           m.home_team,
+                           m.away_team,
+                           m.start_time
+                    FROM matches m
+                    LEFT JOIN leagues l ON l.id = m.league_id
+                    WHERE m.id IN ({placeholders})""",
+                candidate_match_ids,
+            )
+            match_map = {row["match_id"]: _row_to_dict(row) for row in match_rows}
+
+            fallback_pairs: list[tuple[str, str]] = []
+            if len(source_bookmaker_ids) == len(candidate_match_ids):
+                fallback_pairs = list(zip(candidate_match_ids, source_bookmaker_ids))
+            elif len(candidate_match_ids) == 1:
+                fallback_pairs = [
+                    (candidate_match_ids[0], bookmaker_id)
+                    for bookmaker_id in source_bookmaker_ids
+                ]
+
+            for match_id, bookmaker_id in fallback_pairs:
+                key = (match_id, bookmaker_id)
+                if key in seen or match_id not in match_map:
+                    continue
+                seen.add(key)
+                match_data = match_map[match_id]
+                variants.append(
+                    EventReviewVariantOut(
+                        match_id=match_id,
+                        bookmaker_id=bookmaker_id,
+                        bookmaker_name=bookmaker_names.get(bookmaker_id),
+                        league_id=match_data.get("league_id"),
+                        league_name=match_data.get("league_name"),
+                        home_team=match_data["home_team"],
+                        away_team=match_data["away_team"],
+                        start_time=match_data.get("start_time"),
+                        source_league_name=match_data.get("league_name"),
+                        source_home_team=match_data["home_team"],
+                        source_away_team=match_data["away_team"],
+                        source_start_time=match_data.get("start_time"),
+                    )
+                )
+
+    if candidate_match_ids:
+        match_order = {match_id: index for index, match_id in enumerate(candidate_match_ids)}
+        variants.sort(
+            key=lambda variant: (
+                match_order.get(variant.match_id, len(match_order)),
+                variant.bookmaker_id or "",
+            )
+        )
+
+    return variants
+
+
+async def _hydrate_event_review_case(
+    db: aiosqlite.Connection,
+    case: EventReviewCaseOut,
+) -> EventReviewCaseOut:
+    variants = await _get_event_review_case_variants_tx(db, case)
+    primary_variant = next(
+        (variant for variant in variants if variant.match_id == case.primary_match_id),
+        variants[0] if variants else None,
+    )
+    return case.model_copy(
+        update={
+            "variants": variants,
+            "primary_home_team": (
+                primary_variant.source_home_team or primary_variant.home_team
+                if primary_variant
+                else None
+            ),
+            "primary_away_team": (
+                primary_variant.source_away_team or primary_variant.away_team
+                if primary_variant
+                else None
+            ),
+            "primary_league_name": (
+                primary_variant.source_league_name or primary_variant.league_name
+                if primary_variant
+                else None
+            ),
+        }
+    )
+
+
+async def list_event_review_cases(
+    *,
+    sport: str | None = None,
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    include_variants: bool = False,
+) -> list[EventReviewCaseOut]:
+    db = await get_db()
+    q = "SELECT * FROM event_review_cases"
+    conditions: list[str] = []
+    params: list[object] = []
+    if sport:
+        conditions.append("sport = ?")
+        params.append(sport)
+    if status:
+        conditions.append("status = ?")
+        params.append(status)
+    if conditions:
+        q += " WHERE " + " AND ".join(conditions)
+    q += " ORDER BY status ASC, start_time ASC, id ASC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    rows = await db.execute_fetchall(q, params)
+    cases = [_row_to_event_review_case(row) for row in rows]
+    if not include_variants:
+        return cases
+    return [await _hydrate_event_review_case(db, case) for case in cases]
+
+
+async def mark_event_review_case_accepted(
+    case_id: int,
+    *,
+    resolved_event_id: str | None = None,
+) -> None:
+    db = await get_db()
+    await db.execute(
+        """UPDATE event_review_cases
+           SET status = 'accepted',
+               resolved_event_id = COALESCE(?, resolved_event_id),
+               accepted_at = COALESCE(accepted_at, CURRENT_TIMESTAMP),
+               declined_at = NULL,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?""",
+        (resolved_event_id, case_id),
+    )
+    await db.commit()
+
+
+async def mark_event_review_case_declined(case_id: int) -> None:
+    db = await get_db()
+    await db.execute(
+        """UPDATE event_review_cases
+           SET status = 'declined',
+               resolved_event_id = NULL,
+               accepted_at = NULL,
+               declined_at = COALESCE(declined_at, CURRENT_TIMESTAMP),
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?""",
+        (case_id,),
+    )
+    await db.commit()
 
 
 async def merge_matches(
@@ -614,6 +1388,90 @@ async def _get_match_bookmaker_map(
     return bookmaker_map
 
 
+async def get_current_normalized_odds_for_matches(
+    match_ids: list[str],
+) -> list[NormalizedOdds]:
+    selected_match_ids = list(dict.fromkeys(match_ids))
+    if not selected_match_ids:
+        return []
+
+    db = await get_db()
+    snapshot_filter, snapshot_params = await _current_or_legacy_snapshot_filter(db, "o")
+    if snapshot_filter is None:
+        return []
+
+    placeholders = _sql_placeholders(selected_match_ids)
+    rows = await db.execute_fetchall(
+        f"""SELECT o.match_id,
+                   o.bookmaker_id,
+                   m.league_id,
+                   m.sport,
+                   COALESCE(m.home_team_id, 0) AS home_team_id,
+                   COALESCE(m.away_team_id, 0) AS away_team_id,
+                   m.home_team,
+                   m.away_team,
+                   s.source_url,
+                   o.market_type,
+                   o.player_name,
+                   o.threshold,
+                   o.over_odds,
+                   o.under_odds,
+                   m.start_time
+            FROM odds o
+            JOIN matches m ON m.id = o.match_id
+            LEFT JOIN match_bookmaker_sources s
+              ON s.match_id = o.match_id AND s.bookmaker_id = o.bookmaker_id
+            WHERE o.match_id IN ({placeholders})
+              AND {snapshot_filter}
+            ORDER BY m.start_time ASC, o.match_id ASC, o.bookmaker_id ASC,
+                     o.market_type ASC, o.player_name ASC, o.threshold ASC""",
+        [*selected_match_ids, *snapshot_params],
+    )
+    return [NormalizedOdds(**_row_to_dict(row)) for row in rows]
+
+
+async def get_current_normalized_outcome_offers_for_matches(
+    match_ids: list[str],
+) -> list[NormalizedOutcomeOffer]:
+    selected_match_ids = list(dict.fromkeys(match_ids))
+    if not selected_match_ids:
+        return []
+
+    db = await get_db()
+    snapshot_filter, snapshot_params = await _current_or_legacy_snapshot_filter(db, "o")
+    if snapshot_filter is None:
+        return []
+
+    placeholders = _sql_placeholders(selected_match_ids)
+    rows = await db.execute_fetchall(
+        f"""SELECT o.match_id,
+                   o.bookmaker_id,
+                   m.league_id,
+                   m.sport,
+                   COALESCE(m.home_team_id, 0) AS home_team_id,
+                   COALESCE(m.away_team_id, 0) AS away_team_id,
+                   m.home_team,
+                   m.away_team,
+                   s.source_url,
+                   o.market_type,
+                   o.outcome_code,
+                   o.odds,
+                   o.line,
+                   o.raw_label,
+                   m.start_time
+            FROM outcome_offers o
+            JOIN matches m ON m.id = o.match_id
+            LEFT JOIN match_bookmaker_sources s
+              ON s.match_id = o.match_id AND s.bookmaker_id = o.bookmaker_id
+            WHERE o.match_id IN ({placeholders})
+              AND {snapshot_filter}
+            ORDER BY m.start_time ASC, o.match_id ASC, o.bookmaker_id ASC,
+                     o.market_type ASC, o.line ASC, o.outcome_code ASC""",
+        [*selected_match_ids, *snapshot_params],
+    )
+    return [NormalizedOutcomeOffer(**_row_to_dict(row)) for row in rows]
+
+
 # ── Odds ───────────────────────────────────────────────────
 
 async def upsert_odds(odds: NormalizedOdds, *, scraped_at: str) -> int:
@@ -803,16 +1661,49 @@ async def deactivate_opportunities(*, sport: str | None = None) -> None:
     await db.commit()
 
 
+async def deactivate_opportunities_for_scope(
+    *,
+    match_ids: list[str] | None = None,
+    resolved_event_ids: list[str] | None = None,
+) -> None:
+    selected_match_ids = list(dict.fromkeys(match_ids or []))
+    selected_event_ids = list(dict.fromkeys(resolved_event_ids or []))
+    if not selected_match_ids and not selected_event_ids:
+        return
+
+    conditions: list[str] = []
+    params: list[object] = []
+    if selected_match_ids:
+        placeholders = _sql_placeholders(selected_match_ids)
+        conditions.append(f"match_id IN ({placeholders})")
+        params.extend(selected_match_ids)
+    if selected_event_ids:
+        placeholders = _sql_placeholders(selected_event_ids)
+        conditions.append(f"resolved_event_id IN ({placeholders})")
+        params.extend(selected_event_ids)
+
+    db = await get_db()
+    await db.execute(
+        f"""UPDATE opportunities
+            SET is_active = FALSE
+            WHERE is_active = TRUE
+              AND ({" OR ".join(conditions)})""",
+        params,
+    )
+    await db.commit()
+
+
 async def insert_opportunity(opportunity, *, detected_at: str) -> int:
     db = await get_db()
     cursor = await db.execute(
         """INSERT INTO opportunities
-           (sport, match_id, opportunity_type, market_type, line, profit_margin,
+           (sport, match_id, resolved_event_id, opportunity_type, market_type, line, profit_margin,
             middle_profit_margin, legs, detected_at, is_active)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)""",
         (
             opportunity.sport,
             opportunity.match_id,
+            opportunity.resolved_event_id,
             opportunity.opportunity_type,
             opportunity.market_type,
             opportunity.line,
@@ -892,7 +1783,21 @@ async def _enrich_opportunity_legs(
             if leg.bookmaker_id
         }
     )
-    match_ids = sorted({opportunity.match_id for opportunity in opportunities})
+    match_ids = sorted(
+        {
+            match_id
+            for opportunity in opportunities
+            for match_id in [
+                opportunity.match_id,
+                *[
+                    leg.match_id
+                    for leg in opportunity.legs
+                    if leg.match_id is not None
+                ],
+            ]
+            if match_id is not None
+        }
+    )
     if not bookmaker_ids:
         return
 
@@ -922,8 +1827,9 @@ async def _enrich_opportunity_legs(
     for opportunity in opportunities:
         for leg in opportunity.legs:
             leg.bookmaker_name = leg.bookmaker_name or bookmaker_names.get(leg.bookmaker_id)
+            source_match_id = leg.match_id or opportunity.match_id
             leg.source_url = leg.source_url or source_urls.get(
-                (opportunity.match_id, leg.bookmaker_id)
+                (source_match_id, leg.bookmaker_id)
             )
 
 
@@ -1219,15 +2125,16 @@ async def insert_discrepancy(
     gap: float,
     profit_margin: float | None,
     middle_profit_margin: float | None = None,
+    resolved_event_id: str | None = None,
 ) -> int:
     db = await get_db()
     cursor = await db.execute(
         """INSERT INTO discrepancies
-           (match_id, market_type, player_name, bookmaker_a_id, bookmaker_b_id,
+           (match_id, resolved_event_id, market_type, player_name, bookmaker_a_id, bookmaker_b_id,
             threshold_a, threshold_b, odds_a, odds_b, gap, profit_margin, middle_profit_margin)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
-            match_id, market_type, player_name,
+            match_id, resolved_event_id, market_type, player_name,
             bookmaker_a_id, bookmaker_b_id,
             threshold_a, threshold_b,
             odds_a, odds_b, gap, profit_margin, middle_profit_margin,

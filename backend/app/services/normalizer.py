@@ -327,6 +327,137 @@ def _is_contextual_player_match(raw_name: str, candidate_name: str) -> bool:
     return False
 
 
+def _resolve_contextual_player_name_replacements(
+    name_counts: Counter[str],
+) -> dict[str, str]:
+    cleaned_counts: Counter[str] = Counter()
+    for name, count in name_counts.items():
+        if name and name.strip() and count > 0:
+            cleaned_counts[name.strip()] += count
+    name_counts = cleaned_counts
+
+    # Pre-pass: merge names that differ only by punctuation, spacing, or diacritics.
+    case_replacements: dict[str, str] = {}
+    by_compact: dict[str, list[str]] = defaultdict(list)
+    for name in name_counts:
+        by_compact[_compact_person_name(name)].append(name)
+    for compact_key, variants in by_compact.items():
+        if not compact_key or len(variants) <= 1:
+            continue
+        best = max(
+            variants,
+            key=lambda v: (
+                name_counts[v],
+                _name_surface_richness(v),
+                v,
+            ),
+        )
+        merged_count = sum(name_counts[v] for v in variants)
+        for variant in variants:
+            if variant != best:
+                case_replacements[variant] = best
+                name_counts[best] = merged_count
+                del name_counts[variant]
+
+    replacements: dict[str, str] = dict(case_replacements)
+
+    observed_names = list(name_counts)
+    for raw_name in observed_names:
+        raw_parts = _player_name_parts(raw_name)
+        if not raw_parts:
+            continue
+
+        raw_first_tokens, _ = raw_parts
+        raw_completeness = _player_name_completeness(raw_first_tokens)
+        candidates = [
+            candidate
+            for candidate in observed_names
+            if candidate != raw_name and _is_contextual_player_match(raw_name, candidate)
+        ]
+        if not candidates:
+            continue
+        candidate_first_names = _collapse_first_name_variants(
+            {
+                _player_name_parts(candidate)[0][0]
+                for candidate in candidates
+                if _player_name_parts(candidate)
+            }
+        )
+        if len(candidate_first_names) > 1:
+            continue
+
+        ranked = sorted(
+            candidates,
+            key=lambda candidate: (
+                name_counts[candidate],
+                _player_name_completeness(_player_name_parts(candidate)[0]),
+                len(candidate.strip()),
+                candidate,
+            ),
+            reverse=True,
+        )
+        best_candidate = ranked[0]
+        best_parts = _player_name_parts(best_candidate)
+        if not best_parts:
+            continue
+        best_completeness = _player_name_completeness(best_parts[0])
+        if best_completeness < raw_completeness:
+            continue
+        if (
+            best_completeness == raw_completeness
+            and name_counts[best_candidate] <= name_counts[raw_name]
+        ):
+            continue
+
+        if len(ranked) > 1:
+            runner_up = ranked[1]
+            runner_up_parts = _player_name_parts(runner_up)
+            if runner_up_parts and (
+                name_counts[runner_up],
+                _player_name_completeness(runner_up_parts[0]),
+                len(runner_up.strip()),
+            ) == (
+                name_counts[best_candidate],
+                best_completeness,
+                len(best_candidate.strip()),
+            ):
+                continue
+
+        replacements[raw_name] = best_candidate
+
+    return replacements
+
+
+def _final_contextual_player_name(
+    player_name: str,
+    replacements: dict[str, str],
+) -> str:
+    replacement = replacements.get(player_name)
+    seen_replacements: set[str] = set()
+    while replacement and replacement not in seen_replacements:
+        seen_replacements.add(replacement)
+        next_replacement = replacements.get(replacement)
+        if not next_replacement:
+            break
+        replacement = next_replacement
+    return replacement or player_name
+
+
+def resolve_contextual_player_name_variants(names: list[str]) -> dict[str, str]:
+    """Resolve equivalent player labels within one event/match context.
+
+    Returns a variant→display-name map without introducing any global player identity.
+    Ambiguous initials stay mapped to their original label.
+    """
+
+    original_names = [name.strip() for name in names if name and name.strip()]
+    replacements = _resolve_contextual_player_name_replacements(Counter(original_names))
+    return {
+        name: _final_contextual_player_name(name, replacements)
+        for name in dict.fromkeys(original_names)
+    }
+
+
 def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOddsData]:
     names_by_match: dict[str, Counter[str]] = defaultdict(Counter)
 
@@ -358,95 +489,11 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
         )
         names_by_match[match_id][raw.player_name.strip()] += 1
 
-    # Pre-pass: merge names that differ only by punctuation, spacing, or diacritics.
-    case_replacements: dict[tuple[str, str], str] = {}
-    compact_canonical_names: set[tuple[str, str]] = set()
+    replacements_by_match: dict[str, dict[str, str]] = {}
     for match_id, name_counts in names_by_match.items():
-        by_compact: dict[str, list[str]] = defaultdict(list)
-        for name in name_counts:
-            by_compact[_compact_person_name(name)].append(name)
-        for compact_key, variants in by_compact.items():
-            if not compact_key:
-                continue
-            if len(variants) <= 1:
-                continue
-            best = max(
-                variants,
-                key=lambda v: (
-                    name_counts[v],
-                    _name_surface_richness(v),
-                    v,
-                ),
-            )
-            merged_count = sum(name_counts[v] for v in variants)
-            compact_canonical_names.add((match_id, best))
-            for v in variants:
-                if v != best:
-                    case_replacements[(match_id, v)] = best
-                    name_counts[best] = merged_count
-                    del name_counts[v]
-
-    replacements: dict[tuple[str, str], str] = dict(case_replacements)
-
-    for match_id, name_counts in names_by_match.items():
-        observed_names = list(name_counts)
-        for raw_name in observed_names:
-            raw_parts = _player_name_parts(raw_name)
-            if not raw_parts:
-                continue
-
-            raw_first_tokens, _ = raw_parts
-            raw_completeness = _player_name_completeness(raw_first_tokens)
-            raw_is_single_initial = len(raw_first_tokens) == 1 and len(raw_first_tokens[0]) == 1
-            candidates = [
-                candidate
-                for candidate in observed_names
-                if candidate != raw_name and _is_contextual_player_match(raw_name, candidate)
-            ]
-            if not candidates:
-                continue
-            candidate_first_names = _collapse_first_name_variants({
-                _player_name_parts(candidate)[0][0] for candidate in candidates if _player_name_parts(candidate)
-            })
-            if len(candidate_first_names) > 1:
-                continue
-
-            ranked = sorted(
-                candidates,
-                key=lambda candidate: (
-                    name_counts[candidate],
-                    _player_name_completeness(_player_name_parts(candidate)[0]),
-                    len(candidate.strip()),
-                    candidate,
-                ),
-                reverse=True,
-            )
-            best_candidate = ranked[0]
-            best_parts = _player_name_parts(best_candidate)
-            if not best_parts:
-                continue
-            best_completeness = _player_name_completeness(best_parts[0])
-            raw_has_compact_alias_support = (match_id, raw_name) in compact_canonical_names
-            if best_completeness < raw_completeness:
-                continue
-            if best_completeness == raw_completeness and name_counts[best_candidate] <= name_counts[raw_name]:
-                continue
-
-            if len(ranked) > 1:
-                runner_up = ranked[1]
-                runner_up_parts = _player_name_parts(runner_up)
-                if runner_up_parts and (
-                    name_counts[runner_up],
-                    _player_name_completeness(runner_up_parts[0]),
-                    len(runner_up.strip()),
-                ) == (
-                    name_counts[best_candidate],
-                    best_completeness,
-                    len(best_candidate.strip()),
-                ):
-                    continue
-
-            replacements[(match_id, raw_name)] = best_candidate
+        replacements_by_match[match_id] = _resolve_contextual_player_name_replacements(
+            name_counts
+        )
 
     resolved: list[RawOddsData] = []
     for raw in raw_list:
@@ -477,14 +524,12 @@ def _resolve_contextual_player_names(raw_list: list[RawOddsData]) -> list[RawOdd
             raw.start_time,
             raw.sport,
         )
-        replacement = replacements.get((match_id, raw.player_name.strip()))
-        seen_replacements: set[str] = set()
-        while replacement and replacement not in seen_replacements:
-            seen_replacements.add(replacement)
-            next_replacement = replacements.get((match_id, replacement))
-            if not next_replacement:
-                break
-            replacement = next_replacement
+        replacement = _final_contextual_player_name(
+            raw.player_name.strip(),
+            replacements_by_match.get(match_id, {}),
+        )
+        if replacement == raw.player_name.strip():
+            replacement = None
         if not replacement:
             resolved.append(raw)
             continue

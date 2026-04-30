@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import combinations
 
-from ..models.schemas import NormalizedOdds
+from ..models.schemas import NormalizedOdds, ResolvedEventMemberOut
+from .event_player_resolver import (
+    build_event_scoped_player_odds,
+    is_basketball_player_prop,
+)
 
 
 @dataclass
@@ -20,6 +25,16 @@ class Discrepancy:
     gap: float
     profit_margin: float | None
     middle_profit_margin: float | None = None
+    resolved_event_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _OddsGroup:
+    match_id: str
+    market_type: str
+    player_name: str | None
+    odds: list[NormalizedOdds]
+    resolved_event_id: str | None = None
 
 
 def _comparison_market_type(market_type: str) -> str:
@@ -62,28 +77,154 @@ def _middle_profit_margin(odds_a: float | None, odds_b: float | None) -> float |
     return round((2.0 / total_implied) - 1.0, 4)
 
 
+def _representative_match_id(
+    *,
+    resolved_event_id: str,
+    odds: list[NormalizedOdds],
+    event_primary_match_ids: Mapping[str, str] | None,
+) -> str:
+    if event_primary_match_ids and resolved_event_id in event_primary_match_ids:
+        return event_primary_match_ids[resolved_event_id]
+    return min(item.match_id for item in odds)
+
+
+def _legacy_groups(odds_list: list[NormalizedOdds]) -> list[_OddsGroup]:
+    groups: dict[tuple[str, str, str | None], list[NormalizedOdds]] = {}
+    for odds in odds_list:
+        key = (
+            odds.match_id,
+            _comparison_market_type(odds.market_type),
+            odds.player_name,
+        )
+        groups.setdefault(key, []).append(odds)
+
+    return [
+        _OddsGroup(
+            match_id=match_id,
+            market_type=market_type,
+            player_name=player_name,
+            odds=group,
+        )
+        for (match_id, market_type, player_name), group in groups.items()
+    ]
+
+
+def _active_member_event_lookup(
+    event_members: list[ResolvedEventMemberOut],
+) -> dict[tuple[str, str], str]:
+    lookup: dict[tuple[str, str], str] = {}
+    for member in sorted(
+        event_members,
+        key=lambda item: (item.resolved_event_id, item.id, item.match_id, item.bookmaker_id),
+    ):
+        if member.status != "active":
+            continue
+        lookup.setdefault((member.match_id, member.bookmaker_id), member.resolved_event_id)
+    return lookup
+
+
+def _analysis_groups(
+    odds_list: list[NormalizedOdds],
+    *,
+    event_members: list[ResolvedEventMemberOut] | None,
+    event_primary_match_ids: Mapping[str, str] | None,
+) -> list[_OddsGroup]:
+    if not event_members:
+        return _legacy_groups(odds_list)
+
+    event_by_member = _active_member_event_lookup(event_members)
+    event_scoped_odds = build_event_scoped_player_odds(odds_list, event_members)
+    scoped_odds_ids = {id(item.odds) for item in event_scoped_odds}
+
+    event_groups: dict[tuple[str, str, str], list] = {}
+    for item in event_scoped_odds:
+        key = (
+            item.resolved_event_id,
+            _comparison_market_type(item.odds.market_type),
+            item.event_scoped_player_key,
+        )
+        event_groups.setdefault(key, []).append(item)
+
+    groups: list[_OddsGroup] = []
+    for (resolved_event_id, market_type, _player_key), scoped_group in event_groups.items():
+        group_odds = [item.odds for item in scoped_group]
+        groups.append(
+            _OddsGroup(
+                match_id=_representative_match_id(
+                    resolved_event_id=resolved_event_id,
+                    odds=group_odds,
+                    event_primary_match_ids=event_primary_match_ids,
+                ),
+                market_type=market_type,
+                player_name=scoped_group[0].event_player_display_name,
+                odds=group_odds,
+                resolved_event_id=resolved_event_id,
+            )
+        )
+
+    event_non_player_groups: dict[tuple[str, str, str | None], list[NormalizedOdds]] = {}
+    event_grouped_odds_ids = set(scoped_odds_ids)
+    for odds in odds_list:
+        if id(odds) in scoped_odds_ids:
+            continue
+        resolved_event_id = event_by_member.get((odds.match_id, odds.bookmaker_id))
+        if resolved_event_id is None:
+            continue
+        if is_basketball_player_prop(odds):
+            continue
+        key = (
+            resolved_event_id,
+            _comparison_market_type(odds.market_type),
+            odds.player_name,
+        )
+        event_non_player_groups.setdefault(key, []).append(odds)
+        event_grouped_odds_ids.add(id(odds))
+
+    for (resolved_event_id, market_type, player_name), group_odds in event_non_player_groups.items():
+        groups.append(
+            _OddsGroup(
+                match_id=_representative_match_id(
+                    resolved_event_id=resolved_event_id,
+                    odds=group_odds,
+                    event_primary_match_ids=event_primary_match_ids,
+                ),
+                market_type=market_type,
+                player_name=player_name,
+                odds=group_odds,
+                resolved_event_id=resolved_event_id,
+            )
+        )
+
+    unresolved_or_legacy_odds = [
+        odds for odds in odds_list if id(odds) not in event_grouped_odds_ids
+    ]
+    groups.extend(_legacy_groups(unresolved_or_legacy_odds))
+    return groups
+
+
 def find_threshold_gaps(
     odds_list: list[NormalizedOdds],
     min_gap: float = 0.0,
+    *,
+    event_members: list[ResolvedEventMemberOut] | None = None,
+    event_primary_match_ids: Mapping[str, str] | None = None,
 ) -> list[Discrepancy]:
     """
     Find threshold discrepancies: where bookmaker A offers 'over X' and
     bookmaker B offers 'under Y' with Y > X → gap of Y - X points.
     """
-    # Group by (match_id, market_type, player_name)
-    groups: dict[tuple, list[NormalizedOdds]] = {}
-    for o in odds_list:
-        key = (o.match_id, _comparison_market_type(o.market_type), o.player_name)
-        groups.setdefault(key, []).append(o)
-
     discrepancies: list[Discrepancy] = []
 
-    for key, group in groups.items():
-        if len(group) < 2:
+    for group in _analysis_groups(
+        odds_list,
+        event_members=event_members,
+        event_primary_match_ids=event_primary_match_ids,
+    ):
+        if len(group.odds) < 2:
             continue
 
         # Compare every pair of bookmakers
-        for a, b in combinations(group, 2):
+        for a, b in combinations(group.odds, 2):
             if a.bookmaker_id == b.bookmaker_id:
                 continue
 
@@ -123,9 +264,9 @@ def find_threshold_gaps(
                         if best_margin is not None and best_margin > 0:
                             discrepancies.append(
                                 Discrepancy(
-                                    match_id=key[0],
-                                    market_type=key[1],
-                                    player_name=key[2],
+                                    match_id=group.match_id,
+                                    market_type=group.market_type,
+                                    player_name=group.player_name,
                                     bookmaker_a_id=best_a_id,
                                     bookmaker_b_id=best_b_id,
                                     threshold_a=a.threshold,
@@ -135,6 +276,7 @@ def find_threshold_gaps(
                                     gap=0.0,
                                     profit_margin=best_margin,
                                     middle_profit_margin=None,
+                                    resolved_event_id=group.resolved_event_id,
                                 )
                             )
                 continue
@@ -151,9 +293,9 @@ def find_threshold_gaps(
 
             discrepancies.append(
                 Discrepancy(
-                    match_id=key[0],
-                    market_type=key[1],
-                    player_name=key[2],
+                    match_id=group.match_id,
+                    market_type=group.market_type,
+                    player_name=group.player_name,
                     bookmaker_a_id=a.bookmaker_id,
                     bookmaker_b_id=b.bookmaker_id,
                     threshold_a=a.threshold,
@@ -163,6 +305,7 @@ def find_threshold_gaps(
                     gap=round(gap, 1),
                     profit_margin=margin,
                     middle_profit_margin=middle_margin,
+                    resolved_event_id=group.resolved_event_id,
                 )
             )
 
@@ -172,6 +315,14 @@ def find_threshold_gaps(
 def analyze(
     odds_list: list[NormalizedOdds],
     min_gap: float = 0.0,
+    *,
+    event_members: list[ResolvedEventMemberOut] | None = None,
+    event_primary_match_ids: Mapping[str, str] | None = None,
 ) -> list[Discrepancy]:
     """Main entry: find all discrepancies across the odds list."""
-    return find_threshold_gaps(odds_list, min_gap=min_gap)
+    return find_threshold_gaps(
+        odds_list,
+        min_gap=min_gap,
+        event_members=event_members,
+        event_primary_match_ids=event_primary_match_ids,
+    )
