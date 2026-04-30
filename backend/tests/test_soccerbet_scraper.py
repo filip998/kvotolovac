@@ -21,19 +21,26 @@ from app.scrapers.soccerbet_scraper import (
 )
 
 
-def _entry(tt: int, odd: float, specifier: str = "NULL") -> dict:
+def _entry(tt: int, odd: float, specifier: str = "NULL", status: str = "U") -> dict:
     return {
         "tt": tt,
         "ov": odd,
         "sv": specifier,
         "bc": tt,
         "bpc": tt,
-        "s": "U",
+        "s": status,
     }
 
 
 def _group(tt: int, *entries: tuple[str, float]) -> dict[str, dict]:
     return {specifier: _entry(tt, odd, specifier) for specifier, odd in entries}
+
+
+def _group_with_status(tt: int, *entries: tuple[str, float, str]) -> dict[str, dict]:
+    return {
+        specifier: _entry(tt, odd, specifier, status)
+        for specifier, odd, status in entries
+    }
 
 
 KICKOFF_MS = int((datetime.now(tz=timezone.utc) + timedelta(hours=2)).timestamp() * 1000)
@@ -193,6 +200,32 @@ def test_parse_player_match_preview_uses_underlying_matchup():
     assert {row.away_team for row in results} == {"New York Knicks"}
     assert {row.league_id for row in results} == {"nba"}
     assert all(row.player_name == "Jalen Brunson" for row in results)
+
+
+def test_parse_player_match_skips_locked_player_picks():
+    matchup_by_super_code = _build_matchup_index([REGULAR_PREVIEW_MATCH])
+    player_match = {
+        **PLAYER_PREVIEW_MATCH,
+        "betMap": {
+            "51685": _group_with_status(
+                51685,
+                ("total=1.5", 1.85, "U"),
+                ("total=2.5", 1.85, "L"),
+            ),
+            "51687": _group_with_status(
+                51687,
+                ("total=1.5", 1.85, "U"),
+                ("total=2.5", 1.85, "L"),
+            ),
+        },
+    }
+
+    results = _parse_player_match(player_match, matchup_by_super_code)
+
+    rebounds = [row for row in results if row.market_type == "player_rebounds"]
+    assert [(row.threshold, row.over_odds, row.under_odds) for row in rebounds] == [
+        (1.5, 1.85, 1.85)
+    ]
 
 
 def test_parse_player_match_detail_adds_detail_only_supported_markets():

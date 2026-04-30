@@ -47,6 +47,7 @@ _DEFAULT_PARAMS: dict[str, str] = {
 _DISCOVERY_CONCURRENCY = 8
 _DETAIL_CONCURRENCY = 5
 _BOOKMAKER_ID = "soccerbet"
+_ACTIVE_PICK_STATUS = "U"
 
 
 @dataclass(frozen=True)
@@ -186,7 +187,11 @@ def _iter_group_entries(bet_map: dict, tip_type_code: int) -> list[dict]:
     group = bet_map.get(str(tip_type_code))
     if not isinstance(group, dict):
         return []
-    return [entry for entry in group.values() if isinstance(entry, dict)]
+    return [
+        entry
+        for entry in group.values()
+        if isinstance(entry, dict) and entry.get("s") == _ACTIVE_PICK_STATUS
+    ]
 
 
 def _collect_threshold_odds(
