@@ -2,10 +2,12 @@ import { Link, useLocation } from 'react-router-dom';
 import type { Discrepancy } from '../api/types';
 import {
   formatGap,
+  formatHandicapLine,
   formatOdds,
   formatPercentage,
   formatRelativeTime,
   formatThreshold,
+  isHandicapMarket,
   profitBgColor,
   profitColor,
 } from '../utils/format';
@@ -30,6 +32,15 @@ export default function DiscrepancyCard({
   const marketLabel = MARKET_TYPE_LABELS[d.market_type] || d.market_type;
   const label = d.player_name ? `${d.player_name} — ${marketLabel}` : marketLabel;
   const showFlatMeta = context === 'flat';
+  const handicap = isHandicapMarket(d.market_type);
+  const sideALabel = handicap ? 'Home' : 'Over';
+  const sideBLabel = handicap ? 'Away' : 'Under';
+  const lineA = handicap
+    ? formatHandicapLine(d.threshold_a, 'home')
+    : formatThreshold(d.threshold_a);
+  const lineB = handicap
+    ? formatHandicapLine(d.threshold_b, 'away')
+    : formatThreshold(d.threshold_b);
 
   return (
     <div
@@ -83,11 +94,11 @@ export default function DiscrepancyCard({
             />
           </div>
           <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-muted">
-            Over
+            {sideALabel}
           </span>
           <div className="mt-1 flex items-end justify-between gap-2">
             <span className="font-mono text-lg font-semibold text-text">
-              {formatThreshold(d.threshold_a)}
+              {lineA}
             </span>
             <span className="font-mono text-base font-semibold text-text">
               {formatOdds(d.odds_a)}
@@ -103,11 +114,11 @@ export default function DiscrepancyCard({
             />
           </div>
           <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-muted">
-            Under
+            {sideBLabel}
           </span>
           <div className="mt-1 flex items-end justify-between gap-2">
             <span className="font-mono text-lg font-semibold text-text">
-              {formatThreshold(d.threshold_b)}
+              {lineB}
             </span>
             <span className="font-mono text-base font-semibold text-text">
               {formatOdds(d.odds_b)}

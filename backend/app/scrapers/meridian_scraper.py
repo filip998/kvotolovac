@@ -110,6 +110,11 @@ def _is_game_total_ot_group(name: str) -> bool:
     return normalized.startswith("ukupno(uklj.ot)")
 
 
+def _is_handicap_ot_group(name: str) -> bool:
+    normalized = "".join(name.casefold().split())
+    return normalized.startswith("hendikep(uklj.ot)")
+
+
 def _normalize_group_name(name: str) -> str:
     return "".join(character for character in name.casefold() if character.isalnum())
 
@@ -132,6 +137,8 @@ def _classify_supported_market_group(name: str) -> str | None:
         return "player_points_rebounds_assists"
     if normalized.startswith("ukupnoukljot"):
         return "game_total_ot"
+    if normalized.startswith("hendikepukljot"):
+        return "home_handicap_ot"
     return None
 
 
@@ -273,6 +280,89 @@ def _parse_game_total_ot_markets(
     return results
 
 
+def _extract_handicap_outcome_odds(
+    selections: list[dict],
+) -> tuple[float | None, float | None]:
+    """Extract over/under-equivalent odds from Meridian handicap selections.
+
+    Selection ``"1"`` pays when the home team (rivals[0]) covers; ``"2"`` pays
+    when the away team covers. Map to the project's home-perspective
+    over/under: ``over_odds`` = home covers, ``under_odds`` = away covers.
+    """
+    over_odds: float | None = None
+    under_odds: float | None = None
+    for selection in selections:
+        if selection.get("state") != "ACTIVE":
+            continue
+        name = str(selection.get("name", "")).strip()
+        price = selection.get("price")
+        if price is None:
+            continue
+        if name == "1":
+            over_odds = price
+        elif name == "2":
+            under_odds = price
+    return over_odds, under_odds
+
+
+def _parse_handicap_ot_markets(
+    markets_payload: list[dict],
+    *,
+    home_team: str,
+    away_team: str,
+    league_id: str,
+    start_time: str | None,
+) -> list[RawOddsData]:
+    """Extract OT-inclusive Asian handicap rows.
+
+    Meridian provides ``handicap`` as a signed line representing team1's
+    (home) Asian handicap (negative when home is favored). We canonicalise
+    to a home-perspective expected margin so the analyzer can pair handicap
+    rows across bookmakers exactly like total points: ``threshold = -handicap``.
+    """
+    results: list[RawOddsData] = []
+
+    for group in markets_payload:
+        if not _is_handicap_ot_group(str(group.get("marketName", ""))):
+            continue
+
+        for market in group.get("markets", []):
+            if market.get("state") != "ACTIVE":
+                continue
+
+            handicap = market.get("handicap")
+            if handicap is None:
+                continue
+            try:
+                handicap_value = float(handicap)
+            except (TypeError, ValueError):
+                continue
+
+            threshold = -handicap_value
+
+            over_odds, under_odds = _extract_handicap_outcome_odds(
+                market.get("selections", []),
+            )
+            if over_odds is None and under_odds is None:
+                continue
+
+            results.append(
+                RawOddsData(
+                    bookmaker_id="meridian",
+                    league_id=league_id,
+                    sport="basketball",
+                    home_team=home_team,
+                    away_team=away_team,
+                    market_type="home_handicap_ot",
+                    threshold=threshold,
+                    over_odds=over_odds,
+                    under_odds=under_odds,
+                    start_time=start_time,
+                )
+            )
+    return results
+
+
 def _parse_supported_markets(
     markets_payload: list[dict],
     *,
@@ -290,6 +380,7 @@ def _parse_supported_markets(
         "player_points_rebounds_assists": [],
     }
     game_total_groups: list[dict] = []
+    handicap_groups: list[dict] = []
 
     for group in markets_payload:
         market_type = _classify_supported_market_group(str(group.get("marketName", "")))
@@ -297,6 +388,9 @@ def _parse_supported_markets(
             continue
         if market_type == "game_total_ot":
             game_total_groups.append(group)
+            continue
+        if market_type == "home_handicap_ot":
+            handicap_groups.append(group)
             continue
         grouped_payloads[market_type].append(group)
 
@@ -319,6 +413,15 @@ def _parse_supported_markets(
     results.extend(
         _parse_game_total_ot_markets(
             game_total_groups,
+            home_team=home_team,
+            away_team=away_team,
+            league_id=league_id,
+            start_time=start_time,
+        )
+    )
+    results.extend(
+        _parse_handicap_ot_markets(
+            handicap_groups,
             home_team=home_team,
             away_team=away_team,
             league_id=league_id,

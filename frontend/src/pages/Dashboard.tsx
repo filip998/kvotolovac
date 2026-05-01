@@ -19,10 +19,12 @@ import type { Discrepancy, DiscrepancyFilters, Match, Opportunity, OutcomeOffer 
 import {
   formatDateTime,
   formatGap,
+  formatHandicapLine,
   formatOdds,
   formatPercentage,
   formatRelativeTime,
   formatThreshold,
+  isHandicapMarket,
   profitColor,
 } from '../utils/format';
 import { MARKET_TYPE_LABELS } from '../utils/constants';
@@ -732,7 +734,10 @@ export default function Dashboard() {
                           <div className="flex items-center gap-1.5">
                             <BookmakerBadge name={d.bookmaker_a_name} compact />
                             <span className="font-mono text-text-secondary">
-                              {formatThreshold(d.threshold_a)} @ {formatOdds(d.odds_a)}
+                              {isHandicapMarket(d.market_type)
+                                ? formatHandicapLine(d.threshold_a, 'home')
+                                : formatThreshold(d.threshold_a)}{' '}
+                              @ {formatOdds(d.odds_a)}
                             </span>
                           </div>
                         </td>
@@ -740,7 +745,10 @@ export default function Dashboard() {
                           <div className="flex items-center gap-1.5">
                             <BookmakerBadge name={d.bookmaker_b_name} compact />
                             <span className="font-mono text-text-secondary">
-                              {formatThreshold(d.threshold_b)} @ {formatOdds(d.odds_b)}
+                              {isHandicapMarket(d.market_type)
+                                ? formatHandicapLine(d.threshold_b, 'away')
+                                : formatThreshold(d.threshold_b)}{' '}
+                              @ {formatOdds(d.odds_b)}
                             </span>
                           </div>
                         </td>

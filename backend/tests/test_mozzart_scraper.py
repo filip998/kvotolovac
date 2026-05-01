@@ -10,10 +10,14 @@ from app.scrapers.mozzart_scraper import (
     MozzartScraper,
     _MATCHES_API_URL,
     _SPECIALS_API_URL,
+    _MATCHES_HEADERS,
+    _DEFAULT_HEADERS,
     _extract_league_id,
     _extract_player_and_market,
     _parse_game_total_items,
+    _parse_handicap_items,
     _parse_items,
+    _parse_signed_threshold,
     _parse_start_time,
 )
 from app.models.schemas import RawOddsData
@@ -295,6 +299,221 @@ def test_parse_game_total_items_ignores_team_totals_and_uses_group_threshold():
     assert results[0].threshold == 160.5
     assert results[0].over_odds == 1.85
     assert results[0].under_odds == 1.95
+
+
+# ── Handicap parsing ──────────────────────────────────────
+
+
+def test_parse_signed_threshold_handles_negatives_and_positives():
+    assert _parse_signed_threshold("-4.5") == -4.5
+    assert _parse_signed_threshold("3.5") == 3.5
+    assert _parse_signed_threshold("0") == 0.0
+    assert _parse_signed_threshold("garbage") is None
+    assert _parse_signed_threshold(None) is None
+
+
+def test_parse_handicap_items_signed_line_canonical_home_perspective():
+    """Mozzart's specialOddValue is signed: negative = home favoured.
+
+    Real live data: ``Houston vs La Lakers`` returned ``sov='-4.5'`` with
+    ``"1"=1.9, "2"=1.9`` meaning Houston (home, listed first) is favoured by
+    4.5. Storage canonicalises to ``threshold=+4.5`` (home expected to win
+    by 4.5), with ``over``=home covers and ``under``=away covers.
+    """
+    items = [{
+        "home": {"name": "Houston"},
+        "visitor": {"name": "La Lakers"},
+        "competition": {"name": "USA NBA"},
+        "startTime": 1775775600000,
+        "oddsGroup": [
+            {
+                "groupName": "Hendikep",
+                "odds": [
+                    {
+                        "specialOddValue": "-4.5",
+                        "value": 1.92,
+                        "oddStatus": "ACTIVE",
+                        "game": {"name": "Hendikep"},
+                        "subgame": {"name": "1"},
+                    },
+                    {
+                        "specialOddValue": "-4.5",
+                        "value": 1.88,
+                        "oddStatus": "ACTIVE",
+                        "game": {"name": "Hendikep"},
+                        "subgame": {"name": "2"},
+                    },
+                    # Different line on the same match (handicap ladder)
+                    {
+                        "specialOddValue": "+1.5",
+                        "value": 2.20,
+                        "oddStatus": "ACTIVE",
+                        "game": {"name": "Hendikep"},
+                        "subgame": {"name": "1"},
+                    },
+                    {
+                        "specialOddValue": "+1.5",
+                        "value": 1.65,
+                        "oddStatus": "ACTIVE",
+                        "game": {"name": "Hendikep"},
+                        "subgame": {"name": "2"},
+                    },
+                ],
+            }
+        ],
+    }]
+
+    results = _parse_handicap_items(items)
+    assert {r.market_type for r in results} == {"home_handicap_ot"}
+    assert {r.home_team for r in results} == {"Houston"}
+    assert {r.away_team for r in results} == {"La Lakers"}
+    assert {r.league_id for r in results} == {"nba"}
+
+    by_threshold = {r.threshold: r for r in results}
+    # sov=-4.5 → threshold=+4.5 (home favoured by 4.5)
+    assert by_threshold[4.5].over_odds == 1.92
+    assert by_threshold[4.5].under_odds == 1.88
+    # sov=+1.5 → threshold=-1.5 (home underdog by 1.5)
+    assert by_threshold[-1.5].over_odds == 2.20
+    assert by_threshold[-1.5].under_odds == 1.65
+
+
+def test_parse_handicap_items_skips_inactive_or_missing():
+    items = [{
+        "home": {"name": "A"},
+        "visitor": {"name": "B"},
+        "competition": {"name": "Test"},
+        "startTime": 1775775600000,
+        "oddsGroup": [
+            {
+                "groupName": "Hendikep",
+                "odds": [
+                    # Inactive odd
+                    {
+                        "specialOddValue": "-3.5",
+                        "value": 1.9,
+                        "oddStatus": "INACTIVE",
+                        "subgame": {"name": "1"},
+                    },
+                    # Unparseable line
+                    {
+                        "specialOddValue": "garbage",
+                        "value": 1.9,
+                        "oddStatus": "ACTIVE",
+                        "subgame": {"name": "1"},
+                    },
+                    # Missing value
+                    {
+                        "specialOddValue": "-2.5",
+                        "value": None,
+                        "oddStatus": "ACTIVE",
+                        "subgame": {"name": "1"},
+                    },
+                    # Unknown subgame name (neither 1 nor 2)
+                    {
+                        "specialOddValue": "-1.5",
+                        "value": 1.9,
+                        "oddStatus": "ACTIVE",
+                        "subgame": {"name": "X"},
+                    },
+                ],
+            }
+        ],
+    }]
+    assert _parse_handicap_items(items) == []
+
+
+def test_parse_handicap_items_does_not_pick_up_other_groups():
+    items = [{
+        "home": {"name": "A"},
+        "visitor": {"name": "B"},
+        "competition": {"name": "Test"},
+        "startTime": 1775775600000,
+        "oddsGroup": [
+            {
+                "groupName": "Ukupno poena na meču",
+                "odds": [
+                    {
+                        "specialOddValue": "160.5",
+                        "value": 1.85,
+                        "oddStatus": "ACTIVE",
+                        "subgame": {"name": "više"},
+                    }
+                ],
+            }
+        ],
+    }]
+    assert _parse_handicap_items(items) == []
+
+
+def test_parse_handicap_items_preserves_pickem_zero_line():
+    """Pick'em (line 0) must not be lost by truthy fallbacks. Mozzart can
+    legitimately emit ``specialOddValue: 0`` for a zero-handicap line; the
+    parser must store it as ``threshold=0`` rather than skipping the row.
+    """
+    items = [{
+        "home": {"name": "A"},
+        "visitor": {"name": "B"},
+        "competition": {"name": "Test"},
+        "startTime": 1775775600000,
+        "oddsGroup": [
+            {
+                "groupName": "Hendikep",
+                "odds": [
+                    {
+                        "specialOddValue": 0,
+                        "value": 1.92,
+                        "oddStatus": "ACTIVE",
+                        "subgame": {"name": "1"},
+                    },
+                    {
+                        "specialOddValue": 0,
+                        "value": 1.88,
+                        "oddStatus": "ACTIVE",
+                        "subgame": {"name": "2"},
+                    },
+                ],
+            }
+        ],
+    }]
+    results = _parse_handicap_items(items)
+    assert len(results) == 1
+    assert results[0].threshold == 0.0
+    assert results[0].over_odds == 1.92
+    assert results[0].under_odds == 1.88
+
+
+def test_parse_game_total_items_does_not_pick_up_handicap_group():
+    """Regression: now that Hendikep parsing exists, the totals parser must
+    still ignore Hendikep groups entirely."""
+    items = [{
+        "home": {"name": "A"},
+        "visitor": {"name": "B"},
+        "competition": {"name": "Test"},
+        "startTime": 1775775600000,
+        "oddsGroup": [
+            {
+                "groupName": "Hendikep",
+                "odds": [
+                    {
+                        "specialOddValue": "-4.5",
+                        "value": 1.9,
+                        "oddStatus": "ACTIVE",
+                        "subgame": {"name": "1"},
+                    }
+                ],
+            }
+        ],
+    }]
+    assert _parse_game_total_items(items) == []
+
+
+def test_matches_headers_use_prematch_web():
+    """Mozzart's broad listing only returns Hendikep / Pobednik / Dupla šansa
+    when called with ``medium: PREMATCH_WEB``; the rest of the scraper still
+    uses ``PREMATCH_MOBILE`` for specials."""
+    assert _MATCHES_HEADERS["medium"] == "PREMATCH_WEB"
+    assert _DEFAULT_HEADERS["medium"] == "PREMATCH_MOBILE"
 
 
 # ── Integration: MozzartScraper with mocked HTTP ──────────

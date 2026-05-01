@@ -417,3 +417,123 @@ def test_analyze_entrypoint():
     ]
     discs = analyze(odds)
     assert len(discs) >= 1
+
+
+# ── Asian handicap (signed thresholds) ────────────────────
+
+
+def _make_handicap_odds(
+    bookmaker: str,
+    threshold: float,
+    over: float = 1.9,
+    under: float = 1.9,
+    match_id: str = "m1",
+) -> NormalizedOdds:
+    return _make_odds(
+        bookmaker,
+        None,
+        threshold,
+        over=over,
+        under=under,
+        match_id=match_id,
+        market_type="home_handicap_ot",
+    )
+
+
+def test_handicap_negative_threshold_gap_detected_as_middle():
+    """Both books rate home as the underdog but disagree on margin.
+
+    Storage convention: positive threshold = home favoured, negative = home
+    underdog (``threshold`` = home expected margin).
+
+    a=-6.5 (mozzart): home expected to lose by ~6.5
+    b=-4.5 (meridian): home expected to lose by ~4.5
+    Analyzer orders by threshold ascending so a=-6.5 is the lower side.
+    over@a (home_margin > -6.5, easy: home keeps it within 6 or wins) +
+    under@b (home_margin < -4.5, requires home to lose by 5+).
+    Middle window: -6.5 < margin < -4.5 (home loses by 5 or 6) → both win.
+    """
+    odds = [
+        _make_handicap_odds("mozzart", -6.5, over=1.9, under=1.9),
+        _make_handicap_odds("meridian", -4.5, over=1.9, under=1.9),
+    ]
+    discs = find_threshold_gaps(odds)
+    assert len(discs) == 1
+    d = discs[0]
+    assert d.market_type == "home_handicap_ot"
+    assert d.threshold_a == -6.5
+    assert d.threshold_b == -4.5
+    assert d.gap == pytest.approx(2.0)
+    # over_odds comes from the LOWER threshold (a=mozzart, threshold=-6.5)
+    assert d.bookmaker_a_id == "mozzart"
+    assert d.bookmaker_b_id == "meridian"
+    assert d.odds_a == 1.9  # mozzart over
+    assert d.odds_b == 1.9  # meridian under
+    assert d.middle_profit_margin is not None
+    assert d.middle_profit_margin > 0
+
+
+def test_handicap_mixed_sign_threshold_gap_detected():
+    """One book rates home as favourite, the other as underdog — produces a
+    very wide middle window that the analyzer should still flag.
+
+    a=-2.5 (home expected to lose by 2.5, i.e. underdog)
+    b=+3.5 (home expected to win by 3.5, i.e. favourite)
+    over@a (margin > -2.5) + under@b (margin < +3.5) overlap at -2.5 < margin < +3.5
+    (home loses by 2 or 1, draws, or wins by 1/2/3) → both bets win.
+    """
+    odds = [
+        _make_handicap_odds("mozzart", -2.5, over=1.9, under=1.9),
+        _make_handicap_odds("meridian", 3.5, over=1.9, under=1.9),
+    ]
+    discs = find_threshold_gaps(odds)
+    assert len(discs) == 1
+    d = discs[0]
+    assert d.threshold_a == -2.5
+    assert d.threshold_b == 3.5
+    assert d.gap == pytest.approx(6.0)
+    assert d.middle_profit_margin is not None
+    assert d.middle_profit_margin > 0
+
+
+def test_handicap_same_negative_line_arbitrage_picks_better_combo():
+    """Same negative line, asymmetric odds — the same-line arbitrage path
+    should still find the best cross-book over/under combo for handicap.
+
+    Odds chosen so 1/2.05 + 1/2.00 < 1 → small but positive arb when betting
+    over@mozzart and under@meridian."""
+    odds = [
+        # mozzart: high over (priced low for "covers")
+        _make_handicap_odds("mozzart", -4.5, over=2.05, under=1.85),
+        # meridian: high under (priced low for "doesn't cover")
+        _make_handicap_odds("meridian", -4.5, over=1.85, under=2.00),
+    ]
+    discs = find_threshold_gaps(odds)
+    # Same-line same-sign arb: over@mozzart + under@meridian
+    assert len(discs) == 1
+    d = discs[0]
+    assert d.threshold_a == -4.5
+    assert d.threshold_b == -4.5
+    assert d.gap == 0.0
+    assert d.profit_margin is not None
+    assert d.profit_margin > 0
+    # Best combo should be the profitable one
+    assert d.odds_a == 2.05  # mozzart over
+    assert d.odds_b == 2.00  # meridian under
+
+
+def test_handicap_no_gap_when_single_bookmaker():
+    odds = [
+        _make_handicap_odds("mozzart", -4.5),
+        _make_handicap_odds("mozzart", -3.5),
+    ]
+    assert find_threshold_gaps(odds) == []
+
+
+def test_handicap_does_not_pair_with_player_points_market():
+    """Different market_types must never be paired even at matching thresholds."""
+    odds = [
+        _make_handicap_odds("mozzart", 2.5),
+        _make_odds("meridian", "Lundberg", 2.5, market_type="player_points"),
+    ]
+    assert find_threshold_gaps(odds) == []

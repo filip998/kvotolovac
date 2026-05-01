@@ -25,6 +25,12 @@ _DEFAULT_HEADERS = {
     "medium": "PREMATCH_MOBILE",
 }
 
+# The /betting/matches endpoint omits the Hendikep / Pobednik / Dupla šansa
+# groups when called with PREMATCH_MOBILE; the website itself uses PREMATCH_WEB
+# and gets a strictly larger set of oddsGroup entries (still including
+# "Ukupno poena na meču"), so we override the medium for the matches request.
+_MATCHES_HEADERS = {**_DEFAULT_HEADERS, "medium": "PREMATCH_WEB"}
+
 # "Broj poena B.Saraf" → ("B.Saraf", "player_points")
 # "Broj skokova B.Saraf" → ("B.Saraf", "player_rebounds")
 # "Broj asistencija B.Saraf" → ("B.Saraf", "player_assists")
@@ -50,6 +56,7 @@ _GAME_TOTAL_GROUP_NAMES = {
     "ukupno poena na meču",
     "ukupno poena na mecu",
 }
+_HANDICAP_GROUP_NAMES = {"hendikep"}
 _CANONICAL_LEAGUES = {
     "nba": "nba",
     "usa nba": "nba",
@@ -148,10 +155,40 @@ def _parse_threshold(raw_value: object) -> float | None:
     return threshold if threshold > 0 else None
 
 
+def _parse_signed_threshold(raw_value: object) -> float | None:
+    """Parse a signed threshold (e.g., handicap line "-4.5" or "+3.5").
+
+    Unlike ``_parse_threshold``, accepts negative values and rejects only
+    unparseable input.
+    """
+    try:
+        return float(raw_value)
+    except (ValueError, TypeError):
+        return None
+
+
 def _assign_over_under(odds: dict[str, float | None], subgame_name: str, value: float) -> None:
     if "više" in subgame_name or "vise" in subgame_name:
         odds["over"] = value
     elif "manje" in subgame_name:
+        odds["under"] = value
+
+
+def _assign_handicap_outcome(
+    odds: dict[str, float | None],
+    subgame_name: str,
+    value: float,
+) -> None:
+    """Assign Mozzart handicap outcome odds.
+
+    Subgame name "1" pays when the home team (``match.home``) covers, "2" when
+    the away team covers. Mapped to home-perspective over/under:
+    ``over`` = home covers, ``under`` = away covers.
+    """
+    sub = subgame_name.strip()
+    if sub == "1":
+        odds["over"] = value
+    elif sub == "2":
         odds["under"] = value
 
 
@@ -264,6 +301,72 @@ def _parse_game_total_items(items: list[dict]) -> list[RawOddsData]:
     return results
 
 
+def _parse_handicap_items(items: list[dict]) -> list[RawOddsData]:
+    """Extract Asian handicap rows from Mozzart match listings.
+
+    Mozzart provides a single Hendikep group per match where
+    ``odd.specialOddValue`` is a signed line representing team1's handicap
+    (negative when home is favored). Subgame "1" pays when home covers, "2"
+    when away covers. We canonicalise to a home-perspective expected margin so
+    the analyzer can pair with handicap rows from other bookmakers via the
+    same threshold/over/under math used for game totals: ``threshold = -line``.
+    """
+    results: list[RawOddsData] = []
+
+    for match in items:
+        home = match.get("home", {}).get("name", "")
+        visitor = match.get("visitor", {}).get("name", "")
+        competition = match.get("competition", {}).get("name", "")
+        start_time = _parse_start_time(match.get("startTime"))
+        league_id = _extract_league_id(competition)
+
+        aggregated: dict[float, dict[str, float | None]] = {}
+
+        for group in match.get("oddsGroup", []):
+            group_name = group.get("groupName", "").strip().lower()
+            if group_name not in _HANDICAP_GROUP_NAMES:
+                continue
+
+            for odd in group.get("odds", []):
+                if odd.get("oddStatus") != "ACTIVE":
+                    continue
+
+                line = _parse_signed_threshold(
+                    odd.get("specialOddValue")
+                    if odd.get("specialOddValue") is not None
+                    else group.get("specialOddValue"),
+                )
+                value = odd.get("value")
+                if line is None or value is None:
+                    continue
+
+                threshold = -line
+                subgame_name = odd.get("subgame", {}).get("name", "")
+                aggregated.setdefault(threshold, {"over": None, "under": None})
+                _assign_handicap_outcome(aggregated[threshold], subgame_name, value)
+
+        for threshold, odds in aggregated.items():
+            if odds["over"] is None and odds["under"] is None:
+                continue
+            results.append(
+                RawOddsData(
+                    bookmaker_id="mozzart",
+                    league_id=league_id,
+                    sport="basketball",
+                    home_team=home,
+                    away_team=visitor,
+                    market_type="home_handicap_ot",
+                    player_name=None,
+                    threshold=threshold,
+                    over_odds=odds["over"],
+                    under_odds=odds["under"],
+                    start_time=start_time,
+                )
+            )
+
+    return results
+
+
 class MozzartScraper(BaseScraper):
     """Real scraper for Mozzart player props and game total over/under odds."""
 
@@ -304,7 +407,7 @@ class MozzartScraper(BaseScraper):
                 data = await self._http.post_json(
                     _MATCHES_API_URL,
                     json_body=body,
-                    headers=_DEFAULT_HEADERS,
+                    headers=_MATCHES_HEADERS,
                 )
             except Exception:
                 logger.exception("Mozzart match scrape failed on page %d", current_page)
@@ -333,12 +436,17 @@ class MozzartScraper(BaseScraper):
 
         player_results = _parse_items(special_items)
         game_total_results = _parse_game_total_items(match_items)
-        results = player_results + game_total_results
+        handicap_results = _parse_handicap_items(match_items)
+        results = player_results + game_total_results + handicap_results
         logger.info(
-            "Mozzart scraped %d odds (%d player props, %d game totals) from %d specials and %d prematch matches",
+            (
+                "Mozzart scraped %d odds (%d player props, %d game totals, %d handicaps) "
+                "from %d specials and %d prematch matches"
+            ),
             len(results),
             len(player_results),
             len(game_total_results),
+            len(handicap_results),
             len(special_items),
             len(match_items),
         )

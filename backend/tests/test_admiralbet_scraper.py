@@ -16,6 +16,8 @@ from app.scrapers.admiralbet_scraper import (
     _parse_milestone_bets,
     _parse_game_total_ot_bets,
     _parse_game_total_ot_event,
+    _parse_handicap_ot_bets,
+    _parse_handicap_ot_event,
     _extract_league_id,
 )
 from app.models.schemas import RawOddsData
@@ -378,6 +380,178 @@ def test_parse_game_total_ot_event_fixture(totals_fixture_data):
     assert {r.home_team for r in results} == {"PAOK"}
     assert {r.away_team for r in results} == {"Aris"}
     assert sorted(r.threshold for r in results) == [167.5, 168.5, 169.5, 170.5]
+
+
+# ── Handicap (+OT) parsing ───────────────────────────────
+
+
+def test_parse_handicap_ot_bets_team1_favourite_negative_sbv():
+    """sBV is signed; negative means team1 (home) is favoured.
+
+    Real fixture data: Orlando Magic - Detroit Pistons live response had
+    handicap rows like ``sBV='-4.5', '1'=1.95, '2'=1.85`` meaning home is
+    favoured by 4.5; analyzer should see ``threshold=+4.5`` (home expected
+    margin > +4.5 → over, < +4.5 → under).
+    """
+    event = {
+        "bets": [
+            {
+                "betTypeId": 191,
+                "betTypeName": "Hendikep (+OT)",
+                "sBV": "-4.5",
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.95, "isPlayable": True},
+                    {"name": "2", "odd": 1.85, "isPlayable": True},
+                ],
+            }
+        ]
+    }
+    results = _parse_handicap_ot_bets(event, "Orlando", "Detroit", None, "nba")
+    assert len(results) == 1
+    row = results[0]
+    assert row.market_type == "home_handicap_ot"
+    assert row.threshold == 4.5
+    assert row.over_odds == 1.95
+    assert row.under_odds == 1.85
+    assert row.player_name is None
+    assert row.home_team == "Orlando"
+    assert row.away_team == "Detroit"
+
+
+def test_parse_handicap_ot_bets_home_underdog_positive_sbv():
+    """Positive sBV means team1 (home) is the underdog.
+
+    Real fixture: ``Orlando vs Detroit`` ladder included ``sBV='1.5'`` with
+    "1"=2.26, "2"=1.64 — home is the slight underdog. ``threshold = -1.5``
+    (home expected margin around -1.5).
+    """
+    event = {
+        "bets": [
+            {
+                "betTypeId": 191,
+                "betTypeName": "Hendikep (+OT)",
+                "sBV": "1.5",
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 2.26, "isPlayable": True},
+                    {"name": "2", "odd": 1.64, "isPlayable": True},
+                ],
+            }
+        ]
+    }
+    results = _parse_handicap_ot_bets(event, "Orlando", "Detroit", None, "nba")
+    assert len(results) == 1
+    row = results[0]
+    assert row.threshold == -1.5
+    assert row.over_odds == 2.26
+    assert row.under_odds == 1.64
+
+
+def test_parse_handicap_ot_bets_multiple_lines():
+    """A handicap ladder produces one row per line, sign-preserved."""
+    event = {
+        "bets": [
+            {
+                "betTypeId": 191,
+                "betTypeName": "Hendikep (+OT)",
+                "sBV": sbv,
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.9, "isPlayable": True},
+                    {"name": "2", "odd": 1.9, "isPlayable": True},
+                ],
+            }
+            for sbv in ("-4.5", "-2.5", "0.5")
+        ]
+    }
+    results = _parse_handicap_ot_bets(event, "Home", "Away", None, "nba")
+    assert sorted(r.threshold for r in results) == [-0.5, 2.5, 4.5]
+    assert all(r.market_type == "home_handicap_ot" for r in results)
+
+
+def test_parse_handicap_ot_bets_skips_unplayable_or_unparseable():
+    event = {
+        "bets": [
+            # unplayable bet
+            {
+                "betTypeId": 191,
+                "sBV": "3.5",
+                "isPlayable": False,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.9, "isPlayable": True},
+                    {"name": "2", "odd": 1.9, "isPlayable": True},
+                ],
+            },
+            # missing sBV
+            {
+                "betTypeId": 191,
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.9, "isPlayable": True},
+                    {"name": "2", "odd": 1.9, "isPlayable": True},
+                ],
+            },
+            # both outcomes unplayable
+            {
+                "betTypeId": 191,
+                "sBV": "5.5",
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.9, "isPlayable": False},
+                    {"name": "2", "odd": 1.9, "isPlayable": False},
+                ],
+            },
+        ]
+    }
+    assert _parse_handicap_ot_bets(event, "H", "A", None, "nba") == []
+
+
+def test_parse_handicap_ot_event_uses_event_metadata():
+    event = {
+        "name": "PAOK - Aris",
+        "dateTime": "2026-04-11T19:00:00",
+        "competitionName": "AdmiralBet ABA Liga",
+        "bets": [
+            {
+                "betTypeId": 191,
+                "betTypeName": "Hendikep (+OT)",
+                "sBV": "3.5",
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.9, "isPlayable": True},
+                    {"name": "2", "odd": 1.81, "isPlayable": True},
+                ],
+            }
+        ],
+    }
+    results = _parse_handicap_ot_event(event)
+    assert len(results) == 1
+    row = results[0]
+    assert row.home_team == "PAOK"
+    assert row.away_team == "Aris"
+    assert row.league_id == "aba_liga"
+    assert row.threshold == -3.5  # PAOK is the underdog (sBV +3.5 → threshold -3.5)
+
+
+def test_parse_handicap_ot_event_fixture(totals_fixture_data):
+    """The first basketball event fixture has one Hendikep (+OT) line at sBV=3.5."""
+    results = _parse_handicap_ot_event(totals_fixture_data[0])
+    assert len(results) == 1
+    row = results[0]
+    assert row.market_type == "home_handicap_ot"
+    assert row.threshold == -3.5
+    assert row.over_odds == 1.9
+    assert row.under_odds == 1.81
+    assert row.home_team == "PAOK"
+    assert row.away_team == "Aris"
+
+
+def test_parse_game_total_ot_event_does_not_emit_handicap(totals_fixture_data):
+    """Regression: the totals parser must not pick up handicap rows now that
+    the handicap parser exists alongside it."""
+    results = _parse_game_total_ot_event(totals_fixture_data[0])
+    assert all(r.market_type == "game_total_ot" for r in results)
 
 
 # ── Fixture integration ──────────────────────────────────

@@ -40,6 +40,33 @@ export function formatThreshold(value: number): string {
   return value.toFixed(1);
 }
 
+/**
+ * Render an Asian-handicap line from the project's storage convention.
+ *
+ * Storage convention: ``threshold`` is the home team's expected margin
+ * (positive = home favoured). The user-facing Asian-handicap value is the
+ * spread that the team would have to cover, which is the negation of this:
+ *
+ *   threshold = +4.5 (home favoured by 4.5)  → home spread = "-4.5"
+ *   threshold = -3.5 (home is the underdog) → home spread = "+3.5"
+ *
+ * Pass ``side='away'`` to render the same line from the away team's
+ * perspective (which is the opposite sign of the home spread).
+ */
+export function formatHandicapLine(
+  threshold: number,
+  side: 'home' | 'away' = 'home',
+): string {
+  const value = side === 'home' ? -threshold : threshold;
+  if (Math.abs(value) < 1e-9) return '0';
+  const sign = value > 0 ? '+' : '−';
+  return `${sign}${Math.abs(value).toFixed(1)}`;
+}
+
+export function isHandicapMarket(marketType: string | null | undefined): boolean {
+  return marketType === 'home_handicap_ot';
+}
+
 export function formatUnits(value: number): string {
   if (!Number.isFinite(value)) return '—';
   return UNITS_FORMATTER.format(value);

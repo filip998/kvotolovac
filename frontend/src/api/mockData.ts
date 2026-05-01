@@ -296,6 +296,16 @@ export const mockOddsOffers: OddsOffer[] = [
   { id: 36, match_id: 'match-1', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', source_url: 'https://www.volcanobet.rs/sport-v2/prematch/events', market_type: 'player_points', player_name: 'Sasha Vezenkov', threshold: 19.0, over_odds: 1.86, under_odds: 1.92, scraped_at: ago(2) },
   { id: 37, match_id: 'match-1', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', source_url: 'https://www.volcanobet.rs/sport-v2/prematch/events', market_type: 'game_total_ot', player_name: null, threshold: 157.5, over_odds: 1.89, under_odds: 1.88, scraped_at: ago(2) },
   { id: 38, match_id: 'match-2', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', source_url: 'https://www.volcanobet.rs/sport-v2/prematch/events', market_type: 'player_points', player_name: 'Nigel Hayes-Davis', threshold: 16.0, over_odds: 1.87, under_odds: 1.91, scraped_at: ago(1) },
+  // Asian handicap (with OT) — Olympiacos heavy home favourite, books disagree on margin.
+  // mozzart: threshold +5.5 means home favoured by 5.5 → Asian "Home -5.5"
+  { id: 39, match_id: 'match-1', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'home_handicap_ot', player_name: null, threshold: 5.5, over_odds: 1.92, under_odds: 1.88, scraped_at: ago(3) },
+  // meridian disagrees: home favoured by only 3.5 → "Home -3.5" — gap with mozzart produces a middle window
+  { id: 40, match_id: 'match-1', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'home_handicap_ot', player_name: null, threshold: 3.5, over_odds: 1.85, under_odds: 1.95, scraped_at: ago(2) },
+  // maxbet — same line as mozzart, slightly different odds
+  { id: 41, match_id: 'match-1', bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', source_url: 'https://www.maxbet.rs/sr/pocetna#/sport/event/23281441', market_type: 'home_handicap_ot', player_name: null, threshold: 5.5, over_odds: 1.95, under_odds: 1.85, scraped_at: ago(2) },
+  // Match 2: Fenerbahce slight underdog at home, threshold negative
+  { id: 42, match_id: 'match-2', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'home_handicap_ot', player_name: null, threshold: -1.5, over_odds: 1.90, under_odds: 1.90, scraped_at: ago(4) },
+  { id: 43, match_id: 'match-2', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'home_handicap_ot', player_name: null, threshold: -2.5, over_odds: 1.92, under_odds: 1.88, scraped_at: ago(3) },
 ];
 
 export const mockDiscrepancies: Discrepancy[] = [
@@ -544,6 +554,31 @@ export const mockDiscrepancies: Discrepancy[] = [
     profit_margin: 0.01,
     middle_profit_margin: 1.02,
     detected_at: ago(5),
+    is_active: true,
+  },
+  {
+    // Asian handicap (+OT) middle: meridian rates Olympiacos as -3.5 favourite,
+    // mozzart rates them as -5.5. Backing meridian "Home -3.5" + mozzart
+    // "Away +5.5" wins outright if Olympiacos wins by exactly 4 or 5.
+    id: 12,
+    match_id: 'match-1',
+    home_team: 'Olympiacos',
+    away_team: 'Real Madrid',
+    league_name: 'EuroLeague',
+    market_type: 'home_handicap_ot',
+    player_name: null,
+    bookmaker_a_id: 'meridian',
+    bookmaker_a_name: 'Meridian',
+    bookmaker_b_id: 'mozzart',
+    bookmaker_b_name: 'Mozzart',
+    threshold_a: 3.5,
+    threshold_b: 5.5,
+    odds_a: 1.85,
+    odds_b: 1.88,
+    gap: 2.0,
+    profit_margin: 0.0027,
+    middle_profit_margin: 0.9457,
+    detected_at: ago(2),
     is_active: true,
   },
 ];

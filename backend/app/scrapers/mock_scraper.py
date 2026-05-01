@@ -175,6 +175,45 @@ _PLAYER_MARKETS["volcanobet"] = [
 ]
 
 
+# ── Asian handicap (with OT) — mock data ───────────────────
+# Storage convention: ``threshold`` is the home team's expected margin —
+# *positive* means home is favoured by ``threshold`` points; *negative* means
+# home is the underdog by ``|threshold|``. ``over`` pays when home covers the
+# spread (home_margin > threshold); ``under`` pays when the away team covers.
+# We deliberately stagger lines and odds across bookmakers so the analyzer
+# surfaces a same-line same-margin discrepancy on game 0 and a threshold-gap
+# middle on game 1, exercising both code paths in mock mode.
+_HANDICAP_MARKETS: dict[str, list[dict]] = {
+    "mozzart": [
+        # Game 0: Olympiacos (home) favoured by 4.5 → over (home covers) priced
+        # higher than under because covering -4.5 is the harder outcome.
+        {"game": 0, "threshold": 4.5, "over": 1.95, "under": 1.85},
+        # Game 1: Fenerbahce favoured by 5.5 (lower line)
+        {"game": 1, "threshold": 5.5, "over": 1.85, "under": 1.95},
+        # Game 2: Partizan slight underdog (home gets +1.5)
+        {"game": 2, "threshold": -1.5, "over": 1.90, "under": 1.90},
+    ],
+    "meridian": [
+        # Game 0: same line as mozzart, different odds → same-line cross-book
+        # arb candidate (1/1.85 + 1/1.95 < 1).
+        {"game": 0, "threshold": 4.5, "over": 1.85, "under": 1.95},
+        # Game 1: wider line 7.5 → 5.5↔7.5 gap with mozzart (middle window
+        # when home wins by 6 or 7).
+        {"game": 1, "threshold": 7.5, "over": 1.85, "under": 1.95},
+        # Game 2: same direction as mozzart
+        {"game": 2, "threshold": -1.5, "over": 1.92, "under": 1.88},
+    ],
+    "maxbet": [
+        # Game 0: tighter line, middle-friendly odds
+        {"game": 0, "threshold": 3.5, "over": 1.92, "under": 1.88},
+        # Game 1: line between mozzart and meridian
+        {"game": 1, "threshold": 6.5, "over": 1.88, "under": 1.92},
+        # Game 2: same line as the other two
+        {"game": 2, "threshold": -1.5, "over": 1.88, "under": 1.92},
+    ],
+}
+
+
 class MockScraper(BaseScraper):
     """Mock scraper returning realistic Euroleague basketball data."""
 
@@ -212,6 +251,23 @@ class MockScraper(BaseScraper):
                     threshold=m["threshold"],
                     over_odds=m["over"],
                     under_odds=m["under"],
+                    start_time=game["start"],
+                )
+            )
+        for h in _HANDICAP_MARKETS.get(self._bookmaker_id, []):
+            game = _GAMES[h["game"]]
+            results.append(
+                RawOddsData(
+                    bookmaker_id=self._bookmaker_id,
+                    league_id=league_id,
+                    sport="basketball",
+                    home_team=game["home"],
+                    away_team=game["away"],
+                    market_type="home_handicap_ot",
+                    player_name=None,
+                    threshold=h["threshold"],
+                    over_odds=h["over"],
+                    under_odds=h["under"],
                     start_time=game["start"],
                 )
             )
