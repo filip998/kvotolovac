@@ -96,6 +96,11 @@ class NSoftSportSpec:
     player_market_map: dict[int, str]
     # Set of NSoft `marketId` values that represent game totals incl. OT.
     game_total_ot_market_ids: frozenset[int]
+    # Set of NSoft `marketId` values that represent the game-level Asian
+    # handicap incl. OT.  Outcomes are labelled ``H1 <line>`` / ``H2 -<line>``
+    # where ``H1`` is the home (= team1) side and ``g[0]`` carries the home
+    # team's signed Asian handicap.
+    game_handicap_ot_market_ids: frozenset[int] = frozenset()
     # tournamentId → canonical league slug.  Anything not found falls back to
     # `balkanbet_tournament_<id>` / `balkanbet_category_<id>`.
     tournament_league_map: dict[int, str] = field(default_factory=dict)
@@ -124,6 +129,7 @@ _BASKETBALL_SPEC = NSoftSportSpec(
         5091: "player_points_milestones",
     },
     game_total_ot_market_ids=frozenset({530}),
+    game_handicap_ot_market_ids=frozenset({524}),
     tournament_league_map=_BASKETBALL_TOURNAMENT_LEAGUE_MAP,
 )
 
@@ -264,6 +270,65 @@ def _extract_threshold(market: dict) -> float | None:
         return None
 
 
+_HANDICAP_OUTCOME_LABEL_RE = re.compile(
+    r"^(?P<side>H[12]|P[12])\s+(?P<value>[+\-]?\d+(?:[.,]\d+)?)\s*$"
+)
+
+
+def _parse_handicap_outcome_label(label: str) -> tuple[str, float] | None:
+    """Parse a NSoft handicap outcome label like ``H1 9.5`` / ``P2 -6.5``.
+
+    Returns ``(side, signed_line)`` where ``side`` ∈ ``{"H1", "H2"}`` (``P1``
+    is normalised to ``H1`` and ``P2`` to ``H2`` so callers can rely on a
+    single label set) and ``signed_line`` is the numeric value parsed from
+    the label.  Returns ``None`` for any non-handicap label.
+    """
+    if not label:
+        return None
+    match = _HANDICAP_OUTCOME_LABEL_RE.match(label.strip())
+    if not match:
+        return None
+    raw_side = match.group("side")
+    side = "H1" if raw_side in ("H1", "P1") else "H2"
+    raw_value = match.group("value").replace(",", ".")
+    try:
+        signed = float(raw_value)
+    except ValueError:
+        return None
+    return side, signed
+
+
+def _extract_handicap_h1_h2_odds(
+    outcomes: list[dict],
+) -> tuple[float | None, float | None, float | None]:
+    """Pick H1 / H2 outcome odds + the team-1 signed line from a NSoft handicap market.
+
+    NSoft labels handicap outcomes with the team-1 line on the team-1 side
+    (e.g. ``H1 9.5`` paired with ``H2 -9.5``, or ``P1 -6.5`` paired with
+    ``P2 +6.5``).  The team-1 signed line is read directly from the
+    ``H1`` / ``P1`` outcome label so the parser is independent of how the
+    market's top-level ``g`` ladder value is signed.
+    """
+    h1_odds: float | None = None
+    h2_odds: float | None = None
+    h1_line: float | None = None
+    for outcome in outcomes:
+        if not isinstance(outcome, dict):
+            continue
+        label = (outcome.get("e") or outcome.get("name") or "").strip()
+        parsed = _parse_handicap_outcome_label(label)
+        if parsed is None:
+            continue
+        side, signed_line = parsed
+        price = _extract_outcome_price(outcome)
+        if side == "H1":
+            h1_odds = price
+            h1_line = signed_line
+        else:
+            h2_odds = price
+    return h1_odds, h2_odds, h1_line
+
+
 # ── List parsers ────────────────────────────────────────────────────────
 
 
@@ -392,6 +457,68 @@ def _parse_game_total_ot_list(
     return results
 
 
+def _parse_game_handicap_ot_list(
+    data: dict,
+    spec: NSoftSportSpec,
+) -> list[RawOddsData]:
+    """Parse the NSoft game handicap (incl. OT) market for each event.
+
+    Storage convention (matches Phase 1):
+      * ``threshold`` is the home team's signed expected margin (positive ⇒
+        home favoured).  NSoft's ``g[0]`` is the **home team's signed
+        handicap line** (positive ⇒ home is the underdog and gets a head
+        start), so the threshold is the negation of that line.
+      * ``over_odds`` = home covers (``H1`` outcome).
+      * ``under_odds`` = away covers (``H2`` outcome).
+    """
+    results: list[RawOddsData] = []
+    events = data.get("data", {}).get("events", [])
+
+    for event in events:
+        matchup = _split_match_name(event.get("j") or event.get("name") or "")
+        if matchup is None:
+            continue
+
+        home_team, away_team = matchup
+        start_time = _normalize_start_time(event.get("n") or event.get("startsAt"))
+        league_id = _extract_league_id(
+            event.get("c") if event.get("c") is not None else event.get("categoryId"),
+            event.get("f") if event.get("f") is not None else event.get("tournamentId"),
+            spec.tournament_league_map,
+            default=spec.sport,
+        )
+
+        for market in _iter_list_markets(event):
+            market_id = _coerce_int(market.get("b") or market.get("marketId"))
+            if market_id not in spec.game_handicap_ot_market_ids:
+                continue
+
+            outcomes = market.get("h") or market.get("outcomes") or []
+            over_odds, under_odds, h1_line = _extract_handicap_h1_h2_odds(outcomes)
+            if h1_line is None:
+                continue
+            if over_odds is None and under_odds is None:
+                continue
+            threshold = -h1_line
+
+            results.append(
+                RawOddsData(
+                    bookmaker_id="balkanbet",
+                    league_id=league_id,
+                    sport=spec.sport,
+                    home_team=home_team,
+                    away_team=away_team,
+                    market_type="home_handicap_ot",
+                    threshold=threshold,
+                    over_odds=over_odds,
+                    under_odds=under_odds,
+                    start_time=start_time,
+                )
+            )
+
+    return results
+
+
 def _parse_football_outcome_list(data: dict) -> list[RawOutcomeOffer]:
     results: list[RawOutcomeOffer] = []
     events = data.get("data", {}).get("events", [])
@@ -510,13 +637,17 @@ class BalkanBetScraper(BaseScraper):
 
         player_results = _parse_player_props_list(player_data, spec)
         totals_results = _parse_game_total_ot_list(totals_data, spec)
-        results = [*player_results, *totals_results]
+        handicap_results = _parse_game_handicap_ot_list(totals_data, spec)
+        results = [*player_results, *totals_results, *handicap_results]
 
         logger.info(
-            "BalkanBet scraped %d %s player prop odds and %d %s OT total odds",
+            "BalkanBet scraped %d %s player prop odds, %d %s OT total odds, "
+            "and %d %s OT handicap odds",
             len(player_results),
             spec.sport,
             len(totals_results),
+            spec.sport,
+            len(handicap_results),
             spec.sport,
         )
         return results
