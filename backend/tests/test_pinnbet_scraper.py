@@ -14,6 +14,7 @@ from app.scrapers.pinnbet_scraper import (
     _parse_event_name,
     _parse_event_detail,
     _parse_game_total_ot_event,
+    _parse_handicap_ot_event,
     _get_player_event_ids,
     _normalize_start_time,
     _resolve_matchup_from_short_name,
@@ -224,6 +225,133 @@ def test_parse_game_total_ot_event_ignores_team_totals_and_handicap(totals_data)
         170.5,
         171.5,
     }
+
+
+# -- _parse_handicap_ot_event ------------------------------------------------
+
+
+def test_parse_handicap_ot_event_fixture(totals_data):
+    """Fixture has one handicap row at sBV=7.5 with outcomes 1=1.9, 2=1.92."""
+    results = _parse_handicap_ot_event(totals_data[0])
+    assert len(results) == 1
+    row = results[0]
+    assert row.market_type == "home_handicap_ot"
+    assert row.threshold == -7.5  # team1 +7.5 → home margin expected -7.5
+    assert row.over_odds == 1.9
+    assert row.under_odds == 1.92
+    assert row.home_team == "Lyon Villeurbanne"
+    assert row.away_team == "Fenerbahce"
+    assert row.league_id == "euroleague"
+    assert row.player_name is None
+
+
+def test_parse_handicap_ot_event_signed_sbv_negative_means_home_favoured():
+    """Real live shape: ``Piratas de Bogota - Caribbean Storm Islands`` returned
+    sBV=-22.5 with "1"=1.9 and "2"=1.85 — team1=home favoured by 22.5, so
+    threshold=+22.5 (positive = home favoured under our convention)."""
+    event = {
+        "name": "Piratas de Bogota - Caribbean Storm Islands",
+        "dateTime": "2026-04-16T20:00:00",
+        "competitionName": "Liga Profesional",
+        "bets": [
+            {
+                "betTypeId": 166,
+                "betTypeName": "Hendikep (+OT)",
+                "sBV": "-22.5",
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.9, "isPlayable": True},
+                    {"name": "2", "odd": 1.85, "isPlayable": True},
+                ],
+            }
+        ],
+    }
+    results = _parse_handicap_ot_event(event)
+    assert len(results) == 1
+    row = results[0]
+    assert row.threshold == 22.5
+    assert row.over_odds == 1.9
+    assert row.under_odds == 1.85
+
+
+def test_parse_handicap_ot_event_multi_line_ladder():
+    """A handicap ladder produces one row per line, sign-preserved."""
+    event = {
+        "name": "Home - Away",
+        "dateTime": "2026-04-16T20:00:00",
+        "competitionName": "Test",
+        "bets": [
+            {
+                "betTypeId": 166,
+                "betTypeName": "Hendikep (+OT)",
+                "sBV": sbv,
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.9, "isPlayable": True},
+                    {"name": "2", "odd": 1.9, "isPlayable": True},
+                ],
+            }
+            for sbv in ("-3.5", "-1.5", "0", "2.5")
+        ],
+    }
+    results = _parse_handicap_ot_event(event)
+    assert sorted(r.threshold for r in results) == [-2.5, 0.0, 1.5, 3.5]
+
+
+def test_parse_handicap_ot_event_skips_unplayable_or_unparseable():
+    event = {
+        "name": "Home - Away",
+        "dateTime": "2026-04-16T20:00:00",
+        "competitionName": "Test",
+        "bets": [
+            # unplayable
+            {
+                "betTypeId": 166,
+                "isPlayable": False,
+                "sBV": "3.5",
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.9, "isPlayable": True},
+                    {"name": "2", "odd": 1.9, "isPlayable": True},
+                ],
+            },
+            # missing sBV
+            {
+                "betTypeId": 166,
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.9, "isPlayable": True},
+                    {"name": "2", "odd": 1.9, "isPlayable": True},
+                ],
+            },
+            # both outcomes unplayable
+            {
+                "betTypeId": 166,
+                "sBV": "5.5",
+                "isPlayable": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.9, "isPlayable": False},
+                    {"name": "2", "odd": 1.9, "isPlayable": False},
+                ],
+            },
+        ],
+    }
+    assert _parse_handicap_ot_event(event) == []
+
+
+def test_parse_handicap_ot_event_does_not_pick_up_totals(totals_data):
+    """Regression: handicap parser must ignore betTypeId 167 (totals)."""
+    results = _parse_handicap_ot_event(totals_data[0])
+    # Fixture has 11 totals rows but only 1 handicap row
+    assert all(r.market_type == "home_handicap_ot" for r in results)
+    assert len(results) == 1
+
+
+def test_parse_game_total_ot_event_does_not_pick_up_handicap_after_change(totals_data):
+    """Regression: totals parser must still ignore betTypeId 166 (handicap)."""
+    results = _parse_game_total_ot_event(totals_data[0])
+    assert all(r.market_type == "game_total_ot" for r in results)
+    # Same 11 thresholds as before — handicap parser is independent
+    assert len(results) == 11
 
 
 # -- _parse_event_detail ---------------------------------------------------
@@ -686,7 +814,7 @@ async def test_scraper_integration(events_data, bets_data, totals_data):
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
         results = await scraper.scrape_odds("basketball")
 
-    assert len(results) == 13
+    assert len(results) == 14
     assert all(isinstance(r, RawOddsData) for r in results)
     assert all(r.bookmaker_id == "pinnbet" for r in results)
     players = {r.player_name for r in results if r.player_name}
@@ -696,6 +824,9 @@ async def test_scraper_integration(events_data, bets_data, totals_data):
     assert len(game_totals) == 11
     assert {r.home_team for r in game_totals} == {"Lyon Villeurbanne"}
     assert {r.away_team for r in game_totals} == {"Fenerbahce"}
+    handicaps = [r for r in results if r.market_type == "home_handicap_ot"]
+    assert len(handicaps) == 1
+    assert handicaps[0].threshold == -7.5
     assert len(player_urls) == 1
     assert "regionId=" not in player_urls[0]
     assert "competitionId=" not in player_urls[0]
@@ -720,7 +851,7 @@ async def test_scraper_uses_only_list_endpoints_for_inline_player_bets(
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
         results = await scraper.scrape_odds("basketball")
 
-    assert len(results) == 13
+    assert len(results) == 14
     assert len(captured_urls) == 2
     assert all("getWebEventsSelections" in url for url in captured_urls)
     assert any("pageId=3&sportId=3" in url for url in captured_urls)
@@ -751,6 +882,11 @@ async def test_scraper_skips_stub_player_bets_without_detail_fallback(
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
         results = await scraper.scrape_odds("basketball")
 
-    assert len(results) == 11
-    assert all(result.market_type == "game_total_ot" for result in results)
+    # 11 game totals + 1 handicap = 12 (no player rows because stubs lack details)
+    assert len(results) == 12
+    assert {r.market_type for r in results} == {"game_total_ot", "home_handicap_ot"}
+    game_totals = [r for r in results if r.market_type == "game_total_ot"]
+    handicaps = [r for r in results if r.market_type == "home_handicap_ot"]
+    assert len(game_totals) == 11
+    assert len(handicaps) == 1
     assert len(captured_urls) == 2

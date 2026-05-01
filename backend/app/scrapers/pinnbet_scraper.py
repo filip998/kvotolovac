@@ -31,6 +31,8 @@ _MAPPING_TYPE_PLAYER = 5
 _EVENT_MAPPING_TYPES = [1, 2, 3, 4, 5]
 _BET_TYPE_GAME_TOTAL_OT = 167
 _GAME_TOTAL_OT_BET_NAME = "ukupno poena (+ot)"
+_BET_TYPE_HANDICAP_OT = 166
+_HANDICAP_OT_BET_NAME = "hendikep (+ot)"
 
 _BET_TYPE_MARKETS: dict[int, str] = {
     1200: "player_points",
@@ -309,6 +311,81 @@ def _parse_game_total_ot_event(
     return results
 
 
+def _parse_handicap_ot_event(
+    event: dict,
+    league_id: str | None = None,
+) -> list[RawOddsData]:
+    """Parse OT-inclusive Asian handicap rows from the prematch list feed.
+
+    PinnBet expresses the line via a signed ``sBV`` interpreted as team1's
+    Asian handicap (negative when team1 is favored). Outcome name ``"1"``
+    pays when team1 covers; ``"2"`` pays when team2 covers. The event's
+    ``name`` is ``"home - away"`` (team1=home), so we canonicalise to a
+    home-perspective threshold ``= -sBV`` so the analyzer treats handicap
+    exactly like total-points (over=home covers, under=away covers).
+    """
+    results: list[RawOddsData] = []
+    home_team, away_team = _parse_event_name(event.get("name", ""))
+    if not home_team or not away_team:
+        return results
+
+    start_time = _normalize_start_time(event.get("dateTime"))
+    effective_league_id = league_id or _extract_league_id(event)
+
+    for bet in event.get("bets", []):
+        bet_type_key = _normalize_bet_type_key(bet.get("betTypeName"))
+        if (
+            bet.get("betTypeId") != _BET_TYPE_HANDICAP_OT
+            and bet_type_key != _HANDICAP_OT_BET_NAME
+        ):
+            continue
+
+        if not bet.get("isPlayable"):
+            continue
+
+        sbv = bet.get("sBV")
+        if sbv is None:
+            continue
+        try:
+            sbv_value = float(sbv)
+        except (ValueError, TypeError):
+            continue
+
+        threshold = -sbv_value
+
+        over_odds: float | None = None
+        under_odds: float | None = None
+        for outcome in bet.get("betOutcomes", []):
+            if not outcome.get("isPlayable"):
+                continue
+            name = (outcome.get("name") or "").strip()
+            if name == "1":
+                over_odds = outcome.get("odd")
+            elif name == "2":
+                under_odds = outcome.get("odd")
+
+        if over_odds is None and under_odds is None:
+            continue
+
+        results.append(
+            RawOddsData(
+                bookmaker_id="pinnbet",
+                league_id=effective_league_id,
+                sport="basketball",
+                home_team=home_team,
+                away_team=away_team,
+                market_type="home_handicap_ot",
+                player_name=None,
+                threshold=threshold,
+                over_odds=over_odds,
+                under_odds=under_odds,
+                start_time=start_time,
+            )
+        )
+
+    return results
+
+
 def _parse_event_detail(
     event: dict,
     bets_data: dict,
@@ -460,13 +537,14 @@ class PinnBetScraper(BaseScraper):
         basketball_events = await self._fetch_game_total_events()
         for event in basketball_events:
             total_results.extend(_parse_game_total_ot_event(event))
+            total_results.extend(_parse_handicap_ot_event(event))
 
         all_results = [*player_results, *total_results]
 
         logger.info(
             (
                 "PinnBet scraped %d player odds from %d player feed events "
-                "and %d OT total odds from %d basketball prematch events"
+                "and %d OT total/handicap odds from %d basketball prematch events"
             ),
             len(player_results),
             len(player_events),
