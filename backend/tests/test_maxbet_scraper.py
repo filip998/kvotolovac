@@ -12,6 +12,7 @@ from app.scrapers.maxbet_scraper import (
     _extract_league_id,
     _parse_game_total_match,
     _parse_game_total_ot_match,
+    _parse_handicap_ot_match,
     _parse_football_outcome_match,
     _parse_match_detail,
     _get_player_match_ids,
@@ -127,6 +128,187 @@ def test_parse_game_total_ot_match_returns_ot_only_lines(basketball_fixture_data
         1.83,
         1.92,
     )
+
+
+# ── Handicap (+OT) parsing ──────────────────────────────────────────────
+
+
+def _build_handicap_match(*, home="Orlando", away="Detroit") -> dict:
+    """Build a list-mode match with the live MaxBet handicap layout.
+
+    Reproduces the ladder observed live for ``Orlando vs Detroit``:
+    handicapOvertime is the main line at -3.5 with 1.9/1.9 odds; the eight
+    surrounding lines step out symmetrically with monotonic prices on the
+    "1" (team1=home covers, odd-numbered code) side.
+    """
+    return {
+        "id": 23353450,
+        "leagueName": "USA NBA",
+        "home": home,
+        "away": away,
+        "kickOffTime": 1777470900000,
+        "params": {
+            "handicapOvertime":  "-3.5",
+            "handicapOvertime2": "-4.5",
+            "handicapOvertime3": "-2.5",
+            "handicapOvertime4": "-5.5",
+            "handicapOvertime5": "-1.5",
+            "handicapOvertime6": "-6.5",
+            "handicapOvertime7":  "1.5",
+            "handicapOvertime8": "-7.5",
+            "handicapOvertime9":  "2.5",
+        },
+        "odds": {
+            # main, both 1.9
+            "50431": 1.9,  "50430": 1.9,
+            # -4.5 — Orlando harder cover → "1" 2.0
+            "50433": 2.0,  "50432": 1.77,
+            # -2.5 — Orlando easier cover → "1" 1.77
+            "50435": 1.77, "50434": 2.0,
+            # -5.5 → "1" 2.1
+            "50437": 2.1,  "50436": 1.67,
+            # -1.5 → "1" 1.68
+            "50439": 1.68, "50438": 2.1,
+            # -6.5 → "1" 2.25
+            "50441": 2.25, "50440": 1.6,
+            # +1.5 (Orlando underdog) → "1" 1.45 (Orlando keeps it close, easy)
+            "50443": 1.45, "50442": 2.6,
+            # extreme placeholders
+            "50427": 3.6,  "50426": 3.6,
+            "50429": 3.6,  "50428": 3.6,
+        },
+    }
+
+
+def test_parse_handicap_ot_match_returns_canonical_threshold_and_odds():
+    """The 7 central ladder lines emit one row each, with threshold = -line
+    (sign flip so positive threshold = home favoured) and over=team1-cover,
+    under=team2.
+
+    Lines #8 and #9 carry placeholder ``3.6/3.6`` odds at the ladder
+    extremes; they're intentionally not emitted (see
+    ``_BASKETBALL_HANDICAP_OT_LINES`` docstring).
+    """
+    match = _build_handicap_match()
+    results = _parse_handicap_ot_match(match)
+
+    assert len(results) == 7
+    assert {r.market_type for r in results} == {"home_handicap_ot"}
+    assert {r.home_team for r in results} == {"Orlando"}
+    assert {r.away_team for r in results} == {"Detroit"}
+    assert all(r.player_name is None for r in results)
+
+    by_threshold = {r.threshold: (r.over_odds, r.under_odds) for r in results}
+    # main -3.5 → +3.5 home margin
+    assert by_threshold[3.5] == (1.9, 1.9)
+    # -4.5 line → +4.5 home margin (home favoured by 4.5)
+    assert by_threshold[4.5] == (2.0, 1.77)
+    # -2.5 line → +2.5 home margin
+    assert by_threshold[2.5] == (1.77, 2.0)
+    # +1.5 line → -1.5 home margin (home is the underdog)
+    assert by_threshold[-1.5] == (1.45, 2.6)
+
+
+def test_parse_handicap_ot_match_threshold_sorts_correctly():
+    """Sorting handicap rows by threshold gives the home-favourite ordering
+    the analyzer relies on for gap detection."""
+    match = _build_handicap_match()
+    results = _parse_handicap_ot_match(match)
+    sorted_thresholds = sorted(r.threshold for r in results)
+    # 7 central lines from -1.5 (home underdog by 1.5) up to +6.5
+    assert sorted_thresholds == [-1.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5]
+
+
+def test_parse_handicap_ot_match_skips_placeholder_extreme_lines():
+    """Regression for the reviewer-caught placeholder bug. Even when the
+    fixture provides odds for ``handicapOvertime8`` and
+    ``handicapOvertime9`` (codes 50426–50429 with placeholder 3.6/3.6
+    pricing), the parser must not emit them — pairing such fake odds with
+    realistic odds from another bookmaker via the threshold-gap analyzer
+    produces enormous fake profit margins that are not actually betable.
+    """
+    match = _build_handicap_match()
+    results = _parse_handicap_ot_match(match)
+    # Confirm none of the extreme placeholder lines (-7.5 / +2.5 from
+    # team1's perspective → +7.5 / -2.5 home margin) ended up in the output
+    extreme_thresholds = {-2.5, 7.5}
+    assert extreme_thresholds.isdisjoint(r.threshold for r in results)
+
+
+def test_parse_handicap_ot_match_skips_player_match():
+    """Handicap parsing must respect the player-list-vs-totals split — player
+    matches never carry whole-game handicap lines."""
+    match = {
+        "id": 1,
+        "leagueName": "USA NBA - poeni igrača",  # player_league_prefix = 'poeni igrača'
+        "home": "Player",
+        "away": "Team",
+        "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "-3.5"},
+        "odds": {"50431": 1.9, "50430": 1.9},
+    }
+    assert _parse_handicap_ot_match(match) == []
+
+
+def test_parse_handicap_ot_match_skips_unparseable_or_missing():
+    match = {
+        "id": 1,
+        "leagueName": "USA NBA",
+        "home": "A",
+        "away": "B",
+        "kickOffTime": 1777470900000,
+        "params": {
+            "handicapOvertime": "garbage",       # unparseable
+            "handicapOvertime2": "",             # empty
+            "handicapOvertime3": "-2.5",         # valid
+        },
+        "odds": {
+            # only line 3 has odds in this match
+            "50435": 1.77, "50434": 2.0,
+        },
+    }
+    results = _parse_handicap_ot_match(match)
+    assert len(results) == 1
+    assert results[0].threshold == 2.5  # -(-2.5) = +2.5
+
+
+def test_parse_handicap_ot_match_skips_when_no_odds_present():
+    """A line with a parseable param but no matching odds codes is dropped."""
+    match = {
+        "id": 1,
+        "leagueName": "USA NBA",
+        "home": "A",
+        "away": "B",
+        "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "-3.5"},
+        "odds": {},
+    }
+    assert _parse_handicap_ot_match(match) == []
+
+
+def test_parse_handicap_ot_match_pickem_zero_line_emits_row():
+    """A zero handicap (pick'em) is a legitimate line and must emit a row
+    rather than being silently dropped by truthy checks."""
+    match = {
+        "id": 1,
+        "leagueName": "USA NBA",
+        "home": "A",
+        "away": "B",
+        "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "0"},
+        "odds": {"50431": 1.92, "50430": 1.88},
+    }
+    results = _parse_handicap_ot_match(match)
+    assert len(results) == 1
+    assert results[0].threshold == 0.0
+    assert results[0].over_odds == 1.92
+    assert results[0].under_odds == 1.88
+
+
+def test_parse_game_total_ot_match_does_not_emit_handicap_after_change(basketball_fixture_data):
+    """Regression: the totals parser must not touch handicapOvertime params."""
+    results = _parse_game_total_ot_match(basketball_fixture_data["esMatches"][0])
+    assert all(r.market_type == "game_total_ot" for r in results)
 
 
 def test_parse_football_outcome_match_emits_mvp_markets():

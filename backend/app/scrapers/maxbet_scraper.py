@@ -139,6 +139,41 @@ _BASKETBALL_GAME_TOTAL_OT_LINES: tuple[GameTotalLine, ...] = (
     GameTotalLine("50457", "50456", "overUnderOvertime7"),
 )
 
+# OT-inclusive Asian handicap (full game). MaxBet exposes a ladder under
+# params keys ``handicapOvertime`` through ``handicapOvertime9`` whose values
+# are *team1's* signed Asian handicap (negative when team1=home is favoured).
+# The matching odds codes 50426–50443 are 9 alternating pairs where the
+# odd-numbered code holds the "1" (team1 covers) price and the even-numbered
+# code holds the "2" (team2 covers) price — verified live against monotonic
+# price/line behaviour across 27 matches. The mapping between
+# ``handicapOvertime{N}`` and the code pair is *not* sequential by N; lines
+# are interleaved around the main line, so each (over_code, under_code,
+# param_key) tuple is recorded explicitly.
+#
+# We deliberately *exclude* ``handicapOvertime8`` and ``handicapOvertime9``
+# (the extreme ladder edges, codes 50426/50427 and 50428/50429): live data
+# consistently shows them carrying a symmetric placeholder pair like
+# ``3.6/3.6`` whose implied probability sums to ~55%. Pairing such lines
+# with realistic odds from another bookmaker via the threshold-gap analyzer
+# would surface large fake "profit_margin" / "middle_profit_margin" values
+# that aren't actually available to bet on. The 7 lines below cover the
+# normal range MaxBet actually prices, and any genuinely heavy-favourite
+# match relabels its main line so heavier handicaps still appear in the
+# central ``handicapOvertime`` slot.
+#
+# For the analyzer the consumer flips the sign so threshold becomes home
+# expected margin (positive = home favoured) — see
+# _parse_handicap_lines_for_spec.
+_BASKETBALL_HANDICAP_OT_LINES: tuple[GameTotalLine, ...] = (
+    GameTotalLine("50431", "50430", "handicapOvertime"),
+    GameTotalLine("50433", "50432", "handicapOvertime2"),
+    GameTotalLine("50435", "50434", "handicapOvertime3"),
+    GameTotalLine("50437", "50436", "handicapOvertime4"),
+    GameTotalLine("50439", "50438", "handicapOvertime5"),
+    GameTotalLine("50441", "50440", "handicapOvertime6"),
+    GameTotalLine("50443", "50442", "handicapOvertime7"),
+)
+
 _BASKETBALL_CANONICAL_LEAGUES = {
     "nba": "nba",
     "usa nba": "nba",
@@ -385,6 +420,78 @@ def _parse_game_total_lines_for_spec(
     return results
 
 
+def _parse_handicap_lines_for_spec(
+    match: dict,
+    spec: SportSpec,
+    lines: tuple[GameTotalLine, ...],
+    market_type: str = "home_handicap_ot",
+) -> list[RawOddsData]:
+    """Parse Asian handicap rows from a list-mode match.
+
+    MaxBet stores the line value (signed, team1's perspective) in the params
+    map under the line's ``param_key`` and the matching cover odds in the
+    ``odds`` map under ``over_code`` (team1 covers, "1") and ``under_code``
+    (team2 covers, "2"). We canonicalise to a home-perspective expected
+    margin via ``threshold = -line_value`` so the existing analyzer pairs
+    handicap rows with handicap rows from any other bookmaker via the same
+    threshold/over/under math used for total points.
+    """
+    league_name = match.get("leagueName") or ""
+    if not league_name:
+        return []
+    if _is_player_match(match, spec):
+        return []
+
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return []
+
+    params = match.get("params") or {}
+    odds = match.get("odds") or {}
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    league_id = _extract_league_id(league_name, spec)
+    source_url = None
+    match_id = match.get("id")
+    if match_id is not None:
+        source_url = _MATCH_PAGE_URL.format(match_id=match_id)
+
+    results: list[RawOddsData] = []
+    for line in lines:
+        line_str = params.get(line.param_key)
+        if line_str is None or line_str == "":
+            continue
+        try:
+            line_value = float(line_str)
+        except (ValueError, TypeError):
+            continue
+
+        threshold = -line_value
+
+        over_odds = odds.get(line.over_code)
+        under_odds = odds.get(line.under_code)
+        if over_odds is None and under_odds is None:
+            continue
+
+        results.append(
+            RawOddsData(
+                bookmaker_id="maxbet",
+                league_id=league_id,
+                sport=spec.sport,
+                home_team=home_team,
+                away_team=away_team,
+                source_url=source_url,
+                market_type=market_type,
+                player_name=None,
+                threshold=threshold,
+                over_odds=over_odds,
+                under_odds=under_odds,
+                start_time=start_time,
+            )
+        )
+    return results
+
+
 def _get_player_match_ids_for_spec(matches: list[dict], spec: SportSpec) -> list[int]:
     ids: list[int] = []
     for m in matches:
@@ -526,6 +633,15 @@ def _parse_game_total_ot_match(match: dict) -> list[RawOddsData]:
     )
 
 
+def _parse_handicap_ot_match(match: dict) -> list[RawOddsData]:
+    return _parse_handicap_lines_for_spec(
+        match,
+        _BASKETBALL_SPEC,
+        _BASKETBALL_HANDICAP_OT_LINES,
+        "home_handicap_ot",
+    )
+
+
 def _get_player_match_ids(matches: list[dict]) -> list[int]:
     return _get_player_match_ids_for_spec(matches, _BASKETBALL_SPEC)
 
@@ -613,6 +729,7 @@ class MaxBetScraper(BaseScraper):
         # Game totals are read directly from the totals list (no detail fetch needed).
         regular_total_results: list[RawOddsData] = []
         ot_total_results: list[RawOddsData] = []
+        handicap_results: list[RawOddsData] = []
         total_match_count = 0
         for match in total_matches:
             regular = _parse_game_total_lines_for_spec(
@@ -621,10 +738,16 @@ class MaxBetScraper(BaseScraper):
             ot = _parse_game_total_lines_for_spec(
                 match, spec, spec.game_total_ot_lines, spec.game_total_ot_market_type,
             )
-            if regular or ot:
+            handicap: list[RawOddsData] = []
+            if spec is _BASKETBALL_SPEC:
+                handicap = _parse_handicap_lines_for_spec(
+                    match, spec, _BASKETBALL_HANDICAP_OT_LINES, "home_handicap_ot",
+                )
+            if regular or ot or handicap:
                 total_match_count += 1
             regular_total_results.extend(regular)
             ot_total_results.extend(ot)
+            handicap_results.extend(handicap)
 
         # Player props: single bulk-detail GET replaces the previous N+1 loop.
         player_results: list[RawOddsData] = []
@@ -636,14 +759,17 @@ class MaxBetScraper(BaseScraper):
         else:
             logger.info("MaxBet: no %s player-prop matches found", spec.sport)
 
-        results = regular_total_results + ot_total_results + player_results
+        results = (
+            regular_total_results + ot_total_results + handicap_results + player_results
+        )
         logger.info(
-            "MaxBet scraped %d %s odds (%d regular game totals, %d OT game totals from %d matches, "
-            "%d player odds from %d players via bulk-detail)",
+            "MaxBet scraped %d %s odds (%d regular game totals, %d OT game totals, "
+            "%d handicaps from %d matches, %d player odds from %d players via bulk-detail)",
             len(results),
             spec.sport,
             len(regular_total_results),
             len(ot_total_results),
+            len(handicap_results),
             total_match_count,
             len(player_results),
             len(match_ids),
