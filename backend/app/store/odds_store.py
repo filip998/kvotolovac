@@ -412,7 +412,14 @@ async def get_matches(
         params.append(current_snapshot_at)
         if bookmaker_ids:
             params.extend(bookmaker_ids)
-        q = f"""SELECT m.*, l.name as league_name
+        q = f"""SELECT m.*, l.name as league_name,
+                      (
+                          SELECT rem.resolved_event_id
+                          FROM resolved_event_members rem
+                          WHERE rem.match_id = m.id AND rem.status = 'active'
+                          ORDER BY rem.resolved_event_id ASC
+                          LIMIT 1
+                      ) AS resolved_event_id
                FROM matches m
                LEFT JOIN leagues l ON m.league_id = l.id
                WHERE m.id IN (
@@ -438,7 +445,14 @@ async def get_matches(
         params.append(cutoff_at)
         if bookmaker_ids:
             params.extend(bookmaker_ids)
-        q = f"""SELECT m.*, l.name as league_name
+        q = f"""SELECT m.*, l.name as league_name,
+                      (
+                          SELECT rem.resolved_event_id
+                          FROM resolved_event_members rem
+                          WHERE rem.match_id = m.id AND rem.status = 'active'
+                          ORDER BY rem.resolved_event_id ASC
+                          LIMIT 1
+                      ) AS resolved_event_id
                FROM matches m
                LEFT JOIN leagues l ON m.league_id = l.id
                WHERE m.id IN (
@@ -480,7 +494,14 @@ async def get_matches(
 async def get_match(match_id: str) -> MatchOut | None:
     db = await get_db()
     row = await db.execute_fetchall(
-        """SELECT m.*, l.name as league_name
+        """SELECT m.*, l.name as league_name,
+                  (
+                      SELECT rem.resolved_event_id
+                      FROM resolved_event_members rem
+                      WHERE rem.match_id = m.id AND rem.status = 'active'
+                      ORDER BY rem.resolved_event_id ASC
+                      LIMIT 1
+                  ) AS resolved_event_id
            FROM matches m
            LEFT JOIN leagues l ON m.league_id = l.id
            WHERE m.id = ?""",

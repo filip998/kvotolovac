@@ -40,6 +40,7 @@ class MatchOut(BaseModel):
     away_team_id: Optional[int] = None
     start_time: Optional[str] = None
     status: str = "upcoming"
+    resolved_event_id: Optional[str] = None
     available_bookmakers: list[MatchBookmakerOut] = Field(default_factory=list)
 
 

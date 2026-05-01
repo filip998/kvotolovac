@@ -408,6 +408,24 @@ async def test_list_matches_can_filter_by_bookmaker(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_list_matches_includes_resolved_event_id(client: AsyncClient):
+    await client.post("/api/v1/scrape/trigger")
+
+    resp = await client.get("/api/v1/matches")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload, "scrape should produce at least one match"
+    # resolved_event_id is populated by the resolver. It must always be a string
+    # for matches that participated in the cycle (every scrape produces resolved
+    # events covering its source matches).
+    for match in payload:
+        assert "resolved_event_id" in match
+        assert match["resolved_event_id"] is not None
+        assert match["resolved_event_id"].startswith("evt_")
+
+
+@pytest.mark.asyncio
 async def test_list_canonical_teams_filters_by_sport(
     client: AsyncClient,
     team_registry_file,

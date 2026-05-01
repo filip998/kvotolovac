@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import type { Match } from '../api/types';
+import type { Match, MatchBookmaker } from '../api/types';
 import { formatDateTime } from '../utils/format';
 import { buildSearchIndex, filterSearchIndex, normalizeSearchText } from '../utils/search';
 import BookmakerBadge from './BookmakerBadge';
@@ -15,6 +15,57 @@ interface TrackedMatchesPanelProps {
   errorMessage?: string | null;
   searchQuery: string;
   onSearchChange: (value: string) => void;
+}
+
+interface TrackedGroup {
+  key: string;
+  primary: Match;
+  members: Match[];
+  bookmakers: MatchBookmaker[];
+  searchTerms: string[];
+}
+
+function groupMatchesByResolvedEvent(matches: Match[]): TrackedGroup[] {
+  const groupMap = new Map<string, Match[]>();
+  for (const match of matches) {
+    const key = match.resolved_event_id ?? match.id;
+    const existing = groupMap.get(key);
+    if (existing) {
+      existing.push(match);
+    } else {
+      groupMap.set(key, [match]);
+    }
+  }
+
+  const groups: TrackedGroup[] = [];
+  for (const [key, members] of groupMap) {
+    const sortedMembers = [...members].sort((left, right) => {
+      const leftCount = left.available_bookmakers.length;
+      const rightCount = right.available_bookmakers.length;
+      if (leftCount !== rightCount) {
+        return rightCount - leftCount;
+      }
+      return left.id.localeCompare(right.id);
+    });
+    const primary = sortedMembers[0];
+    const seenBookmakers = new Set<string>();
+    const bookmakers: MatchBookmaker[] = [];
+    for (const member of sortedMembers) {
+      for (const bookmaker of member.available_bookmakers) {
+        if (seenBookmakers.has(bookmaker.id)) continue;
+        seenBookmakers.add(bookmaker.id);
+        bookmakers.push(bookmaker);
+      }
+    }
+    const searchTerms: string[] = [];
+    for (const member of sortedMembers) {
+      searchTerms.push(member.home_team);
+      searchTerms.push(member.away_team);
+      searchTerms.push(`${member.home_team} ${member.away_team}`);
+    }
+    groups.push({ key, primary, members: sortedMembers, bookmakers, searchTerms });
+  }
+  return groups;
 }
 
 export default function TrackedMatchesPanel({
@@ -67,32 +118,37 @@ export default function TrackedMatchesPanel({
     [matches, referenceTimeMs]
   );
 
-  const searchableMatches = useMemo(
-    () =>
-      buildSearchIndex(upcomingMatches, (match) => [
-        match.home_team,
-        match.away_team,
-        `${match.home_team} ${match.away_team}`,
-      ]),
+  const upcomingGroups = useMemo(
+    () => groupMatchesByResolvedEvent(upcomingMatches),
     [upcomingMatches]
   );
 
-  const filteredMatches = useMemo(
-    () => filterSearchIndex(searchableMatches, appliedSearchQuery),
-    [searchableMatches, appliedSearchQuery]
+  const searchableGroups = useMemo(
+    () => buildSearchIndex(upcomingGroups, (group) => group.searchTerms),
+    [upcomingGroups]
   );
 
-  const sortedMatches = useMemo(
+  const filteredGroups = useMemo(
+    () => filterSearchIndex(searchableGroups, appliedSearchQuery),
+    [searchableGroups, appliedSearchQuery]
+  );
+
+  const sortedGroups = useMemo(
     () =>
-      [...filteredMatches].sort((a, b) => {
-        if (a.start_time && b.start_time) {
-          return a.start_time.localeCompare(b.start_time);
+      [...filteredGroups].sort((a, b) => {
+        const leftStart = a.primary.start_time ?? '';
+        const rightStart = b.primary.start_time ?? '';
+        if (leftStart && rightStart) {
+          return leftStart.localeCompare(rightStart);
         }
-        if (a.start_time) return -1;
-        if (b.start_time) return 1;
-        return a.home_team.localeCompare(b.home_team) || a.away_team.localeCompare(b.away_team);
+        if (leftStart) return -1;
+        if (rightStart) return 1;
+        return (
+          a.primary.home_team.localeCompare(b.primary.home_team) ||
+          a.primary.away_team.localeCompare(b.primary.away_team)
+        );
       }),
-    [filteredMatches]
+    [filteredGroups]
   );
 
   const hasSearchQuery = normalizeSearchText(appliedSearchQuery).length > 0;
@@ -115,7 +171,7 @@ export default function TrackedMatchesPanel({
       );
     }
 
-    if (hasSearchQuery && sortedMatches.length === 0 && upcomingMatches.length > 0) {
+    if (hasSearchQuery && sortedGroups.length === 0 && upcomingGroups.length > 0) {
       return (
         <EmptyState
           title={`No tracked matchups match "${activeSearchLabel}"`}
@@ -124,7 +180,7 @@ export default function TrackedMatchesPanel({
       );
     }
 
-    if (sortedMatches.length === 0) {
+    if (sortedGroups.length === 0) {
       return (
         <EmptyState
           title="No upcoming fetched matches stored right now"
@@ -135,13 +191,23 @@ export default function TrackedMatchesPanel({
 
     return (
       <div className="grid gap-2">
-        {sortedMatches.map((match) => {
-          const checked = selectedForMerge.has(match.id);
+        {sortedGroups.map((group) => {
+          const { primary, members, bookmakers } = group;
+          const checked = selectedForMerge.has(group.key);
+          const isMultiMember = members.length > 1;
           const rowClasses = `group flex flex-wrap items-center justify-between gap-4 rounded-lg border bg-surface px-4 py-3 transition ${
             mergeMode && checked
               ? 'border-accent bg-accent/[0.06]'
               : 'border-border hover:border-border-hover'
           }`;
+
+          const variantSummary = isMultiMember
+            ? Array.from(
+                new Set(
+                  members.map((member) => `${member.home_team} vs ${member.away_team}`)
+                )
+              )
+            : [];
 
           const inner = (
             <>
@@ -149,42 +215,57 @@ export default function TrackedMatchesPanel({
                 {mergeMode && (
                   <input
                     type="checkbox"
-                    aria-label={`Select ${match.home_team} vs ${match.away_team} for event merge`}
+                    aria-label={`Select ${primary.home_team} vs ${primary.away_team} for event merge`}
                     className="mt-1 h-4 w-4 cursor-pointer accent-accent"
                     checked={checked}
                     onChange={(e) => {
                       e.stopPropagation();
-                      toggleSelectedForMerge(match.id);
+                      toggleSelectedForMerge(group.key);
                     }}
                     onClick={(e) => e.stopPropagation()}
                   />
                 )}
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="text-[11px] font-medium uppercase tracking-wider text-accent">
-                      {match.league_name}
+                      {primary.league_name}
                     </span>
                     <span
                       className={`text-[11px] font-medium ${
-                        match.status === 'live' ? 'text-danger' : 'text-text-muted'
+                        primary.status === 'live' ? 'text-danger' : 'text-text-muted'
                       }`}
                     >
-                      {match.status}
+                      {primary.status}
                     </span>
+                    {isMultiMember && (
+                      <span
+                        className="rounded-full border border-accent/40 bg-accent/[0.08] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-accent"
+                        title={`Resolved to one event with ${members.length} bookmaker variants`}
+                      >
+                        Linked × {members.length}
+                      </span>
+                    )}
                   </div>
                   <div className="mt-1 text-sm font-semibold text-text">
-                    {match.home_team} vs {match.away_team}
+                    {primary.home_team} vs {primary.away_team}
                   </div>
-                  <div className="mt-0.5 text-xs text-text-muted">{formatDateTime(match.start_time)}</div>
-                  {match.available_bookmakers.length > 0 && (
+                  <div className="mt-0.5 text-xs text-text-muted">
+                    {formatDateTime(primary.start_time)}
+                  </div>
+                  {variantSummary.length > 1 && (
+                    <div className="mt-1 text-[11px] text-text-muted" title="Other bookmaker labels for this event">
+                      Also: {variantSummary.slice(1).join(' · ')}
+                    </div>
+                  )}
+                  {bookmakers.length > 0 && (
                     <div className="mt-3 flex flex-wrap items-center gap-2">
-                      {match.available_bookmakers.map((bookmaker) => {
+                      {bookmakers.map((bookmaker) => {
                         const highlighted =
                           selectedSet.size > 0 && selectedSet.has(bookmaker.id);
 
                         return (
                           <span
-                            key={`${match.id}-${bookmaker.id}`}
+                            key={`${group.key}-${bookmaker.id}`}
                             className={`inline-flex items-center rounded-full border px-1.5 py-1 transition ${
                               highlighted
                                 ? 'border-accent/60 bg-accent/[0.12] shadow-[0_0_0_1px_rgba(250,208,122,0.18)]'
@@ -211,9 +292,9 @@ export default function TrackedMatchesPanel({
           if (mergeMode) {
             return (
               <button
-                key={match.id}
+                key={group.key}
                 type="button"
-                onClick={() => toggleSelectedForMerge(match.id)}
+                onClick={() => toggleSelectedForMerge(group.key)}
                 className={`${rowClasses} text-left`}
               >
                 {inner}
@@ -222,8 +303,8 @@ export default function TrackedMatchesPanel({
           }
           return (
             <Link
-              key={match.id}
-              to={{ pathname: `/matches/${match.id}`, search: location.search }}
+              key={group.key}
+              to={{ pathname: `/matches/${primary.id}`, search: location.search }}
               className={rowClasses}
             >
               {inner}
@@ -241,13 +322,24 @@ export default function TrackedMatchesPanel({
     mergeMode,
     selectedForMerge,
     selectedSet,
-    sortedMatches,
-    upcomingMatches.length,
+    sortedGroups,
+    upcomingGroups.length,
   ]);
 
-  const selectedMatches = useMemo(
-    () => sortedMatches.filter((m) => selectedForMerge.has(m.id)),
-    [sortedMatches, selectedForMerge]
+  const selectedMatches = useMemo(() => {
+    const flat: Match[] = [];
+    for (const group of sortedGroups) {
+      if (!selectedForMerge.has(group.key)) continue;
+      for (const member of group.members) {
+        flat.push(member);
+      }
+    }
+    return flat;
+  }, [sortedGroups, selectedForMerge]);
+
+  const selectedGroupCount = useMemo(
+    () => sortedGroups.filter((group) => selectedForMerge.has(group.key)).length,
+    [sortedGroups, selectedForMerge]
   );
 
   return (
@@ -277,7 +369,7 @@ export default function TrackedMatchesPanel({
             {mergeMode ? 'Done selecting' : 'Select events'}
           </button>
           <span className="font-mono text-xs text-text-muted">
-            {hasSearchQuery ? `${sortedMatches.length} of ${upcomingMatches.length}` : sortedMatches.length}{' '}
+            {hasSearchQuery ? `${sortedGroups.length} of ${upcomingGroups.length}` : sortedGroups.length}{' '}
             tracked
           </span>
         </div>
@@ -288,16 +380,16 @@ export default function TrackedMatchesPanel({
         onChange={onSearchChange}
         scopeLabel="Tracked"
         placeholder="Search matchup or team names, e.g. PAOK or Panathinaikos"
-        resultCount={sortedMatches.length}
-        totalCount={upcomingMatches.length}
+        resultCount={sortedGroups.length}
+        totalCount={upcomingGroups.length}
       />
 
       {resultsContent}
 
-      {mergeMode && selectedMatches.length >= 2 && (
+      {mergeMode && selectedGroupCount >= 2 && (
         <div className="sticky bottom-4 z-30 flex items-center justify-between gap-3 rounded-lg border border-accent/60 bg-surface/95 px-4 py-3 shadow-lg backdrop-blur">
           <div className="text-sm text-text">
-            <span className="font-semibold">{selectedMatches.length}</span> events selected
+            <span className="font-semibold">{selectedGroupCount}</span> events selected
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -318,7 +410,7 @@ export default function TrackedMatchesPanel({
         </div>
       )}
 
-      {mergeModalOpen && selectedMatches.length >= 2 && (
+      {mergeModalOpen && selectedGroupCount >= 2 && selectedMatches.length >= 2 && (
         <MergeMatchesModal
           matches={selectedMatches}
           onClose={() => setMergeModalOpen(false)}

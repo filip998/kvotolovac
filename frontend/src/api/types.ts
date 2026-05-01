@@ -29,6 +29,7 @@ export interface Match {
   away_team_id?: number | null;
   start_time: string | null;
   status: 'upcoming' | 'live' | 'finished';
+  resolved_event_id?: string | null;
   available_bookmakers: MatchBookmaker[];
 }
 
