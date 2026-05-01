@@ -13,6 +13,7 @@ from app.scrapers.betole_scraper import (
     _REGULAR_FEED_URL,
     _build_matchup_index,
     _extract_league_id,
+    _parse_handicap_match,
     _parse_player_match,
     _parse_regular_match,
 )
@@ -58,6 +59,107 @@ def test_parse_regular_match_returns_ot_total_with_source_url(regular_preview_da
         1.85,
     )
     assert results[0].source_url == "https://www.betole.com/match-special/90241113"
+
+
+# ── Handicap (+OT) parsing ──────────────────────────────────────────────
+
+
+def test_parse_handicap_match_positive_line_means_team1_favoured():
+    """BetOle is on the same Tipster platform as MerkurXTip / OktagonBet:
+    handicapOvertime is team1's expected margin (positive = team1=home
+    favoured), so threshold = +line WITHOUT sign flip.
+
+    Real live shape: Orlando vs Detroit returned ``handicapOvertime='3.5'``
+    with "1"=1.9, "2"=1.9.
+    """
+    match = {
+        "id": 12345,
+        "home": "Orlando",
+        "away": "Detroit",
+        "leagueName": "USA, NBA - Play Offs",
+        "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "3.5"},
+        "odds": {"50431": 1.9, "50430": 1.9},
+    }
+    results = _parse_handicap_match(match)
+    assert len(results) == 1
+    row = results[0]
+    assert row.market_type == "home_handicap_ot"
+    assert row.threshold == 3.5
+    assert row.over_odds == 1.9
+    assert row.under_odds == 1.9
+    assert row.bookmaker_id == "betole"
+    assert row.home_team == "Orlando"
+    assert row.away_team == "Detroit"
+    assert row.player_name is None
+    assert row.source_url == "https://www.betole.com/match-special/12345"
+
+
+def test_parse_handicap_match_negative_line_means_team1_underdog():
+    match = {
+        "id": 222,
+        "home": "Houston",
+        "away": "LA Lakers",
+        "leagueName": "USA, NBA",
+        "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "-3.5"},
+        "odds": {"50431": 1.9, "50430": 1.9},
+    }
+    results = _parse_handicap_match(match)
+    assert len(results) == 1
+    assert results[0].threshold == -3.5
+
+
+def test_parse_handicap_match_pickem_zero_line_emits_row():
+    match = {
+        "id": 333,
+        "home": "A",
+        "away": "B",
+        "leagueName": "Test",
+        "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "0"},
+        "odds": {"50431": 1.92, "50430": 1.88},
+    }
+    results = _parse_handicap_match(match)
+    assert len(results) == 1
+    assert results[0].threshold == 0.0
+    assert results[0].over_odds == 1.92
+    assert results[0].under_odds == 1.88
+
+
+def test_parse_handicap_match_skips_unparseable_or_missing():
+    bad = {
+        "id": 444, "home": "A", "away": "B",
+        "leagueName": "Test", "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "garbage"},
+        "odds": {"50431": 1.9, "50430": 1.9},
+    }
+    no_odds = {
+        "id": 555, "home": "A", "away": "B",
+        "leagueName": "Test", "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "-3.5"},
+        "odds": {},
+    }
+    no_line = {
+        "id": 666, "home": "A", "away": "B",
+        "leagueName": "Test", "kickOffTime": 1777470900000,
+        "params": {},
+        "odds": {"50431": 1.9, "50430": 1.9},
+    }
+    assert _parse_handicap_match(bad) == []
+    assert _parse_handicap_match(no_odds) == []
+    assert _parse_handicap_match(no_line) == []
+
+
+def test_parse_regular_match_does_not_emit_handicap_after_change():
+    """Regression: regular-totals parser must not pick up handicap codes."""
+    match = {
+        "id": 777, "home": "A", "away": "B",
+        "leagueName": "Test", "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "-3.5"},
+        "odds": {"50431": 1.9, "50430": 1.9},
+    }
+    assert _parse_regular_match(match) == []
 
 
 def test_parse_player_match_uses_super_code_matchup(player_preview_data, regular_preview_data):
