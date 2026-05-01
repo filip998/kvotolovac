@@ -19,6 +19,7 @@ from app.scrapers.bookmaker365_scraper import (
     _parse_total_match,
     _GAME_TOTAL_LINES,
     _GAME_TOTAL_OT_LINES,
+    _HANDICAP_OT_LINES,
 )
 
 REGULAR_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "bookmaker365_regular_league.json"
@@ -94,6 +95,112 @@ def test_parse_total_match_returns_regular_and_ot_lines(regular_preview_data):
         ("game_total_ot", 218.5, 1.9, 1.85),
         ("game_total_ot", 217.5, 1.85, 1.95),
     }
+
+
+# ── Handicap (+OT) parsing ──────────────────────────────────────────────
+
+
+def _build_365_handicap_match() -> dict:
+    """Build a list-mode match reproducing the live Bookmaker365 ladder
+    observed for Orlando vs Detroit (handicapOvertime through 13)."""
+    return {
+        "id": 12345,
+        "leagueName": "NBA / Play Off",
+        "home": "Orlando",
+        "away": "Detroit",
+        "kickOffTime": 1777470900000,
+        "params": {
+            "handicapOvertime":   "3.5",   # main
+            "handicapOvertime2":  "2.5",
+            "handicapOvertime3":  "4.5",
+            "handicapOvertime4":  "1.5",
+            "handicapOvertime5":  "5.5",
+            "handicapOvertime6":  "-1.5",
+            "handicapOvertime7":  "6.5",
+            "handicapOvertime8":  "-2.5",
+            "handicapOvertime9":  "7.5",
+            "handicapOvertime10": "-3.5",
+            "handicapOvertime11": "8.5",
+            "handicapOvertime12": "-4.5",
+            "handicapOvertime13": "9.5",
+        },
+        "odds": {
+            # N=1 (main 3.5) — codes 50431/50430
+            "50431": 1.9,  "50430": 1.9,
+            # N=2 (2.5) — easier for team1 → "1" lower
+            "50433": 1.77, "50432": 2.0,
+            # N=3 (4.5) — harder
+            "50435": 2.0,  "50434": 1.78,
+            # N=4 (1.5) — much easier
+            "50437": 1.67, "50436": 2.15,
+            # N=5 (5.5) — much harder
+            "50439": 2.1,  "50438": 1.68,
+            # N=6 (-1.5) — easy (home underdog by 1.5)
+            "50441": 1.45, "50440": 2.65,
+            # N=7 (6.5)
+            "50443": 2.25, "50442": 1.6,
+            # N=8 (-2.5) — codes 51625/51624
+            "51625": 1.4,  "51624": 2.85,
+            # N=9 (7.5)
+            "51627": 2.45, "51626": 1.52,
+            # N=10 (-3.5)
+            "51629": 1.35, "51628": 3.05,
+            # N=11 (8.5)
+            "51631": 2.65, "51630": 1.45,
+            # N=12 (-4.5)
+            "51633": 1.30, "51632": 3.25,
+            # N=13 (9.5)
+            "51635": 2.85, "51634": 1.4,
+        },
+    }
+
+
+def test_parse_total_match_handicap_ladder_full_13_lines():
+    """All 13 ladder lines emit one row each, with threshold = +line (no flip)
+    so positive threshold = home favoured. 365 is on the same Tipster
+    platform as MerkurXTip / OktagonBet / BetOle (positive line = team1
+    favoured) — opposite sign convention from MaxBet/AdmiralBet/PinnBet/
+    Mozzart."""
+    match = _build_365_handicap_match()
+    results = _parse_total_match(match, _HANDICAP_OT_LINES)
+    assert len(results) == 13
+    assert {r.market_type for r in results} == {"home_handicap_ot"}
+    assert {r.home_team for r in results} == {"Orlando"}
+    assert {r.away_team for r in results} == {"Detroit"}
+    assert all(r.player_name is None for r in results)
+
+    by_threshold = {r.threshold: (r.over_odds, r.under_odds) for r in results}
+    # main +3.5
+    assert by_threshold[3.5] == (1.9, 1.9)
+    # +4.5 (harder)
+    assert by_threshold[4.5] == (2.0, 1.78)
+    # -1.5 (home underdog, "1" easy)
+    assert by_threshold[-1.5] == (1.45, 2.65)
+    # +9.5 (extreme high line)
+    assert by_threshold[9.5] == (2.85, 1.4)
+
+
+def test_parse_total_match_handicap_partial_ladder():
+    """A match with fewer ladder lines emits only the present ones."""
+    match = {
+        "id": 1,
+        "leagueName": "NBA",
+        "home": "A",
+        "away": "B",
+        "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "0", "handicapOvertime2": "-1.5"},
+        "odds": {"50431": 1.92, "50430": 1.88, "50433": 1.95, "50432": 1.85},
+    }
+    results = _parse_total_match(match, _HANDICAP_OT_LINES)
+    assert sorted(r.threshold for r in results) == [-1.5, 0.0]
+
+
+def test_parse_total_match_does_not_mix_handicap_with_totals():
+    """Regression: parsing for game_total_ot must ignore handicap codes/params."""
+    match = _build_365_handicap_match()
+    totals = _parse_total_match(match, _GAME_TOTAL_OT_LINES)
+    # The fixture has no overUnderOvertime[N] keys, so totals parser yields nothing
+    assert totals == []
 
 
 def test_parse_player_match_uses_super_code_matchup(player_preview_data, regular_preview_data):
