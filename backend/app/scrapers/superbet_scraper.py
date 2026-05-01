@@ -65,6 +65,21 @@ _GAME_TOTAL_MARKET_NAMES = {
     "ukupno poena uklj produzetke",
 }
 
+# OT-inclusive Asian handicap (full game). SuperBet exposes this market under
+# the human-readable name ``Hendikep poena (uklj. produžetke)``. Each odd's
+# ``metadata.specifiers["hcp"]`` carries the signed line value (team1's
+# Asian handicap; **negative = team1 favoured**), and ``metadata.code`` is
+# ``"1"`` (team1=home covers) or ``"2"`` (team2=away covers). Each market
+# emits a full ladder of lines.
+#
+# IMPORTANT: SuperBet uses the MaxBet/AdmiralBet/PinnBet/Mozzart sign
+# convention (not the Tipster one), so the parser FLIPS the sign:
+# ``threshold = -hcp`` (positive threshold = home favoured per analyzer
+# canonical convention).
+_HANDICAP_OT_MARKET_NAMES = {
+    "hendikep poena uklj produzetke",
+}
+
 _PLAYER_POINTS_MARKET_NAMES = {
     "ukupno poena igraca uklj produzetke",
 }
@@ -254,18 +269,42 @@ def _normalize_player_name(value: object) -> str | None:
     return " ".join([*parts[1:], parts[0]]).strip()
 
 
-def _extract_threshold(specifiers: dict[str, object]) -> float | None:
+def _extract_threshold(
+    specifiers: dict[str, object],
+    *,
+    market_type: str | None = None,
+) -> float | None:
     milestone = _parse_float(specifiers.get("milestone"))
     if milestone is not None:
         return max(milestone - 0.5, 0.5)
+    if market_type == "home_handicap_ot":
+        # SuperBet stores ``hcp`` as team1's Asian handicap (negative = team1
+        # favoured). Canonicalise to home-perspective expected margin.
+        hcp = _parse_float(specifiers.get("hcp"))
+        if hcp is None:
+            return None
+        return -hcp
     return _parse_float(specifiers.get("total"))
 
 
-def _extract_side(metadata: dict[str, object], specifiers: dict[str, object]) -> str | None:
+def _extract_side(
+    metadata: dict[str, object],
+    specifiers: dict[str, object],
+    *,
+    market_type: str | None = None,
+) -> str | None:
     if specifiers.get("milestone") is not None:
         return "over"
 
     code = str(metadata.get("code") or "").strip()
+    if market_type == "home_handicap_ot":
+        # "1" = team1=home covers → maps to over; "2" = team2=away covers → under
+        if code == "1":
+            return "over"
+        if code == "2":
+            return "under"
+        return None
+
     if code == "+":
         return "over"
     if code == "-":
@@ -291,6 +330,9 @@ def _classify_market_type(
 
     if not has_player and normalized_name in _GAME_TOTAL_MARKET_NAMES:
         return "game_total_ot"
+
+    if not has_player and normalized_name in _HANDICAP_OT_MARKET_NAMES:
+        return "home_handicap_ot"
 
     if normalized_name in _PLAYER_POINTS_REBOUNDS_ASSISTS_MARKET_NAMES:
         return "player_points_rebounds_assists" if has_player else None
@@ -353,15 +395,15 @@ def _parse_selection(
     if market_type is None:
         return None
 
-    threshold = _extract_threshold(specifiers)
+    threshold = _extract_threshold(specifiers, market_type=market_type)
     if threshold is None:
         return None
 
     player_name = _normalize_player_name(specifiers.get("player"))
-    if market_type != "game_total_ot" and player_name is None:
+    if market_type not in ("game_total_ot", "home_handicap_ot") and player_name is None:
         return None
 
-    side = _extract_side(metadata, specifiers)
+    side = _extract_side(metadata, specifiers, market_type=market_type)
     if side is None:
         return None
 
