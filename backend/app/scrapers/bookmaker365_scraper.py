@@ -100,6 +100,37 @@ _GAME_TOTAL_OT_LINES: tuple[ThresholdLine, ...] = (
     ThresholdLine("50457", "50456", "overUnderOvertime7", "game_total_ot"),
 )
 
+# OT-inclusive Asian handicap (full game). Bookmaker365's existing
+# /sport/B/league/{id}/mob preview already returns
+# params['handicapOvertime'] through ['handicapOvertime13'] and the matching
+# odds codes 50430–50443 (lines 1–7) plus 51624–51635 (lines 8–13). 365 is
+# on the same Tipster white-label platform as MerkurXTip / OktagonBet /
+# BetOle and shares their convention: ``handicapOvertime`` is **team1's
+# expected margin** (positive = team1=home favoured), so the parser uses
+# ``threshold = +line`` WITHOUT a sign flip.
+#
+# Mapping derived empirically from a live match (Orlando vs Detroit, line
+# values vs odds): the odd-numbered code in each pair holds "1" (team1
+# covers) and the even code holds "2" (team2 covers); pairs are allocated
+# sequentially as the ladder index N grows. Lines 1–7 occupy codes
+# 50430–50443; codes 50444–50457 belong to OT totals; lines 8–13 resume
+# at 51624–51635.
+_HANDICAP_OT_LINES: tuple[ThresholdLine, ...] = (
+    ThresholdLine("50431", "50430", "handicapOvertime",  "home_handicap_ot"),
+    ThresholdLine("50433", "50432", "handicapOvertime2", "home_handicap_ot"),
+    ThresholdLine("50435", "50434", "handicapOvertime3", "home_handicap_ot"),
+    ThresholdLine("50437", "50436", "handicapOvertime4", "home_handicap_ot"),
+    ThresholdLine("50439", "50438", "handicapOvertime5", "home_handicap_ot"),
+    ThresholdLine("50441", "50440", "handicapOvertime6", "home_handicap_ot"),
+    ThresholdLine("50443", "50442", "handicapOvertime7", "home_handicap_ot"),
+    ThresholdLine("51625", "51624", "handicapOvertime8", "home_handicap_ot"),
+    ThresholdLine("51627", "51626", "handicapOvertime9", "home_handicap_ot"),
+    ThresholdLine("51629", "51628", "handicapOvertime10", "home_handicap_ot"),
+    ThresholdLine("51631", "51630", "handicapOvertime11", "home_handicap_ot"),
+    ThresholdLine("51633", "51632", "handicapOvertime12", "home_handicap_ot"),
+    ThresholdLine("51635", "51634", "handicapOvertime13", "home_handicap_ot"),
+)
+
 _SUPPORTED_PLAYER_PARAM_KEYS = {line.param_key for line in _PLAYER_THRESHOLD_LINES}
 _PLAYER_LEAGUE_SUFFIXES = (
     " broj poena skokova asistencija",
@@ -463,21 +494,32 @@ class Bookmaker365Scraper(BaseScraper):
 
         regular_total_results: list[RawOddsData] = []
         ot_total_results: list[RawOddsData] = []
+        handicap_results: list[RawOddsData] = []
         for match in regular_matches:
             regular_total_results.extend(_parse_total_match(match, _GAME_TOTAL_LINES))
             ot_total_results.extend(_parse_total_match(match, _GAME_TOTAL_OT_LINES))
+            handicap_results.extend(_parse_total_match(match, _HANDICAP_OT_LINES))
 
         player_results: list[RawOddsData] = []
         for match in player_matches:
             player_results.extend(_parse_player_match(match, matchup_index))
 
-        results = regular_total_results + ot_total_results + player_results
+        results = (
+            regular_total_results
+            + ot_total_results
+            + handicap_results
+            + player_results
+        )
         logger.info(
-            "365 scraped %d basketball odds (%d regular leagues, %d player leagues, %d regular matches, %d player matches)",
+            (
+                "365 scraped %d basketball odds (%d regular leagues, %d player leagues, "
+                "%d regular matches, %d player matches; %d handicap rows)"
+            ),
             len(results),
             len(selected_regular_leagues),
             len(player_leagues),
             len(regular_matches),
             len(player_matches),
+            len(handicap_results),
         )
         return results
