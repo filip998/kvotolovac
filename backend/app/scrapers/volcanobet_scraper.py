@@ -41,8 +41,10 @@ _EVENT_BATCH_CONCURRENCY = 4
 
 _PLAYER_POINTS_MARKET_NAME = "broj poena igraca uklj prod"
 _GAME_TOTAL_OT_MARKET_NAME = "zbir poena uklj prod"
+_GAME_HANDICAP_OT_MARKET_NAME = "hendikep uklj prod"
 _FALLBACK_PLAYER_POINTS_MARKET_IDS = ("921",)
 _FALLBACK_GAME_TOTAL_OT_MARKET_IDS = ("225",)
+_FALLBACK_GAME_HANDICAP_OT_MARKET_IDS = ("223",)
 
 _CANONICAL_LEAGUES: dict[str, str] = {
     "nba": "nba",
@@ -68,6 +70,7 @@ class OfferBaseLookup:
     league_names: dict[str, str]
     player_points_market_ids: tuple[str, ...]
     game_total_ot_market_ids: tuple[str, ...]
+    game_handicap_ot_market_ids: tuple[str, ...] = _FALLBACK_GAME_HANDICAP_OT_MARKET_IDS
 
 
 @dataclass(frozen=True)
@@ -160,6 +163,7 @@ def _extract_market_ids(
     *,
     basketball_sport_id: str,
     normalized_name: str,
+    expected_bet_options: frozenset[str] = frozenset({"under", "over"}),
 ) -> tuple[str, ...]:
     market_ids: list[str] = []
     for market in markets:
@@ -181,7 +185,7 @@ def _extract_market_ids(
             for option in [str(bet.get("p") or "").strip().lower()]
             if option
         }
-        if bet_options != {"under", "over"}:
+        if bet_options != expected_bet_options:
             continue
 
         market_ids.append(market_id)
@@ -197,6 +201,7 @@ def _build_offer_base_lookup(data: object) -> OfferBaseLookup:
             league_names={},
             player_points_market_ids=_FALLBACK_PLAYER_POINTS_MARKET_IDS,
             game_total_ot_market_ids=_FALLBACK_GAME_TOTAL_OT_MARKET_IDS,
+            game_handicap_ot_market_ids=_FALLBACK_GAME_HANDICAP_OT_MARKET_IDS,
         )
 
     sports = payload.get("s") or []
@@ -234,6 +239,14 @@ def _build_offer_base_lookup(data: object) -> OfferBaseLookup:
         basketball_sport_id=basketball_sport_id,
         normalized_name=_GAME_TOTAL_OT_MARKET_NAME,
     )
+    # Asian-handicap market: outcome ``p`` strings are ``"1"`` (team-1
+    # covers) and ``"2"`` (team-2 covers) instead of under/over.
+    game_handicap_ot_market_ids = _extract_market_ids(
+        markets,
+        basketball_sport_id=basketball_sport_id,
+        normalized_name=_GAME_HANDICAP_OT_MARKET_NAME,
+        expected_bet_options=frozenset({"1", "2"}),
+    )
 
     return OfferBaseLookup(
         basketball_sport_id=basketball_sport_id,
@@ -243,6 +256,9 @@ def _build_offer_base_lookup(data: object) -> OfferBaseLookup:
         ),
         game_total_ot_market_ids=(
             game_total_ot_market_ids or _FALLBACK_GAME_TOTAL_OT_MARKET_IDS
+        ),
+        game_handicap_ot_market_ids=(
+            game_handicap_ot_market_ids or _FALLBACK_GAME_HANDICAP_OT_MARKET_IDS
         ),
     )
 
@@ -372,15 +388,65 @@ def _parse_game_total_ot_bet(bet: dict) -> ParsedSelection | None:
     )
 
 
+def _extract_handicap_side(value: object) -> str | None:
+    """Map Xtreme handicap outcome ``id`` to our ``over`` / ``under`` sides.
+
+    Each handicap selection in the GetEventMarkets payload has ``id`` of
+    ``"1"`` (team-1 covers ⇒ home covers ⇒ stored as ``over_odds``) or
+    ``"2"`` (team-2 covers ⇒ away covers ⇒ stored as ``under_odds``).
+    """
+    normalized = str(value or "").strip()
+    if normalized == "1":
+        return "over"
+    if normalized == "2":
+        return "under"
+    return None
+
+
+def _parse_game_handicap_ot_bet(bet: dict) -> ParsedSelection | None:
+    """Parse a single handicap (incl. OT) selection.
+
+    Storage convention (matches Phase 1): ``threshold`` is the home team's
+    expected margin (positive ⇒ home favoured).  Xtreme's ``bl`` is the
+    team-1 = home signed Asian-handicap line — when it's negative the home
+    team is favoured (must give back points), so the threshold is the
+    negation.
+
+    Unlike totals, the line is signed and may be negative or zero, so we
+    parse it through ``_parse_float`` rather than ``_parse_threshold``
+    (which rejects non-positive values for the totals' over/under
+    semantics).
+    """
+    line = _parse_float(bet.get("bl"))
+    odd_value = _parse_odd_value(bet.get("od"))
+    side = _extract_handicap_side(bet.get("id"))
+
+    if line is None or odd_value is None or side is None:
+        return None
+
+    return ParsedSelection(
+        market_type="home_handicap_ot",
+        player_name=None,
+        participant_id=None,
+        threshold=-line,
+        side=side,
+        odd_value=odd_value,
+    )
+
+
 def _parse_event_markets(
     item: object,
     *,
     context: FixtureContext,
     player_points_market_ids: set[str],
     game_total_ot_market_ids: set[str],
+    game_handicap_ot_market_ids: set[str] | None = None,
 ) -> list[RawOddsData]:
     if not isinstance(item, dict):
         return []
+
+    if game_handicap_ot_market_ids is None:
+        game_handicap_ot_market_ids = set()
 
     markets = item.get("m")
     if not isinstance(markets, list):
@@ -405,6 +471,8 @@ def _parse_event_markets(
                 parsed = _parse_player_points_bet(bet)
             elif market_id in game_total_ot_market_ids:
                 parsed = _parse_game_total_ot_bet(bet)
+            elif market_id in game_handicap_ot_market_ids:
+                parsed = _parse_game_handicap_ot_bet(bet)
             if parsed is None:
                 continue
 
@@ -552,6 +620,7 @@ class VolcanoBetScraper(BaseScraper):
                 [
                     *lookup.player_points_market_ids,
                     *lookup.game_total_ot_market_ids,
+                    *lookup.game_handicap_ot_market_ids,
                 ]
             )
         )
@@ -578,10 +647,12 @@ class VolcanoBetScraper(BaseScraper):
         }
         player_point_market_ids = set(lookup.player_points_market_ids)
         game_total_ot_market_ids = set(lookup.game_total_ot_market_ids)
+        game_handicap_ot_market_ids = set(lookup.game_handicap_ot_market_ids)
 
         results: list[RawOddsData] = []
         player_point_events: set[str] = set()
         game_total_events: set[str] = set()
+        game_handicap_events: set[str] = set()
         for batch in batch_results:
             for item in batch:
                 event_id = _clean_text(item.get("e"))
@@ -596,6 +667,7 @@ class VolcanoBetScraper(BaseScraper):
                     context=context,
                     player_points_market_ids=player_point_market_ids,
                     game_total_ot_market_ids=game_total_ot_market_ids,
+                    game_handicap_ot_market_ids=game_handicap_ot_market_ids,
                 )
                 if not parsed:
                     continue
@@ -605,15 +677,19 @@ class VolcanoBetScraper(BaseScraper):
                     player_point_events.add(event_id)
                 if any(row.market_type == "game_total_ot" for row in parsed):
                     game_total_events.add(event_id)
+                if any(row.market_type == "home_handicap_ot" for row in parsed):
+                    game_handicap_events.add(event_id)
 
         logger.info(
             "VolcanoBet scraped %d basketball odds (%d player points from %d events, "
-            "%d OT totals from %d events across %d fixtures)",
+            "%d OT totals from %d events, %d OT handicaps from %d events across %d fixtures)",
             len(results),
             sum(row.market_type == "player_points" for row in results),
             len(player_point_events),
             sum(row.market_type == "game_total_ot" for row in results),
             len(game_total_events),
+            sum(row.market_type == "home_handicap_ot" for row in results),
+            len(game_handicap_events),
             len(fixture_contexts),
         )
         return results
