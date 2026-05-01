@@ -128,6 +128,23 @@ _GAME_TOTAL_OT_LINES = [
     ("51647", "51646", "overUnderOvertime13"),
 ]
 
+# OT-inclusive Asian handicap (full game). MerkurXTip exposes a single
+# main line per match under params["handicapOvertime"] alongside odds
+# codes 50431 ("1" = team1=home covers) and 50430 ("2" = team2=away covers).
+# The list call already returns these — no new HTTP. Each (over_code,
+# under_code, param_key) tuple matches the GameTotalLine shape used by
+# the totals lines above.
+#
+# IMPORTANT: MerkurXTip's sign convention is the *inverse* of MaxBet /
+# AdmiralBet / PinnBet / Mozzart. MerkurXTip stores ``handicapOvertime``
+# as **team1's expected margin** (positive = team1 favoured), whereas the
+# others store it as **team1's signed Asian handicap** (negative = team1
+# favoured). To canonicalise to our home-perspective ``threshold`` we use
+# ``threshold = +line`` (no flip) — see ``_parse_handicap_ot_match``.
+_HANDICAP_OT_LINES: list[tuple[str, str, str]] = [
+    ("50431", "50430", "handicapOvertime"),
+]
+
 _KNOWN_LEAGUE_IDS: list[int] = [
     2314461,  # NBA Igrači
     2314422,  # ACB Igrači
@@ -310,6 +327,60 @@ def _parse_game_total_ot_match(match: dict) -> list[RawOddsData]:
             )
         )
 
+    return results
+
+
+def _parse_handicap_ot_match(match: dict) -> list[RawOddsData]:
+    """Parse OT-inclusive Asian handicap rows from a list/league match.
+
+    MerkurXTip stores ``handicapOvertime`` as **team1's expected margin**
+    (positive = team1=home favoured); we forward the value as-is into
+    ``threshold`` (no sign flip), since the analyzer canonical convention
+    is "positive threshold = home favoured". Outcome ``"1"`` (odds code
+    ``50431``) pays when the home team covers; ``"2"`` (``50430``) pays
+    when the away team covers.
+    """
+    if "igrači" in match.get("leagueName", "").lower():
+        return []
+
+    home_team = match.get("home", "").strip()
+    away_team = match.get("away", "").strip()
+    if not home_team or not away_team:
+        return []
+
+    params = match.get("params", {})
+    odds = match.get("odds", {})
+
+    results: list[RawOddsData] = []
+    for over_code, under_code, param_key in _HANDICAP_OT_LINES:
+        line_str = params.get(param_key)
+        if line_str is None or line_str == "":
+            continue
+        try:
+            threshold = float(line_str)
+        except (ValueError, TypeError):
+            continue
+
+        over_odds = odds.get(over_code)
+        under_odds = odds.get(under_code)
+        if over_odds is None and under_odds is None:
+            continue
+
+        results.append(
+            RawOddsData(
+                bookmaker_id="merkurxtip",
+                league_id=_extract_league_id(match.get("leagueName", "")),
+                sport="basketball",
+                home_team=home_team,
+                away_team=away_team,
+                market_type="home_handicap_ot",
+                player_name=None,
+                threshold=threshold,
+                over_odds=over_odds,
+                under_odds=under_odds,
+                start_time=_parse_start_time(match.get("kickOffTime")),
+            )
+        )
     return results
 
 
@@ -496,14 +567,19 @@ class MerkurXTipScraper(BaseScraper):
             for match in total_matches
             for result in _parse_game_total_ot_match(match)
         ]
+        handicap_results = [
+            result
+            for match in total_matches
+            for result in _parse_handicap_ot_match(match)
+        ]
         total_match_ids = list(dict.fromkeys(_get_total_match_ids(total_matches)))
 
-        if not player_results and not total_results:
+        if not player_results and not total_results and not handicap_results:
             logger.warning(
                 (
                     "MerkurXTip: no list-parseable player odds found in group listing or "
                     "%d fallback leagues, "
-                    "and no OT total matches found in basketball listing"
+                    "and no OT total/handicap matches found in basketball listing"
                 ),
                 len(_KNOWN_LEAGUE_IDS),
             )
@@ -513,26 +589,39 @@ class MerkurXTipScraper(BaseScraper):
         if self._detail_mode == "full" and total_match_ids:
             concurrency = _get_detail_fetch_concurrency(self._http, len(total_match_ids))
             semaphore = asyncio.Semaphore(concurrency)
-            total_detail_results = await asyncio.gather(
+
+            def _parse_total_and_handicap(match: dict) -> list[RawOddsData]:
+                # Parse both markets from the same per-match payload so the
+                # fan-out costs the same as before (no extra HTTP per event).
+                return _parse_game_total_ot_match(match) + _parse_handicap_ot_match(match)
+
+            detail_results = await asyncio.gather(
                 *(
-                    self._fetch_match_detail(mid, semaphore, _parse_game_total_ot_match)
+                    self._fetch_match_detail(mid, semaphore, _parse_total_and_handicap)
                     for mid in total_match_ids
                 )
             )
-            total_results.extend(item for batch in total_detail_results for item in batch)
+            for batch in detail_results:
+                for row in batch:
+                    if row.market_type == "home_handicap_ot":
+                        handicap_results.append(row)
+                    else:
+                        total_results.append(row)
         total_results = self._dedupe_raw_odds(total_results)
-        results = [*player_results, *total_results]
+        handicap_results = self._dedupe_raw_odds(handicap_results)
+        results = [*player_results, *total_results, *handicap_results]
 
         logger.info(
             (
                 "MerkurXTip scraped %d player odds from %d player list matches via %s "
-                "and %d OT total odds from %d basketball matches "
+                "and %d OT total + %d OT handicap odds from %d basketball matches "
                 "(total detail mode=%s concurrency=%d)"
             ),
             len(player_results),
             len(player_matches),
             source,
             len(total_results),
+            len(handicap_results),
             len(total_match_ids),
             self._detail_mode,
             concurrency,
