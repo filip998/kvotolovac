@@ -12,6 +12,7 @@ from app.scrapers.oktagonbet_scraper import (
     OktagonBetScraper,
     _parse_match,
     _parse_game_total_ot_match,
+    _parse_handicap_ot_match,
     _parse_match_detail,
     _parse_bulk_match,
     _parse_start_time,
@@ -363,6 +364,115 @@ def test_parse_game_total_ot_match_from_detail_fixture(totals_fixture_data):
 
 def test_parse_game_total_ot_match_excludes_combo_only_match(totals_fixture_data):
     assert _parse_game_total_ot_match(totals_fixture_data["list"]["esMatches"][1]) == []
+
+
+# ── Handicap (+OT) parsing ──────────────────────────────────────────────
+
+
+def test_parse_handicap_ot_match_positive_line_means_team1_favoured():
+    """OktagonBet's handicapOvertime is team1's expected margin (positive =
+    team1=home favoured), so threshold = +line (no flip), opposite of
+    MaxBet/AdmiralBet/PinnBet/Mozzart but same as MerkurXTip.
+
+    Real live shape: Orlando vs Detroit returned ``handicapOvertime=3.5``
+    with "1"=1.9, "2"=1.9.
+    """
+    match = {
+        "id": 1,
+        "home": "Orlando",
+        "away": "Detroit",
+        "leagueName": "USA NBA",
+        "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "3.5"},
+        "odds": {"50431": 1.9, "50430": 1.9},
+    }
+    results = _parse_handicap_ot_match(match)
+    assert len(results) == 1
+    row = results[0]
+    assert row.market_type == "home_handicap_ot"
+    assert row.threshold == 3.5
+    assert row.over_odds == 1.9
+    assert row.under_odds == 1.9
+    assert row.bookmaker_id == "oktagonbet"
+    assert row.home_team == "Orlando"
+    assert row.away_team == "Detroit"
+    assert row.player_name is None
+
+
+def test_parse_handicap_ot_match_negative_line_means_team1_underdog():
+    """Houston vs LA Lakers returned ``handicapOvertime=-3.5``: Houston
+    (home) underdog by 3.5; threshold stays at -3.5.
+    """
+    match = {
+        "id": 2,
+        "home": "Houston",
+        "away": "LA Lakers",
+        "leagueName": "USA NBA",
+        "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "-3.5"},
+        "odds": {"50431": 1.9, "50430": 1.9},
+    }
+    results = _parse_handicap_ot_match(match)
+    assert len(results) == 1
+    assert results[0].threshold == -3.5
+
+
+def test_parse_handicap_ot_match_pickem_zero_line_emits_row():
+    match = {
+        "id": 3,
+        "home": "A",
+        "away": "B",
+        "leagueName": "Test",
+        "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "0"},
+        "odds": {"50431": 1.92, "50430": 1.88},
+    }
+    results = _parse_handicap_ot_match(match)
+    assert len(results) == 1
+    assert results[0].threshold == 0.0
+
+
+def test_parse_handicap_ot_match_skips_player_market():
+    match = {
+        "id": 4,
+        "home": "Jokic",
+        "away": "Denver",
+        "leagueName": "Igrači ~ USA NBA",
+        "leagueCategory": "PL",
+        "params": {"handicapOvertime": "-3.5"},
+        "odds": {"50431": 1.9, "50430": 1.9},
+    }
+    assert _parse_handicap_ot_match(match) == []
+
+
+def test_parse_handicap_ot_match_skips_unparseable_or_missing():
+    bad = {
+        "id": 5, "home": "A", "away": "B", "leagueName": "Test",
+        "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "garbage"},
+        "odds": {"50431": 1.9, "50430": 1.9},
+    }
+    no_odds = {
+        "id": 6, "home": "A", "away": "B", "leagueName": "Test",
+        "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "-3.5"},
+        "odds": {},
+    }
+    assert _parse_handicap_ot_match(bad) == []
+    assert _parse_handicap_ot_match(no_odds) == []
+
+
+def test_parse_game_total_ot_match_does_not_emit_handicap_after_change():
+    match = {
+        "id": 7,
+        "home": "A",
+        "away": "B",
+        "leagueName": "Test",
+        "kickOffTime": 1777470900000,
+        "params": {"handicapOvertime": "-3.5"},
+        "odds": {"50431": 1.9, "50430": 1.9},
+    }
+    assert _parse_game_total_ot_match(match) == []
 
 
 def test_parse_match_detail_fixed_thresholds():
