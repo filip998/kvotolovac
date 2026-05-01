@@ -16,7 +16,9 @@ from app.scrapers.balkanbet_scraper import (
     _format_filter_from,
     _normalize_start_time,
     _parse_football_outcome_list,
+    _parse_game_handicap_ot_list,
     _parse_game_total_ot_list,
+    _parse_handicap_outcome_label,
     _parse_player_name,
     _parse_player_props_list,
 )
@@ -394,6 +396,307 @@ def test_parse_game_total_ot_list_skips_invalid_match_name():
     assert _parse_game_total_ot_list(data, _BASKETBALL_SPEC) == []
 
 
+# ── _parse_handicap_outcome_label ─────────────────────────
+
+
+def test_parse_handicap_outcome_label_h1_positive():
+    assert _parse_handicap_outcome_label("H1 9.5") == ("H1", 9.5)
+
+
+def test_parse_handicap_outcome_label_h2_negative():
+    assert _parse_handicap_outcome_label("H2 -9.5") == ("H2", -9.5)
+
+
+def test_parse_handicap_outcome_label_normalises_p_to_h():
+    assert _parse_handicap_outcome_label("P1 -6.5") == ("H1", -6.5)
+    assert _parse_handicap_outcome_label("P2 +6.5") == ("H2", 6.5)
+
+
+def test_parse_handicap_outcome_label_zero_pickem():
+    assert _parse_handicap_outcome_label("H1 0") == ("H1", 0.0)
+    assert _parse_handicap_outcome_label("H2 0") == ("H2", 0.0)
+
+
+def test_parse_handicap_outcome_label_comma_decimal():
+    assert _parse_handicap_outcome_label("H1 1,5") == ("H1", 1.5)
+
+
+def test_parse_handicap_outcome_label_rejects_non_handicap():
+    assert _parse_handicap_outcome_label("Više od 210.5") is None
+    assert _parse_handicap_outcome_label("Domaćin Manje od 103.5") is None
+    assert _parse_handicap_outcome_label("") is None
+    assert _parse_handicap_outcome_label("H3 1.5") is None
+    assert _parse_handicap_outcome_label("H1") is None  # missing line
+    assert _parse_handicap_outcome_label("H1 abc") is None
+
+
+# ── _parse_game_handicap_ot_list ──────────────────────────
+
+
+def _build_handicap_event(
+    event_id: int,
+    name: str,
+    h1_label: str,
+    h1_odds: float | None,
+    h2_label: str,
+    h2_odds: float | None,
+    *,
+    market_id: int = 524,
+    g: list[str] | None = None,
+    extra_outcomes: list[dict] | None = None,
+) -> dict:
+    """Build a minimal NSoft event JSON containing one handicap market.
+
+    Keeps the test fixtures explicit and self-contained so the regression
+    intent of each test case is obvious from the call site.
+    """
+    outcomes: list[dict] = []
+    if h1_odds is not None or h1_label:
+        outcomes.append({"a": 1, "e": h1_label, "g": h1_odds})
+    if h2_odds is not None or h2_label:
+        outcomes.append({"a": 2, "e": h2_label, "g": h2_odds})
+    if extra_outcomes:
+        outcomes.extend(extra_outcomes)
+    return {
+        "a": event_id,
+        "j": name,
+        "n": "2026-04-12T19:00:00.000Z",
+        "c": 999,
+        "f": 999,
+        "o": {
+            "1": {
+                "a": event_id * 10,
+                "b": market_id,
+                "g": g if g is not None else [],
+                "h": outcomes,
+            }
+        },
+    }
+
+
+def test_parse_game_handicap_ot_list_signed_positive_line():
+    """Live shape: ``H1 +9.5`` / ``H2 -9.5`` ⇒ home is the underdog (+9.5)
+    so home expected margin = -9.5 ⇒ stored threshold is -9.5."""
+    data = {
+        "data": {
+            "events": [
+                _build_handicap_event(
+                    1, "Detroit Pistons - Orlando Magic",
+                    "H1 9.5", 1.35, "H2 -9.5", 2.85,
+                    g=["9.5"],
+                )
+            ]
+        }
+    }
+    results = _parse_game_handicap_ot_list(data, _BASKETBALL_SPEC)
+    assert len(results) == 1
+    r = results[0]
+    assert r.market_type == "home_handicap_ot"
+    assert r.home_team == "Detroit Pistons"
+    assert r.away_team == "Orlando Magic"
+    assert r.threshold == -9.5
+    assert r.over_odds == 1.35   # home covers
+    assert r.under_odds == 2.85  # away covers
+
+
+def test_parse_game_handicap_ot_list_signed_negative_line():
+    """``H1 -3.5`` / ``H2 +3.5`` ⇒ home favoured by 3.5 ⇒ threshold +3.5."""
+    data = {
+        "data": {
+            "events": [
+                _build_handicap_event(
+                    2, "Orlando Magic - Detroit Pistons",
+                    "H1 -3.5", 2.8, "H2 3.5", 1.36,
+                    g=["-3.5"],
+                )
+            ]
+        }
+    }
+    results = _parse_game_handicap_ot_list(data, _BASKETBALL_SPEC)
+    assert len(results) == 1
+    assert results[0].threshold == 3.5
+    assert results[0].over_odds == 2.8
+    assert results[0].under_odds == 1.36
+
+
+def test_parse_game_handicap_ot_list_legacy_p1_p2_label_shape():
+    """Older NSoft responses (and the existing fixture) use ``P1 / P2``
+    instead of ``H1 / H2``; the parser must accept both."""
+    data = {
+        "data": {
+            "events": [
+                _build_handicap_event(
+                    3, "ASVEL Lyon-Villeurbanne - Fenerbahce Istanbul",
+                    "P1 -6.5", 1.85, "P2 +6.5", 1.85,
+                    g=["6.5"],
+                )
+            ]
+        }
+    }
+    results = _parse_game_handicap_ot_list(data, _BASKETBALL_SPEC)
+    assert len(results) == 1
+    r = results[0]
+    # P1 -6.5 means team1 (home) -6.5 ⇒ home favoured by 6.5 ⇒ threshold +6.5
+    assert r.threshold == 6.5
+    assert r.over_odds == 1.85
+    assert r.under_odds == 1.85
+
+
+def test_parse_game_handicap_ot_list_zero_pickem():
+    """Pick'em (line = 0) is a valid handicap; threshold must be 0."""
+    data = {
+        "data": {
+            "events": [
+                _build_handicap_event(
+                    4, "Team A - Team B",
+                    "H1 0", 1.9, "H2 0", 1.9,
+                    g=["0"],
+                )
+            ]
+        }
+    }
+    results = _parse_game_handicap_ot_list(data, _BASKETBALL_SPEC)
+    assert len(results) == 1
+    assert results[0].threshold == 0.0
+    assert results[0].over_odds == 1.9
+    assert results[0].under_odds == 1.9
+
+
+def test_parse_game_handicap_ot_list_skips_when_h1_line_missing():
+    """If the H1 outcome label is missing or unparseable we cannot recover
+    the signed line, so the row must be skipped rather than persisting an
+    incorrect threshold."""
+    data = {
+        "data": {
+            "events": [
+                _build_handicap_event(
+                    5, "Team A - Team B",
+                    "Garbage label", 1.9, "H2 -3.5", 1.9,
+                    g=["3.5"],
+                )
+            ]
+        }
+    }
+    assert _parse_game_handicap_ot_list(data, _BASKETBALL_SPEC) == []
+
+
+def test_parse_game_handicap_ot_list_skips_when_no_odds():
+    """If both H1 and H2 odds are missing the market is unplayable."""
+    data = {
+        "data": {
+            "events": [
+                _build_handicap_event(
+                    6, "Team A - Team B",
+                    "H1 1.5", None, "H2 -1.5", None,
+                    g=["1.5"],
+                )
+            ]
+        }
+    }
+    assert _parse_game_handicap_ot_list(data, _BASKETBALL_SPEC) == []
+
+
+def test_parse_game_handicap_ot_list_keeps_partial_one_sided_odds():
+    """If only the H1 (or H2) side is priced, still emit the row so the
+    discrepancy analyzer can pair it with another bookmaker's same-line
+    offering."""
+    data = {
+        "data": {
+            "events": [
+                _build_handicap_event(
+                    7, "Team A - Team B",
+                    "H1 3.5", 2.0, "H2 -3.5", None,
+                    g=["3.5"],
+                )
+            ]
+        }
+    }
+    results = _parse_game_handicap_ot_list(data, _BASKETBALL_SPEC)
+    assert len(results) == 1
+    assert results[0].threshold == -3.5
+    assert results[0].over_odds == 2.0
+    assert results[0].under_odds is None
+
+
+def test_parse_game_handicap_ot_list_skips_invalid_match_name():
+    data = {
+        "data": {
+            "events": [
+                _build_handicap_event(
+                    8, "no-separator",
+                    "H1 1.5", 1.9, "H2 -1.5", 1.9,
+                    g=["1.5"],
+                )
+            ]
+        }
+    }
+    assert _parse_game_handicap_ot_list(data, _BASKETBALL_SPEC) == []
+
+
+def test_parse_game_handicap_ot_list_ignores_unrelated_markets():
+    """Market ids not in ``game_handicap_ot_market_ids`` (e.g. totals
+    market 530) must be skipped even when their outcome labels happen to
+    look numeric."""
+    data = {
+        "data": {
+            "events": [
+                {
+                    "a": 9,
+                    "j": "Team A - Team B",
+                    "n": "2026-04-12T19:00:00.000Z",
+                    "o": {
+                        "1": {
+                            "a": 90,
+                            "b": 530,  # totals market, NOT handicap
+                            "g": ["207.5"],
+                            "h": [
+                                {"e": "Više od 207.5", "g": 1.85},
+                                {"e": "Manje od 207.5", "g": 1.85},
+                            ],
+                        }
+                    },
+                }
+            ]
+        }
+    }
+    assert _parse_game_handicap_ot_list(data, _BASKETBALL_SPEC) == []
+
+
+def test_parse_game_total_ot_list_ignores_handicap_market():
+    """The totals parser must not accidentally pick up handicap market 524
+    rows (regression for a generic ``g[0]`` consumer)."""
+    data = {
+        "data": {
+            "events": [
+                _build_handicap_event(
+                    10, "Team A - Team B",
+                    "H1 5.5", 1.85, "H2 -5.5", 1.85,
+                    g=["5.5"],
+                )
+            ]
+        }
+    }
+    assert _parse_game_total_ot_list(data, _BASKETBALL_SPEC) == []
+
+
+def test_parse_game_handicap_ot_list_from_fixture(game_total_ot_list_data):
+    """The list-fixture handicap entries (using the legacy P1/P2 label
+    shape) must round-trip through the parser and produce the right
+    direction."""
+    results = _parse_game_handicap_ot_list(
+        game_total_ot_list_data, _BASKETBALL_SPEC
+    )
+    assert len(results) == 1
+    r = results[0]
+    assert r.market_type == "home_handicap_ot"
+    assert r.home_team == "ASVEL Lyon-Villeurbanne"
+    assert r.away_team == "Fenerbahce Istanbul"
+    # P1 -6.5 → team1 favoured ⇒ threshold = +6.5
+    assert r.threshold == 6.5
+    assert r.over_odds == 1.85
+    assert r.under_odds == 1.85
+
+
 # ── Scraper integration ──────────────────────────────────
 
 
@@ -419,6 +722,7 @@ async def test_scraper_returns_data(player_list_data, game_total_ot_list_data):
     assert all(r.bookmaker_id == "balkanbet" for r in results)
     assert "player_points" in {r.market_type for r in results}
     assert "game_total_ot" in {r.market_type for r in results}
+    assert "home_handicap_ot" in {r.market_type for r in results}
 
 
 @pytest.mark.asyncio
@@ -435,8 +739,11 @@ async def test_scraper_returns_ot_totals_from_basketball_list(game_total_ot_list
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
         results = await scraper.scrape_odds("basketball")
 
-    assert len(results) == 3
-    assert {r.market_type for r in results} == {"game_total_ot"}
+    # Same single fetch produces totals AND handicap rows: 3 totals + 1 handicap.
+    market_types = {r.market_type for r in results}
+    assert market_types == {"game_total_ot", "home_handicap_ot"}
+    assert sum(1 for r in results if r.market_type == "game_total_ot") == 3
+    assert sum(1 for r in results if r.market_type == "home_handicap_ot") == 1
 
 
 @pytest.mark.asyncio
@@ -500,8 +807,11 @@ async def test_scraper_keeps_ot_totals_when_player_list_fails(game_total_ot_list
     with patch.object(scraper._http, "get_json", side_effect=mock_get):
         results = await scraper.scrape_odds("basketball")
 
-    assert len(results) == 3
-    assert {r.market_type for r in results} == {"game_total_ot"}
+    assert len(results) == 4
+    market_types = {r.market_type for r in results}
+    assert market_types == {"game_total_ot", "home_handicap_ot"}
+    assert sum(1 for r in results if r.market_type == "game_total_ot") == 3
+    assert sum(1 for r in results if r.market_type == "home_handicap_ot") == 1
 
 
 @pytest.mark.asyncio
