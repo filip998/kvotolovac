@@ -213,6 +213,8 @@ export interface TeamReviewApproval {
   saved_team_id: number;
   saved_team_name: string;
   resolved_team_name: string | null;
+  merged_source_team_id?: number | null;
+  merged_source_team_name?: string | null;
 }
 
 export interface TeamReviewAction {

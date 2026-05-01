@@ -533,10 +533,14 @@ export default function Dashboard() {
       },
       {
         onSuccess: (result) => {
+          const resolvedSuffix = result.resolved_team_name
+            ? ` Current canonical: ${result.resolved_team_name}.`
+            : '';
+          const mergedPrefix = result.merged_source_team_name
+            ? `Merged canonical team ${result.merged_source_team_name} into ${result.saved_team_name}. `
+            : '';
           setTeamReviewMessage(
-            result.resolved_team_name
-              ? `Saved "${result.saved_alias}" -> ${result.saved_team_name}. Current canonical: ${result.resolved_team_name}. Run the next scrape to apply it.`
-              : `Saved "${result.saved_alias}" -> ${result.saved_team_name}. Run the next scrape to apply it.`
+            `${mergedPrefix}Saved "${result.saved_alias}" -> ${result.saved_team_name}.${resolvedSuffix} Run the next scrape to apply it.`
           );
           void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
           void queryClient.invalidateQueries({ queryKey: ['canonicalTeams'] });

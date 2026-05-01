@@ -241,6 +241,8 @@ class TeamReviewApprovalOut(BaseModel):
     saved_team_id: int
     saved_team_name: str
     resolved_team_name: Optional[str] = None
+    merged_source_team_id: Optional[int] = None
+    merged_source_team_name: Optional[str] = None
 
 
 class TeamReviewActionOut(BaseModel):

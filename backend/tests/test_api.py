@@ -1003,6 +1003,69 @@ async def test_team_review_approval_rejects_circular_alias(
 
 
 @pytest.mark.asyncio
+async def test_team_review_approval_merges_existing_canonical_duplicate(
+    client: AsyncClient,
+    team_registry_file,
+):
+    batch_scraped_at = "2026-04-16T21:50:00+00:00"
+    await odds_store.upsert_bookmaker("volcanobet", "VolcanoBet")
+    await odds_store.upsert_league("paraguay_lnb", "Paraguay LNB", "basketball", "Paraguay")
+    target = create_canonical_team(display_name="Deportivo Amambay", sport="basketball")
+    duplicate = create_canonical_team(display_name="Amambay", sport="basketball")
+    case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic.model_validate(
+            {
+                "bookmaker_id": "volcanobet",
+                "raw_league_id": "Paraguay LNB",
+                "normalized_raw_league_id": "paraguay lnb",
+                "scope_league_id": "paraguay_lnb",
+                "raw_team_name": "Amambay",
+                "normalized_raw_team_name": "Amambay",
+                "suggested_team_id": target.team_id,
+                "suggested_team_name": target.team_name,
+                "start_time": batch_scraped_at,
+                "reason_code": "candidate_team_match_same_start_time",
+                "confidence": "high",
+                "similarity_score": 100,
+                "candidate_teams": [
+                    {
+                        "team_id": target.team_id,
+                        "team_name": target.team_name,
+                        "score": 100,
+                    },
+                    {
+                        "team_id": duplicate.team_id,
+                        "team_name": duplicate.team_name,
+                        "score": 100,
+                    },
+                ],
+                "evidence": ["Stronger competing canonical event: support x3"],
+                "status": "pending",
+            }
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    approve_resp = await client.post(
+        f"/api/v1/team-review/cases/{case_id}/approve",
+        json={"team_id": target.team_id},
+    )
+    db = await get_db()
+    duplicate_rows = await db.execute_fetchall(
+        "SELECT is_active, merged_into_team_id FROM canonical_teams WHERE id = ?",
+        (duplicate.team_id,),
+    )
+
+    assert approve_resp.status_code == 200
+    assert approve_resp.json()["saved_team_id"] == target.team_id
+    assert approve_resp.json()["merged_source_team_id"] == duplicate.team_id
+    assert normalize_team_name("Amambay", None, "volcanobet") == target.team_name
+    assert duplicate_rows[0]["is_active"] == 0
+    assert duplicate_rows[0]["merged_into_team_id"] == target.team_id
+
+
+@pytest.mark.asyncio
 async def test_team_review_approval_only_updates_clicked_case(
     client: AsyncClient,
     team_registry_file,

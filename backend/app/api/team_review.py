@@ -13,14 +13,86 @@ from ..models.schemas import (
     TeamReviewOut,
 )
 from ..services.team_registry import (
+    CanonicalTeamSummary,
     CircularAliasError,
+    TeamAliasResolution,
     create_canonical_team,
     get_canonical_team,
+    merge_canonical_teams,
     remember_team_alias,
+    resolve_team_alias,
 )
+from ..services.text_normalizer import normalize_identity_text
 from ..store import odds_store
 
 router = APIRouter(prefix="/team-review", tags=["team-review"])
+
+
+async def _remember_team_alias(
+    case: TeamReviewOut,
+    *,
+    target_team_name: str,
+) -> TeamAliasResolution:
+    return await asyncio.to_thread(
+        remember_team_alias,
+        bookmaker_id=case.bookmaker_id,
+        raw_team_name=case.raw_team_name,
+        team_name=target_team_name,
+        sport=case.sport,
+    )
+
+
+def _is_canonical_duplicate_conflict(
+    case: TeamReviewOut,
+    existing_resolution: TeamAliasResolution | None,
+    source_team: CanonicalTeamSummary | None,
+    *,
+    target_team_id: int,
+) -> bool:
+    return (
+        existing_resolution is not None
+        and source_team is not None
+        and existing_resolution.team_id != target_team_id
+        and existing_resolution.bookmaker_id == ""
+        and source_team.sport == case.sport
+        and normalize_identity_text(source_team.display_name)
+        == normalize_identity_text(case.raw_team_name)
+    )
+
+
+async def _merge_existing_canonical_duplicate_for_review(
+    case: TeamReviewOut,
+    *,
+    target_team_id: int,
+    target_team_name: str,
+) -> tuple[TeamAliasResolution, CanonicalTeamSummary] | None:
+    existing_resolution = await asyncio.to_thread(
+        resolve_team_alias,
+        case.raw_team_name,
+        bookmaker_id=case.bookmaker_id,
+        sport=case.sport,
+    )
+    source_team = (
+        await asyncio.to_thread(get_canonical_team, existing_resolution.team_id)
+        if existing_resolution is not None
+        else None
+    )
+    if not _is_canonical_duplicate_conflict(
+        case,
+        existing_resolution,
+        source_team,
+        target_team_id=target_team_id,
+    ):
+        return None
+
+    assert source_team is not None
+    await asyncio.to_thread(
+        merge_canonical_teams,
+        source_team_id=source_team.id,
+        target_team_id=target_team_id,
+    )
+    resolution = await _remember_team_alias(case, target_team_name=target_team_name)
+    return resolution, source_team
 
 
 @router.get("/cases", response_model=list[TeamReviewOut])
@@ -95,16 +167,25 @@ async def approve_team_review_case(
             detail="Review case has no suggested team; choose a candidate or create a new canonical team",
         )
 
+    merged_source_team: CanonicalTeamSummary | None = None
     try:
-        resolution = await asyncio.to_thread(
-            remember_team_alias,
-            bookmaker_id=case.bookmaker_id,
-            raw_team_name=case.raw_team_name,
-            team_name=target_team_name,
-            sport=case.sport,
-        )
+        resolution = await _remember_team_alias(case, target_team_name=target_team_name)
     except CircularAliasError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        try:
+            merged_result = (
+                await _merge_existing_canonical_duplicate_for_review(
+                    case,
+                    target_team_id=target_team_id,
+                    target_team_name=target_team_name,
+                )
+                if target_team_id > 0
+                else None
+            )
+        except CircularAliasError as retry_exc:
+            raise HTTPException(status_code=409, detail=str(retry_exc)) from retry_exc
+        if merged_result is None:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        resolution, merged_source_team = merged_result
     await odds_store.mark_team_review_case_approved(case_id)
     return TeamReviewApprovalOut(
         case_id=case_id,
@@ -116,6 +197,12 @@ async def approve_team_review_case(
             resolution.team_name
             if resolution.team_name != target_team_name
             else None
+        ),
+        merged_source_team_id=(
+            merged_source_team.id if merged_source_team is not None else None
+        ),
+        merged_source_team_name=(
+            merged_source_team.display_name if merged_source_team is not None else None
         ),
     )
 
