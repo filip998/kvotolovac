@@ -113,6 +113,22 @@ _GAME_TOTAL_OT_LINES = [
     ("51647", "51646", "overUnderOvertime13"),
 ]
 
+# OT-inclusive Asian handicap (full game). OktagonBet's basketball totals
+# list call already returns ``params["handicapOvertime"]`` and odds codes
+# 50431 ("1" = team1=home covers) / 50430 ("2" = team2=away covers) on the
+# same response — no new HTTP needed. Each match exposes only one main line
+# (no ladder).
+#
+# OktagonBet's sign convention matches MerkurXTip (the same Tipster
+# white-label platform): ``handicapOvertime`` is **team1's expected margin**
+# (positive = team1 favoured), so the parser uses ``threshold = +line``
+# WITHOUT a sign flip — this is the *opposite* of MaxBet/AdmiralBet/PinnBet/
+# Mozzart which store team1's signed Asian handicap (negative = team1
+# favoured).
+_HANDICAP_OT_LINES: list[tuple[str, str, str]] = [
+    ("50431", "50430", "handicapOvertime"),
+]
+
 _LEAGUE_PREFIX = "igrači ~"
 
 # Map OktagonBet league suffixes to canonical IDs used by other scrapers,
@@ -378,6 +394,53 @@ def _parse_game_total_ot_match(match: dict) -> list[RawOddsData]:
             )
         )
 
+    return results
+
+
+def _parse_handicap_ot_match(match: dict) -> list[RawOddsData]:
+    """Parse OT-inclusive Asian handicap rows from a list-mode match.
+
+    OktagonBet stores ``handicapOvertime`` as **team1's expected margin**
+    (positive = team1=home favoured), so we forward the value as-is into
+    ``threshold`` (no sign flip), since the analyzer canonical convention
+    is "positive threshold = home favoured". Outcome ``"1"`` (odds code
+    50431) pays when home covers; ``"2"`` (50430) pays when away covers.
+    """
+    if _is_player_market(match):
+        return []
+
+    home_team = match.get("home", "").strip()
+    away_team = match.get("away", "").strip()
+    if not home_team or not away_team:
+        return []
+
+    params = match.get("params", {}) or {}
+    odds = match.get("odds", {}) or {}
+
+    results: list[RawOddsData] = []
+    for over_code, under_code, param_key in _HANDICAP_OT_LINES:
+        line_str = params.get(param_key)
+        if line_str is None or line_str == "":
+            continue
+        try:
+            threshold = float(line_str)
+        except (TypeError, ValueError):
+            continue
+
+        over_odds = odds.get(over_code)
+        under_odds = odds.get(under_code)
+        if over_odds is None and under_odds is None:
+            continue
+
+        results.append(
+            _build_game_total_raw_odds(
+                match,
+                market_type="home_handicap_ot",
+                threshold=threshold,
+                over_odds=over_odds,
+                under_odds=under_odds,
+            )
+        )
     return results
 
 
@@ -688,6 +751,7 @@ class OktagonBetScraper(BaseScraper):
         for match_id, list_match in list_matches.items():
             results.extend(_parse_match(list_match))
             results.extend(_parse_game_total_ot_match(list_match))
+            results.extend(_parse_handicap_ot_match(list_match))
 
             bulk_match = bulk_by_id.get(match_id) or bulk_by_id.get(str(match_id))
             if bulk_match:
