@@ -66,6 +66,21 @@ _PLAYER_THRESHOLD_LINES: tuple[ThresholdLine, ...] = (
 )
 _GAME_TOTAL_OT_LINE = ThresholdLine("50445", "50444", "overUnderOvertime", "game_total_ot")
 
+# OT-inclusive Asian handicap (full game). BetOle's existing
+# /restapi/offer/sr/sport/B/mob basketball list call already returns
+# params["handicapOvertime"] and odds codes 50431 ("1" = home covers) /
+# 50430 ("2" = away covers) on the same response — no new HTTP needed.
+# Each match exposes one main line per match (no ladder).
+#
+# BetOle is on the same Tipster white-label platform as MerkurXTip /
+# OktagonBet, and shares their convention: ``handicapOvertime`` is
+# **team1's expected margin** (positive = team1=home favoured), so the
+# parser uses ``threshold = +line`` WITHOUT a sign flip — opposite of
+# MaxBet/AdmiralBet/PinnBet/Mozzart.
+_HANDICAP_OT_LINE = ThresholdLine(
+    "50431", "50430", "handicapOvertime", "home_handicap_ot",
+)
+
 _CANONICAL_LEAGUES: dict[str, str] = {
     "usa nba play offs": "nba",
     "usa nba play in": "nba",
@@ -228,6 +243,52 @@ def _parse_regular_match(match: dict) -> list[RawOddsData]:
     ]
 
 
+def _parse_handicap_match(match: dict) -> list[RawOddsData]:
+    """Parse OT-inclusive Asian handicap rows from a regular-feed match.
+
+    BetOle stores ``handicapOvertime`` as team1's expected margin
+    (positive = team1=home favoured), so we forward the value as
+    ``threshold`` without sign flip. Outcome ``"1"`` (code 50431) pays
+    when home covers; ``"2"`` (50430) pays when away covers.
+    """
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return []
+
+    params = match.get("params") or {}
+    odds = match.get("odds") or {}
+
+    line_str = params.get(_HANDICAP_OT_LINE.param_key)
+    if line_str is None or line_str == "":
+        return []
+    threshold = _parse_float(line_str)
+    if threshold is None:
+        return []
+
+    over_odds = _parse_float(odds.get(_HANDICAP_OT_LINE.over_code))
+    under_odds = _parse_float(odds.get(_HANDICAP_OT_LINE.under_code))
+    if over_odds is None and under_odds is None:
+        return []
+
+    return [
+        RawOddsData(
+            bookmaker_id=_BOOKMAKER_ID,
+            league_id=_extract_league_id(match.get("leagueName")),
+            sport="basketball",
+            home_team=home_team,
+            away_team=away_team,
+            source_url=_build_source_url(_parse_int(match.get("id"))),
+            market_type=_HANDICAP_OT_LINE.market_type,
+            player_name=None,
+            threshold=threshold,
+            over_odds=over_odds,
+            under_odds=under_odds,
+            start_time=_parse_start_time(match.get("kickOffTime")),
+        )
+    ]
+
+
 def _parse_player_match(match: dict, matchup_index: MatchupIndex) -> list[RawOddsData]:
     player_name = (match.get("home") or "").strip()
     if not player_name:
@@ -328,6 +389,11 @@ class BetOleScraper(BaseScraper):
             for match in regular_matches
             for result in _parse_regular_match(match)
         ]
+        handicap_results = [
+            result
+            for match in regular_matches
+            for result in _parse_handicap_match(match)
+        ]
 
         player_results: list[RawOddsData] = []
         unmatched_player_rows = 0
@@ -338,16 +404,17 @@ class BetOleScraper(BaseScraper):
                 continue
             player_results.extend(parsed)
 
-        results = [*regular_results, *player_results]
+        results = [*regular_results, *handicap_results, *player_results]
         logger.info(
             (
                 "BetOle scraped %d player odds from %d player rows "
-                "and %d OT total odds from %d regular rows "
+                "and %d OT total + %d OT handicap odds from %d regular rows "
                 "(unmatched player rows=%d)"
             ),
             len(player_results),
             len(player_matches),
             len(regular_results),
+            len(handicap_results),
             len(regular_matches),
             unmatched_player_rows,
         )
