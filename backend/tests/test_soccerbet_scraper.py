@@ -16,6 +16,7 @@ from app.scrapers.soccerbet_scraper import (
     _PLAYER_PREVIEW_URL,
     _build_matchup_index,
     _extract_league_id,
+    _parse_handicap_spec,
     _parse_player_match,
     _parse_regular_match,
 )
@@ -179,6 +180,130 @@ def test_parse_regular_match_detail_returns_both_total_types():
 
     assert {row.market_type for row in results} == {"game_total", "game_total_ot"}
     assert {row.threshold for row in results if row.market_type == "game_total"} == {208.5}
+
+
+# ── Handicap (+OT) parsing ──────────────────────────────────────────────
+
+
+def test_parse_handicap_spec_handles_signed_lines():
+    """``hcp=`` specifiers are signed; positive = team1 favoured."""
+    assert _parse_handicap_spec("hcp=3.5") == 3.5
+    assert _parse_handicap_spec("hcp=-1.5") == -1.5
+    assert _parse_handicap_spec("hcp=0") == 0.0
+    assert _parse_handicap_spec("total=200") is None  # totals spec, not handicap
+    assert _parse_handicap_spec("garbage") is None
+    assert _parse_handicap_spec(None) is None
+
+
+def _hcp_entry(tt: int, hcp: float, odd: float, status: str = "U") -> dict:
+    """Helper to build a SoccerBet betMap handicap entry."""
+    return {"tt": tt, "ov": odd, "sv": f"hcp={hcp}", "s": status}
+
+
+def test_parse_regular_match_emits_handicap_rows_with_signed_threshold():
+    """Real live shape (Orlando vs Detroit): tip-type 50431 ('1' = home covers,
+    code is the higher / odd one) and 50430 ('2' = away covers) carry hcp=X
+    entries with signed line. SoccerBet stores ``hcp`` as team1's expected
+    margin (positive = team1 favoured), so threshold = +line directly.
+    """
+    match = {
+        "home": "Orlando",
+        "away": "Detroit",
+        "leagueName": "USA - NBA",
+        "kickOffTime": 1777470900000,
+        "betMap": {
+            "50431": {  # team1=home covers
+                "hcp=3.5":  _hcp_entry(50431, 3.5,  1.9),
+                "hcp=2.5":  _hcp_entry(50431, 2.5,  1.77),
+                "hcp=4.5":  _hcp_entry(50431, 4.5,  2.0),
+                "hcp=-1.5": _hcp_entry(50431, -1.5, 1.45),  # home underdog easy
+            },
+            "50430": {  # team2=away covers
+                "hcp=3.5":  _hcp_entry(50430, 3.5,  1.9),
+                "hcp=2.5":  _hcp_entry(50430, 2.5,  2.0),
+                "hcp=4.5":  _hcp_entry(50430, 4.5,  1.78),
+                "hcp=-1.5": _hcp_entry(50430, -1.5, 2.6),
+            },
+        },
+    }
+    results = _parse_regular_match(match)
+    handicap = [r for r in results if r.market_type == "home_handicap_ot"]
+    assert len(handicap) == 4
+    by_threshold = {r.threshold: (r.over_odds, r.under_odds) for r in handicap}
+    assert by_threshold[3.5] == (1.9, 1.9)
+    assert by_threshold[4.5] == (2.0, 1.78)
+    assert by_threshold[-1.5] == (1.45, 2.6)
+    # Sanity: all attached to the right match
+    assert {r.home_team for r in handicap} == {"Orlando"}
+    assert {r.away_team for r in handicap} == {"Detroit"}
+
+
+def test_parse_regular_match_handicap_skips_locked_entries():
+    """Locked picks (s='L') must be filtered out; only s='U' active picks emit rows."""
+    match = {
+        "home": "A",
+        "away": "B",
+        "leagueName": "Test",
+        "kickOffTime": 1777470900000,
+        "betMap": {
+            "50431": {
+                "hcp=3.5":  _hcp_entry(50431, 3.5, 1.9, status="L"),  # locked, skip
+                "hcp=2.5":  _hcp_entry(50431, 2.5, 1.77),  # active
+            },
+            "50430": {
+                "hcp=2.5":  _hcp_entry(50430, 2.5, 2.0),
+            },
+        },
+    }
+    results = _parse_regular_match(match)
+    handicap = [r for r in results if r.market_type == "home_handicap_ot"]
+    assert len(handicap) == 1
+    assert handicap[0].threshold == 2.5
+
+
+def test_parse_regular_match_handicap_pickem_zero_line():
+    """A zero-handicap pick'em is a legitimate line and must emit a row."""
+    match = {
+        "home": "A",
+        "away": "B",
+        "leagueName": "Test",
+        "kickOffTime": 1777470900000,
+        "betMap": {
+            "50431": {"hcp=0": _hcp_entry(50431, 0, 1.92)},
+            "50430": {"hcp=0": _hcp_entry(50430, 0, 1.88)},
+        },
+    }
+    results = _parse_regular_match(match)
+    handicap = [r for r in results if r.market_type == "home_handicap_ot"]
+    assert len(handicap) == 1
+    assert handicap[0].threshold == 0.0
+    assert handicap[0].over_odds == 1.92
+    assert handicap[0].under_odds == 1.88
+
+
+def test_parse_regular_match_does_not_mix_handicap_with_totals():
+    """Regression: handicap entries must not leak into game_total_ot rows."""
+    match = {
+        "home": "A",
+        "away": "B",
+        "leagueName": "Test",
+        "kickOffTime": 1777470900000,
+        "betMap": {
+            # totals on the dedicated codes
+            "50445": {"total=210.5": {"tt": 50445, "ov": 1.85, "sv": "total=210.5", "s": "U"}},
+            "50444": {"total=210.5": {"tt": 50444, "ov": 1.95, "sv": "total=210.5", "s": "U"}},
+            # handicap on its codes
+            "50431": {"hcp=-2.5": _hcp_entry(50431, -2.5, 1.45)},
+            "50430": {"hcp=-2.5": _hcp_entry(50430, -2.5, 2.6)},
+        },
+    }
+    results = _parse_regular_match(match)
+    totals = [r for r in results if r.market_type == "game_total_ot"]
+    handicap = [r for r in results if r.market_type == "home_handicap_ot"]
+    assert len(totals) == 1
+    assert totals[0].threshold == 210.5
+    assert len(handicap) == 1
+    assert handicap[0].threshold == -2.5
 
 
 def test_parse_player_match_preview_uses_underlying_matchup():

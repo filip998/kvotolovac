@@ -116,6 +116,19 @@ _GAME_TOTAL_LINES: tuple[ThresholdLine, ...] = (
     ThresholdLine(50445, 50444, "game_total_ot"),
 )
 
+# OT-inclusive Asian handicap (full game). SoccerBet's existing basketball
+# list calls (/restapi/offer/sr/sport/B/mob and per-league preview) already
+# return betMap entries under tip-type codes 50431 ("1" = team1=home covers)
+# and 50430 ("2" = team2=away covers); each entry's ``sv`` is a string like
+# ``hcp=-1.5`` carrying the signed line. Handicap rides on the same fetch
+# as totals — no new HTTP needed.
+#
+# SoccerBet is on the Tipster white-label platform and shares its sign
+# convention with MerkurXTip / OktagonBet / BetOle / 365: ``hcp=`` value
+# is **team1's expected margin** (positive = team1 favoured), so the
+# parser uses ``threshold = +line`` WITHOUT a sign flip.
+_HANDICAP_OT_LINE = ThresholdLine(50431, 50430, "home_handicap_ot")
+
 _CANONICAL_LEAGUES: dict[str, str] = {
     "nba": "nba",
     "nba play off": "nba",
@@ -164,6 +177,20 @@ def _parse_total_spec(specifier: object) -> float | None:
     return _parse_float(specifier.removeprefix("total="))
 
 
+def _parse_handicap_spec(specifier: object) -> float | None:
+    """Parse a SoccerBet handicap specifier like ``hcp=-1.5`` or ``hcp=9.5``.
+
+    The value is signed; positive = team1=home favoured, negative = team1
+    underdog. The analyzer's canonical convention is identical (positive
+    threshold = home favoured), so we forward the value without sign flip.
+    """
+    if not isinstance(specifier, str):
+        return None
+    if not specifier.startswith("hcp="):
+        return None
+    return _parse_float(specifier.removeprefix("hcp="))
+
+
 def _normalize_league_key(raw_league_name: str | None) -> str:
     normalized = normalize_identity_text(raw_league_name)
     if normalized.endswith(" igraci"):
@@ -197,18 +224,25 @@ def _iter_group_entries(bet_map: dict, tip_type_code: int) -> list[dict]:
 def _collect_threshold_odds(
     bet_map: dict,
     line: ThresholdLine,
+    spec_parser=_parse_total_spec,
 ) -> list[tuple[float, float | None, float | None]]:
+    """Aggregate over/under odds from a SoccerBet betMap into (threshold, over, under) tuples.
+
+    ``spec_parser`` controls how each entry's ``sv`` field is decoded into a
+    threshold value: ``_parse_total_spec`` for ``total=X`` (game totals),
+    ``_parse_handicap_spec`` for ``hcp=X`` (Asian handicap).
+    """
     over_odds_by_threshold: dict[float, float] = {}
     under_odds_by_threshold: dict[float, float] = {}
 
     for entry in _iter_group_entries(bet_map, line.over_code):
-        threshold = _parse_total_spec(entry.get("sv"))
+        threshold = spec_parser(entry.get("sv"))
         odd = _parse_float(entry.get("ov"))
         if threshold is not None and odd is not None:
             over_odds_by_threshold[threshold] = odd
 
     for entry in _iter_group_entries(bet_map, line.under_code):
-        threshold = _parse_total_spec(entry.get("sv"))
+        threshold = spec_parser(entry.get("sv"))
         odd = _parse_float(entry.get("ov"))
         if threshold is not None and odd is not None:
             under_odds_by_threshold[threshold] = odd
@@ -281,6 +315,27 @@ def _parse_regular_match(match: dict) -> list[RawOddsData]:
                     start_time=start_time,
                 )
             )
+
+    for threshold, over_odds, under_odds in _collect_threshold_odds(
+        bet_map, _HANDICAP_OT_LINE, _parse_handicap_spec,
+    ):
+        if over_odds is None and under_odds is None:
+            continue
+        results.append(
+            RawOddsData(
+                bookmaker_id=_BOOKMAKER_ID,
+                league_id=league_id,
+                sport="basketball",
+                home_team=home_team,
+                away_team=away_team,
+                market_type=_HANDICAP_OT_LINE.market_type,
+                player_name=None,
+                threshold=threshold,
+                over_odds=over_odds,
+                under_odds=under_odds,
+                start_time=start_time,
+            )
+        )
 
     return results
 
