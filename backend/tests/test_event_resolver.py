@@ -485,3 +485,267 @@ async def test_event_resolver_fuzzy_groups_distinct_match_ids_without_team_merge
 
     assert {"Partizan", "KK Partizan", "Crvena Zvezda"} <= active_teams
     assert match_count == 2
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_auto_merges_compound_subset_event_at_lowered_thresholds(
+    team_registry_file,
+):
+    hermine = create_canonical_team(display_name="Hermine Nantes", sport="basketball")
+    hermine_basket = create_canonical_team(
+        display_name="Hermine Nantes Basket", sport="basketball"
+    )
+    saint_chamond = create_canonical_team(
+        display_name="Saint-Chamond", sport="basketball"
+    )
+    league_id = "francuska_lnb_pro_b"
+    await _seed_bookmakers("superbet", "meridian")
+    await _seed_league(league_id, "basketball")
+    superbet_match_id = generate_match_id(
+        hermine.team_id,
+        saint_chamond.team_id,
+        START_TIME,
+        "basketball",
+    )
+    meridian_match_id = generate_match_id(
+        hermine_basket.team_id,
+        saint_chamond.team_id,
+        START_TIME,
+        "basketball",
+    )
+    normalized = [
+        _basketball_odds(
+            "superbet",
+            match_id=superbet_match_id,
+            league_id=league_id,
+            home_team_id=hermine.team_id,
+            away_team_id=saint_chamond.team_id,
+            home_team=hermine.team_name,
+            away_team=saint_chamond.team_name,
+            threshold=12.5,
+        ),
+        _basketball_odds(
+            "meridian",
+            match_id=meridian_match_id,
+            league_id=league_id,
+            home_team_id=hermine_basket.team_id,
+            away_team_id=saint_chamond.team_id,
+            home_team=hermine_basket.team_name,
+            away_team=saint_chamond.team_name,
+            threshold=13.5,
+        ),
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOddsData(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="basketball",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            market_type=row.market_type,
+            player_name=row.player_name,
+            threshold=row.threshold,
+            over_odds=row.over_odds,
+            under_odds=row.under_odds,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=raw,
+        raw_outcome_offers=[],
+        normalized_odds=normalized,
+        normalized_outcome_offers=[],
+    )
+
+    assert result.resolved_events == 1
+    events = await odds_store.list_resolved_events(sport="basketball")
+    assert len(events) == 1
+    event = await odds_store.get_resolved_event(events[0].id)
+    assert event is not None
+    assert event.method == "auto_fuzzy_high"
+    assert {member.match_id for member in event.members} == {
+        superbet_match_id,
+        meridian_match_id,
+    }
+
+    with sqlite3.connect(settings.db_path) as conn:
+        active_teams = {
+            name
+            for name, is_active, merged_into in conn.execute(
+                """
+                SELECT display_name, is_active, merged_into_team_id
+                FROM canonical_teams
+                WHERE sport = 'basketball'
+                """
+            ).fetchall()
+            if is_active and merged_into is None
+        }
+
+    assert {"Hermine Nantes", "Hermine Nantes Basket", "Saint-Chamond"} <= active_teams
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_does_not_auto_merge_distinct_same_token_teams(
+    team_registry_file,
+):
+    south_korea = create_canonical_team(display_name="South Korea", sport="basketball")
+    north_korea = create_canonical_team(display_name="North Korea", sport="basketball")
+    japan = create_canonical_team(display_name="Japan", sport="basketball")
+    league_id = "asian_cup"
+    await _seed_bookmakers("superbet", "meridian")
+    await _seed_league(league_id, "basketball")
+    superbet_match_id = generate_match_id(
+        south_korea.team_id,
+        japan.team_id,
+        START_TIME,
+        "basketball",
+    )
+    meridian_match_id = generate_match_id(
+        north_korea.team_id,
+        japan.team_id,
+        START_TIME,
+        "basketball",
+    )
+    normalized = [
+        _basketball_odds(
+            "superbet",
+            match_id=superbet_match_id,
+            league_id=league_id,
+            home_team_id=south_korea.team_id,
+            away_team_id=japan.team_id,
+            home_team=south_korea.team_name,
+            away_team=japan.team_name,
+            threshold=12.5,
+        ),
+        _basketball_odds(
+            "meridian",
+            match_id=meridian_match_id,
+            league_id=league_id,
+            home_team_id=north_korea.team_id,
+            away_team_id=japan.team_id,
+            home_team=north_korea.team_name,
+            away_team=japan.team_name,
+            threshold=13.5,
+        ),
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOddsData(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="basketball",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            market_type=row.market_type,
+            player_name=row.player_name,
+            threshold=row.threshold,
+            over_odds=row.over_odds,
+            under_odds=row.under_odds,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=raw,
+        raw_outcome_offers=[],
+        normalized_odds=normalized,
+        normalized_outcome_offers=[],
+    )
+
+    # Two distinct events whose only similarity is sharing the token "Korea"
+    # must NOT auto-merge even at the lowered fuzzy thresholds. They land in
+    # separate resolved events and a pending Event Review case is created so
+    # a human can decide.
+    assert result.resolved_events == 2
+    assert result.review_cases >= 1
+    events = await odds_store.list_resolved_events(sport="basketball")
+    assert {event.method for event in events} == {"exact"}
+    assert {event.id for event in events} == {
+        f"evt_{superbet_match_id}",
+        f"evt_{meridian_match_id}",
+    }
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_does_not_auto_merge_distinct_non_subset_teams(
+    team_registry_file,
+):
+    austria = create_canonical_team(display_name="Austria", sport="basketball")
+    australia = create_canonical_team(display_name="Australia", sport="basketball")
+    niger = create_canonical_team(display_name="Niger", sport="basketball")
+    nigeria = create_canonical_team(display_name="Nigeria", sport="basketball")
+    league_id = "world_cup"
+    await _seed_bookmakers("superbet", "meridian")
+    await _seed_league(league_id, "basketball")
+    superbet_match_id = generate_match_id(
+        austria.team_id,
+        niger.team_id,
+        START_TIME,
+        "basketball",
+    )
+    meridian_match_id = generate_match_id(
+        australia.team_id,
+        nigeria.team_id,
+        START_TIME,
+        "basketball",
+    )
+    normalized = [
+        _basketball_odds(
+            "superbet",
+            match_id=superbet_match_id,
+            league_id=league_id,
+            home_team_id=austria.team_id,
+            away_team_id=niger.team_id,
+            home_team=austria.team_name,
+            away_team=niger.team_name,
+            threshold=12.5,
+        ),
+        _basketball_odds(
+            "meridian",
+            match_id=meridian_match_id,
+            league_id=league_id,
+            home_team_id=australia.team_id,
+            away_team_id=nigeria.team_id,
+            home_team=australia.team_name,
+            away_team=nigeria.team_name,
+            threshold=13.5,
+        ),
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOddsData(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="basketball",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            market_type=row.market_type,
+            player_name=row.player_name,
+            threshold=row.threshold,
+            over_odds=row.over_odds,
+            under_odds=row.under_odds,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=raw,
+        raw_outcome_offers=[],
+        normalized_odds=normalized,
+        normalized_outcome_offers=[],
+    )
+
+    # Distinct teams with non-subset names that score in the 82-89 band
+    # (Austria/Australia + Niger/Nigeria) must not auto-merge: the
+    # non-subset path retains the strict avg >= 90 / weak >= 82 floor.
+    assert result.resolved_events == 2
+    events = await odds_store.list_resolved_events(sport="basketball")
+    assert {event.method for event in events} == {"exact"}

@@ -30,9 +30,11 @@ from .text_normalizer import normalize_identity_text
 logger = logging.getLogger(__name__)
 
 _RESOLVER_VERSION = "event_resolver_v1"
-_HIGH_FUZZY_AVG_SCORE = 90.0
-_HIGH_FUZZY_SIDE_SCORE = 82.0
-_REVIEW_FUZZY_AVG_SCORE = 75.0
+_HIGH_FUZZY_AVG_SCORE = 85.0
+_HIGH_FUZZY_SIDE_SCORE = 75.0
+_HIGH_FUZZY_AVG_SCORE_NON_SUBSET = 90.0
+_HIGH_FUZZY_SIDE_SCORE_NON_SUBSET = 82.0
+_REVIEW_FUZZY_AVG_SCORE = 65.0
 _FUZZY_ORIENTATION_MARGIN = 8.0
 _SOURCE_MATCH_MIN_SCORE = 60.0
 CANONICAL_TEAM_AUTO_MERGE_THRESHOLD = 88.0
@@ -551,6 +553,39 @@ def _orientation_scores(
     return sorted(scores, key=lambda score: score.avg_score, reverse=True)
 
 
+def _is_subset_or_equal_token_pair(left_name: str, right_name: str) -> bool:
+    """True iff one team's significant tokens are a subset/equal of the other's.
+
+    Used to guard fuzzy event auto-merge against false positives where two
+    distinct teams share one significant token (e.g. ``South Korea`` /
+    ``North Korea``). Subset/equal pairs (``Hermine Nantes`` /
+    ``Hermine Nantes Basket``) are typically the same team with an extra
+    qualifier and are safe to auto-merge at lowered score thresholds.
+    """
+    left_tokens = _significant_team_tokens(left_name)
+    right_tokens = _significant_team_tokens(right_name)
+    if not left_tokens or not right_tokens:
+        return False
+    return left_tokens <= right_tokens or right_tokens <= left_tokens
+
+
+def _weak_side_pair_is_subset_or_equal(
+    left_home: str,
+    left_away: str,
+    right_home: str,
+    right_away: str,
+    score: _OrientationScore,
+) -> bool:
+    if score.orientation == "as_listed":
+        home_pair = (left_home, right_home)
+        away_pair = (left_away, right_away)
+    else:
+        home_pair = (left_home, right_away)
+        away_pair = (left_away, right_home)
+    weak_pair = home_pair if score.home_score <= score.away_score else away_pair
+    return _is_subset_or_equal_token_pair(*weak_pair)
+
+
 def _source_match_score(source: _RawEventSource, candidate: EventCandidate) -> float:
     scores = _orientation_scores(
         source.home_team,
@@ -815,8 +850,18 @@ def _group_pair_resolution(
                     ),
                 )
             elif (
-                top.avg_score >= _HIGH_FUZZY_AVG_SCORE
+                _weak_side_pair_is_subset_or_equal(
+                    left_candidate.home_team,
+                    left_candidate.away_team,
+                    right_candidate.home_team,
+                    right_candidate.away_team,
+                    top,
+                )
+                and top.avg_score >= _HIGH_FUZZY_AVG_SCORE
                 and top.weak_side_score >= _HIGH_FUZZY_SIDE_SCORE
+            ) or (
+                top.avg_score >= _HIGH_FUZZY_AVG_SCORE_NON_SUBSET
+                and top.weak_side_score >= _HIGH_FUZZY_SIDE_SCORE_NON_SUBSET
             ):
                 resolution = _PairResolution(
                     confidence=top.avg_score / 100,
