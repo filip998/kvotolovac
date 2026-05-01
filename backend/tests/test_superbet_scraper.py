@@ -12,7 +12,10 @@ from app.scrapers.superbet_scraper import (
     _EVENT_SUBSCRIPTION_URL,
     _MARKET_GROUPS_URL,
     _STRUCTURE_URL,
+    _classify_market_type,
     _extract_league_id,
+    _extract_side,
+    _extract_threshold,
     _normalize_player_name,
     _parse_event_payload,
 )
@@ -371,6 +374,141 @@ def test_normalize_player_name_reorders_last_first_format():
 def test_extract_league_id_uses_known_aliases_and_fallback():
     assert _extract_league_id("Nemačka - BBL") == "germany"
     assert _extract_league_id("VTB Liga") == "vtb_liga"
+
+
+# ── Handicap (+OT) parsing ──────────────────────────────────────────────
+
+
+def test_classify_market_type_recognises_handicap_market_name():
+    """The Serbian-language handicap market name must classify as
+    home_handicap_ot when there's no player specifier."""
+    name = "Hendikep poena (uklj. produžetke)"
+    assert _classify_market_type(name, None, {}) == "home_handicap_ot"
+    # With a player specifier present, must NOT match (it's a whole-game market)
+    assert _classify_market_type(name, None, {"player": "X"}) is None
+
+
+def test_extract_threshold_handicap_flips_sign():
+    """SuperBet stores hcp as team1's signed Asian handicap (negative = team1
+    favoured), so the canonical home-perspective threshold is the negation."""
+    assert _extract_threshold({"hcp": "-7.5"}, market_type="home_handicap_ot") == 7.5
+    assert _extract_threshold({"hcp": "+3.5"}, market_type="home_handicap_ot") == -3.5
+    assert _extract_threshold({"hcp": "0"}, market_type="home_handicap_ot") == 0.0
+    # Without the handicap market type, hcp is ignored
+    assert _extract_threshold({"hcp": "-7.5"}) is None
+
+
+def test_extract_side_handicap_uses_code_one_two():
+    """For handicap, code "1" = team1=home covers (over) and "2" = team2
+    covers (under). Other side hints used for totals must NOT apply."""
+    assert _extract_side({"code": "1"}, {}, market_type="home_handicap_ot") == "over"
+    assert _extract_side({"code": "2"}, {}, market_type="home_handicap_ot") == "under"
+    assert _extract_side({"code": "+"}, {}, market_type="home_handicap_ot") is None
+    assert _extract_side({"code": "X"}, {}, market_type="home_handicap_ot") is None
+
+
+def test_parse_event_payload_aggregates_handicap_ladder():
+    """Reproduces the live Toronto vs Cleveland handicap ladder shape:
+    market name 'Hendikep poena (uklj. produžetke)' with code "1"/"2" odds
+    and signed hcp specifiers. Each line emits one row with threshold = -hcp.
+    """
+    context = EventContext(
+        event_id=12345,
+        league_id="nba",
+        home_team="Toronto Raptors",
+        away_team="Cleveland Cavaliers",
+        start_time=START_DT.isoformat(),
+        source_url=None,
+    )
+
+    def _hcp_odd(code: str, hcp: str, price: float) -> dict:
+        return {
+            "uuid": f"u-{code}-{hcp}",
+            "price": price,
+            "status": 1,
+            "display": True,
+            "metadata": {
+                "code": code,
+                "specifiers": {"hcp": hcp},
+                "name": f"Toronto uz ({hcp}) hendikep",
+                "info": "",
+            },
+        }
+
+    payload = {
+        "event_id": 12345,
+        "markets": [
+            {
+                "name": "Hendikep poena (uklj. produžetke)",
+                "id": 999,
+                "metadata": {},
+                "odds": [
+                    _hcp_odd("1", "-7.5", 4.4),   # Toronto wins by 8+: hard
+                    _hcp_odd("2", "-7.5", 1.17),  # Cleveland covers
+                    _hcp_odd("1", "-3.5", 1.95),  # Toronto wins by 4+: closer to even
+                    _hcp_odd("2", "-3.5", 1.85),
+                    _hcp_odd("1", "+1.5", 1.4),   # Toronto loses by ≤1 OR wins
+                    _hcp_odd("2", "+1.5", 2.85),
+                ],
+            }
+        ],
+    }
+    results = _parse_event_payload(payload, context=context, market_group_lookup={})
+    handi = [r for r in results if r.market_type == "home_handicap_ot"]
+    assert len(handi) == 3
+
+    by_threshold = {r.threshold: (r.over_odds, r.under_odds) for r in handi}
+    # hcp=-7.5 → threshold=+7.5 (Toronto favoured by 7.5)
+    assert by_threshold[7.5] == (4.4, 1.17)
+    # hcp=-3.5 → threshold=+3.5
+    assert by_threshold[3.5] == (1.95, 1.85)
+    # hcp=+1.5 → threshold=-1.5 (Toronto underdog by 1.5)
+    assert by_threshold[-1.5] == (1.4, 2.85)
+
+
+def test_parse_event_payload_does_not_mix_handicap_with_totals():
+    """Regression: a totals market and a handicap market in the same payload
+    must both produce rows correctly (no cross-contamination of specifiers).
+    """
+    context = EventContext(
+        event_id=1,
+        league_id="nba",
+        home_team="A",
+        away_team="B",
+        start_time=START_DT.isoformat(),
+        source_url=None,
+    )
+    payload = {
+        "event_id": 1,
+        "markets": [
+            {
+                "name": "Ukupno poena (uklj. produžetke)",
+                "id": 1,
+                "metadata": {},
+                "odds": [
+                    {"uuid": "x", "price": 1.85, "status": 1, "display": True,
+                     "metadata": {"code": "+", "specifiers": {"total": "210.5"}}},
+                    {"uuid": "y", "price": 1.95, "status": 1, "display": True,
+                     "metadata": {"code": "-", "specifiers": {"total": "210.5"}}},
+                ],
+            },
+            {
+                "name": "Hendikep poena (uklj. produžetke)",
+                "id": 2,
+                "metadata": {},
+                "odds": [
+                    {"uuid": "h1", "price": 1.9, "status": 1, "display": True,
+                     "metadata": {"code": "1", "specifiers": {"hcp": "-3.5"}}},
+                    {"uuid": "h2", "price": 1.9, "status": 1, "display": True,
+                     "metadata": {"code": "2", "specifiers": {"hcp": "-3.5"}}},
+                ],
+            },
+        ],
+    }
+    results = _parse_event_payload(payload, context=context, market_group_lookup={})
+    by_market = {(r.market_type, r.threshold): (r.over_odds, r.under_odds) for r in results}
+    assert by_market[("game_total_ot", 210.5)] == (1.85, 1.95)
+    assert by_market[("home_handicap_ot", 3.5)] == (1.9, 1.9)
 
 
 def test_parse_event_payload_groups_supported_superbet_markets():
