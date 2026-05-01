@@ -46,6 +46,7 @@ _DEFAULT_HEADERS = {
 # betTypeId constants
 _BET_POINTS_MILESTONES = 1683  # "Postiže poena" — milestone outcomes (5+, 10+, …)
 _BET_GAME_TOTAL_OT = 213  # "Ukupno (+OT)"
+_BET_HANDICAP_OT = 191  # "Hendikep (+OT)" — signed sBV is team1's Asian handicap.
 
 # Mapping of betTypeId → canonical market_type for player over/under props.
 _BET_OVER_UNDER_MAP: dict[int, str] = {
@@ -297,6 +298,73 @@ def _parse_event(event: dict) -> list[RawOddsData]:
     return results
 
 
+def _parse_handicap_ot_bets(
+    event: dict,
+    home_team: str,
+    away_team: str,
+    start_time: str | None,
+    league_id: str,
+) -> list[RawOddsData]:
+    """Extract OT-inclusive Asian handicap rows.
+
+    AdmiralBet expresses the handicap line via a signed ``sBV`` interpreted as
+    *team1's* Asian handicap (negative when team1 is the favorite). Outcome
+    name ``"1"`` pays when team1 covers; ``"2"`` pays when team2 covers.
+    The event's ``name`` is ``"home - away"``, so team1=home, team2=away. We
+    canonicalise to a home-perspective threshold ``= -sBV`` so the analyzer can
+    treat handicap exactly like total-points (over = home covers, under = away
+    covers).
+    """
+    results: list[RawOddsData] = []
+    for bet in event.get("bets", []):
+        if bet.get("betTypeId") != _BET_HANDICAP_OT:
+            continue
+        if not bet.get("isPlayable"):
+            continue
+
+        sbv = bet.get("sBV")
+        if sbv is None:
+            continue
+        try:
+            sbv_value = float(sbv)
+        except (ValueError, TypeError):
+            continue
+
+        threshold = -sbv_value
+
+        over_odds: float | None = None
+        under_odds: float | None = None
+        for outcome in bet.get("betOutcomes", []):
+            if not outcome.get("isPlayable"):
+                continue
+            name = (outcome.get("name") or "").strip()
+            if name == "1":
+                over_odds = outcome.get("odd")
+            elif name == "2":
+                under_odds = outcome.get("odd")
+
+        if over_odds is None and under_odds is None:
+            continue
+
+        results.append(
+            RawOddsData(
+                bookmaker_id="admiralbet",
+                league_id=league_id,
+                sport="basketball",
+                home_team=home_team,
+                away_team=away_team,
+                market_type="home_handicap_ot",
+                player_name=None,
+                threshold=threshold,
+                over_odds=over_odds,
+                under_odds=under_odds,
+                start_time=start_time,
+            )
+        )
+
+    return results
+
+
 def _parse_game_total_ot_event(event: dict) -> list[RawOddsData]:
     """Parse a standard basketball match event into OT-inclusive game totals."""
     name = event.get("name", "")
@@ -307,6 +375,18 @@ def _parse_game_total_ot_event(event: dict) -> list[RawOddsData]:
     start_time = _parse_start_time(event.get("dateTime"))
     league_id = _extract_league_id(event.get("competitionName"))
     return _parse_game_total_ot_bets(event, home_team, away_team, start_time, league_id)
+
+
+def _parse_handicap_ot_event(event: dict) -> list[RawOddsData]:
+    """Parse a basketball match event into OT-inclusive Asian handicap rows."""
+    name = event.get("name", "")
+    home_team, away_team = _parse_event_name(name)
+    if not home_team or not away_team:
+        return []
+
+    start_time = _parse_start_time(event.get("dateTime"))
+    league_id = _extract_league_id(event.get("competitionName"))
+    return _parse_handicap_ot_bets(event, home_team, away_team, start_time, league_id)
 
 
 class AdmiralBetScraper(BaseScraper):
@@ -378,13 +458,14 @@ class AdmiralBetScraper(BaseScraper):
         total_results: list[RawOddsData] = []
         for event in basketball_events:
             total_results.extend(_parse_game_total_ot_event(event))
+            total_results.extend(_parse_handicap_ot_event(event))
 
         results = [*player_results, *total_results]
 
         logger.info(
             (
                 "AdmiralBet scraped %d player odds from %d special events "
-                "and %d OT total odds from %d basketball events"
+                "and %d OT total/handicap odds from %d basketball events"
             ),
             len(player_results),
             len(player_data),

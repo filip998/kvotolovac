@@ -113,6 +113,13 @@ _MARKET_TYPE_MAPPING: dict[str, str] = {
     "total": "game_total",
     "game_total_ot": "game_total_ot",
     "game total ot": "game_total_ot",
+    "home_handicap_ot": "home_handicap_ot",
+    "home handicap ot": "home_handicap_ot",
+    "handicap (+ot)": "home_handicap_ot",
+    "handicap +ot": "home_handicap_ot",
+    "hendikep (+ot)": "home_handicap_ot",
+    "hendikep (uklj. ot)": "home_handicap_ot",
+    "hendikep uklj ot": "home_handicap_ot",
 }
 
 

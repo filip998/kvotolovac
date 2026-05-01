@@ -13,8 +13,10 @@ from app.scrapers.meridian_scraper import (
     _build_event_context,
     _classify_supported_market_group,
     _is_game_total_ot_group,
+    _is_handicap_ot_group,
     _is_player_market,
     _parse_game_total_ot_markets,
+    _parse_handicap_ot_markets,
     _parse_player_name,
     _parse_markets,
     _parse_start_time,
@@ -285,6 +287,13 @@ def test_is_game_total_ot_group():
     assert not _is_game_total_ot_group("Ukupno Poena")
 
 
+def test_is_handicap_ot_group():
+    assert _is_handicap_ot_group("Hendikep (uklj. OT)")
+    assert _is_handicap_ot_group("Hendikep (uklj.OT)")
+    assert not _is_handicap_ot_group("Hendikep Poena")
+    assert not _is_handicap_ot_group("Ukupno (uklj.OT) ")
+
+
 def test_classify_supported_market_group():
     assert _classify_supported_market_group("Ukupno Poena (Uklj. OT)") == "player_points"
     assert _classify_supported_market_group("Ukupno Skokova (Uklj. OT)") == "player_rebounds"
@@ -298,6 +307,7 @@ def test_classify_supported_market_group():
     )
     assert _classify_supported_market_group("Diallo, Alpha Ukupno Poena (Uklj. OT)") == "player_points"
     assert _classify_supported_market_group("Ukupno (uklj.OT) ") == "game_total_ot"
+    assert _classify_supported_market_group("Hendikep (uklj. OT)") == "home_handicap_ot"
     assert _classify_supported_market_group("AS Monaco Ukupno Poena (uklj.OT)") is None
 
 
@@ -317,6 +327,104 @@ def test_parse_game_total_ot_markets_returns_only_ot_totals(all_supported_market
     assert all(result.home_team == "AS Monaco" for result in results)
     assert all(result.away_team == "FC Barcelona" for result in results)
     assert all(result.threshold is not None for result in results)
+
+
+def test_parse_handicap_ot_markets_signed_threshold_home_perspective():
+    """Real fixture-style payload: handicap is team1's Asian handicap (signed,
+    negative when home is favoured); selection ``"1"`` pays when home covers
+    and ``"2"`` when away covers. We canonicalise to ``threshold = -handicap``
+    so positive threshold = home favoured."""
+    payload = [
+        {
+            "marketName": "Hendikep (uklj. OT)",
+            "markets": [
+                {
+                    "name": "Hendikep (uklj. OT)",
+                    "state": "ACTIVE",
+                    "overUnder": None,
+                    "handicap": -11.5,
+                    "selections": [
+                        {"selectionId": "x_0", "state": "ACTIVE", "name": "1", "price": 4.0},
+                        {"selectionId": "x_1", "state": "ACTIVE", "name": "2", "price": 1.23},
+                    ],
+                },
+                {
+                    "name": "Hendikep (uklj. OT)",
+                    "state": "ACTIVE",
+                    "overUnder": None,
+                    "handicap": 4.5,
+                    "selections": [
+                        {"selectionId": "y_0", "state": "ACTIVE", "name": "1", "price": 1.85},
+                        {"selectionId": "y_1", "state": "ACTIVE", "name": "2", "price": 1.95},
+                    ],
+                },
+            ],
+        }
+    ]
+    results = _parse_handicap_ot_markets(
+        payload,
+        home_team="AS Monaco",
+        away_team="FC Barcelona",
+        league_id="euroleague",
+        start_time="2026-04-10T12:00:00+00:00",
+    )
+
+    assert {r.market_type for r in results} == {"home_handicap_ot"}
+    assert {r.home_team for r in results} == {"AS Monaco"}
+    assert {r.away_team for r in results} == {"FC Barcelona"}
+    by_threshold = {r.threshold: r for r in results}
+    # handicap=-11.5 → threshold=+11.5 (home favoured), over=4.0 (home covers, hard)
+    assert by_threshold[11.5].over_odds == 4.0
+    assert by_threshold[11.5].under_odds == 1.23
+    # handicap=+4.5 → threshold=-4.5 (home underdog)
+    assert by_threshold[-4.5].over_odds == 1.85
+    assert by_threshold[-4.5].under_odds == 1.95
+
+
+def test_parse_handicap_ot_markets_skips_inactive_or_missing_handicap():
+    payload = [
+        {
+            "marketName": "Hendikep (uklj. OT)",
+            "markets": [
+                # missing handicap field
+                {
+                    "state": "ACTIVE",
+                    "selections": [
+                        {"state": "ACTIVE", "name": "1", "price": 1.9},
+                        {"state": "ACTIVE", "name": "2", "price": 1.9},
+                    ],
+                },
+                # market not active
+                {
+                    "state": "SUSPENDED",
+                    "handicap": -3.5,
+                    "selections": [
+                        {"state": "ACTIVE", "name": "1", "price": 1.9},
+                        {"state": "ACTIVE", "name": "2", "price": 1.9},
+                    ],
+                },
+                # both selections inactive
+                {
+                    "state": "ACTIVE",
+                    "handicap": 5.5,
+                    "selections": [
+                        {"state": "SUSPENDED", "name": "1", "price": 1.9},
+                        {"state": "SUSPENDED", "name": "2", "price": 1.9},
+                    ],
+                },
+            ],
+        }
+    ]
+    assert (
+        _parse_handicap_ot_markets(
+            payload,
+            home_team="H",
+            away_team="A",
+            league_id="x",
+            start_time=None,
+        )
+        == []
+    )
 
 
 def test_parse_markets_skips_null_threshold():

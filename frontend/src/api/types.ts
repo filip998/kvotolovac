@@ -48,6 +48,7 @@ export type MarketType =
   | 'player_points_rebounds_assists'
   | 'game_total'
   | 'game_total_ot'
+  | 'home_handicap_ot'
   | 'football_total_goals'
   | 'football_result'
   | 'football_double_chance'
