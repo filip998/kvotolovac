@@ -18,6 +18,7 @@ class Opportunity:
     middle_profit_margin: float | None
     legs: list[OpportunityLeg]
     resolved_event_id: str | None = None
+    market_keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

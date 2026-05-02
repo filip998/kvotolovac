@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 
 from ..config import settings
@@ -19,6 +20,7 @@ from ..services.normalizer import (
     resolve_team_name,
 )
 from ..services.analyzer import analyze
+from ..services.canonical_analyzer import analyze_canonical_offers
 from ..services.event_resolver import (
     CANONICAL_TEAM_AUTO_MERGE_THRESHOLD,
     SameTimeCanonicalMergeProposal as _SameTimeMergeProposal,
@@ -56,6 +58,13 @@ AUTO_CANONICAL_MERGE_REVIEW_KIND = "auto_canonical_merge_suggestion"
 SAME_TIME_MIN_TARGET_SUPPORT = 2
 
 
+@dataclass(frozen=True)
+class _CanonicalShadowResult:
+    offers_analyzed: int = 0
+    opportunities_found: int = 0
+    warnings: tuple[str, ...] = ()
+
+
 def _is_auto_alias_candidate(case) -> bool:
     return (
         case.review_kind in {"alias_suggestion", "candidate_search"}
@@ -69,6 +78,117 @@ def _is_auto_alias_candidate(case) -> bool:
         and case.similarity_score is not None
         and case.similarity_score >= ANCHORED_AUTO_APPLY_THRESHOLD
     )
+
+
+def _enabled_threshold_league_ids(scraper: BaseScraper, enabled_sports: set[str]) -> list[str]:
+    league_ids: list[str] = []
+    for sport, sport_leagues in scraper.get_supported_odds_leagues().items():
+        if sport not in enabled_sports:
+            continue
+        league_ids.extend(sport_leagues)
+    return list(dict.fromkeys(league_ids))
+
+
+async def _run_canonical_shadow_analysis(
+    *,
+    match_ids: set[str],
+    legacy_discrepancy_count: int,
+    legacy_opportunity_count: int,
+) -> _CanonicalShadowResult:
+    canonical_offers = await odds_store.get_current_canonical_offers_for_matches(
+        sorted(match_ids)
+    )
+    event_ids = sorted(
+        {
+            offer.market.event_id
+            for offer in canonical_offers
+            if offer.market.event_id
+        }
+    )
+    event_primary_match_ids = (
+        await odds_store.get_resolved_event_primary_match_ids(event_ids)
+        if event_ids
+        else {}
+    )
+    canonical_opportunities = analyze_canonical_offers(
+        canonical_offers,
+        event_primary_match_ids=event_primary_match_ids,
+    )
+    expected_count = legacy_discrepancy_count + legacy_opportunity_count
+    legacy_equivalent_count = _legacy_equivalent_shadow_count(
+        canonical_opportunities,
+        canonical_offers,
+    )
+    warnings: tuple[str, ...] = ()
+    if legacy_equivalent_count != expected_count:
+        warnings = (
+            "canonical_shadow_count_mismatch "
+            f"legacy={expected_count} "
+            f"canonical_legacy_equivalent={legacy_equivalent_count} "
+            f"canonical_total={len(canonical_opportunities)}",
+        )
+    return _CanonicalShadowResult(
+        offers_analyzed=len(canonical_offers),
+        opportunities_found=len(canonical_opportunities),
+        warnings=warnings,
+    )
+
+
+def _legacy_equivalent_shadow_count(opportunities, canonical_offers) -> int:
+    count = 0
+    basketball_same_line_keys: set[tuple[str, tuple[str, str]]] = set()
+
+    for opportunity in opportunities:
+        if opportunity.sport == "basketball":
+            if opportunity.opportunity_type == "same_line_arbitrage":
+                key = _basketball_same_line_shadow_legacy_key(
+                    opportunity,
+                    canonical_offers,
+                )
+                if key is not None:
+                    basketball_same_line_keys.add(key)
+                continue
+            count += 1
+            continue
+        if _is_legacy_equivalent_shadow_opportunity(opportunity):
+            count += 1
+
+    return count + len(basketball_same_line_keys)
+
+
+def _is_legacy_equivalent_shadow_opportunity(opportunity) -> bool:
+    if opportunity.sport == "basketball":
+        return True
+    if opportunity.sport == "football":
+        return opportunity.market_type in {
+            "football_total_goals",
+            "football_result_double_chance",
+        }
+    return False
+
+
+def _basketball_same_line_shadow_legacy_key(
+    opportunity,
+    canonical_offers,
+) -> tuple[str, tuple[str, str]] | None:
+    if len(opportunity.market_keys) != 1:
+        return None
+    market_key = opportunity.market_keys[0]
+    over_offers = {
+        offer.bookmaker_id: offer
+        for offer in canonical_offers
+        if offer.market_key == market_key and offer.outcome_code == "over"
+    }
+    leg_bookmakers = [leg.bookmaker_id for leg in opportunity.legs]
+    if len(leg_bookmakers) != 2:
+        return None
+    first = over_offers.get(leg_bookmakers[0])
+    second = over_offers.get(leg_bookmakers[1])
+    if first is None or second is None:
+        return None
+    if abs(first.odds - second.odds) < 0.05:
+        return None
+    return market_key, tuple(sorted((first.bookmaker_id, second.bookmaker_id)))
 
 
 def _candidate_merge_source_ids(case) -> set[int]:
@@ -795,15 +915,11 @@ class Scheduler:
             scrapers = registry.get_all()
             enabled_sports = set(settings.enabled_sport_list)
             scrape_started_at = time.perf_counter()
-            scrape_tasks = (
-                [
-                    self._scrape_one(scraper, league_id)
-                    for scraper in scrapers
-                    for league_id in scraper.get_supported_leagues()
-                ]
-                if "basketball" in enabled_sports
-                else []
-            )
+            scrape_tasks = [
+                self._scrape_one(scraper, league_id)
+                for scraper in scrapers
+                for league_id in _enabled_threshold_league_ids(scraper, enabled_sports)
+            ]
             outcome_scrape_tasks = [
                 self._scrape_outcome_one(scraper, sport)
                 for scraper in scrapers
@@ -845,6 +961,7 @@ class Scheduler:
             seen_matches: set[str] = set()
             discrepancies = []
             opportunities = []
+            canonical_shadow = _CanonicalShadowResult()
             notified = 0
             pending_auto_merges: list[tuple[int, int]] = []
             (
@@ -1035,6 +1152,23 @@ class Scheduler:
                         bookmaker_b_match_id=d.bookmaker_b_match_id,
                     )
 
+                try:
+                    canonical_shadow = await _run_canonical_shadow_analysis(
+                        match_ids=seen_matches,
+                        legacy_discrepancy_count=len(discrepancies),
+                        legacy_opportunity_count=len(opportunities),
+                    )
+                    if canonical_shadow.warnings:
+                        logger.warning(
+                            "Canonical shadow analysis warnings: %s",
+                            ", ".join(canonical_shadow.warnings),
+                        )
+                except Exception:
+                    logger.exception("Canonical shadow analysis failed")
+                    canonical_shadow = _CanonicalShadowResult(
+                        warnings=("canonical_shadow_failed",)
+                    )
+
                 self._scan_phase = "notifying"
                 notified = await self._notification_service.notify_discrepancies(
                     discrepancies
@@ -1091,6 +1225,9 @@ class Scheduler:
                 "outcome_offers_scraped": len(normalized_outcome_offers),
                 "discrepancies_found": len(discrepancies),
                 "opportunities_found": len(opportunities),
+                "canonical_offers_analyzed": canonical_shadow.offers_analyzed,
+                "canonical_opportunities_found": canonical_shadow.opportunities_found,
+                "canonical_shadow_warnings": list(canonical_shadow.warnings),
                 "notifications_sent": notified,
                 "scrape_duration_ms": scrape_duration_ms,
                 "cycle_duration_ms": int((time.perf_counter() - cycle_started_at) * 1000),

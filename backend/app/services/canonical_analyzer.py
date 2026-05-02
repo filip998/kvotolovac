@@ -91,6 +91,7 @@ def _analyze_two_way_arbitrage(
                 middle_profit_margin=None,
                 legs=[_leg(first), _leg(second)],
                 resolved_event_id=context.resolved_event_id,
+                market_keys=(market.market_key,),
             )
         )
     return opportunities
@@ -141,6 +142,7 @@ def _analyze_line_middle(
                 middle_profit_margin=middle_margin,
                 legs=[_leg(low), _leg(high)],
                 resolved_event_id=context.resolved_event_id,
+                market_keys=tuple(sorted({low.market_key, high.market_key})),
             )
         )
     return opportunities
@@ -179,6 +181,14 @@ def _analyze_complementary_outcomes(
                         middle_profit_margin=None,
                         legs=[_leg(result_offer), _leg(double_chance_offer)],
                         resolved_event_id=context.resolved_event_id,
+                        market_keys=tuple(
+                            sorted(
+                                {
+                                    result_offer.market_key,
+                                    double_chance_offer.market_key,
+                                }
+                            )
+                        ),
                     )
                 )
     return opportunities
@@ -327,5 +337,6 @@ def _dedupe_key(opportunity: Opportunity) -> tuple:
         opportunity.opportunity_type,
         opportunity.market_type,
         opportunity.line,
+        opportunity.market_keys,
         leg_keys,
     )

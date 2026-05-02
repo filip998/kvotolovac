@@ -22,6 +22,15 @@ class BaseScraper(abc.ABC):
         """Return list of league IDs this scraper supports."""
         ...
 
+    def get_supported_odds_sports(self) -> list[str]:
+        """Return sports supported by the threshold-odds scraper lane."""
+        return list(self.get_supported_odds_leagues())
+
+    def get_supported_odds_leagues(self) -> dict[str, list[str]]:
+        """Return threshold-odds league IDs grouped by sport."""
+        leagues = self.get_supported_leagues()
+        return {"basketball": leagues} if leagues else {}
+
     @abc.abstractmethod
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         """Scrape odds for a given league and return raw data."""
