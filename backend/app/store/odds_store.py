@@ -1975,7 +1975,55 @@ async def get_opportunities(
         conditions.append("op.sport = ?")
         params.append(sport)
     if not include_legacy_discrepancy_overlap:
-        conditions.append("op.sport != ?")
+        conditions.append(
+            """NOT (
+                   op.sport = ?
+                   AND EXISTS (
+                       SELECT 1
+                       FROM discrepancies d
+                       WHERE d.is_active = TRUE
+                         AND d.market_type = op.market_type
+                         AND (
+                             d.match_id = op.match_id
+                             OR (
+                                 d.resolved_event_id IS NOT NULL
+                                 AND d.resolved_event_id = op.resolved_event_id
+                             )
+                         )
+                         AND (
+                             (op.subject_type = 'player' AND d.player_name = op.subject_name)
+                             OR (
+                                 COALESCE(op.subject_type, 'event') != 'player'
+                                 AND d.player_name IS NULL
+                             )
+                         )
+                         AND EXISTS (
+                             SELECT 1
+                             FROM json_each(op.legs) AS over_leg
+                             WHERE json_extract(over_leg.value, '$.bookmaker_id') = d.bookmaker_a_id
+                               AND json_extract(over_leg.value, '$.outcome_code') = 'over'
+                               AND CAST(json_extract(over_leg.value, '$.line') AS REAL) = d.threshold_a
+                               AND (
+                                   json_extract(over_leg.value, '$.match_id') IS NULL
+                                   OR json_extract(over_leg.value, '$.match_id') =
+                                      COALESCE(d.bookmaker_a_match_id, d.match_id)
+                               )
+                         )
+                         AND EXISTS (
+                             SELECT 1
+                             FROM json_each(op.legs) AS under_leg
+                             WHERE json_extract(under_leg.value, '$.bookmaker_id') = d.bookmaker_b_id
+                               AND json_extract(under_leg.value, '$.outcome_code') = 'under'
+                               AND CAST(json_extract(under_leg.value, '$.line') AS REAL) = d.threshold_b
+                               AND (
+                                   json_extract(under_leg.value, '$.match_id') IS NULL
+                                   OR json_extract(under_leg.value, '$.match_id') =
+                                      COALESCE(d.bookmaker_b_match_id, d.match_id)
+                               )
+                         )
+                   )
+               )"""
+        )
         params.append("basketball")
     if market_type:
         conditions.append("op.market_type = ?")

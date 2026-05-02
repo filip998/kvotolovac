@@ -156,7 +156,7 @@ export interface Opportunity {
   is_active: boolean;
 }
 
-export type EdgeSport = 'basketball' | 'football';
+export type EdgeSport = 'basketball' | 'football' | 'tennis';
 
 export interface EdgeLeg {
   bookmaker_id: string;

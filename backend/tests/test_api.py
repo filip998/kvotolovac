@@ -299,7 +299,9 @@ async def test_football_market_offers_and_opportunities_api(client: AsyncClient)
 
 
 @pytest.mark.asyncio
-async def test_opportunities_api_hides_basketball_overlap_by_default(client: AsyncClient):
+async def test_opportunities_api_hides_only_basketball_rows_that_overlap_discrepancies(
+    client: AsyncClient,
+):
     await odds_store.upsert_league("euroleague", "EuroLeague", "basketball")
     await odds_store.upsert_bookmaker("mozzart", "Mozzart")
     await odds_store.upsert_bookmaker("meridian", "Meridian")
@@ -311,12 +313,15 @@ async def test_opportunities_api_hides_basketball_overlap_by_default(client: Asy
         away_team="Real Madrid",
         start_time="2030-01-01T20:00:00+00:00",
     )
-    await odds_store.insert_opportunity(
+    overlapping_id = await odds_store.insert_opportunity(
         Opportunity(
             sport="basketball",
             match_id="basketball-match",
             opportunity_type="middle",
             market_type="player_points",
+            subject_type="player",
+            subject_key="player:nikola jokic",
+            subject_name="Nikola Jokic",
             line=18.5,
             profit_margin=0.02,
             middle_profit_margin=0.50,
@@ -339,6 +344,51 @@ async def test_opportunities_api_hides_basketball_overlap_by_default(client: Asy
         ),
         detected_at="2030-01-01T20:00:00",
     )
+    canonical_only_id = await odds_store.insert_opportunity(
+        Opportunity(
+            sport="basketball",
+            match_id="basketball-match",
+            opportunity_type="same_line_arbitrage",
+            market_type="player_points",
+            subject_type="player",
+            subject_key="player:nikola jokic",
+            subject_name="Nikola Jokic",
+            line=22.5,
+            profit_margin=0.04,
+            middle_profit_margin=None,
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id="mozzart",
+                    market_type="player_points",
+                    outcome_code="over",
+                    line=22.5,
+                    odds=2.10,
+                ),
+                OpportunityLeg(
+                    bookmaker_id="meridian",
+                    market_type="player_points",
+                    outcome_code="under",
+                    line=22.5,
+                    odds=2.10,
+                ),
+            ],
+        ),
+        detected_at="2030-01-01T20:01:00",
+    )
+    await odds_store.insert_discrepancy(
+        match_id="basketball-match",
+        market_type="player_points",
+        player_name="Nikola Jokic",
+        bookmaker_a_id="mozzart",
+        bookmaker_b_id="meridian",
+        threshold_a=18.5,
+        threshold_b=20.5,
+        odds_a=1.90,
+        odds_b=2.10,
+        gap=2.0,
+        profit_margin=0.02,
+        middle_profit_margin=0.50,
+    )
 
     default_resp = await client.get("/api/v1/opportunities")
     basketball_resp = await client.get(
@@ -356,12 +406,17 @@ async def test_opportunities_api_hides_basketball_overlap_by_default(client: Asy
     assert default_resp.status_code == 200
     assert basketball_resp.status_code == 200
     assert opt_in_resp.status_code == 200
-    assert default_resp.json() == []
-    assert basketball_resp.json() == []
-    assert [row["sport"] for row in opt_in_resp.json()] == ["basketball"]
-    assert opt_in_resp.json()[0]["event_id"] is None
-    assert "subject_type" in opt_in_resp.json()[0]
-    assert "market_keys" in opt_in_resp.json()[0]
+    assert [row["id"] for row in default_resp.json()] == [canonical_only_id]
+    assert [row["id"] for row in basketball_resp.json()] == [canonical_only_id]
+    assert {row["id"] for row in opt_in_resp.json()} == {
+        overlapping_id,
+        canonical_only_id,
+    }
+    default_row = default_resp.json()[0]
+    assert default_row["opportunity_type"] == "same_line_arbitrage"
+    assert default_row["event_id"] is None
+    assert "subject_type" in default_row
+    assert "market_keys" in default_row
 
 
 @pytest.mark.asyncio

@@ -36,12 +36,13 @@ import { buildEdges } from '../utils/edgeAdapter';
 import { groupEdgesByMarket } from '../utils/edgeGrouping';
 
 type DashboardTab = 'opportunities' | 'tracked' | 'teams' | 'canonical' | 'warnings';
-type SportFilter = 'both' | 'basketball' | 'football';
+type SportFilter = 'both' | 'basketball' | 'football' | 'tennis';
 
 const SPORT_FILTER_OPTIONS: { value: SportFilter; label: string }[] = [
   { value: 'both', label: 'All sports' },
   { value: 'basketball', label: 'Basketball' },
   { value: 'football', label: 'Football' },
+  { value: 'tennis', label: 'Tennis' },
 ];
 
 function sportFilterToParam(value: SportFilter): string | undefined {

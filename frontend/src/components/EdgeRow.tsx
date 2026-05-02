@@ -37,7 +37,7 @@ function LegCell({ edge, side }: { edge: Edge; side: 'a' | 'b' }) {
 }
 
 function SportPill({ sport }: { sport: Edge['sport'] }) {
-  const label = sport === 'football' ? '⚽' : '🏀';
+  const label = sport === 'football' ? '⚽' : sport === 'tennis' ? '🎾' : '🏀';
   return (
     <span
       className="inline-flex items-center rounded-full border border-border/70 bg-bg/60 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-secondary"
