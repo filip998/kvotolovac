@@ -4,7 +4,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from itertools import combinations
 
-from ..models.schemas import CanonicalOffer, OpportunityLeg
+from ..models.schemas import CanonicalMarket, CanonicalOffer, OpportunityLeg
+from .canonical_offers import _clean_part
 from .opportunity_analyzer import Opportunity, _middle_profit_margin, _profit_margin
 
 
@@ -73,6 +74,8 @@ def _analyze_two_way_arbitrage(
             continue
         if not _is_two_way_pair(first, second):
             continue
+        if not _has_positive_odds(first, second):
+            continue
         margin = _profit_margin(first.odds, second.odds)
         if margin is None or margin <= 0:
             continue
@@ -110,6 +113,8 @@ def _analyze_line_middle(
 
         low, high = (first, second) if first.market.line < second.market.line else (second, first)
         if low.outcome_code != "over" or high.outcome_code != "under":
+            continue
+        if not _has_positive_odds(low, high):
             continue
 
         gap = high.market.line - low.market.line
@@ -158,6 +163,8 @@ def _analyze_complementary_outcomes(
             for double_chance_offer in by_key.get(double_chance_key, []):
                 if result_offer.bookmaker_id == double_chance_offer.bookmaker_id:
                     continue
+                if not _has_positive_odds(result_offer, double_chance_offer):
+                    continue
                 margin = _profit_margin(result_offer.odds, double_chance_offer.odds)
                 if margin is None or margin <= 0:
                     continue
@@ -183,6 +190,10 @@ def _is_two_way_pair(first: CanonicalOffer, second: CanonicalOffer) -> bool:
     if first.market.line is not None:
         return outcomes == _LINE_OUTCOME_PAIR
     return outcomes == _TWO_WAY_MARKET_OUTCOMES.get(market_type)
+
+
+def _has_positive_odds(*offers: CanonicalOffer) -> bool:
+    return all(offer.odds > 0 for offer in offers)
 
 
 def _passes_line_middle_margin_filter(
@@ -243,8 +254,7 @@ def _market_family_key(
         market.sport,
         _event_identity(offer),
         market.subject_type,
-        market.subject_key,
-        market.subject_name,
+        _subject_identity(market),
         market.period,
         market.scope,
     ]
@@ -257,6 +267,10 @@ def _event_identity(offer: CanonicalOffer) -> str:
     if offer.market.event_id:
         return f"event:{offer.market.event_id}"
     return f"match:{offer.market.match_id}"
+
+
+def _subject_identity(market: CanonicalMarket) -> str | None:
+    return _clean_part(market.subject_key) or _clean_part(market.subject_name)
 
 
 def _context(

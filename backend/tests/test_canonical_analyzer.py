@@ -22,6 +22,8 @@ def _odds(
     match_id: str = "basketball-match-1",
     market_type: str = "player_points",
     event_id: str | None = None,
+    subject_key: str | None = None,
+    subject_name: str | None = None,
 ) -> list:
     odds = NormalizedOdds(
         match_id=match_id,
@@ -36,7 +38,12 @@ def _odds(
         over_odds=over,
         under_odds=under,
     )
-    return canonical_offers_from_normalized_odds(odds, event_id=event_id)
+    return canonical_offers_from_normalized_odds(
+        odds,
+        event_id=event_id,
+        subject_key_override=subject_key,
+        subject_name_override=subject_name,
+    )
 
 
 def _legacy_odds(
@@ -156,6 +163,70 @@ def test_canonical_line_middle_honors_min_gap():
 
     assert analyze_canonical_offers(offers, min_gap=2.0) == []
     assert len(analyze_canonical_offers(offers, min_gap=0.5)) == 1
+
+
+def test_canonical_line_middle_uses_subject_key_before_display_name():
+    opportunities = analyze_canonical_offers(
+        [
+            *_odds(
+                "mozzart",
+                "Nikola Jokić",
+                16.5,
+                over=1.90,
+                under=1.80,
+                subject_key="ply_lundberg",
+                subject_name="Nikola Jokić",
+            ),
+            *_odds(
+                "meridian",
+                "N. Jokic",
+                18.5,
+                over=1.80,
+                under=1.95,
+                subject_key="ply_lundberg",
+                subject_name="N. Jokic",
+            ),
+        ]
+    )
+
+    assert len(opportunities) == 1
+    assert {(leg.bookmaker_id, leg.outcome_code, leg.line) for leg in opportunities[0].legs} == {
+        ("mozzart", "over", 16.5),
+        ("meridian", "under", 18.5),
+    }
+
+
+def test_canonical_line_middle_rejects_invalid_odds():
+    opportunities = analyze_canonical_offers(
+        [
+            *_odds("mozzart", "Lundberg", 16.5, over=0.0, under=None),
+            *_odds("meridian", "Lundberg", 18.5, over=None, under=2.00),
+        ]
+    )
+
+    assert opportunities == []
+
+
+def test_canonical_same_line_arbitrage_rejects_invalid_odds():
+    opportunities = analyze_canonical_offers(
+        [
+            *_odds("mozzart", "Lundberg", 16.5, over=0.0, under=None),
+            *_odds("meridian", "Lundberg", 16.5, over=None, under=2.00),
+        ]
+    )
+
+    assert opportunities == []
+
+
+def test_canonical_complementary_outcomes_reject_invalid_odds():
+    opportunities = analyze_canonical_offers(
+        [
+            _outcome_offer("maxbet", "football_result", "home", 0.0),
+            _outcome_offer("balkanbet", "football_double_chance", "draw_or_away", 2.0),
+        ]
+    )
+
+    assert opportunities == []
 
 
 def test_canonical_player_points_milestones_compare_as_player_points():
