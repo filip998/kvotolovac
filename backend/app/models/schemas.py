@@ -284,6 +284,7 @@ class NormalizedOdds(BaseModel):
     over_odds: Optional[float] = None
     under_odds: Optional[float] = None
     start_time: Optional[str] = None
+    scraped_at: Optional[str] = None
 
 
 # ── Generic outcome offers ─────────────────────────────────
@@ -318,6 +319,34 @@ class NormalizedOutcomeOffer(BaseModel):
     line: Optional[float] = None
     raw_label: Optional[str] = None
     start_time: Optional[str] = None
+    scraped_at: Optional[str] = None
+
+
+class CanonicalMarket(BaseModel):
+    market_key: str
+    match_id: str
+    event_id: Optional[str] = None
+    bookmaker_match_id: Optional[str] = None
+    sport: str
+    market_type: str
+    source_market_type: str
+    subject_type: str
+    subject_key: Optional[str] = None
+    subject_name: Optional[str] = None
+    line: Optional[float] = None
+    period: Optional[str] = None
+    scope: Optional[str] = None
+
+
+class CanonicalOffer(BaseModel):
+    market_key: str
+    market: CanonicalMarket
+    bookmaker_id: str
+    outcome_code: str
+    odds: float
+    source_url: Optional[str] = None
+    raw_label: Optional[str] = None
+    scraped_at: Optional[str] = None
 
 
 class OutcomeOfferOut(BaseModel):
