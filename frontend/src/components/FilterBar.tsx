@@ -1,16 +1,16 @@
 import { MARKET_TYPES, MARKET_TYPE_LABELS } from '../utils/constants';
 import { useLeagues } from '../api/hooks';
-import type { DiscrepancyFilters, MarketType } from '../api/types';
+import type { OpportunityBoardFilters, MarketType } from '../api/types';
 
 interface FilterBarProps {
-  filters: DiscrepancyFilters;
-  onChange: (filters: DiscrepancyFilters) => void;
+  filters: OpportunityBoardFilters;
+  onChange: (filters: OpportunityBoardFilters) => void;
 }
 
 export default function FilterBar({ filters, onChange }: FilterBarProps) {
   const { data: leagues } = useLeagues();
 
-  const update = (patch: Partial<DiscrepancyFilters>) => {
+  const update = (patch: Partial<OpportunityBoardFilters>) => {
     onChange({ ...filters, ...patch });
   };
 

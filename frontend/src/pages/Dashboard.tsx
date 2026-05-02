@@ -6,14 +6,13 @@ import {
   useUnmergeCanonicalTeam,
   useApproveTeamReviewCase,
   useDeclineTeamReviewCase,
-  useDiscrepancies,
   useMatches,
   useOpportunities,
   useSystemStatus,
   useTeamReviewCases,
   useUnresolvedOdds,
 } from '../api/hooks';
-import type { DiscrepancyFilters } from '../api/types';
+import type { OpportunityBoardFilters } from '../api/types';
 import FilterBar from '../components/FilterBar';
 import BookmakerFilterDeck from '../components/BookmakerFilterDeck';
 import EdgeGroupRow from '../components/EdgeRow';
@@ -32,7 +31,7 @@ import {
 import { useBookmakerFilter } from '../hooks/useBookmakerFilter';
 import { buildSearchIndex, filterSearchIndex, normalizeSearchText } from '../utils/search';
 import { groupUnresolvedOdds } from '../utils/unresolvedWarnings';
-import { buildEdges } from '../utils/edgeAdapter';
+import { buildOpportunityEdges } from '../utils/edgeAdapter';
 import { groupEdgesByMarket } from '../utils/edgeGrouping';
 
 type DashboardTab = 'opportunities' | 'tracked' | 'teams' | 'canonical' | 'warnings';
@@ -57,7 +56,7 @@ export default function Dashboard() {
     search: sharedSearch,
   } = useBookmakerFilter();
   const { units: stakeUnits, updateUnits: updateStakeUnits, minUnits } = useDashboardStakeUnits();
-  const [filters, setFilters] = useState<DiscrepancyFilters>({
+  const [filters, setFilters] = useState<OpportunityBoardFilters>({
     sort_by: 'profit_margin',
     sort_order: 'desc',
   });
@@ -119,23 +118,6 @@ export default function Dashboard() {
     setStakeUnitsInput(formatDashboardStakeUnitsInput(normalized));
   };
 
-  const discrepancyFilters = useMemo(
-    () => ({
-      ...filters,
-      sport: sportFilterToParam(opportunitiesSport),
-      search: activeSearchLabel || undefined,
-      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
-    }),
-    [activeSearchLabel, filters, opportunitiesSport, selectedBookmakerIds]
-  );
-
-  const {
-    data: discrepancies,
-    isLoading: discrepanciesLoading,
-    isError: discrepanciesError,
-    error: discrepanciesLoadError,
-    refetch: refetchDiscrepancies,
-  } = useDiscrepancies(discrepancyFilters, { enabled: activeTab === 'opportunities' });
   const {
     data: opportunities,
     isLoading: opportunitiesLoading,
@@ -145,9 +127,11 @@ export default function Dashboard() {
   } = useOpportunities(
     {
       sport: sportFilterToParam(opportunitiesSport),
+      market_type: filters.market_type,
       limit: 200,
       loadAll: true,
       bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
+      include_legacy_discrepancy_overlap: true,
     },
     { enabled: activeTab === 'opportunities' }
   );
@@ -215,25 +199,23 @@ export default function Dashboard() {
   const mergeCanonicalTeam = useMergeCanonicalTeam();
   const unmergeCanonicalTeam = useUnmergeCanonicalTeam();
 
-  const opportunitiesPanelLoading = discrepanciesLoading || opportunitiesLoading;
-  const opportunitiesPanelError =
-    (discrepanciesError ? (discrepanciesLoadError as Error)?.message : null) ||
-    (opportunitiesError ? (opportunitiesLoadError as Error)?.message : null);
+  const opportunitiesPanelLoading = opportunitiesLoading;
+  const opportunitiesPanelError = opportunitiesError
+    ? (opportunitiesLoadError as Error)?.message
+    : null;
 
   const isInitialScanInProgress =
     activeTab === 'opportunities' && !!status?.scan.in_progress && !status.last_scrape_at;
   const isTimeoutError =
-    typeof (discrepanciesLoadError as Error | undefined)?.message === 'string' &&
-    (discrepanciesLoadError as Error).message.toLowerCase().includes('timeout');
+    typeof (opportunitiesLoadError as Error | undefined)?.message === 'string' &&
+    (opportunitiesLoadError as Error).message.toLowerCase().includes('timeout');
 
   useEffect(() => {
     const scanInProgress = !!status?.scan.in_progress;
     const scanJustFinished = previousScanInProgressRef.current && !scanInProgress;
 
     if (scanJustFinished && activeTab === 'opportunities') {
-      void queryClient.invalidateQueries({ queryKey: ['discrepancies'] });
       void queryClient.invalidateQueries({ queryKey: ['opportunities'] });
-      void refetchDiscrepancies();
       void refetchOpportunities();
     }
     if (scanJustFinished && activeTab === 'warnings') {
@@ -253,7 +235,6 @@ export default function Dashboard() {
   }, [
     activeTab,
     queryClient,
-    refetchDiscrepancies,
     refetchOpportunities,
     refetchCanonicalTeams,
     refetchTeamReviewCases,
@@ -266,7 +247,7 @@ export default function Dashboard() {
   const leagueFilter = filters.league;
 
   const edges = useMemo(() => {
-    let all = buildEdges(discrepancies, opportunities, opportunitiesSport);
+    let all = buildOpportunityEdges(opportunities, opportunitiesSport);
     if (marketTypeFilter) {
       all = all.filter((edge) => edge.market_type === marketTypeFilter);
     }
@@ -277,7 +258,7 @@ export default function Dashboard() {
       all = all.filter((edge) => (edge.gap ?? 0) >= minGapFilter);
     }
     return all;
-  }, [discrepancies, opportunities, opportunitiesSport, marketTypeFilter, leagueFilter, minGapFilter]);
+  }, [opportunities, opportunitiesSport, marketTypeFilter, leagueFilter, minGapFilter]);
 
   const edgeGroups = useMemo(() => groupEdgesByMarket(edges), [edges]);
 
@@ -554,7 +535,7 @@ export default function Dashboard() {
         }
         description={
           activeTab === 'opportunities'
-            ? 'Every detected edge across basketball and football, ranked by margin. Filter by sport to narrow the board.'
+            ? 'Every detected edge across basketball, football, and tennis, ranked by margin. Filter by sport to narrow the board.'
             : activeTab === 'tracked'
               ? 'Open tracked matches to review player markets, bookmaker prices, and discrepancy-linked lines.'
               : activeTab === 'teams'

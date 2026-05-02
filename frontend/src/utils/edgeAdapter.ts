@@ -106,6 +106,21 @@ export function opportunityToEdge(o: Opportunity): Edge | null {
   };
 }
 
+export function buildOpportunityEdges(
+  opportunities: Opportunity[] | undefined,
+  sportFilter?: EdgeSport | 'both'
+): Edge[] {
+  const edges: Edge[] = [];
+  for (const o of opportunities ?? []) {
+    const edge = opportunityToEdge(o);
+    if (edge) edges.push(edge);
+  }
+  if (sportFilter && sportFilter !== 'both') {
+    return edges.filter((edge) => edge.sport === sportFilter);
+  }
+  return edges;
+}
+
 export function buildEdges(
   discrepancies: Discrepancy[] | undefined,
   opportunities: Opportunity[] | undefined,
@@ -115,10 +130,7 @@ export function buildEdges(
   for (const d of discrepancies ?? []) {
     edges.push(discrepancyToEdge(d));
   }
-  for (const o of opportunities ?? []) {
-    const edge = opportunityToEdge(o);
-    if (edge) edges.push(edge);
-  }
+  edges.push(...buildOpportunityEdges(opportunities));
   if (sportFilter && sportFilter !== 'both') {
     return edges.filter((edge) => edge.sport === sportFilter);
   }
