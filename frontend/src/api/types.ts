@@ -367,10 +367,25 @@ export interface DiscrepancyFilters {
   loadAll?: boolean;
 }
 
+export interface OpportunityBoardFilters {
+  sport?: string;
+  league?: string;
+  bookmaker_ids?: string[];
+  min_gap?: number;
+  market_type?: MarketType;
+  search?: string;
+  sort_by?: string;
+  sort_order?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
+  loadAll?: boolean;
+}
+
 export interface OpportunityFilters {
   sport?: string;
   bookmaker_ids?: string[];
   market_type?: OutcomeMarketType;
+  include_legacy_discrepancy_overlap?: boolean;
   limit?: number;
   offset?: number;
   loadAll?: boolean;

@@ -1,8 +1,8 @@
-import type { DiscrepancyFilters } from '../api/types';
+import type { OpportunityBoardFilters } from '../api/types';
 
 interface SortControlsProps {
-  filters: DiscrepancyFilters;
-  onChange: (filters: DiscrepancyFilters) => void;
+  filters: OpportunityBoardFilters;
+  onChange: (filters: OpportunityBoardFilters) => void;
 }
 
 const SORT_OPTIONS = [

@@ -48,6 +48,10 @@ export const MARKET_TYPE_LABELS: Record<MarketType, string> = {
   tennis_match_winner: 'Tennis Match Winner',
 };
 
+export function normalizeOpportunityMarketType(marketType: MarketType | undefined): MarketType | undefined {
+  return marketType === 'tennis_match_winner' ? 'match_winner' : marketType;
+}
+
 export const SPORT_LABELS: Record<string, string> = {
   basketball: 'Basketball',
   football: 'Football',

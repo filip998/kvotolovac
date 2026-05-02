@@ -38,7 +38,7 @@ import {
   mockMatches,
   mockOddsOffers,
   mockDiscrepancies,
-  mockFootballOpportunities,
+  mockOpportunities,
   mockFootballOutcomeOffers,
   mockUnresolvedOdds,
   mockSystemStatus,
@@ -319,7 +319,7 @@ export function useOpportunities(
     queryFn: async () => {
       if (USE_MOCK) {
         await delay();
-        let results = [...mockFootballOpportunities];
+        let results = [...mockOpportunities];
         if (filters.sport) {
           results = results.filter((row) => row.sport === filters.sport);
         }
