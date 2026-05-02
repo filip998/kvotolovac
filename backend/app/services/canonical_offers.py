@@ -14,6 +14,7 @@ from ..models.schemas import (
 _CANONICAL_MARKET_TYPES = {
     "football_result": "result",
     "football_double_chance": "double_chance",
+    "player_points_milestones": "player_points",
     "tennis_match_winner": "match_winner",
 }
 
