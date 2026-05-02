@@ -464,13 +464,15 @@ def test_parse_game_total_ot_match_skips_player_market():
 
 
 def test_parse_handicap_ot_match_positive_line_means_team1_favoured():
-    """MerkurXTip's ``handicapOvertime`` value is team1's expected margin
-    (positive = team1=home favoured), so we forward it as ``threshold``
-    without sign flip — opposite of MaxBet/Pinnbet/AdmiralBet/Mozzart.
+    """MerkurXTip's ``handicapOvertime`` is the home team's signed
+    Asian-handicap line (negative = home favourite, positive = home
+    underdog — same as Mozzart's ``Hendikep -X`` UI).  The parser
+    negates the source so positive threshold = home favoured.
 
-    Real live shape: Orlando vs Detroit returned ``handicapOvertime='4.5'``
-    with ``"1"=1.95, "2"=1.85`` meaning Orlando (home) is favoured by 4.5,
-    so threshold stays at +4.5.
+    Real live shape: Orlando vs Detroit (Detroit is favourite) returned
+    ``handicapOvertime='4.5'`` with code 50430 = home covers, code
+    50431 = away covers.  Source +4.5 → threshold = -4.5 (Orlando is
+    the underdog by 4.5).
     """
     match = {
         "id": 1,
@@ -479,25 +481,24 @@ def test_parse_handicap_ot_match_positive_line_means_team1_favoured():
         "leagueName": "USA NBA",
         "kickOffTime": 1777470900000,
         "params": {"handicapOvertime": "4.5"},
-        "odds": {"50431": 1.95, "50430": 1.85},
+        "odds": {"50430": 1.85, "50431": 1.95},
     }
     results = _parse_handicap_ot_match(match)
     assert len(results) == 1
     row = results[0]
     assert row.market_type == "home_handicap_ot"
-    assert row.threshold == 4.5
-    assert row.over_odds == 1.95
-    assert row.under_odds == 1.85
+    assert row.threshold == -4.5  # source +4.5 negated to home-margin convention
+    assert row.over_odds == 1.85   # 50430 = home covers
+    assert row.under_odds == 1.95  # 50431 = away covers
     assert row.home_team == "Orlando"
     assert row.away_team == "Detroit"
     assert row.player_name is None
 
 
 def test_parse_handicap_ot_match_negative_line_means_team1_underdog():
-    """Houston vs LA Lakers returned ``handicapOvertime='-4.5'`` with
-    "1"=1.8, "2"=2.0 meaning Houston (home) is the underdog by 4.5;
-    threshold stays at -4.5 (negative = home underdog).
-    """
+    """Houston vs LA Lakers (Houston home favourite) returned
+    ``handicapOvertime='-4.5'``; source is negated so threshold = +4.5
+    (positive = home favourite by 4.5)."""
     match = {
         "id": 2,
         "home": "Houston",
@@ -505,13 +506,13 @@ def test_parse_handicap_ot_match_negative_line_means_team1_underdog():
         "leagueName": "USA NBA",
         "kickOffTime": 1777470900000,
         "params": {"handicapOvertime": "-4.5"},
-        "odds": {"50431": 1.8, "50430": 2.0},
+        "odds": {"50430": 2.0, "50431": 1.8},
     }
     results = _parse_handicap_ot_match(match)
     assert len(results) == 1
-    assert results[0].threshold == -4.5
-    assert results[0].over_odds == 1.8
-    assert results[0].under_odds == 2.0
+    assert results[0].threshold == 4.5
+    assert results[0].over_odds == 2.0   # 50430 = home covers
+    assert results[0].under_odds == 1.8  # 50431 = away covers
 
 
 def test_parse_handicap_ot_match_pickem_zero_line_emits_row():
@@ -523,7 +524,7 @@ def test_parse_handicap_ot_match_pickem_zero_line_emits_row():
         "leagueName": "Test",
         "kickOffTime": 1777470900000,
         "params": {"handicapOvertime": "0"},
-        "odds": {"50431": 1.92, "50430": 1.88},
+        "odds": {"50430": 1.88, "50431": 1.92},
     }
     results = _parse_handicap_ot_match(match)
     assert len(results) == 1
@@ -537,7 +538,7 @@ def test_parse_handicap_ot_match_skips_player_market():
         "away": "Denver",
         "leagueName": "NBA Igrači",
         "params": {"handicapOvertime": "-3.5"},
-        "odds": {"50431": 1.9, "50430": 1.9},
+        "odds": {"50430": 1.9, "50431": 1.9},
     }
     assert _parse_handicap_ot_match(match) == []
 
@@ -547,7 +548,7 @@ def test_parse_handicap_ot_match_skips_unparseable_line_or_no_odds():
         "id": 5, "home": "A", "away": "B", "leagueName": "Test",
         "kickOffTime": 1777470900000,
         "params": {"handicapOvertime": "garbage"},
-        "odds": {"50431": 1.9, "50430": 1.9},
+        "odds": {"50430": 1.9, "50431": 1.9},
     }
     no_odds = {
         "id": 6, "home": "A", "away": "B", "leagueName": "Test",

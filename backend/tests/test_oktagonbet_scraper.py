@@ -370,12 +370,15 @@ def test_parse_game_total_ot_match_excludes_combo_only_match(totals_fixture_data
 
 
 def test_parse_handicap_ot_match_positive_line_means_team1_favoured():
-    """OktagonBet's handicapOvertime is team1's expected margin (positive =
-    team1=home favoured), so threshold = +line (no flip), opposite of
-    MaxBet/AdmiralBet/PinnBet/Mozzart but same as MerkurXTip.
+    """OktagonBet's ``handicapOvertime`` is the home team's signed
+    Asian-handicap line (negative = home favourite, positive = home
+    underdog — same convention as Mozzart's ``Hendikep -X`` UI).
+    The parser negates the source value so positive threshold = home
+    favoured (analyzer convention).  Pair codes: 50430 = home covers
+    (over_odds), 50431 = away covers (under_odds).
 
-    Real live shape: Orlando vs Detroit returned ``handicapOvertime=3.5``
-    with "1"=1.9, "2"=1.9.
+    Live sample: Orlando vs Detroit (Detroit is favourite) returned
+    ``handicapOvertime=3.5`` → threshold = -3.5.
     """
     match = {
         "id": 1,
@@ -384,13 +387,13 @@ def test_parse_handicap_ot_match_positive_line_means_team1_favoured():
         "leagueName": "USA NBA",
         "kickOffTime": 1777470900000,
         "params": {"handicapOvertime": "3.5"},
-        "odds": {"50431": 1.9, "50430": 1.9},
+        "odds": {"50430": 1.9, "50431": 1.9},
     }
     results = _parse_handicap_ot_match(match)
     assert len(results) == 1
     row = results[0]
     assert row.market_type == "home_handicap_ot"
-    assert row.threshold == 3.5
+    assert row.threshold == -3.5
     assert row.over_odds == 1.9
     assert row.under_odds == 1.9
     assert row.bookmaker_id == "oktagonbet"
@@ -400,8 +403,8 @@ def test_parse_handicap_ot_match_positive_line_means_team1_favoured():
 
 
 def test_parse_handicap_ot_match_negative_line_means_team1_underdog():
-    """Houston vs LA Lakers returned ``handicapOvertime=-3.5``: Houston
-    (home) underdog by 3.5; threshold stays at -3.5.
+    """Houston vs LA Lakers (Houston home favourite) returned
+    ``handicapOvertime=-3.5``; source is negated so threshold = +3.5.
     """
     match = {
         "id": 2,
@@ -410,11 +413,11 @@ def test_parse_handicap_ot_match_negative_line_means_team1_underdog():
         "leagueName": "USA NBA",
         "kickOffTime": 1777470900000,
         "params": {"handicapOvertime": "-3.5"},
-        "odds": {"50431": 1.9, "50430": 1.9},
+        "odds": {"50430": 1.9, "50431": 1.9},
     }
     results = _parse_handicap_ot_match(match)
     assert len(results) == 1
-    assert results[0].threshold == -3.5
+    assert results[0].threshold == 3.5
 
 
 def test_parse_handicap_ot_match_pickem_zero_line_emits_row():
@@ -425,7 +428,7 @@ def test_parse_handicap_ot_match_pickem_zero_line_emits_row():
         "leagueName": "Test",
         "kickOffTime": 1777470900000,
         "params": {"handicapOvertime": "0"},
-        "odds": {"50431": 1.92, "50430": 1.88},
+        "odds": {"50430": 1.88, "50431": 1.92},
     }
     results = _parse_handicap_ot_match(match)
     assert len(results) == 1

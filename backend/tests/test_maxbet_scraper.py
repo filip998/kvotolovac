@@ -136,10 +136,13 @@ def test_parse_game_total_ot_match_returns_ot_only_lines(basketball_fixture_data
 def _build_handicap_match(*, home="Orlando", away="Detroit") -> dict:
     """Build a list-mode match with the live MaxBet handicap layout.
 
-    Reproduces the ladder observed live for ``Orlando vs Detroit``:
-    handicapOvertime is the main line at -3.5 with 1.9/1.9 odds; the eight
-    surrounding lines step out symmetrically with monotonic prices on the
-    "1" (team1=home covers, odd-numbered code) side.
+    Reproduces the ladder observed live for ``Orlando vs Detroit`` where
+    Detroit is the favourite (per moneyline) so home (Orlando) expected
+    margin is ≈ -3.5.  ``handicapOvertime`` carries the home-perspective
+    *signed* expected margin (no sign flip — verified by checking that
+    the home-cover odds, code 50430, fall as the line grows in the
+    favourite's favour).  Pair codes: even (50430, 50432, ...) = home
+    covers, odd (50431, 50433, ...) = away covers.
     """
     return {
         "id": 23353450,
@@ -148,42 +151,42 @@ def _build_handicap_match(*, home="Orlando", away="Detroit") -> dict:
         "away": away,
         "kickOffTime": 1777470900000,
         "params": {
-            "handicapOvertime":  "-3.5",
+            "handicapOvertime":  "-3.5",  # main line, home expected margin
             "handicapOvertime2": "-4.5",
             "handicapOvertime3": "-2.5",
             "handicapOvertime4": "-5.5",
             "handicapOvertime5": "-1.5",
             "handicapOvertime6": "-6.5",
-            "handicapOvertime7":  "1.5",
-            "handicapOvertime8": "-7.5",
-            "handicapOvertime9":  "2.5",
+            "handicapOvertime7":  "1.5",  # alt line on the home-favourite side
+            "handicapOvertime8": "-7.5",  # placeholder
+            "handicapOvertime9":  "2.5",  # placeholder
         },
         "odds": {
-            # main, both 1.9
-            "50431": 1.9,  "50430": 1.9,
-            # -4.5 — Orlando harder cover → "1" 2.0
-            "50433": 2.0,  "50432": 1.77,
-            # -2.5 — Orlando easier cover → "1" 1.77
-            "50435": 1.77, "50434": 2.0,
-            # -5.5 → "1" 2.1
-            "50437": 2.1,  "50436": 1.67,
-            # -1.5 → "1" 1.68
-            "50439": 1.68, "50438": 2.1,
-            # -6.5 → "1" 2.25
-            "50441": 2.25, "50440": 1.6,
-            # +1.5 (Orlando underdog) → "1" 1.45 (Orlando keeps it close, easy)
-            "50443": 1.45, "50442": 2.6,
-            # extreme placeholders
-            "50427": 3.6,  "50426": 3.6,
-            "50429": 3.6,  "50428": 3.6,
+            # Main -3.5: balanced 1.9/1.9
+            "50430": 1.9,  "50431": 1.9,
+            # -4.5 (less of a home underdog): home covers easier ⇒ 50432=1.77
+            "50432": 1.77, "50433": 2.0,
+            # -2.5 (more of a home underdog): home covers harder ⇒ 50434=2.0
+            "50434": 2.0,  "50435": 1.77,
+            # -5.5: 50436=1.67 (home covers very easy at this lenient line)
+            "50436": 1.67, "50437": 2.1,
+            # -1.5: 50438=2.1 (home covers harder; tighter line)
+            "50438": 2.1,  "50439": 1.68,
+            # -6.5: 50440=1.6
+            "50440": 1.6,  "50441": 2.25,
+            # +1.5 (home favoured side of the spread): 50442=2.6 (home wins by 2+)
+            "50442": 2.6,  "50443": 1.45,
+            # extreme placeholder edges (intentionally dropped by the parser)
+            "50426": 3.6,  "50427": 3.6,
+            "50428": 3.6,  "50429": 3.6,
         },
     }
 
 
 def test_parse_handicap_ot_match_returns_canonical_threshold_and_odds():
-    """The 7 central ladder lines emit one row each, with threshold = -line
-    (sign flip so positive threshold = home favoured) and over=team1-cover,
-    under=team2.
+    """The 7 central ladder lines emit one row each, with the home
+    expected margin stored verbatim into ``threshold`` (no sign flip)
+    and ``over_odds`` = home covers.
 
     Lines #8 and #9 carry placeholder ``3.6/3.6`` odds at the ladder
     extremes; they're intentionally not emitted (see
@@ -199,24 +202,28 @@ def test_parse_handicap_ot_match_returns_canonical_threshold_and_odds():
     assert all(r.player_name is None for r in results)
 
     by_threshold = {r.threshold: (r.over_odds, r.under_odds) for r in results}
-    # main -3.5 → +3.5 home margin
-    assert by_threshold[3.5] == (1.9, 1.9)
-    # -4.5 line → +4.5 home margin (home favoured by 4.5)
-    assert by_threshold[4.5] == (2.0, 1.77)
-    # -2.5 line → +2.5 home margin
-    assert by_threshold[2.5] == (1.77, 2.0)
-    # +1.5 line → -1.5 home margin (home is the underdog)
-    assert by_threshold[-1.5] == (1.45, 2.6)
+    # Main -3.5 (home is the underdog by 3.5): balanced 1.9/1.9
+    assert by_threshold[-3.5] == (1.9, 1.9)
+    # -4.5 (home would lose by 4.5 to balance — less likely than real -3.5):
+    # home covers easier ⇒ over=1.77, away covers harder ⇒ under=2.0
+    assert by_threshold[-4.5] == (1.77, 2.0)
+    # -2.5 (home is more of an underdog at this line): home covers harder
+    assert by_threshold[-2.5] == (2.0, 1.77)
+    # +1.5 (line on the home-favourite side, far above real margin -3.5):
+    # home covers requires +2 win — unlikely → over=2.6, under=1.45
+    assert by_threshold[1.5] == (2.6, 1.45)
+    # -1.5 (closer to pick'em from home side): home covers harder than 50/50
+    assert by_threshold[-1.5] == (2.1, 1.68)
 
 
 def test_parse_handicap_ot_match_threshold_sorts_correctly():
-    """Sorting handicap rows by threshold gives the home-favourite ordering
+    """Sorting handicap rows by threshold gives the home-margin ordering
     the analyzer relies on for gap detection."""
     match = _build_handicap_match()
     results = _parse_handicap_ot_match(match)
     sorted_thresholds = sorted(r.threshold for r in results)
-    # 7 central lines from -1.5 (home underdog by 1.5) up to +6.5
-    assert sorted_thresholds == [-1.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5]
+    # 7 central lines: 6 negative (home is the underdog ladder) + 1 positive
+    assert sorted_thresholds == [-6.5, -5.5, -4.5, -3.5, -2.5, -1.5, 1.5]
 
 
 def test_parse_handicap_ot_match_skips_placeholder_extreme_lines():
@@ -229,9 +236,10 @@ def test_parse_handicap_ot_match_skips_placeholder_extreme_lines():
     """
     match = _build_handicap_match()
     results = _parse_handicap_ot_match(match)
-    # Confirm none of the extreme placeholder lines (-7.5 / +2.5 from
-    # team1's perspective → +7.5 / -2.5 home margin) ended up in the output
-    extreme_thresholds = {-2.5, 7.5}
+    # The two placeholder ladder slots have source values -7.5 and +2.5,
+    # which (with no sign flip) become thresholds -7.5 and +2.5 — neither
+    # of which should appear in the 7 central rows.
+    extreme_thresholds = {-7.5, 2.5}
     assert extreme_thresholds.isdisjoint(r.threshold for r in results)
 
 
@@ -269,7 +277,7 @@ def test_parse_handicap_ot_match_skips_unparseable_or_missing():
     }
     results = _parse_handicap_ot_match(match)
     assert len(results) == 1
-    assert results[0].threshold == 2.5  # -(-2.5) = +2.5
+    assert results[0].threshold == -2.5  # +line = -2.5 (home is the underdog by 2.5)
 
 
 def test_parse_handicap_ot_match_skips_when_no_odds_present():
@@ -296,13 +304,14 @@ def test_parse_handicap_ot_match_pickem_zero_line_emits_row():
         "away": "B",
         "kickOffTime": 1777470900000,
         "params": {"handicapOvertime": "0"},
-        "odds": {"50431": 1.92, "50430": 1.88},
+        "odds": {"50430": 1.88, "50431": 1.92},
     }
     results = _parse_handicap_ot_match(match)
     assert len(results) == 1
     assert results[0].threshold == 0.0
-    assert results[0].over_odds == 1.92
-    assert results[0].under_odds == 1.88
+    # 50430 is the home-cover (over) code; 50431 is away-cover (under).
+    assert results[0].over_odds == 1.88
+    assert results[0].under_odds == 1.92
 
 
 def test_parse_game_total_ot_match_does_not_emit_handicap_after_change(basketball_fixture_data):

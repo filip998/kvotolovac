@@ -128,21 +128,20 @@ _GAME_TOTAL_OT_LINES = [
     ("51647", "51646", "overUnderOvertime13"),
 ]
 
-# OT-inclusive Asian handicap (full game). MerkurXTip exposes a single
-# main line per match under params["handicapOvertime"] alongside odds
-# codes 50431 ("1" = team1=home covers) and 50430 ("2" = team2=away covers).
-# The list call already returns these — no new HTTP. Each (over_code,
-# under_code, param_key) tuple matches the GameTotalLine shape used by
-# the totals lines above.
+# OT-inclusive Asian handicap (full game). MerkurXTip's existing
+# basketball list call already returns ``params["handicapOvertime"]``
+# (single line per match) and odds codes 50430 ("2" = home covers) /
+# 50431 ("1" = away covers) — verified live by checking the ladder
+# direction (home cover odds fall as the line grows in the favourite's
+# favour).
 #
-# IMPORTANT: MerkurXTip's sign convention is the *inverse* of MaxBet /
-# AdmiralBet / PinnBet / Mozzart. MerkurXTip stores ``handicapOvertime``
-# as **team1's expected margin** (positive = team1 favoured), whereas the
-# others store it as **team1's signed Asian handicap** (negative = team1
-# favoured). To canonicalise to our home-perspective ``threshold`` we use
-# ``threshold = +line`` (no flip) — see ``_parse_handicap_ot_match``.
+# Sign convention: ``handicapOvertime`` is the home team's *signed*
+# Asian-handicap line (negative = home favourite, positive = home
+# underdog — same as Mozzart's ``Hendikep -X`` UI).  Our analyzer expects
+# ``threshold`` to be home expected margin (positive = home favoured),
+# so we negate the parsed line — see ``_parse_handicap_ot_match``.
 _HANDICAP_OT_LINES: list[tuple[str, str, str]] = [
-    ("50431", "50430", "handicapOvertime"),
+    ("50430", "50431", "handicapOvertime"),
 ]
 
 _KNOWN_LEAGUE_IDS: list[int] = [
@@ -333,12 +332,13 @@ def _parse_game_total_ot_match(match: dict) -> list[RawOddsData]:
 def _parse_handicap_ot_match(match: dict) -> list[RawOddsData]:
     """Parse OT-inclusive Asian handicap rows from a list/league match.
 
-    MerkurXTip stores ``handicapOvertime`` as **team1's expected margin**
-    (positive = team1=home favoured); we forward the value as-is into
-    ``threshold`` (no sign flip), since the analyzer canonical convention
-    is "positive threshold = home favoured". Outcome ``"1"`` (odds code
-    ``50431``) pays when the home team covers; ``"2"`` (``50430``) pays
-    when the away team covers.
+    MerkurXTip stores ``handicapOvertime`` as the home team's *signed*
+    Asian-handicap line (negative = home favourite, positive = home
+    underdog — same as Mozzart's ``Hendikep -X`` UI).  Our canonical
+    analyzer convention is the opposite (positive = home expected margin
+    = home favoured), so we negate the parsed value when storing the
+    threshold.  Outcome ``"2"`` (odds code 50430) pays when the home
+    team covers; ``"1"`` (50431) pays when the away team covers.
     """
     if "igrači" in match.get("leagueName", "").lower():
         return []
@@ -357,9 +357,10 @@ def _parse_handicap_ot_match(match: dict) -> list[RawOddsData]:
         if line_str is None or line_str == "":
             continue
         try:
-            threshold = float(line_str)
+            line = float(line_str)
         except (ValueError, TypeError):
             continue
+        threshold = -line
 
         over_odds = odds.get(over_code)
         under_odds = odds.get(under_code)

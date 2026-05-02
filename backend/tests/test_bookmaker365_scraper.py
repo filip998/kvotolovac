@@ -102,7 +102,15 @@ def test_parse_total_match_returns_regular_and_ot_lines(regular_preview_data):
 
 def _build_365_handicap_match() -> dict:
     """Build a list-mode match reproducing the live Bookmaker365 ladder
-    observed for Orlando vs Detroit (handicapOvertime through 13)."""
+    observed for Orlando vs Detroit (handicapOvertime through 13).
+
+    Source values are the home team's *signed* Asian-handicap line
+    (negative = home favourite, positive = home underdog — same as
+    Mozzart's ``Hendikep -X`` UI).  After parsing, the home expected
+    margin is the negation of the source value.  Pair codes: even
+    (50430, 50432, ..., 50442, 51624, ...) = home covers (over_odds);
+    odd (50431, 50433, ..., 50443, 51625, ...) = away covers (under_odds).
+    """
     return {
         "id": 12345,
         "leagueName": "NBA / Play Off",
@@ -110,7 +118,7 @@ def _build_365_handicap_match() -> dict:
         "away": "Detroit",
         "kickOffTime": 1777470900000,
         "params": {
-            "handicapOvertime":   "3.5",   # main
+            "handicapOvertime":   "3.5",   # main: home is the underdog by 3.5
             "handicapOvertime2":  "2.5",
             "handicapOvertime3":  "4.5",
             "handicapOvertime4":  "1.5",
@@ -125,42 +133,41 @@ def _build_365_handicap_match() -> dict:
             "handicapOvertime13": "9.5",
         },
         "odds": {
-            # N=1 (main 3.5) — codes 50431/50430
-            "50431": 1.9,  "50430": 1.9,
-            # N=2 (2.5) — easier for team1 → "1" lower
-            "50433": 1.77, "50432": 2.0,
-            # N=3 (4.5) — harder
-            "50435": 2.0,  "50434": 1.78,
-            # N=4 (1.5) — much easier
-            "50437": 1.67, "50436": 2.15,
-            # N=5 (5.5) — much harder
-            "50439": 2.1,  "50438": 1.68,
-            # N=6 (-1.5) — easy (home underdog by 1.5)
-            "50441": 1.45, "50440": 2.65,
-            # N=7 (6.5)
-            "50443": 2.25, "50442": 1.6,
-            # N=8 (-2.5) — codes 51625/51624
-            "51625": 1.4,  "51624": 2.85,
-            # N=9 (7.5)
-            "51627": 2.45, "51626": 1.52,
-            # N=10 (-3.5)
-            "51629": 1.35, "51628": 3.05,
-            # N=11 (8.5)
-            "51631": 2.65, "51630": 1.45,
-            # N=12 (-4.5)
-            "51633": 1.30, "51632": 3.25,
-            # N=13 (9.5)
-            "51635": 2.85, "51634": 1.4,
+            # N=1 (source 3.5 → threshold -3.5, balanced)
+            "50430": 1.9,  "50431": 1.9,
+            # N=2 (2.5 → -2.5): home covers harder ⇒ over=2.0
+            "50432": 2.0,  "50433": 1.77,
+            # N=3 (4.5 → -4.5): home covers easier ⇒ over=1.78
+            "50434": 1.78, "50435": 2.0,
+            # N=4 (1.5 → -1.5)
+            "50436": 2.15, "50437": 1.67,
+            # N=5 (5.5 → -5.5)
+            "50438": 1.68, "50439": 2.1,
+            # N=6 (-1.5 → +1.5, line on the home-favourite side)
+            "50440": 2.65, "50441": 1.45,
+            # N=7 (6.5 → -6.5)
+            "50442": 1.6,  "50443": 2.25,
+            # N=8 (-2.5 → +2.5)
+            "51624": 2.85, "51625": 1.4,
+            # N=9 (7.5 → -7.5)
+            "51626": 1.52, "51627": 2.45,
+            # N=10 (-3.5 → +3.5)
+            "51628": 3.05, "51629": 1.35,
+            # N=11 (8.5 → -8.5)
+            "51630": 1.45, "51631": 2.65,
+            # N=12 (-4.5 → +4.5)
+            "51632": 3.25, "51633": 1.30,
+            # N=13 (9.5 → -9.5)
+            "51634": 1.4,  "51635": 2.85,
         },
     }
 
 
 def test_parse_total_match_handicap_ladder_full_13_lines():
-    """All 13 ladder lines emit one row each, with threshold = +line (no flip)
-    so positive threshold = home favoured. 365 is on the same Tipster
-    platform as MerkurXTip / OktagonBet / BetOle (positive line = team1
-    favoured) — opposite sign convention from MaxBet/AdmiralBet/PinnBet/
-    Mozzart."""
+    """All 13 ladder lines emit one row each.  365 is on the same Tipster
+    platform as MerkurXTip / OktagonBet / BetOle / SoccerBet: the source
+    value is the home-perspective signed line (negative = home favourite),
+    and the parser negates it so positive threshold = home favoured."""
     match = _build_365_handicap_match()
     results = _parse_total_match(match, _HANDICAP_OT_LINES)
     assert len(results) == 13
@@ -170,14 +177,14 @@ def test_parse_total_match_handicap_ladder_full_13_lines():
     assert all(r.player_name is None for r in results)
 
     by_threshold = {r.threshold: (r.over_odds, r.under_odds) for r in results}
-    # main +3.5
-    assert by_threshold[3.5] == (1.9, 1.9)
-    # +4.5 (harder)
-    assert by_threshold[4.5] == (2.0, 1.78)
-    # -1.5 (home underdog, "1" easy)
-    assert by_threshold[-1.5] == (1.45, 2.65)
-    # +9.5 (extreme high line)
-    assert by_threshold[9.5] == (2.85, 1.4)
+    # source +3.5 → threshold -3.5 (balanced, home is the underdog)
+    assert by_threshold[-3.5] == (1.9, 1.9)
+    # source +4.5 → threshold -4.5 (home covers easier here)
+    assert by_threshold[-4.5] == (1.78, 2.0)
+    # source -1.5 → threshold +1.5 (line on the home-favourite side)
+    assert by_threshold[1.5] == (2.65, 1.45)
+    # source +9.5 → threshold -9.5 (extreme home-underdog line)
+    assert by_threshold[-9.5] == (1.4, 2.85)
 
 
 def test_parse_total_match_handicap_partial_ladder():
@@ -189,10 +196,11 @@ def test_parse_total_match_handicap_partial_ladder():
         "away": "B",
         "kickOffTime": 1777470900000,
         "params": {"handicapOvertime": "0", "handicapOvertime2": "-1.5"},
-        "odds": {"50431": 1.92, "50430": 1.88, "50433": 1.95, "50432": 1.85},
+        "odds": {"50430": 1.88, "50431": 1.92, "50432": 1.85, "50433": 1.95},
     }
     results = _parse_total_match(match, _HANDICAP_OT_LINES)
-    assert sorted(r.threshold for r in results) == [-1.5, 0.0]
+    # source 0 → 0; source -1.5 → +1.5
+    assert sorted(r.threshold for r in results) == [0.0, 1.5]
 
 
 def test_parse_total_match_does_not_mix_handicap_with_totals():

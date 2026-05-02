@@ -186,9 +186,12 @@ def test_parse_regular_match_detail_returns_both_total_types():
 
 
 def test_parse_handicap_spec_handles_signed_lines():
-    """``hcp=`` specifiers are signed; positive = team1 favoured."""
-    assert _parse_handicap_spec("hcp=3.5") == 3.5
-    assert _parse_handicap_spec("hcp=-1.5") == -1.5
+    """``hcp=`` specifiers are signed and stored from the home team's
+    perspective (negative = home favoured). Our analyzer convention is
+    the opposite (positive threshold = home favoured), so the parser
+    negates the parsed value."""
+    assert _parse_handicap_spec("hcp=3.5") == -3.5
+    assert _parse_handicap_spec("hcp=-1.5") == 1.5
     assert _parse_handicap_spec("hcp=0") == 0.0
     assert _parse_handicap_spec("total=200") is None  # totals spec, not handicap
     assert _parse_handicap_spec("garbage") is None
@@ -201,10 +204,11 @@ def _hcp_entry(tt: int, hcp: float, odd: float, status: str = "U") -> dict:
 
 
 def test_parse_regular_match_emits_handicap_rows_with_signed_threshold():
-    """Real live shape (Orlando vs Detroit): tip-type 50431 ('1' = home covers,
-    code is the higher / odd one) and 50430 ('2' = away covers) carry hcp=X
-    entries with signed line. SoccerBet stores ``hcp`` as team1's expected
-    margin (positive = team1 favoured), so threshold = +line directly.
+    """Real live shape (Orlando vs Detroit, where Detroit is favoured):
+    tip-type 50430 ('2' = home covers) and 50431 ('1' = away covers)
+    carry hcp=X entries with signed lines.  SoccerBet's ``hcp`` is the
+    home team's signed Asian-handicap line (negative = home favourite),
+    so threshold = -hcp.
     """
     match = {
         "home": "Orlando",
@@ -212,13 +216,15 @@ def test_parse_regular_match_emits_handicap_rows_with_signed_threshold():
         "leagueName": "USA - NBA",
         "kickOffTime": 1777470900000,
         "betMap": {
-            "50431": {  # team1=home covers
+            # Source labels lines from home perspective: hcp=+3.5 means
+            # home (Orlando) +3.5 head start (home is the underdog by 3.5).
+            "50431": {  # away covers
                 "hcp=3.5":  _hcp_entry(50431, 3.5,  1.9),
                 "hcp=2.5":  _hcp_entry(50431, 2.5,  1.77),
                 "hcp=4.5":  _hcp_entry(50431, 4.5,  2.0),
-                "hcp=-1.5": _hcp_entry(50431, -1.5, 1.45),  # home underdog easy
+                "hcp=-1.5": _hcp_entry(50431, -1.5, 1.45),
             },
-            "50430": {  # team2=away covers
+            "50430": {  # home covers
                 "hcp=3.5":  _hcp_entry(50430, 3.5,  1.9),
                 "hcp=2.5":  _hcp_entry(50430, 2.5,  2.0),
                 "hcp=4.5":  _hcp_entry(50430, 4.5,  1.78),
@@ -230,10 +236,15 @@ def test_parse_regular_match_emits_handicap_rows_with_signed_threshold():
     handicap = [r for r in results if r.market_type == "home_handicap_ot"]
     assert len(handicap) == 4
     by_threshold = {r.threshold: (r.over_odds, r.under_odds) for r in handicap}
-    assert by_threshold[3.5] == (1.9, 1.9)
-    assert by_threshold[4.5] == (2.0, 1.78)
-    assert by_threshold[-1.5] == (1.45, 2.6)
-    # Sanity: all attached to the right match
+    # hcp=+3.5 → threshold=-3.5 (home is the underdog by 3.5);
+    # over=50430=1.9 (home covers), under=50431=1.9 (away covers)
+    assert by_threshold[-3.5] == (1.9, 1.9)
+    # hcp=+4.5 → threshold=-4.5 (more of a home underdog line):
+    # over=50430=1.78 (home covers easier here), under=50431=2.0
+    assert by_threshold[-4.5] == (1.78, 2.0)
+    # hcp=-1.5 → threshold=+1.5 (line on the home-favourite side):
+    # over=50430=2.6, under=50431=1.45
+    assert by_threshold[1.5] == (2.6, 1.45)
     assert {r.home_team for r in handicap} == {"Orlando"}
     assert {r.away_team for r in handicap} == {"Detroit"}
 
@@ -258,7 +269,8 @@ def test_parse_regular_match_handicap_skips_locked_entries():
     results = _parse_regular_match(match)
     handicap = [r for r in results if r.market_type == "home_handicap_ot"]
     assert len(handicap) == 1
-    assert handicap[0].threshold == 2.5
+    # hcp=2.5 → threshold=-2.5 after sign flip
+    assert handicap[0].threshold == -2.5
 
 
 def test_parse_regular_match_handicap_pickem_zero_line():
@@ -269,16 +281,17 @@ def test_parse_regular_match_handicap_pickem_zero_line():
         "leagueName": "Test",
         "kickOffTime": 1777470900000,
         "betMap": {
-            "50431": {"hcp=0": _hcp_entry(50431, 0, 1.92)},
-            "50430": {"hcp=0": _hcp_entry(50430, 0, 1.88)},
+            "50431": {"hcp=0": _hcp_entry(50431, 0, 1.92)},  # away covers
+            "50430": {"hcp=0": _hcp_entry(50430, 0, 1.88)},  # home covers
         },
     }
     results = _parse_regular_match(match)
     handicap = [r for r in results if r.market_type == "home_handicap_ot"]
     assert len(handicap) == 1
     assert handicap[0].threshold == 0.0
-    assert handicap[0].over_odds == 1.92
-    assert handicap[0].under_odds == 1.88
+    # 50430 = home covers (over), 50431 = away covers (under)
+    assert handicap[0].over_odds == 1.88
+    assert handicap[0].under_odds == 1.92
 
 
 def test_parse_regular_match_does_not_mix_handicap_with_totals():
@@ -303,7 +316,8 @@ def test_parse_regular_match_does_not_mix_handicap_with_totals():
     assert len(totals) == 1
     assert totals[0].threshold == 210.5
     assert len(handicap) == 1
-    assert handicap[0].threshold == -2.5
+    # hcp=-2.5 → threshold=+2.5 (home is the favourite by 2.5)
+    assert handicap[0].threshold == 2.5
 
 
 def test_parse_player_match_preview_uses_underlying_matchup():

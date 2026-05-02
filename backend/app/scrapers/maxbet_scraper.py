@@ -140,15 +140,21 @@ _BASKETBALL_GAME_TOTAL_OT_LINES: tuple[GameTotalLine, ...] = (
 )
 
 # OT-inclusive Asian handicap (full game). MaxBet exposes a ladder under
-# params keys ``handicapOvertime`` through ``handicapOvertime9`` whose values
-# are *team1's* signed Asian handicap (negative when team1=home is favoured).
+# params keys ``handicapOvertime`` through ``handicapOvertime9`` whose
+# values are the *home team's expected margin* (positive when home is
+# favoured, negative when home is the underdog) — verified live across
+# many matches by comparing against moneyline odds.  Our analyzer
+# canonical convention is identical (positive threshold = home favoured),
+# so we forward the value into ``threshold`` *without* a sign flip.
 # The matching odds codes 50426–50443 are 9 alternating pairs where the
-# odd-numbered code holds the "1" (team1 covers) price and the even-numbered
-# code holds the "2" (team2 covers) price — verified live against monotonic
-# price/line behaviour across 27 matches. The mapping between
-# ``handicapOvertime{N}`` and the code pair is *not* sequential by N; lines
-# are interleaved around the main line, so each (over_code, under_code,
-# param_key) tuple is recorded explicitly.
+# **even-numbered** code holds the "2" (home covers) price and the
+# **odd-numbered** code holds the "1" (away covers) price.  This mapping
+# is the *opposite* of historical comments and is what live ladder
+# direction confirms (home-cover odds fall as the line grows in the
+# favourite's favour).  The mapping between ``handicapOvertime{N}`` and
+# the code pair is *not* sequential by N; lines are interleaved around
+# the main line, so each (over_code=even, under_code=odd, param_key)
+# tuple is recorded explicitly.
 #
 # We deliberately *exclude* ``handicapOvertime8`` and ``handicapOvertime9``
 # (the extreme ladder edges, codes 50426/50427 and 50428/50429): live data
@@ -160,18 +166,14 @@ _BASKETBALL_GAME_TOTAL_OT_LINES: tuple[GameTotalLine, ...] = (
 # normal range MaxBet actually prices, and any genuinely heavy-favourite
 # match relabels its main line so heavier handicaps still appear in the
 # central ``handicapOvertime`` slot.
-#
-# For the analyzer the consumer flips the sign so threshold becomes home
-# expected margin (positive = home favoured) — see
-# _parse_handicap_lines_for_spec.
 _BASKETBALL_HANDICAP_OT_LINES: tuple[GameTotalLine, ...] = (
-    GameTotalLine("50431", "50430", "handicapOvertime"),
-    GameTotalLine("50433", "50432", "handicapOvertime2"),
-    GameTotalLine("50435", "50434", "handicapOvertime3"),
-    GameTotalLine("50437", "50436", "handicapOvertime4"),
-    GameTotalLine("50439", "50438", "handicapOvertime5"),
-    GameTotalLine("50441", "50440", "handicapOvertime6"),
-    GameTotalLine("50443", "50442", "handicapOvertime7"),
+    GameTotalLine("50430", "50431", "handicapOvertime"),
+    GameTotalLine("50432", "50433", "handicapOvertime2"),
+    GameTotalLine("50434", "50435", "handicapOvertime3"),
+    GameTotalLine("50436", "50437", "handicapOvertime4"),
+    GameTotalLine("50438", "50439", "handicapOvertime5"),
+    GameTotalLine("50440", "50441", "handicapOvertime6"),
+    GameTotalLine("50442", "50443", "handicapOvertime7"),
 )
 
 _BASKETBALL_CANONICAL_LEAGUES = {
@@ -428,13 +430,15 @@ def _parse_handicap_lines_for_spec(
 ) -> list[RawOddsData]:
     """Parse Asian handicap rows from a list-mode match.
 
-    MaxBet stores the line value (signed, team1's perspective) in the params
-    map under the line's ``param_key`` and the matching cover odds in the
-    ``odds`` map under ``over_code`` (team1 covers, "1") and ``under_code``
-    (team2 covers, "2"). We canonicalise to a home-perspective expected
-    margin via ``threshold = -line_value`` so the existing analyzer pairs
-    handicap rows with handicap rows from any other bookmaker via the same
-    threshold/over/under math used for total points.
+    MaxBet stores the line value as **the home team's expected margin**
+    in the params map under the line's ``param_key`` (positive when
+    home is favoured, negative when home is the underdog — verified
+    live by comparing against moneyline odds across many matches).
+    The matching cover odds live in the ``odds`` map under ``over_code``
+    ("2" = home covers) and ``under_code`` ("1" = away covers).  Our
+    analyzer's canonical convention is identical (positive threshold =
+    home favoured), so we forward the line value directly into
+    ``threshold`` without sign flip.
     """
     league_name = match.get("leagueName") or ""
     if not league_name:
@@ -466,7 +470,7 @@ def _parse_handicap_lines_for_spec(
         except (ValueError, TypeError):
             continue
 
-        threshold = -line_value
+        threshold = line_value
 
         over_odds = odds.get(line.over_code)
         under_odds = odds.get(line.under_code)
