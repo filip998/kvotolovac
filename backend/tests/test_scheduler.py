@@ -13,7 +13,7 @@ from app.models.schemas import (
     RawOutcomeOffer,
     TeamReviewDiagnostic,
 )
-from app.scrapers.base import BaseScraper
+from app.scrapers.base import BaseScraper, ScraperCapability
 from app.services.opportunity_analyzer import Opportunity
 from app.services.scheduler import Scheduler, _normalize_merge_pairings
 from app.services.normalizer import normalize_team_name
@@ -202,6 +202,23 @@ def test_normalize_merge_pairings_rejects_reciprocal_cycles_regardless_of_order(
     assert normalized_reverse == {}
     assert conflicts_forward == {1, 2}
     assert conflicts_reverse == {1, 2}
+
+
+def test_scraper_capabilities_unify_threshold_and_outcome_lanes():
+    scraper = StubScraper(
+        "multi",
+        odds_leagues_by_sport={
+            "basketball": ["euroleague"],
+            "football": ["football_league"],
+        },
+        outcome_sports=("tennis",),
+    )
+
+    assert scraper.get_scraper_capabilities() == [
+        ScraperCapability.threshold_odds(sport="basketball", league_id="euroleague"),
+        ScraperCapability.threshold_odds(sport="football", league_id="football_league"),
+        ScraperCapability.outcome_offer(sport="tennis"),
+    ]
 
 
 @pytest.fixture(autouse=True)
