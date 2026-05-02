@@ -13,6 +13,7 @@ from app.services.event_resolver import (
     _event_review_case,
     SameTimeCanonicalSlot,
     _same_time_slot_orientation,
+    build_event_resolution_groups,
     resolve_and_persist_events,
 )
 from app.services.normalizer import generate_match_id
@@ -101,6 +102,39 @@ def test_event_review_case_metadata_records_exact_source_variant_pairs():
         {"match_id": "match-z", "bookmaker_id": "book-z"},
     ]
     assert review_case.candidate_resolved_event_id is None
+
+
+def test_event_resolution_groups_keep_sports_separate_for_same_teams_and_time():
+    candidates = [
+        EventCandidate(
+            match_id="basketball-match",
+            bookmaker_id="book-a",
+            sport="basketball",
+            start_time=START_TIME,
+            home_team_id=1,
+            away_team_id=2,
+            home_team="Team Alpha",
+            away_team="Team Beta",
+        ),
+        EventCandidate(
+            match_id="football-match",
+            bookmaker_id="book-b",
+            sport="football",
+            start_time=START_TIME,
+            home_team_id=1,
+            away_team_id=2,
+            home_team="Team Alpha",
+            away_team="Team Beta",
+        ),
+    ]
+
+    resolutions, review_cases = build_event_resolution_groups(candidates)
+
+    assert review_cases == []
+    assert {(resolution.sport, resolution.primary_match_id) for resolution in resolutions} == {
+        ("basketball", "basketball-match"),
+        ("football", "football-match"),
+    }
 
 
 async def _seed_bookmakers(*bookmaker_ids: str) -> None:

@@ -190,3 +190,24 @@ def test_market_key_uses_event_identity_when_available():
 
     assert match_scoped.market_key != event_scoped.market_key
     assert event_scoped.market_key == same_event_scoped.market_key
+
+
+def test_player_market_key_keeps_subject_scoped_to_resolved_event():
+    event_a = canonical_offers_from_normalized_odds(
+        _odds("mozzart", match_id="bookmaker-match-a"),
+        event_id="resolved-event-a",
+        subject_key_override="player:nikola-jovic",
+    )[0]
+    same_event_a = canonical_offers_from_normalized_odds(
+        _odds("maxbet", match_id="bookmaker-match-b"),
+        event_id="resolved-event-a",
+        subject_key_override="player:nikola-jovic",
+    )[0]
+    event_b = canonical_offers_from_normalized_odds(
+        _odds("meridian", match_id="bookmaker-match-c"),
+        event_id="resolved-event-b",
+        subject_key_override="player:nikola-jovic",
+    )[0]
+
+    assert event_a.market_key == same_event_a.market_key
+    assert event_a.market_key != event_b.market_key
