@@ -499,6 +499,8 @@ def clear_team_registry_cache(*, reset_bootstrap: bool = True) -> None:
     if reset_bootstrap:
         _bootstrap_db_path = None
         _schema_db_path = None
+    _get_canonical_team_cached.cache_clear()
+    _resolve_team_alias_cached.cache_clear()
     _load_team_search_rows.cache_clear()
     _load_canonical_team_list_rows.cache_clear()
 
@@ -516,12 +518,28 @@ def resolve_team_alias(
         return None
 
     _ensure_bootstrapped()
+    return _resolve_team_alias_cached(
+        settings.db_path,
+        raw_key,
+        sport,
+        _normalize_bookmaker_key(bookmaker_id),
+    )
+
+
+@lru_cache(maxsize=65536)
+def _resolve_team_alias_cached(
+    db_path: str,
+    raw_key: str,
+    sport: str,
+    bookmaker_id: str,
+) -> TeamAliasResolution | None:
+    del db_path
     with _connect() as conn:
         return _find_resolution_by_exact_alias(
             conn,
             raw_key=raw_key,
             sport=sport,
-            bookmaker_id=_normalize_bookmaker_key(bookmaker_id),
+            bookmaker_id=bookmaker_id,
         )
 
 
@@ -810,6 +828,16 @@ def get_canonical_team(
     follow_merge: bool = False,
 ) -> CanonicalTeamSummary | None:
     _ensure_bootstrapped()
+    return _get_canonical_team_cached(settings.db_path, team_id, follow_merge)
+
+
+@lru_cache(maxsize=8192)
+def _get_canonical_team_cached(
+    db_path: str,
+    team_id: int,
+    follow_merge: bool,
+) -> CanonicalTeamSummary | None:
+    del db_path
     with _connect() as conn:
         team_row = _query_team_by_id(conn, team_id)
         if team_row is None and follow_merge:

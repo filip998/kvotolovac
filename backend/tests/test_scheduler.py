@@ -684,17 +684,14 @@ async def test_scheduler_run_cycle_keeps_previous_snapshot_if_store_fails_mid_ba
     )
     await odds_store.set_current_snapshot("2026-04-10T13:39:04.516801")
 
-    original_upsert_odds = odds_store.upsert_odds
-    call_count = 0
+    async def failing_set_current_snapshot_tx(db, snapshot_at):
+        raise RuntimeError("simulated store failure")
 
-    async def failing_upsert_odds(odds, *, scraped_at):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            raise RuntimeError("simulated store failure")
-        return await original_upsert_odds(odds, scraped_at=scraped_at)
-
-    monkeypatch.setattr(odds_store, "upsert_odds", failing_upsert_odds)
+    monkeypatch.setattr(
+        odds_store,
+        "_set_current_snapshot_tx",
+        failing_set_current_snapshot_tx,
+    )
 
     _register_test_scrapers(
         StubScraper(
@@ -733,11 +730,12 @@ async def test_scheduler_run_cycle_keeps_previous_snapshot_if_store_fails_mid_ba
     with pytest.raises(RuntimeError, match="simulated store failure"):
         await Scheduler(interval_minutes=1).run_cycle()
 
-    matches = await odds_store.get_matches(limit=10)
     status = await odds_store.get_system_status()
+    current = await odds_store.get_odds_for_match("old")
 
-    assert [match.id for match in matches] == ["old"]
     assert status.last_scrape_at == "2026-04-10T13:39:04.516801"
+    assert len(current) == 1
+    assert current[0].over_odds == 1.8
 
 
 @pytest.mark.asyncio
@@ -1493,17 +1491,14 @@ async def test_scheduler_run_cycle_rolls_back_auto_saved_alias_if_store_fails(
         ),
     )
 
-    original_upsert_odds = odds_store.upsert_odds
-    call_count = 0
+    async def failing_replace_cycle_outputs_and_activate_snapshot(**kwargs):
+        raise RuntimeError("simulated store failure")
 
-    async def failing_upsert_odds(odds, *, scraped_at):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            raise RuntimeError("simulated store failure")
-        return await original_upsert_odds(odds, scraped_at=scraped_at)
-
-    monkeypatch.setattr(odds_store, "upsert_odds", failing_upsert_odds)
+    monkeypatch.setattr(
+        odds_store,
+        "replace_cycle_outputs_and_activate_snapshot",
+        failing_replace_cycle_outputs_and_activate_snapshot,
+    )
 
     with pytest.raises(RuntimeError, match="simulated store failure"):
         await Scheduler(interval_minutes=1).run_cycle()
@@ -1570,17 +1565,14 @@ async def test_scheduler_run_cycle_rolls_back_auto_merge_if_store_fails(
         ),
     )
 
-    original_upsert_odds = odds_store.upsert_odds
-    call_count = 0
+    async def failing_replace_cycle_outputs_and_activate_snapshot(**kwargs):
+        raise RuntimeError("simulated store failure")
 
-    async def failing_upsert_odds(odds, *, scraped_at):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            raise RuntimeError("simulated store failure")
-        return await original_upsert_odds(odds, scraped_at=scraped_at)
-
-    monkeypatch.setattr(odds_store, "upsert_odds", failing_upsert_odds)
+    monkeypatch.setattr(
+        odds_store,
+        "replace_cycle_outputs_and_activate_snapshot",
+        failing_replace_cycle_outputs_and_activate_snapshot,
+    )
 
     with pytest.raises(RuntimeError, match="simulated store failure"):
         await Scheduler(interval_minutes=1).run_cycle()
@@ -1607,17 +1599,17 @@ async def test_scheduler_run_cycle_ignores_unsnapshotted_review_history_for_auto
     )
     await odds_store.set_current_snapshot("2020-01-01T00:00:00+00:00")
 
-    original_set_current_snapshot = odds_store.set_current_snapshot
+    original_set_current_snapshot_tx = odds_store._set_current_snapshot_tx
     call_count = 0
 
-    async def flaky_set_current_snapshot(snapshot_at: str) -> None:
+    async def flaky_set_current_snapshot_tx(db, snapshot_at: str) -> None:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
             raise RuntimeError("simulated snapshot failure")
-        await original_set_current_snapshot(snapshot_at)
+        await original_set_current_snapshot_tx(db, snapshot_at)
 
-    monkeypatch.setattr(odds_store, "set_current_snapshot", flaky_set_current_snapshot)
+    monkeypatch.setattr(odds_store, "_set_current_snapshot_tx", flaky_set_current_snapshot_tx)
 
     with pytest.raises(RuntimeError, match="simulated snapshot failure"):
         await Scheduler(interval_minutes=1).run_cycle()

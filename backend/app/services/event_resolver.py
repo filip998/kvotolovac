@@ -1160,7 +1160,8 @@ async def persist_event_resolution_groups(
     resolutions: list[EventResolutionGroup],
     review_cases: list[EventReviewCaseIn],
 ) -> EventResolverResult:
-    member_count = 0
+    events: list[ResolvedEventIn] = []
+    members: list[ResolvedEventMemberIn] = []
     for resolution in resolutions:
         source_league_labels = sorted(
             {
@@ -1170,7 +1171,7 @@ async def persist_event_resolution_groups(
             }
         )
         source_match_ids = sorted({member.match_id for member in resolution.members})
-        await odds_store.upsert_resolved_event(
+        events.append(
             ResolvedEventIn(
                 id=resolution.event_id,
                 sport=resolution.sport,
@@ -1194,7 +1195,7 @@ async def persist_event_resolution_groups(
             key=lambda candidate: (candidate.match_id, candidate.bookmaker_id),
         )
         for member in resolution.members:
-            await odds_store.link_resolved_event_member(
+            members.append(
                 ResolvedEventMemberIn(
                     resolved_event_id=resolution.event_id,
                     match_id=member.match_id,
@@ -1216,17 +1217,15 @@ async def persist_event_resolution_groups(
                     },
                 )
             )
-            member_count += 1
 
-    persisted_review_cases = 0
-    for review_case in review_cases:
-        await odds_store.upsert_event_review_case(review_case)
-        persisted_review_cases += 1
+    await odds_store.upsert_resolved_events_bulk(events)
+    await odds_store.link_resolved_event_members_bulk(members)
+    persisted_review_cases = await odds_store.upsert_event_review_cases_bulk(review_cases)
 
     return EventResolverResult(
-        candidates=member_count,
+        candidates=len(members),
         resolved_events=len(resolutions),
-        resolved_event_members=member_count,
+        resolved_event_members=len(members),
         review_cases=persisted_review_cases,
     )
 

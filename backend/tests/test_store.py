@@ -11,6 +11,9 @@ from app.database import close_db, get_db, init_db
 from app.models.schemas import (
     EventReviewCaseIn,
     NormalizedOdds,
+    NormalizedOutcomeOffer,
+    ResolvedEventIn,
+    ResolvedEventMemberIn,
     TeamReviewDiagnostic,
     UnresolvedOddsDiagnostic,
 )
@@ -1465,3 +1468,392 @@ async def test_insert_opportunities_bulk_handles_empty_input():
         [], detected_at="2026-05-02T16:00:00+00:00"
     )
     assert inserted == 0
+
+
+@pytest.mark.asyncio
+async def test_replace_cycle_outputs_and_snapshot_rolls_back_atomically_on_failure():
+    from dataclasses import dataclass
+
+    from app.models.schemas import OpportunityLeg
+    from app.services.opportunity_analyzer import Opportunity
+
+    @dataclass
+    class _DiscrepancyRow:
+        match_id: str
+        resolved_event_id: str | None
+        market_type: str
+        player_name: str | None
+        bookmaker_a_id: str
+        bookmaker_a_match_id: str | None
+        bookmaker_b_id: str
+        bookmaker_b_match_id: str | None
+        threshold_a: float
+        threshold_b: float
+        odds_a: float | None
+        odds_b: float | None
+        gap: float
+        profit_margin: float | None
+        middle_profit_margin: float | None
+
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("old", "euroleague", "Partizan", "Crvena Zvezda")
+    await odds_store.upsert_match("new", "euroleague", "Bayern", "Real Madrid")
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="old",
+            bookmaker_id="mozzart",
+            league_id="euroleague",
+            home_team="Partizan",
+            away_team="Crvena Zvezda",
+            market_type="player_points",
+            player_name="Old Player",
+            threshold=10.5,
+            over_odds=1.8,
+            under_odds=2.0,
+        ),
+        scraped_at="old-snapshot",
+    )
+    await odds_store.set_current_snapshot("old-snapshot")
+    await odds_store.insert_discrepancy(
+        "old",
+        "player_points",
+        "Old Player",
+        "mozzart",
+        "maxbet",
+        10.5,
+        12.5,
+        1.8,
+        1.9,
+        2.0,
+        0.02,
+    )
+    await odds_store.insert_opportunity(
+        Opportunity(
+            sport="basketball",
+            match_id="old",
+            opportunity_type="test",
+            market_type="player_points",
+            line=10.5,
+            profit_margin=0.02,
+            middle_profit_margin=None,
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id="mozzart",
+                    market_type="player_points",
+                    outcome_code="over",
+                    odds=1.8,
+                    line=10.5,
+                )
+            ],
+        ),
+        detected_at="old-snapshot",
+    )
+
+    with pytest.raises(Exception):
+        await odds_store.replace_cycle_outputs_and_activate_snapshot(
+            odds=[
+                NormalizedOdds(
+                    match_id="old",
+                    bookmaker_id="mozzart",
+                    league_id="euroleague",
+                    home_team="Partizan",
+                    away_team="Crvena Zvezda",
+                    market_type="player_points",
+                    player_name="Old Player",
+                    threshold=10.5,
+                    over_odds=1.7,
+                    under_odds=2.1,
+                )
+            ],
+            outcome_offers=[],
+            unresolved_odds=[],
+            team_review_cases=[],
+            auto_approved_team_reviews=[],
+            opportunities=[
+                Opportunity(
+                    sport="basketball",
+                    match_id="new",
+                    opportunity_type="test",
+                    market_type="player_points",
+                    line=12.5,
+                    profit_margin=0.03,
+                    middle_profit_margin=None,
+                    legs=[
+                        OpportunityLeg(
+                            bookmaker_id="maxbet",
+                            market_type="player_points",
+                            outcome_code="under",
+                            odds=1.9,
+                            line=12.5,
+                        )
+                    ],
+                )
+            ],
+            discrepancies=[
+                _DiscrepancyRow(
+                    match_id="missing-match",
+                    resolved_event_id=None,
+                    market_type="player_points",
+                    player_name="Broken",
+                    bookmaker_a_id="mozzart",
+                    bookmaker_a_match_id=None,
+                    bookmaker_b_id="maxbet",
+                    bookmaker_b_match_id=None,
+                    threshold_a=10.5,
+                    threshold_b=12.5,
+                    odds_a=1.8,
+                    odds_b=1.9,
+                    gap=2.0,
+                    profit_margin=0.03,
+                    middle_profit_margin=None,
+                )
+            ],
+            detected_at="new-snapshot",
+            snapshot_at="new-snapshot",
+        )
+
+    status = await odds_store.get_system_status()
+    discrepancies = await odds_store.get_discrepancies()
+    opportunities = await odds_store.get_opportunities()
+
+    assert status.last_scrape_at == "old-snapshot"
+    assert [d.match_id for d in discrepancies] == ["old"]
+    assert [o.match_id for o in opportunities] == ["old"]
+    current = await odds_store.get_odds_for_match("old")
+    assert len(current) == 1
+    assert current[0].over_odds == 1.8
+
+
+@pytest.mark.asyncio
+async def test_upsert_odds_bulk_writes_current_history_and_sources():
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("m1", "euroleague", "Partizan", "Crvena Zvezda")
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="m1",
+            bookmaker_id="mozzart",
+            league_id="euroleague",
+            home_team="Partizan",
+            away_team="Crvena Zvezda",
+            source_url="https://example.com/original",
+            market_type="player_points",
+            player_name="Iffe Lundberg",
+            threshold=16.5,
+            over_odds=1.85,
+            under_odds=1.95,
+        ),
+        scraped_at="2026-05-02T15:00:00+00:00",
+    )
+
+    inserted = await odds_store.upsert_odds_bulk(
+        [
+            NormalizedOdds(
+                match_id="m1",
+                bookmaker_id="mozzart",
+                league_id="euroleague",
+                home_team="Partizan",
+                away_team="Crvena Zvezda",
+                source_url=None,
+                market_type="player_points",
+                player_name="Iffe Lundberg",
+                threshold=16.5,
+                over_odds=1.90,
+                under_odds=1.90,
+            ),
+            NormalizedOdds(
+                match_id="m1",
+                bookmaker_id="mozzart",
+                league_id="euroleague",
+                home_team="Partizan",
+                away_team="Crvena Zvezda",
+                source_url="https://example.com/handicap",
+                market_type="home_handicap_ot",
+                threshold=-4.5,
+                over_odds=1.85,
+                under_odds=1.95,
+            ),
+        ],
+        scraped_at="2026-05-02T16:00:00+00:00",
+    )
+    await odds_store.set_current_snapshot("2026-05-02T16:00:00+00:00")
+
+    assert inserted == 2
+    current = await odds_store.get_odds_for_match("m1")
+    assert {(row.market_type, row.player_name, row.threshold) for row in current} == {
+        ("player_points", "Iffe Lundberg", 16.5),
+        ("home_handicap_ot", None, -4.5),
+    }
+    player_row = next(row for row in current if row.market_type == "player_points")
+    assert player_row.over_odds == 1.90
+    assert player_row.source_url == "https://example.com/handicap"
+
+    db = await get_db()
+    history_count = await db.execute_fetchall(
+        "SELECT COUNT(*) AS count FROM odds_history WHERE match_id = ?",
+        ("m1",),
+    )
+    assert history_count[0]["count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_upsert_outcome_offers_bulk_preserves_nullable_line_uniqueness():
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_league("premier_league", "Premier League", "football")
+    await odds_store.upsert_match("f1", "premier_league", "Arsenal", "Chelsea", sport="football")
+
+    inserted = await odds_store.upsert_outcome_offers_bulk(
+        [
+            NormalizedOutcomeOffer(
+                match_id="f1",
+                bookmaker_id="mozzart",
+                league_id="premier_league",
+                sport="football",
+                home_team="Arsenal",
+                away_team="Chelsea",
+                source_url="https://example.com/f1",
+                market_type="football_result",
+                outcome_code="home",
+                odds=2.05,
+                line=None,
+                raw_label="1",
+            ),
+            NormalizedOutcomeOffer(
+                match_id="f1",
+                bookmaker_id="mozzart",
+                league_id="premier_league",
+                sport="football",
+                home_team="Arsenal",
+                away_team="Chelsea",
+                source_url="https://example.com/f1",
+                market_type="football_total",
+                outcome_code="over",
+                odds=1.95,
+                line=2.5,
+                raw_label="2.5+",
+            ),
+        ],
+        scraped_at="2026-05-02T16:00:00+00:00",
+    )
+    await odds_store.set_current_snapshot("2026-05-02T16:00:00+00:00")
+
+    assert inserted == 2
+    offers = await odds_store.get_outcome_offers(match_id="f1")
+    assert {(offer.market_type, offer.outcome_code, offer.line) for offer in offers} == {
+        ("football_result", "home", None),
+        ("football_total", "over", 2.5),
+    }
+    assert {offer.source_url for offer in offers} == {"https://example.com/f1"}
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_bulk_inserts_match_per_row_visibility():
+    await odds_store.upsert_bookmaker("admiralbet", "AdmiralBet")
+    await odds_store.upsert_league("aba_liga", "ABA Liga", "basketball")
+    scraped_at = "2026-05-02T16:00:00+00:00"
+
+    unresolved_inserted = await odds_store.insert_unresolved_odds_bulk(
+        [
+            UnresolvedOddsDiagnostic(
+                bookmaker_id="admiralbet",
+                raw_league_id="AdmiralBet ABA Liga",
+                league_id="aba_liga",
+                market_type="player_points",
+                player_name="P. Nikolic",
+                raw_team_name="Borac Cacak",
+                normalized_team_name="Borac Cacak",
+                start_time="2026-05-02T16:00:00+00:00",
+                threshold=10.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                reason_code="no_canonical_matchup_for_team_at_slot",
+                candidate_count=0,
+                available_matchups_same_slot=["Dubai vs Buducnost"],
+            )
+        ],
+        scraped_at=scraped_at,
+    )
+    approved_ids = await odds_store.insert_team_review_cases_bulk(
+        [
+            TeamReviewDiagnostic(
+                bookmaker_id="admiralbet",
+                raw_league_id="aba_liga",
+                normalized_raw_league_id="aba_liga",
+                scope_league_id="aba_liga",
+                raw_team_name="Borac",
+                normalized_raw_team_name="borac",
+                start_time="2026-05-02T16:00:00+00:00",
+                reason_code="candidate_team_match_same_start_time",
+                matched_counterpart_team="Dubai",
+                canonical_home_team="Borac",
+                canonical_away_team="Dubai",
+            )
+        ],
+        scraped_at=scraped_at,
+        mark_approved=True,
+    )
+    await odds_store.set_current_snapshot(scraped_at)
+
+    assert unresolved_inserted == 1
+    assert len(approved_ids) == 1
+    unresolved = await odds_store.get_unresolved_odds()
+    assert len(unresolved) == 1
+    assert unresolved[0].available_matchups_same_slot == ["Dubai vs Buducnost"]
+    reviews = await odds_store.get_team_review_cases(status="approved")
+    assert len(reviews) == 1
+    assert reviews[0].raw_team_name == "Borac"
+
+
+@pytest.mark.asyncio
+async def test_link_resolved_event_members_bulk_preserves_manual_member():
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("m1", "euroleague", "Partizan", "Crvena Zvezda")
+    await odds_store.upsert_match("m2", "euroleague", "Partizan", "Crvena Zvezda")
+    await odds_store.upsert_resolved_event(
+        ResolvedEventIn(
+            id="evt_manual",
+            sport="basketball",
+            start_time="2026-05-02T16:00:00+00:00",
+            primary_match_id="m1",
+            method="manual",
+        )
+    )
+    await odds_store.link_resolved_event_member(
+        ResolvedEventMemberIn(
+            resolved_event_id="evt_manual",
+            match_id="m1",
+            bookmaker_id="mozzart",
+            source_url="https://example.com/manual",
+        )
+    )
+
+    await odds_store.upsert_resolved_events_bulk(
+        [
+            ResolvedEventIn(
+                id="evt_auto",
+                sport="basketball",
+                start_time="2026-05-02T16:00:00+00:00",
+                primary_match_id="m2",
+                method="exact",
+            )
+        ]
+    )
+    linked = await odds_store.link_resolved_event_members_bulk(
+        [
+            ResolvedEventMemberIn(
+                resolved_event_id="evt_auto",
+                match_id="m1",
+                bookmaker_id="mozzart",
+                source_url="https://example.com/auto",
+            )
+        ]
+    )
+
+    assert linked == 1
+    member = await odds_store.get_resolved_event_member(match_id="m1", bookmaker_id="mozzart")
+    assert member is not None
+    assert member.resolved_event_id == "evt_manual"
+    assert member.source_url == "https://example.com/manual"

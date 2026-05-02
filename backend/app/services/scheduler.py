@@ -14,7 +14,6 @@ from ..models.schemas import ScanProgressOut
 from ..services.league_registry import league_country, league_display_name
 from ..services.normalizer import (
     ANCHORED_AUTO_APPLY_THRESHOLD,
-    log_unresolved_shared_platform_diagnostics,
     normalize_odds_with_diagnostics,
     resolve_team_name,
 )
@@ -833,13 +832,15 @@ class Scheduler:
             )
 
             self._scan_phase = "registering"
-            for scraper in scrapers:
-                await odds_store.upsert_bookmaker(
-                    id=scraper.get_bookmaker_id(),
-                    name=scraper.get_bookmaker_name(),
-                )
+            await odds_store.upsert_bookmakers_bulk(
+                [
+                    (scraper.get_bookmaker_id(), scraper.get_bookmaker_name(), None)
+                    for scraper in scrapers
+                ]
+            )
 
             self._scan_phase = "normalizing"
+            normalizing_started_at = time.perf_counter()
             normalized = []
             normalized_outcome_offers = []
             seen_matches: set[str] = set()
@@ -862,13 +863,21 @@ class Scheduler:
             ) = normalize_outcome_offers_with_diagnostics(all_raw_outcome_offers)
             unresolved_odds = [*unresolved_odds, *unresolved_outcome_offers]
             team_review_cases = [*team_review_cases, *outcome_team_review_cases]
+            initial_normalize_duration_ms = int(
+                (time.perf_counter() - normalizing_started_at) * 1000
+            )
             applied_auto_aliases: list[tuple[str, str, str]] = []
             applied_auto_merges: list[tuple[int, int]] = []
             try:
+                same_time_auto_started_at = time.perf_counter()
                 (
                     same_time_auto_reviews,
                     same_time_auto_merges,
                 ) = await self._same_time_canonical_merge_candidates(all_raw)
+                same_time_auto_duration_ms = int(
+                    (time.perf_counter() - same_time_auto_started_at) * 1000
+                )
+                anchored_alias_started_at = time.perf_counter()
                 (
                     auto_approved_team_reviews,
                     applied_auto_aliases,
@@ -876,6 +885,9 @@ class Scheduler:
                 ) = await self._auto_apply_anchored_aliases(
                     team_review_cases,
                     all_raw,
+                )
+                anchored_alias_duration_ms = int(
+                    (time.perf_counter() - anchored_alias_started_at) * 1000
                 )
                 auto_approved_team_reviews = [
                     *same_time_auto_reviews,
@@ -885,11 +897,19 @@ class Scheduler:
                     *same_time_auto_merges,
                     *pending_auto_merges,
                 ]
+                apply_merges_duration_ms = 0
                 if pending_auto_merges:
+                    apply_merges_started_at = time.perf_counter()
                     applied_auto_merges = await self._apply_canonical_merges(
                         pending_auto_merges
                     )
-                if auto_approved_team_reviews or applied_auto_merges:
+                    apply_merges_duration_ms = int(
+                        (time.perf_counter() - apply_merges_started_at) * 1000
+                    )
+                renormalize_duration_ms = 0
+                should_renormalize = bool(applied_auto_aliases or applied_auto_merges)
+                if should_renormalize:
+                    renormalize_started_at = time.perf_counter()
                     (
                         normalized,
                         unresolved_odds,
@@ -902,77 +922,82 @@ class Scheduler:
                     ) = normalize_outcome_offers_with_diagnostics(all_raw_outcome_offers)
                     unresolved_odds = [*unresolved_odds, *unresolved_outcome_offers]
                     team_review_cases = [*team_review_cases, *outcome_team_review_cases]
+                    renormalize_duration_ms = int(
+                        (time.perf_counter() - renormalize_started_at) * 1000
+                    )
                 else:
-                    log_unresolved_shared_platform_diagnostics(unresolved_odds)
+                    logger.info(
+                        "Skipping unresolved shared-platform detail diagnostics for %d rows; "
+                        "run normalize_odds_with_diagnostics(..., log_unresolved_shared_platform=True) "
+                        "in a targeted debug session for full grouped warnings",
+                        len(unresolved_odds),
+                    )
 
                 self._scan_phase = "storing"
                 cycle_scraped_at = datetime.utcnow().isoformat()
-                for o in normalized:
-                    if o.match_id not in seen_matches:
-                        await odds_store.upsert_league(
-                            id=o.league_id,
-                            name=league_display_name(o.league_id),
-                            sport=o.sport,
-                            country=league_country(o.league_id),
-                        )
-                        await odds_store.upsert_match(
-                            id=o.match_id,
-                            league_id=o.league_id,
-                            home_team=o.home_team,
-                            away_team=o.away_team,
-                            sport=o.sport,
-                            home_team_id=o.home_team_id,
-                            away_team_id=o.away_team_id,
-                            start_time=o.start_time,
-                        )
-                        seen_matches.add(o.match_id)
-                    await odds_store.upsert_odds(o, scraped_at=cycle_scraped_at)
-                for offer in normalized_outcome_offers:
-                    if offer.match_id not in seen_matches:
-                        await odds_store.upsert_league(
-                            id=offer.league_id,
-                            name=league_display_name(offer.league_id),
-                            sport=offer.sport,
-                            country=league_country(offer.league_id),
-                        )
-                        await odds_store.upsert_match(
-                            id=offer.match_id,
-                            league_id=offer.league_id,
-                            home_team=offer.home_team,
-                            away_team=offer.away_team,
-                            sport=offer.sport,
-                            home_team_id=offer.home_team_id,
-                            away_team_id=offer.away_team_id,
-                            start_time=offer.start_time,
-                        )
-                        seen_matches.add(offer.match_id)
-                    await odds_store.upsert_outcome_offer(
-                        offer,
-                        scraped_at=cycle_scraped_at,
+                prerequisite_store_started_at = time.perf_counter()
+                league_rows: dict[str, tuple[str, str, str, str | None]] = {}
+                match_rows: list[
+                    tuple[
+                        str,
+                        str,
+                        str,
+                        str,
+                        str,
+                        int | None,
+                        int | None,
+                        str | None,
+                        str,
+                    ]
+                ] = []
+                for item in [*normalized, *normalized_outcome_offers]:
+                    league_rows[item.league_id] = (
+                        item.league_id,
+                        league_display_name(item.league_id),
+                        item.sport,
+                        league_country(item.league_id),
                     )
+                    if item.match_id in seen_matches:
+                        continue
+                    match_rows.append(
+                        (
+                            item.match_id,
+                            item.league_id,
+                            item.home_team,
+                            item.away_team,
+                            item.sport,
+                            item.home_team_id,
+                            item.away_team_id,
+                            item.start_time,
+                            "upcoming",
+                        )
+                    )
+                    seen_matches.add(item.match_id)
+                prerequisite_build_duration_ms = int(
+                    (time.perf_counter() - prerequisite_store_started_at) * 1000
+                )
+                prerequisite_db_started_at = time.perf_counter()
+                await odds_store.upsert_leagues_bulk(list(league_rows.values()))
+                await odds_store.upsert_matches_bulk(match_rows)
+                prerequisite_db_duration_ms = int(
+                    (time.perf_counter() - prerequisite_db_started_at) * 1000
+                )
+                event_resolve_started_at = time.perf_counter()
                 await resolve_and_persist_events(
                     raw_odds=all_raw,
                     raw_outcome_offers=all_raw_outcome_offers,
                     normalized_odds=normalized,
                     normalized_outcome_offers=normalized_outcome_offers,
                 )
-                for unresolved in unresolved_odds:
-                    await odds_store.insert_unresolved_odds(
-                        unresolved, scraped_at=cycle_scraped_at
-                    )
-                for team_review_case in team_review_cases:
-                    await odds_store.insert_team_review_case(
-                        team_review_case, scraped_at=cycle_scraped_at
-                    )
-                for team_review_case in auto_approved_team_reviews:
-                    case_id = await odds_store.insert_team_review_case(
-                        team_review_case, scraped_at=cycle_scraped_at
-                    )
-                    await odds_store.mark_team_review_case_approved(case_id)
-                await odds_store.set_current_snapshot(cycle_scraped_at)
+                event_resolve_duration_ms = int(
+                    (time.perf_counter() - event_resolve_started_at) * 1000
+                )
+                prerequisite_store_duration_ms = int(
+                    (time.perf_counter() - prerequisite_store_started_at) * 1000
+                )
 
                 self._scan_phase = "analyzing"
-                await odds_store.deactivate_all_discrepancies()
+                event_lookup_started_at = time.perf_counter()
                 discrepancy_event_members = (
                     await odds_store.get_eligible_resolved_event_members_for_odds(
                         normalized
@@ -986,12 +1011,6 @@ class Scheduler:
                         ]
                     )
                 )
-                discrepancies = analyze(
-                    normalized,
-                    event_members=discrepancy_event_members,
-                    event_primary_match_ids=discrepancy_event_primary_match_ids,
-                )
-                await odds_store.deactivate_opportunities()
                 opportunity_event_members = (
                     await odds_store.get_eligible_resolved_event_members_for_outcome_offers(
                         normalized_outcome_offers
@@ -1005,17 +1024,61 @@ class Scheduler:
                         ]
                     )
                 )
+                event_lookup_duration_ms = int(
+                    (time.perf_counter() - event_lookup_started_at) * 1000
+                )
+                analyze_started_at = time.perf_counter()
+                discrepancies = analyze(
+                    normalized,
+                    event_members=discrepancy_event_members,
+                    event_primary_match_ids=discrepancy_event_primary_match_ids,
+                )
                 opportunities = analyze_outcome_offers(
                     normalized_outcome_offers,
                     event_members=opportunity_event_members,
                     event_primary_match_ids=opportunity_event_primary_match_ids,
                 )
-                await odds_store.insert_opportunities_bulk(
-                    opportunities,
-                    detected_at=cycle_scraped_at,
+                analyze_duration_ms = int(
+                    (time.perf_counter() - analyze_started_at) * 1000
                 )
 
-                await odds_store.insert_discrepancies_bulk(discrepancies)
+                self._scan_phase = "storing"
+                snapshot_store_started_at = time.perf_counter()
+                await odds_store.replace_cycle_outputs_and_activate_snapshot(
+                    odds=normalized,
+                    outcome_offers=normalized_outcome_offers,
+                    unresolved_odds=unresolved_odds,
+                    team_review_cases=team_review_cases,
+                    auto_approved_team_reviews=auto_approved_team_reviews,
+                    opportunities=opportunities,
+                    discrepancies=discrepancies,
+                    detected_at=cycle_scraped_at,
+                    snapshot_at=cycle_scraped_at,
+                )
+                snapshot_store_duration_ms = int(
+                    (time.perf_counter() - snapshot_store_started_at) * 1000
+                )
+                output_store_duration_ms = snapshot_store_duration_ms
+                logger.info(
+                    "Cycle phase durations: initial_normalize=%d ms same_time_auto=%d ms "
+                    "anchored_alias=%d ms apply_merges=%d ms renormalize_or_diagnostics=%d ms "
+                    "prereq_build=%d ms prereq_db=%d ms event_resolve=%d ms "
+                    "prereq_store=%d ms event_lookup=%d ms analyze=%d ms "
+                    "snapshot_store=%d ms output_store=%d ms",
+                    initial_normalize_duration_ms,
+                    same_time_auto_duration_ms,
+                    anchored_alias_duration_ms,
+                    apply_merges_duration_ms,
+                    renormalize_duration_ms,
+                    prerequisite_build_duration_ms,
+                    prerequisite_db_duration_ms,
+                    event_resolve_duration_ms,
+                    prerequisite_store_duration_ms,
+                    event_lookup_duration_ms,
+                    analyze_duration_ms,
+                    snapshot_store_duration_ms,
+                    output_store_duration_ms,
+                )
 
                 self._scan_phase = "notifying"
                 notified = await self._notification_service.notify_discrepancies(
@@ -1062,8 +1125,13 @@ class Scheduler:
 
             try:
                 self._scan_phase = "retaining"
+                retention_started_at = time.perf_counter()
                 cleanup_counts = await odds_store.cleanup_retained_data(cycle_scraped_at)
-                logger.info("Retention cleanup complete: %s", cleanup_counts)
+                logger.info(
+                    "Retention cleanup complete: %s (duration_ms=%d)",
+                    cleanup_counts,
+                    int((time.perf_counter() - retention_started_at) * 1000),
+                )
             except Exception:
                 logger.exception("Retention cleanup failed after a successful scrape cycle")
 
