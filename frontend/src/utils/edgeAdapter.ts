@@ -1,4 +1,4 @@
-import type { Discrepancy, Edge, EdgeLeg, EdgeSport, Opportunity, OpportunityLeg } from '../api/types';
+import type { Edge, EdgeLeg, EdgeSport, Opportunity, OpportunityLeg } from '../api/types';
 
 function inferSportFromMarketType(marketType: string): EdgeSport {
   if (marketType.startsWith('football_')) {
@@ -8,48 +8,6 @@ function inferSportFromMarketType(marketType: string): EdgeSport {
     return 'tennis';
   }
   return 'basketball';
-}
-
-export function discrepancyToEdge(d: Discrepancy): Edge {
-  const sport = inferSportFromMarketType(d.market_type);
-  const legA: EdgeLeg = {
-    bookmaker_id: d.bookmaker_a_id,
-    bookmaker_name: d.bookmaker_a_name,
-    outcome_code: 'over',
-    line: d.threshold_a,
-    odds: d.odds_a,
-    source_url: d.bookmaker_a_source_url ?? null,
-    bookmaker_match_id: d.bookmaker_a_match_id ?? null,
-  };
-  const legB: EdgeLeg = {
-    bookmaker_id: d.bookmaker_b_id,
-    bookmaker_name: d.bookmaker_b_name,
-    outcome_code: 'under',
-    line: d.threshold_b,
-    odds: d.odds_b,
-    source_url: d.bookmaker_b_source_url ?? null,
-    bookmaker_match_id: d.bookmaker_b_match_id ?? null,
-  };
-  return {
-    id: `discrepancy-${d.id}`,
-    source: 'discrepancy',
-    source_id: d.id,
-    sport,
-    match_id: d.match_id,
-    resolved_event_id: d.resolved_event_id ?? null,
-    home_team: d.home_team,
-    away_team: d.away_team,
-    league_name: d.league_name,
-    start_time: d.detected_at,
-    market_type: d.market_type,
-    player_name: d.player_name,
-    profit_margin: d.profit_margin,
-    middle_profit_margin: d.middle_profit_margin ?? null,
-    gap: d.gap,
-    detected_at: d.detected_at,
-    leg_a: legA,
-    leg_b: legB,
-  };
 }
 
 function opportunityLegToEdgeLeg(leg: OpportunityLeg): EdgeLeg {
@@ -115,22 +73,6 @@ export function buildOpportunityEdges(
     const edge = opportunityToEdge(o);
     if (edge) edges.push(edge);
   }
-  if (sportFilter && sportFilter !== 'both') {
-    return edges.filter((edge) => edge.sport === sportFilter);
-  }
-  return edges;
-}
-
-export function buildEdges(
-  discrepancies: Discrepancy[] | undefined,
-  opportunities: Opportunity[] | undefined,
-  sportFilter?: EdgeSport | 'both'
-): Edge[] {
-  const edges: Edge[] = [];
-  for (const d of discrepancies ?? []) {
-    edges.push(discrepancyToEdge(d));
-  }
-  edges.push(...buildOpportunityEdges(opportunities));
   if (sportFilter && sportFilter !== 'both') {
     return edges.filter((edge) => edge.sport === sportFilter);
   }

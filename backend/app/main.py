@@ -181,7 +181,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="KvotoLovac",
-    description="Odds comparison tool for Serbian bookmakers — basketball betting line discrepancy detection",
+    description="Odds comparison tool for Serbian bookmakers — canonical betting opportunity detection",
     version="0.1.0",
     lifespan=lifespan,
 )

@@ -77,34 +77,6 @@ export interface OddsOffer {
   scraped_at: string;
 }
 
-export interface Discrepancy {
-  id: number;
-  match_id: string;
-  resolved_event_id?: string | null;
-  home_team: string;
-  away_team: string;
-  league_name: string;
-  market_type: MarketType;
-  player_name: string | null;
-  bookmaker_a_id: string;
-  bookmaker_a_match_id?: string | null;
-  bookmaker_a_name: string;
-  bookmaker_a_source_url?: string | null;
-  bookmaker_b_id: string;
-  bookmaker_b_match_id?: string | null;
-  bookmaker_b_name: string;
-  bookmaker_b_source_url?: string | null;
-  threshold_a: number;
-  threshold_b: number;
-  odds_a: number;
-  odds_b: number;
-  gap: number;
-  profit_margin: number;
-  middle_profit_margin?: number | null;
-  detected_at: string;
-  is_active: boolean;
-}
-
 export interface OutcomeOffer {
   id: number;
   match_id: string;
@@ -170,7 +142,7 @@ export interface EdgeLeg {
 
 export interface Edge {
   id: string;
-  source: 'discrepancy' | 'opportunity';
+  source: 'opportunity';
   source_id: number;
   sport: EdgeSport;
   match_id: string;
@@ -343,28 +315,13 @@ export interface SystemStatus {
   last_scrape_at: string | null;
   total_matches: number;
   total_odds: number;
-  total_discrepancies: number;
+  total_opportunities: number;
   active_bookmakers: number;
   scheduler_running: boolean;
   scan: ScanProgress;
   // Mock-only fields (optional)
   last_scrape?: string | null;
-  active_discrepancies?: number;
   bookmaker_status?: BookmakerStatus[];
-}
-
-export interface DiscrepancyFilters {
-  sport?: string;
-  league?: string;
-  bookmaker_ids?: string[];
-  min_gap?: number;
-  market_type?: MarketType;
-  search?: string;
-  sort_by?: string;
-  sort_order?: 'asc' | 'desc';
-  limit?: number;
-  offset?: number;
-  loadAll?: boolean;
 }
 
 export interface OpportunityBoardFilters {
@@ -385,7 +342,6 @@ export interface OpportunityFilters {
   sport?: string;
   bookmaker_ids?: string[];
   market_type?: OutcomeMarketType;
-  include_legacy_discrepancy_overlap?: boolean;
   limit?: number;
   offset?: number;
   loadAll?: boolean;
@@ -461,7 +417,7 @@ export interface CanonicalTeamMerge {
   merged_team_name: string;
   matches_scraped: number;
   odds_scraped: number;
-  discrepancies_found: number;
+  opportunities_found: number;
 }
 
 export interface CanonicalTeamUnmerge {
@@ -488,7 +444,6 @@ export interface MatchMergeResult {
   reassigned_odds: number;
   reassigned_odds_history: number;
   reassigned_outcome_offers: number;
-  reassigned_discrepancies: number;
   reassigned_opportunities: number;
   deleted_source_matches: number;
 }
@@ -503,6 +458,5 @@ export interface EventMergeResult {
   primary_match_id: string;
   linked_match_ids: string[];
   linked_member_count: number;
-  discrepancies_rebuilt: number;
   opportunities_rebuilt: number;
 }

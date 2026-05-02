@@ -5,7 +5,7 @@ interface EmptyStateProps {
 
 export default function EmptyState({
   title = 'No results found',
-  message = 'Try adjusting your filters to see more discrepancies.',
+  message = 'Try adjusting your filters to see more opportunities.',
 }: EmptyStateProps) {
   return (
     <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border px-6 py-16 text-center">

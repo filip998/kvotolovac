@@ -6,7 +6,6 @@ import type {
   OddsOffer,
   Opportunity,
   OutcomeOffer,
-  Discrepancy,
   EventReviewCase,
   SystemStatus,
   TeamReviewCase,
@@ -423,7 +422,7 @@ export const mockOddsOffers: OddsOffer[] = [
   { id: 43, match_id: 'match-2', bookmaker_id: 'meridian', bookmaker_name: 'Meridian', market_type: 'home_handicap_ot', player_name: null, threshold: -2.5, over_odds: 1.92, under_odds: 1.88, scraped_at: ago(3) },
 ];
 
-export const mockDiscrepancies: Discrepancy[] = [
+export const mockLegacyDiscrepancies = [
   {
     id: 1,
     match_id: 'match-1',
@@ -1176,7 +1175,7 @@ export const mockSystemStatus: SystemStatus = {
   last_scrape: ago(2),
   total_matches: 6,
   total_odds: mockOddsOffers.length,
-  total_discrepancies: mockDiscrepancies.length,
+  total_opportunities: mockOpportunities.length,
   active_bookmakers: 8,
   scheduler_running: true,
   scan: {
@@ -1188,7 +1187,6 @@ export const mockSystemStatus: SystemStatus = {
     failed_tasks: 1,
     active_tasks: 4,
   },
-  active_discrepancies: 10,
   bookmaker_status: [
     { id: 'mozzart', name: 'Mozzart', last_scrape: ago(2), is_active: true },
     { id: 'meridian', name: 'Meridian', last_scrape: ago(3), is_active: true },

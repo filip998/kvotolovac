@@ -91,7 +91,7 @@ async def test_trigger_scrape(client: AsyncClient):
     data = resp.json()
     assert data["matches_scraped"] > 0
     assert data["odds_scraped"] > 0
-    assert data["discrepancies_found"] > 0
+    assert data["opportunities_found"] > 0
 
 
 @pytest.mark.asyncio
@@ -299,7 +299,7 @@ async def test_football_market_offers_and_opportunities_api(client: AsyncClient)
 
 
 @pytest.mark.asyncio
-async def test_opportunities_api_hides_only_basketball_rows_that_overlap_discrepancies(
+async def test_opportunities_api_legacy_overlap_flag_is_noop(
     client: AsyncClient,
 ):
     await odds_store.upsert_league("euroleague", "EuroLeague", "basketball")
@@ -375,21 +375,6 @@ async def test_opportunities_api_hides_only_basketball_rows_that_overlap_discrep
         ),
         detected_at="2030-01-01T20:01:00",
     )
-    await odds_store.insert_discrepancy(
-        match_id="basketball-match",
-        market_type="player_points",
-        player_name="Nikola Jokic",
-        bookmaker_a_id="mozzart",
-        bookmaker_b_id="meridian",
-        threshold_a=18.5,
-        threshold_b=20.5,
-        odds_a=1.90,
-        odds_b=2.10,
-        gap=2.0,
-        profit_margin=0.02,
-        middle_profit_margin=0.50,
-    )
-
     default_resp = await client.get("/api/v1/opportunities")
     basketball_resp = await client.get(
         "/api/v1/opportunities",
@@ -406,13 +391,14 @@ async def test_opportunities_api_hides_only_basketball_rows_that_overlap_discrep
     assert default_resp.status_code == 200
     assert basketball_resp.status_code == 200
     assert opt_in_resp.status_code == 200
-    assert [row["id"] for row in default_resp.json()] == [canonical_only_id]
-    assert [row["id"] for row in basketball_resp.json()] == [canonical_only_id]
-    assert {row["id"] for row in opt_in_resp.json()} == {
+    expected_ids = {
         overlapping_id,
         canonical_only_id,
     }
-    default_row = default_resp.json()[0]
+    assert {row["id"] for row in default_resp.json()} == expected_ids
+    assert {row["id"] for row in basketball_resp.json()} == expected_ids
+    assert {row["id"] for row in opt_in_resp.json()} == expected_ids
+    default_row = next(row for row in default_resp.json() if row["id"] == canonical_only_id)
     assert default_row["opportunity_type"] == "same_line_arbitrage"
     assert default_row["event_id"] is None
     assert "subject_type" in default_row
@@ -662,40 +648,9 @@ async def test_match_history(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_list_discrepancies(client: AsyncClient):
-    await client.post("/api/v1/scrape/trigger")
-    resp = await client.get("/api/v1/discrepancies")
-    assert resp.status_code == 200
-    discs = resp.json()
-    assert len(discs) > 0
-    assert "middle_profit_margin" in discs[0]
-    assert "bookmaker_a_source_url" in discs[0]
-    assert "bookmaker_b_source_url" in discs[0]
-
-
-@pytest.mark.asyncio
-async def test_discrepancy_filters(client: AsyncClient):
-    await client.post("/api/v1/scrape/trigger")
-    resp = await client.get("/api/v1/discrepancies?market_type=player_points&min_gap=1.0&bookmaker_ids=meridian")
-    assert resp.status_code == 200
-    for row in resp.json():
-        assert "meridian" in {row["bookmaker_a_id"], row["bookmaker_b_id"]}
-
-
-@pytest.mark.asyncio
-async def test_discrepancy_detail(client: AsyncClient):
-    await client.post("/api/v1/scrape/trigger")
-    discs_resp = await client.get("/api/v1/discrepancies")
-    disc_id = discs_resp.json()[0]["id"]
-
-    resp = await client.get(f"/api/v1/discrepancies/{disc_id}")
-    assert resp.status_code == 200
-    assert resp.json()["id"] == disc_id
-    assert "middle_profit_margin" in resp.json()
-
-
-@pytest.mark.asyncio
-async def test_discrepancy_not_found(client: AsyncClient):
+async def test_discrepancy_api_removed(client: AsyncClient):
+    list_resp = await client.get("/api/v1/discrepancies")
+    assert list_resp.status_code == 404
     resp = await client.get("/api/v1/discrepancies/99999")
     assert resp.status_code == 404
 

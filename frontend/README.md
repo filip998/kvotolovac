@@ -1,6 +1,6 @@
 # KvotoLovac 🎯 — Frontend
 
-Odds comparison tool for Serbian bookmakers that detects discrepancies in basketball betting lines.
+Odds comparison tool for Serbian bookmakers that surfaces canonical betting opportunities across supported sports.
 
 ## Tech Stack
 

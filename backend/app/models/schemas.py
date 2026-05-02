@@ -160,7 +160,6 @@ class EventMergeOut(BaseModel):
     primary_match_id: str
     linked_match_ids: list[str]
     linked_member_count: int
-    discrepancies_rebuilt: int = 0
     opportunities_rebuilt: int = 0
 
 
@@ -400,38 +399,6 @@ class OpportunityOut(BaseModel):
     is_active: bool = True
 
 
-# ── Discrepancy ────────────────────────────────────────────
-class DiscrepancyOut(BaseModel):
-    id: int
-    match_id: str
-    resolved_event_id: Optional[str] = None
-    market_type: str
-    player_name: Optional[str] = None
-    bookmaker_a_id: str
-    bookmaker_a_match_id: Optional[str] = None
-    bookmaker_b_id: str
-    bookmaker_b_match_id: Optional[str] = None
-    threshold_a: float
-    threshold_b: float
-    odds_a: Optional[float] = None
-    odds_b: Optional[float] = None
-    gap: float
-    profit_margin: Optional[float] = None
-    middle_profit_margin: Optional[float] = None
-    detected_at: Optional[str] = None
-    is_active: bool = True
-
-
-class DiscrepancyDetail(DiscrepancyOut):
-    home_team: Optional[str] = None
-    away_team: Optional[str] = None
-    league_name: Optional[str] = None
-    bookmaker_a_name: Optional[str] = None
-    bookmaker_a_source_url: Optional[str] = None
-    bookmaker_b_name: Optional[str] = None
-    bookmaker_b_source_url: Optional[str] = None
-
-
 # ── Notification ───────────────────────────────────────────
 class NotificationOut(BaseModel):
     id: int
@@ -459,7 +426,7 @@ class SystemStatus(BaseModel):
     last_scrape_at: Optional[str] = None
     total_matches: int = 0
     total_odds: int = 0
-    total_discrepancies: int = 0
+    total_opportunities: int = 0
     active_bookmakers: int = 0
     scheduler_running: bool = False
     scan: ScanProgressOut = Field(default_factory=ScanProgressOut)
@@ -470,7 +437,7 @@ class ScrapeResponse(BaseModel):
     message: str
     matches_scraped: int = 0
     odds_scraped: int = 0
-    discrepancies_found: int = 0
+    opportunities_found: int = 0
 
 
 # ── Scraper benchmarks ─────────────────────────────────────
@@ -534,7 +501,7 @@ class CanonicalTeamMergeOut(BaseModel):
     merged_team_name: str
     matches_scraped: int = 0
     odds_scraped: int = 0
-    discrepancies_found: int = 0
+    opportunities_found: int = 0
 
 
 class CanonicalTeamUnmergeOut(BaseModel):
@@ -562,6 +529,5 @@ class MatchMergeOut(BaseModel):
     reassigned_odds: int = 0
     reassigned_odds_history: int = 0
     reassigned_outcome_offers: int = 0
-    reassigned_discrepancies: int = 0
     reassigned_opportunities: int = 0
     deleted_source_matches: int = 0

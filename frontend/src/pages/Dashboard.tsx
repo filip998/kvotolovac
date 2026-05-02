@@ -133,7 +133,6 @@ export default function Dashboard() {
       limit: 200,
       loadAll: true,
       bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
-      include_legacy_discrepancy_overlap: true,
     },
     { enabled: activeTab === 'opportunities' }
   );
@@ -539,7 +538,7 @@ export default function Dashboard() {
           activeTab === 'opportunities'
             ? 'Every detected edge across basketball, football, and tennis, ranked by margin. Filter by sport to narrow the board.'
             : activeTab === 'tracked'
-              ? 'Open tracked matches to review player markets, bookmaker prices, and discrepancy-linked lines.'
+              ? 'Open tracked matches to review player markets, bookmaker prices, and fetched lines.'
               : activeTab === 'teams'
                 ? 'Approve the best candidate, choose another canonical team, or create a new one inline.'
                 : activeTab === 'canonical'

@@ -6,7 +6,7 @@ import logging
 from typing import Optional
 
 from ..store import odds_store
-from .analyzer import Discrepancy
+from .opportunity_analyzer import Opportunity
 
 logger = logging.getLogger(__name__)
 
@@ -39,29 +39,46 @@ class NotificationService:
     def register_provider(self, provider: NotificationProvider) -> None:
         self._providers.append(provider)
 
-    async def notify_discrepancies(self, discrepancies: list[Discrepancy]) -> int:
-        """Send notifications for discrepancies above threshold. Returns count sent."""
+    async def notify_opportunities(self, opportunities: list[Opportunity]) -> int:
+        """Send notifications for generic opportunities above threshold. Returns count sent."""
         count = 0
-        for d in discrepancies:
-            if d.gap >= self.gap_threshold:
-                if not self._providers:
-                    continue
-                title = f"Discrepancy: {d.player_name or 'game'} ({d.gap}pt gap)"
-                message = (
-                    f"{d.bookmaker_a_id} over {d.threshold_a} vs "
-                    f"{d.bookmaker_b_id} under {d.threshold_b} — "
-                    f"gap {d.gap}, edge ROI {d.profit_margin}, middle ROI {d.middle_profit_margin}"
-                )
-                data = {
-                    "match_id": d.match_id,
-                    "player_name": d.player_name,
-                    "gap": d.gap,
-                    "profit_margin": d.profit_margin,
-                    "middle_profit_margin": d.middle_profit_margin,
-                    "bookmaker_a": d.bookmaker_a_id,
-                    "bookmaker_b": d.bookmaker_b_id,
-                }
-                for provider in self._providers:
-                    await provider.send("discrepancy", title, message, data)
-                count += 1
+        for opportunity in opportunities:
+            gap = _opportunity_gap(opportunity)
+            if gap is None or gap < self.gap_threshold:
+                continue
+            if not self._providers:
+                continue
+            first_leg, second_leg = opportunity.legs[:2]
+            subject = opportunity.subject_name or opportunity.market_type
+            title = f"Opportunity: {subject} ({gap}pt gap)"
+            message = (
+                f"{first_leg.bookmaker_id} {first_leg.outcome_code} {first_leg.line} vs "
+                f"{second_leg.bookmaker_id} {second_leg.outcome_code} {second_leg.line} — "
+                f"gap {gap}, edge ROI {opportunity.profit_margin}, "
+                f"middle ROI {opportunity.middle_profit_margin}"
+            )
+            data = {
+                "match_id": opportunity.match_id,
+                "resolved_event_id": opportunity.resolved_event_id,
+                "sport": opportunity.sport,
+                "market_type": opportunity.market_type,
+                "subject_name": opportunity.subject_name,
+                "gap": gap,
+                "profit_margin": opportunity.profit_margin,
+                "middle_profit_margin": opportunity.middle_profit_margin,
+                "bookmaker_a": first_leg.bookmaker_id,
+                "bookmaker_b": second_leg.bookmaker_id,
+            }
+            for provider in self._providers:
+                await provider.send("opportunity", title, message, data)
+            count += 1
         return count
+
+
+def _opportunity_gap(opportunity: Opportunity) -> float | None:
+    if opportunity.opportunity_type != "middle" or len(opportunity.legs) != 2:
+        return None
+    first_leg, second_leg = opportunity.legs
+    if first_leg.line is None or second_leg.line is None:
+        return None
+    return abs(first_leg.line - second_leg.line)

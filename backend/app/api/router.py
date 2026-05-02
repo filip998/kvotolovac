@@ -3,7 +3,6 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from .canonical_teams import router as canonical_teams_router
-from .discrepancies import router as discrepancies_router
 from .event_review import router as event_review_router
 from .matches import router as matches_router
 from .opportunities import router as opportunities_router
@@ -14,7 +13,6 @@ from .unresolved_odds import router as unresolved_odds_router
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(canonical_teams_router)
-api_router.include_router(discrepancies_router)
 api_router.include_router(event_review_router)
 api_router.include_router(matches_router)
 api_router.include_router(opportunities_router)

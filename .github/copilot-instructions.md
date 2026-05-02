@@ -1,6 +1,6 @@
 # KvotoLovac — Copilot Instructions
 
-Odds-comparison tool for Serbian basketball bookmakers. Two services in one repo: a Python/FastAPI backend that scrapes bookmakers and detects line discrepancies, and a React/Vite frontend that visualizes them.
+Odds-comparison tool for Serbian bookmakers. Two services in one repo: a Python/FastAPI backend that scrapes bookmakers and detects canonical betting opportunities, and a React/Vite frontend that visualizes them.
 
 ## Layout
 
@@ -33,14 +33,14 @@ Scrape → normalize → store → analyze → notify, orchestrated by a single 
 - **Scheduler** (`app/services/scheduler.py`) runs cycles every `SCRAPE_INTERVAL_MINUTES`. Use `scheduler.is_cycle_in_progress` to gate destructive endpoints (return 409 if true) — don't acquire your own lock.
 - **Normalizer** (`app/services/normalizer.py`) computes the deterministic `match_id = md5(f"{sport}:{start_time}:{home_id}:{away_id}").hexdigest()[:12]`. Two matches across bookmakers collapse iff their canonical home/away team IDs **and** start_time match exactly. Time strings are compared as-is — don't reformat them.
 - **Team registry** (`app/services/team_registry.py`) is the single source of truth for canonical teams and aliases. It bootstraps legacy `team_registry.json` aliases into `canonical_teams`/`team_aliases` on first use. Use `merge_canonical_teams()` to fold one team into another (also reassigns aliases and pending review cases).
-- **Store** (`app/store/odds_store.py`) is the only module that touches sqlite directly. `odds` has `UNIQUE(match_id, bookmaker_id, market_type, player_name, threshold)` — note `scraped_at` is **not** part of the key, so any operation that reassigns `match_id` must dedupe on this tuple across all involved matches before the UPDATE or it will trip the constraint. `odds_history` and `discrepancies` have no UNIQUE constraint.
+- **Store** (`app/store/odds_store.py`) is the only module that touches sqlite directly. `odds` has `UNIQUE(match_id, bookmaker_id, market_type, player_name, threshold)` — note `scraped_at` is **not** part of the key, so any operation that reassigns `match_id` must dedupe on this tuple across all involved matches before the UPDATE or it will trip the constraint. `opportunities` is the canonical public analysis table; the legacy `discrepancies` table/API has been removed.
 - **API routers** are mounted under `/api/v1` via `app/api/router.py`. Add new routers there.
 - **Schemas** (`app/models/schemas.py`) are Pydantic and shared between API + store. If you add fields to a response model, also extend the corresponding TS type in `frontend/src/api/types.ts`.
 
 ## Frontend architecture
 
 - **Mock-first**: `frontend/src/api/hooks.ts` reads `VITE_USE_MOCK` (default `true`). Every hook has a mock branch backed by `src/api/mockData.ts` and a real branch using `axios`. When you add a new mutation/query, implement **both** branches or the dev experience breaks.
-- **Query keys** are flat strings: `['matches']`, `['discrepancies']`, `['canonicalTeams']`, `['teamReviewCases']`. After mutations that affect multiple resources (e.g. match merges that also touch teams), invalidate all relevant keys.
+- **Query keys** are flat strings: `['matches']`, `['opportunities']`, `['canonicalTeams']`, `['teamReviewCases']`. After mutations that affect multiple resources (e.g. match merges that also touch teams), invalidate all relevant keys.
 - **Routing**: `App.tsx` uses React Router v7. Pages live in `src/pages/`, reusable UI in `src/components/`.
 - **Styling**: Tailwind v4 via `@tailwindcss/vite`. Tokens used across the app: `bg`, `surface`, `border`, `border-hover`, `text`, `text-muted`, `text-secondary`, `accent`, `danger`, `warning`. Reuse them — don't introduce raw hex colors.
 - **Time formatting**: always use `frontend/src/utils/format.ts::formatDateTime`. It renders in `Europe/Belgrade`, not the viewer's TZ.

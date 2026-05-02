@@ -26,8 +26,8 @@ export default function StatusBar() {
 
   const metrics = [
     {
-      label: 'Discrepancies',
-      value: String(status.active_discrepancies ?? status.total_discrepancies ?? 0),
+      label: 'Opportunities',
+      value: String(status.total_opportunities ?? 0),
     },
     {
       label: 'Last scan',

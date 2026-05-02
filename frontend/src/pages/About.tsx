@@ -28,12 +28,12 @@ const pillars = [
     body: 'Teams, players, leagues, and market types are normalized before analysis so cross-bookmaker comparisons stay trustworthy.',
   },
   {
-    title: 'Discrepancy detection',
-    body: 'Threshold gaps are ranked by profit margin so the highest-value middles float to the top of the board immediately.',
+    title: 'Opportunity detection',
+    body: 'Canonical opportunities are ranked by profit margin so the highest-value edges float to the top of the board immediately.',
   },
   {
     title: 'Drill-down inspection',
-    body: 'Every tracked match can be opened to review full fetched odds, player coverage, and discrepancy-linked lines.',
+    body: 'Every tracked match can be opened to review full fetched odds, player coverage, and available lines.',
   },
 ];
 
