@@ -6,7 +6,13 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.config import settings
-from app.models.schemas import NormalizedOdds, OpportunityLeg, RawOddsData, TeamReviewDiagnostic
+from app.models.schemas import (
+    NormalizedOdds,
+    OpportunityLeg,
+    RawOddsData,
+    RawOutcomeOffer,
+    TeamReviewDiagnostic,
+)
 from app.scrapers.base import BaseScraper
 from app.services.opportunity_analyzer import Opportunity
 from app.services.scheduler import Scheduler, _normalize_merge_pairings
@@ -32,6 +38,7 @@ def _raw_odds(
     *,
     over_odds: float = 1.9,
     under_odds: float = 1.9,
+    player_name: str = "Sasha Vezenkov",
 ) -> RawOddsData:
     return RawOddsData(
         bookmaker_id=bookmaker_id,
@@ -39,11 +46,33 @@ def _raw_odds(
         home_team="Olympiacos",
         away_team="Real Madrid",
         market_type="player_points",
-        player_name="Sasha Vezenkov",
+        player_name=player_name,
         threshold=threshold,
         over_odds=over_odds,
         under_odds=under_odds,
         start_time="2030-01-01T20:00:00",
+    )
+
+
+def _raw_outcome_offer(
+    bookmaker_id: str,
+    outcome_code: str,
+    *,
+    sport: str = "tennis",
+    market_type: str = "tennis_match_winner",
+    odds: float = 2.1,
+) -> RawOutcomeOffer:
+    return RawOutcomeOffer(
+        bookmaker_id=bookmaker_id,
+        league_id=f"{sport}_test_league",
+        sport=sport,
+        home_team="Novak Djokovic",
+        away_team="Carlos Alcaraz",
+        market_type=market_type,
+        outcome_code=outcome_code,
+        odds=odds,
+        raw_label=outcome_code,
+        start_time="2030-01-01T20:00:00+00:00",
     )
 
 
@@ -85,6 +114,10 @@ class StubScraper(BaseScraper):
         malformed_return: object = _UNSET,
         recorder: dict | None = None,
         payload_by_league: dict[str, list[RawOddsData]] | None = None,
+        odds_sports: tuple[str, ...] | None = None,
+        odds_leagues_by_sport: dict[str, list[str]] | None = None,
+        outcome_sports: tuple[str, ...] = (),
+        outcome_payload_by_sport: dict[str, list[RawOutcomeOffer]] | None = None,
     ) -> None:
         self._bookmaker_id = bookmaker_id
         self._bookmaker_name = bookmaker_name or bookmaker_id.title()
@@ -94,6 +127,10 @@ class StubScraper(BaseScraper):
         self._malformed_return = malformed_return
         self._recorder = recorder
         self._payload_by_league = payload_by_league or {}
+        self._odds_sports = odds_sports
+        self._odds_leagues_by_sport = odds_leagues_by_sport
+        self._outcome_sports = list(outcome_sports)
+        self._outcome_payload_by_sport = outcome_payload_by_sport or {}
 
     def get_bookmaker_id(self) -> str:
         return self._bookmaker_id
@@ -103,6 +140,24 @@ class StubScraper(BaseScraper):
 
     def get_supported_leagues(self) -> list[str]:
         return list(self._leagues)
+
+    def get_supported_odds_sports(self) -> list[str]:
+        if self._odds_sports is not None:
+            return list(self._odds_sports)
+        return super().get_supported_odds_sports()
+
+    def get_supported_odds_leagues(self) -> dict[str, list[str]]:
+        if self._odds_leagues_by_sport is not None:
+            return {
+                sport: list(league_ids)
+                for sport, league_ids in self._odds_leagues_by_sport.items()
+            }
+        if self._odds_sports is not None:
+            return {sport: list(self._leagues) for sport in self._odds_sports}
+        return super().get_supported_odds_leagues()
+
+    def get_supported_outcome_sports(self) -> list[str]:
+        return list(self._outcome_sports)
 
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         if self._recorder is not None:
@@ -124,6 +179,9 @@ class StubScraper(BaseScraper):
             if self._recorder is not None:
                 self._recorder["active"] -= 1
                 self._recorder["finishes"].append((self._bookmaker_id, league_id))
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        return list(self._outcome_payload_by_sport.get(sport, []))
 
 
 def test_normalize_merge_pairings_flattens_valid_chains():
@@ -187,6 +245,222 @@ async def test_scheduler_run_cycle_overlaps_scraper_tasks():
     assert result["matches_scraped"] == 0
     assert result["odds_scraped"] == 0
     assert result["discrepancies_found"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_threshold_scrape_uses_explicit_sport_capability(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    recorder = {"active": 0, "max_active": 0, "starts": [], "finishes": []}
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            recorder=recorder,
+            payload_by_league={"euroleague": [_raw_odds("alpha", 18.5)]},
+        )
+    )
+    monkeypatch.setattr(settings, "enabled_sports", "football")
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert recorder["starts"] == []
+    assert result["odds_scraped"] == 0
+    assert result["canonical_offers_analyzed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_threshold_scrape_runs_only_enabled_sport_leagues(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    recorder = {"active": 0, "max_active": 0, "starts": [], "finishes": []}
+    _register_test_scrapers(
+        StubScraper(
+            "multi",
+            leagues=("euroleague", "football_league"),
+            odds_leagues_by_sport={
+                "basketball": ["euroleague"],
+                "football": ["football_league"],
+            },
+            recorder=recorder,
+            payload_by_league={
+                "euroleague": [_raw_odds("multi", 18.5)],
+                "football_league": [
+                    _raw_odds("multi", 20.5).model_copy(
+                        update={"sport": "football", "league_id": "football_league"}
+                    )
+                ],
+            },
+        )
+    )
+    monkeypatch.setattr(settings, "enabled_sports", "football")
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert recorder["starts"] == [("multi", "football_league")]
+    assert recorder["finishes"] == [("multi", "football_league")]
+    assert result["matches_scraped"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_runs_canonical_shadow_analysis_for_current_snapshot():
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={"euroleague": [_raw_odds("alpha", 18.5)]},
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={"euroleague": [_raw_odds("beta", 20.5)]},
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["discrepancies_found"] == 1
+    assert result["opportunities_found"] == 0
+    assert result["canonical_offers_analyzed"] == 4
+    assert result["canonical_opportunities_found"] == 1
+    assert result["canonical_shadow_warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_shadow_ignores_canonical_only_basketball_same_line_arbitrage():
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={
+                "euroleague": [_raw_odds("alpha", 18.5, over_odds=2.10, under_odds=2.10)]
+            },
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={
+                "euroleague": [_raw_odds("beta", 18.5, over_odds=2.10, under_odds=2.10)]
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["discrepancies_found"] == 0
+    assert result["canonical_opportunities_found"] == 2
+    assert result["canonical_shadow_warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_shadow_matches_same_line_player_markets_with_shared_leg_fields():
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds(
+                        "alpha",
+                        18.5,
+                        over_odds=2.10,
+                        under_odds=1.50,
+                        player_name="Sasha Vezenkov",
+                    ),
+                    _raw_odds(
+                        "alpha",
+                        18.5,
+                        over_odds=2.10,
+                        under_odds=1.50,
+                        player_name="Facundo Campazzo",
+                    ),
+                ]
+            },
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds(
+                        "beta",
+                        18.5,
+                        over_odds=2.00,
+                        under_odds=2.10,
+                        player_name="Sasha Vezenkov",
+                    ),
+                    _raw_odds(
+                        "beta",
+                        18.5,
+                        over_odds=2.00,
+                        under_odds=2.20,
+                        player_name="Facundo Campazzo",
+                    ),
+                ]
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["discrepancies_found"] == 2
+    assert result["canonical_opportunities_found"] == 2
+    assert result["canonical_shadow_warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_shadow_counts_same_line_best_direction_once():
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds("alpha", 18.5, over_odds=2.10, under_odds=2.10)
+                ]
+            },
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds("beta", 18.5, over_odds=2.00, under_odds=2.10)
+                ]
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["discrepancies_found"] == 1
+    assert result["canonical_opportunities_found"] == 2
+    assert result["canonical_shadow_warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_shadow_analysis_handles_tennis_outcome_offers(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "enabled_sports", "tennis")
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            leagues=(),
+            outcome_sports=("tennis",),
+            outcome_payload_by_sport={
+                "tennis": [_raw_outcome_offer("alpha", "home")],
+            },
+        ),
+        StubScraper(
+            "beta",
+            leagues=(),
+            outcome_sports=("tennis",),
+            outcome_payload_by_sport={
+                "tennis": [_raw_outcome_offer("beta", "away")],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["odds_scraped"] == 0
+    assert result["outcome_offers_scraped"] == 2
+    assert result["opportunities_found"] == 0
+    assert result["canonical_offers_analyzed"] == 2
+    assert result["canonical_opportunities_found"] == 1
+    assert result["canonical_shadow_warnings"] == []
 
 
 @pytest.mark.asyncio
@@ -432,17 +706,27 @@ async def test_scheduler_run_cycle_returns_expected_output_shape():
     assert {
         "matches_scraped",
         "odds_scraped",
+        "outcome_offers_scraped",
         "discrepancies_found",
+        "opportunities_found",
+        "canonical_offers_analyzed",
+        "canonical_opportunities_found",
+        "canonical_shadow_warnings",
         "notifications_sent",
     } <= result.keys()
     for key in (
         "matches_scraped",
         "odds_scraped",
+        "outcome_offers_scraped",
         "discrepancies_found",
+        "opportunities_found",
+        "canonical_offers_analyzed",
+        "canonical_opportunities_found",
         "notifications_sent",
     ):
         assert isinstance(result[key], int)
         assert result[key] >= 0
+    assert isinstance(result["canonical_shadow_warnings"], list)
 
 
 @pytest.mark.asyncio
