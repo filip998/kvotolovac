@@ -1912,18 +1912,23 @@ async def insert_opportunity(opportunity, *, detected_at: str) -> int:
     db = await get_db()
     cursor = await db.execute(
         """INSERT INTO opportunities
-           (sport, match_id, resolved_event_id, opportunity_type, market_type, line, profit_margin,
-            middle_profit_margin, legs, detected_at, is_active)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)""",
+           (sport, match_id, resolved_event_id, opportunity_type, market_type, subject_type,
+            subject_key, subject_name, line, profit_margin, middle_profit_margin, market_keys,
+            legs, detected_at, is_active)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)""",
         (
             opportunity.sport,
             opportunity.match_id,
             opportunity.resolved_event_id,
             opportunity.opportunity_type,
             opportunity.market_type,
+            opportunity.subject_type,
+            opportunity.subject_key,
+            opportunity.subject_name,
             opportunity.line,
             opportunity.profit_margin,
             opportunity.middle_profit_margin,
+            json.dumps(list(opportunity.market_keys)),
             json.dumps([leg.model_dump() for leg in opportunity.legs]),
             detected_at,
         ),
@@ -1940,6 +1945,13 @@ def _row_to_opportunity(row: aiosqlite.Row) -> OpportunityOut:
     for leg_data in legs_payload:
         legs.append(OpportunityLeg(**leg_data))
     data["legs"] = legs
+    data["event_id"] = data.get("resolved_event_id")
+    raw_market_keys = data.get("market_keys")
+    data["market_keys"] = (
+        json.loads(raw_market_keys)
+        if isinstance(raw_market_keys, str) and raw_market_keys
+        else []
+    )
     return OpportunityOut(**data)
 
 

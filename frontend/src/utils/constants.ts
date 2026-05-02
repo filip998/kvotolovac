@@ -20,6 +20,8 @@ export const MARKET_TYPES: readonly MarketType[] = [
   'football_result',
   'football_double_chance',
   'football_result_double_chance',
+  'match_winner',
+  'tennis_match_winner',
 ];
 
 export const MARKET_TYPE_LABELS: Record<MarketType, string> = {
@@ -42,11 +44,14 @@ export const MARKET_TYPE_LABELS: Record<MarketType, string> = {
   football_result: 'Match Result',
   football_double_chance: 'Double Chance',
   football_result_double_chance: 'Result + Double Chance',
+  match_winner: 'Match Winner',
+  tennis_match_winner: 'Tennis Match Winner',
 };
 
 export const SPORT_LABELS: Record<string, string> = {
   basketball: 'Basketball',
   football: 'Football',
+  tennis: 'Tennis',
 };
 
 export const STATUS_LABELS: Record<string, string> = {

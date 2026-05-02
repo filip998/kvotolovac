@@ -91,6 +91,9 @@ def _analyze_two_way_arbitrage(
                 middle_profit_margin=None,
                 legs=[_leg(first), _leg(second)],
                 resolved_event_id=context.resolved_event_id,
+                subject_type=market.subject_type,
+                subject_key=market.subject_key,
+                subject_name=market.subject_name,
                 market_keys=(market.market_key,),
             )
         )
@@ -131,6 +134,10 @@ def _analyze_line_middle(
         ):
             continue
 
+        subject_type, subject_key, subject_name = _subject_metadata(
+            low.market,
+            high.market,
+        )
         opportunities.append(
             Opportunity(
                 sport=low.market.sport,
@@ -142,6 +149,9 @@ def _analyze_line_middle(
                 middle_profit_margin=middle_margin,
                 legs=[_leg(low), _leg(high)],
                 resolved_event_id=context.resolved_event_id,
+                subject_type=subject_type,
+                subject_key=subject_key,
+                subject_name=subject_name,
                 market_keys=tuple(sorted({low.market_key, high.market_key})),
             )
         )
@@ -170,6 +180,10 @@ def _analyze_complementary_outcomes(
                 margin = _profit_margin(result_offer.odds, double_chance_offer.odds)
                 if margin is None or margin <= 0:
                     continue
+                subject_type, subject_key, subject_name = _subject_metadata(
+                    result_offer.market,
+                    double_chance_offer.market,
+                )
                 opportunities.append(
                     Opportunity(
                         sport=result_offer.market.sport,
@@ -181,6 +195,9 @@ def _analyze_complementary_outcomes(
                         middle_profit_margin=None,
                         legs=[_leg(result_offer), _leg(double_chance_offer)],
                         resolved_event_id=context.resolved_event_id,
+                        subject_type=subject_type,
+                        subject_key=subject_key,
+                        subject_name=subject_name,
                         market_keys=tuple(
                             sorted(
                                 {
@@ -271,6 +288,24 @@ def _market_family_key(
     if include_market_type:
         key.insert(2, market.market_type)
     return tuple(key)
+
+
+def _subject_metadata(
+    first: CanonicalMarket,
+    second: CanonicalMarket | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    markets = [market for market in (first, second) if market is not None]
+    subject_types = {market.subject_type for market in markets if market.subject_type}
+    subject_type = sorted(subject_types)[0] if len(subject_types) == 1 else None
+    subject_key = next(
+        (market.subject_key for market in markets if market.subject_key),
+        None,
+    )
+    subject_name = next(
+        (market.subject_name for market in markets if market.subject_name),
+        None,
+    )
+    return subject_type, subject_key, subject_name
 
 
 def _event_identity(offer: CanonicalOffer) -> str:

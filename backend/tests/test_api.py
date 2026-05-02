@@ -359,6 +359,241 @@ async def test_opportunities_api_hides_basketball_overlap_by_default(client: Asy
     assert default_resp.json() == []
     assert basketball_resp.json() == []
     assert [row["sport"] for row in opt_in_resp.json()] == ["basketball"]
+    assert opt_in_resp.json()[0]["event_id"] is None
+    assert "subject_type" in opt_in_resp.json()[0]
+    assert "market_keys" in opt_in_resp.json()[0]
+
+
+@pytest.mark.asyncio
+async def test_opportunities_api_returns_generic_shape_across_sports(client: AsyncClient):
+    await odds_store.upsert_league("euroleague", "EuroLeague", "basketball")
+    await odds_store.upsert_league("premier_league", "Premier League", "football")
+    await odds_store.upsert_league("atp", "ATP", "tennis")
+    for bookmaker_id, bookmaker_name in (
+        ("mozzart", "Mozzart"),
+        ("meridian", "Meridian"),
+        ("maxbet", "MaxBet"),
+        ("balkanbet", "BalkanBet"),
+        ("alpha", "Alpha"),
+        ("beta", "Beta"),
+    ):
+        await odds_store.upsert_bookmaker(bookmaker_id, bookmaker_name)
+
+    await odds_store.upsert_match(
+        id="basketball-match",
+        league_id="euroleague",
+        sport="basketball",
+        home_team="Partizan",
+        away_team="Crvena Zvezda",
+        start_time="2030-01-01T20:00:00+00:00",
+    )
+    await odds_store.upsert_match(
+        id="football-match",
+        league_id="premier_league",
+        sport="football",
+        home_team="Team Alpha",
+        away_team="Team Beta",
+        start_time="2030-01-01T18:00:00+00:00",
+    )
+    await odds_store.upsert_match(
+        id="tennis-match",
+        league_id="atp",
+        sport="tennis",
+        home_team="Novak Djokovic",
+        away_team="Carlos Alcaraz",
+        start_time="2030-01-01T16:00:00+00:00",
+    )
+
+    seeded_opportunities = [
+        Opportunity(
+            sport="basketball",
+            match_id="basketball-match",
+            opportunity_type="middle",
+            market_type="player_points",
+            subject_type="player",
+            subject_key="ply_jokic",
+            subject_name="Nikola Jokić",
+            line=18.5,
+            profit_margin=0.02,
+            middle_profit_margin=0.50,
+            market_keys=("mk-player-points-18.5", "mk-player-points-20.5"),
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id="mozzart",
+                    market_type="player_points",
+                    outcome_code="over",
+                    line=18.5,
+                    odds=1.90,
+                ),
+                OpportunityLeg(
+                    bookmaker_id="meridian",
+                    market_type="player_points",
+                    outcome_code="under",
+                    line=20.5,
+                    odds=2.10,
+                ),
+            ],
+        ),
+        Opportunity(
+            sport="basketball",
+            match_id="basketball-match",
+            opportunity_type="same_line_arbitrage",
+            market_type="player_rebounds",
+            subject_type="player",
+            subject_key="ply_micic",
+            subject_name="Vasilije Micić",
+            line=7.5,
+            profit_margin=0.03,
+            middle_profit_margin=None,
+            market_keys=("mk-player-rebounds-7.5",),
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id="mozzart",
+                    market_type="player_rebounds",
+                    outcome_code="over",
+                    line=7.5,
+                    odds=2.10,
+                ),
+                OpportunityLeg(
+                    bookmaker_id="meridian",
+                    market_type="player_rebounds",
+                    outcome_code="under",
+                    line=7.5,
+                    odds=2.10,
+                ),
+            ],
+        ),
+        Opportunity(
+            sport="football",
+            match_id="football-match",
+            opportunity_type="middle",
+            market_type="football_total_goals",
+            subject_type="event",
+            line=2.5,
+            profit_margin=-0.01,
+            middle_profit_margin=0.08,
+            market_keys=("mk-football-total-2.5", "mk-football-total-3.5"),
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id="maxbet",
+                    market_type="football_total_goals",
+                    outcome_code="over",
+                    line=2.5,
+                    odds=1.90,
+                ),
+                OpportunityLeg(
+                    bookmaker_id="balkanbet",
+                    market_type="football_total_goals",
+                    outcome_code="under",
+                    line=3.5,
+                    odds=2.10,
+                ),
+            ],
+        ),
+        Opportunity(
+            sport="football",
+            match_id="football-match",
+            opportunity_type="complementary_outcomes",
+            market_type="football_result_double_chance",
+            subject_type="event",
+            line=None,
+            profit_margin=0.04,
+            middle_profit_margin=None,
+            market_keys=("mk-football-result-home", "mk-football-dc-draw-away"),
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id="maxbet",
+                    market_type="football_result",
+                    outcome_code="home",
+                    odds=2.10,
+                ),
+                OpportunityLeg(
+                    bookmaker_id="balkanbet",
+                    market_type="football_double_chance",
+                    outcome_code="draw_or_away",
+                    odds=2.10,
+                ),
+            ],
+        ),
+        Opportunity(
+            sport="tennis",
+            match_id="tennis-match",
+            opportunity_type="same_line_arbitrage",
+            market_type="match_winner",
+            subject_type="event",
+            line=None,
+            profit_margin=0.05,
+            middle_profit_margin=None,
+            market_keys=("mk-tennis-winner",),
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id="alpha",
+                    market_type="tennis_match_winner",
+                    outcome_code="home",
+                    odds=2.10,
+                ),
+                OpportunityLeg(
+                    bookmaker_id="beta",
+                    market_type="tennis_match_winner",
+                    outcome_code="away",
+                    odds=2.10,
+                ),
+            ],
+        ),
+    ]
+    for opportunity in seeded_opportunities:
+        await odds_store.insert_opportunity(
+            opportunity,
+            detected_at="2030-01-01T20:00:00",
+        )
+
+    resp = await client.get(
+        "/api/v1/opportunities",
+        params={"include_legacy_discrepancy_overlap": "true", "limit": 10},
+    )
+
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert len(rows) == 5
+    assert {
+        (row["sport"], row["opportunity_type"], row["market_type"])
+        for row in rows
+    } == {
+        ("basketball", "middle", "player_points"),
+        ("basketball", "same_line_arbitrage", "player_rebounds"),
+        ("football", "middle", "football_total_goals"),
+        ("football", "complementary_outcomes", "football_result_double_chance"),
+        ("tennis", "same_line_arbitrage", "match_winner"),
+    }
+
+    player_middle = next(row for row in rows if row["subject_key"] == "ply_jokic")
+    assert player_middle["event_id"] is None
+    assert player_middle["resolved_event_id"] is None
+    assert player_middle["subject_type"] == "player"
+    assert player_middle["subject_name"] == "Nikola Jokić"
+    assert player_middle["market_keys"] == [
+        "mk-player-points-18.5",
+        "mk-player-points-20.5",
+    ]
+    assert [leg["bookmaker_name"] for leg in player_middle["legs"]] == [
+        "Mozzart",
+        "Meridian",
+    ]
+
+    football_complement = next(
+        row for row in rows if row["opportunity_type"] == "complementary_outcomes"
+    )
+    assert football_complement["subject_type"] == "event"
+    assert {leg["market_type"] for leg in football_complement["legs"]} == {
+        "football_result",
+        "football_double_chance",
+    }
+
+    tennis_winner = next(row for row in rows if row["sport"] == "tennis")
+    assert tennis_winner["market_type"] == "match_winner"
+    assert {leg["market_type"] for leg in tennis_winner["legs"]} == {
+        "tennis_match_winner"
+    }
 
 
 @pytest.mark.asyncio

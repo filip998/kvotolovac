@@ -52,9 +52,12 @@ export type MarketType =
   | 'football_total_goals'
   | 'football_result'
   | 'football_double_chance'
-  | 'football_result_double_chance';
+  | 'football_result_double_chance'
+  | 'match_winner'
+  | 'tennis_match_winner';
 
 export type OutcomeMarketType =
+  | MarketType
   | 'football_total_goals'
   | 'football_result'
   | 'football_double_chance'
@@ -122,7 +125,7 @@ export interface OpportunityLeg {
   bookmaker_id: string;
   bookmaker_name?: string | null;
   source_url?: string | null;
-  market_type: OutcomeMarketType;
+  market_type: string;
   outcome_code: string;
   odds: number;
   line: number | null;
@@ -132,6 +135,7 @@ export interface OpportunityLeg {
 export interface Opportunity {
   id: number;
   sport: string;
+  event_id?: string | null;
   match_id: string;
   resolved_event_id?: string | null;
   home_team: string | null;
@@ -139,10 +143,14 @@ export interface Opportunity {
   league_name: string | null;
   start_time: string | null;
   opportunity_type: string;
-  market_type: OutcomeMarketType;
+  market_type: string;
+  subject_type?: string | null;
+  subject_key?: string | null;
+  subject_name?: string | null;
   line: number | null;
   profit_margin: number | null;
   middle_profit_margin: number | null;
+  market_keys: string[];
   legs: OpportunityLeg[];
   detected_at: string | null;
   is_active: boolean;

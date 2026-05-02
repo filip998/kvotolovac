@@ -16,10 +16,17 @@ async def list_opportunities(
     sport: Optional[str] = Query(None),
     bookmaker_ids: Optional[str] = Query(None),
     market_type: Optional[str] = Query(None),
-    include_legacy_discrepancy_overlap: bool = Query(False),
+    include_legacy_discrepancy_overlap: bool = Query(
+        False,
+        description=(
+            "Compatibility guard for the current Dashboard: basketball canonical "
+            "opportunities overlap legacy discrepancies unless explicitly included."
+        ),
+    ),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
+    """Return the generic canonical opportunity shape across supported sports."""
     return await odds_store.get_opportunities(
         sport=sport,
         bookmaker_ids=parse_csv_query_values(bookmaker_ids),

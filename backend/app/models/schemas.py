@@ -379,6 +379,7 @@ class OpportunityLeg(BaseModel):
 class OpportunityOut(BaseModel):
     id: int
     sport: str
+    event_id: Optional[str] = None
     match_id: str
     resolved_event_id: Optional[str] = None
     home_team: Optional[str] = None
@@ -387,9 +388,13 @@ class OpportunityOut(BaseModel):
     start_time: Optional[str] = None
     opportunity_type: str
     market_type: str
+    subject_type: Optional[str] = None
+    subject_key: Optional[str] = None
+    subject_name: Optional[str] = None
     line: Optional[float] = None
     profit_margin: Optional[float] = None
     middle_profit_margin: Optional[float] = None
+    market_keys: list[str] = Field(default_factory=list)
     legs: list[OpportunityLeg] = Field(default_factory=list)
     detected_at: Optional[str] = None
     is_active: bool = True

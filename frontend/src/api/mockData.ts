@@ -214,9 +214,11 @@ export const mockFootballOpportunities: Opportunity[] = [
     start_time: hours(2.5),
     opportunity_type: 'same_line_arbitrage',
     market_type: 'football_total_goals',
+    subject_type: 'event',
     line: 2.5,
     profit_margin: 0.1277,
     middle_profit_margin: null,
+    market_keys: ['mock-football-total-2.5'],
     legs: [
       { bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'football_total_goals', outcome_code: 'under', odds: 2.15, line: 2.5, raw_label: '0-2' },
       { bookmaker_id: 'balkanbet', bookmaker_name: 'BalkanBet', market_type: 'football_total_goals', outcome_code: 'over', odds: 2.85, line: 2.5, raw_label: '3+' },
@@ -234,9 +236,11 @@ export const mockFootballOpportunities: Opportunity[] = [
     start_time: hours(2.25),
     opportunity_type: 'complementary_outcomes',
     market_type: 'football_result_double_chance',
+    subject_type: 'event',
     line: null,
     profit_margin: 0.0253,
     middle_profit_margin: null,
+    market_keys: ['mock-football-result-home', 'mock-football-double-chance-draw-away'],
     legs: [
       { bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'football_result', outcome_code: 'home', odds: 2.5, line: null, raw_label: '1' },
       { bookmaker_id: 'balkanbet', bookmaker_name: 'BalkanBet', market_type: 'football_double_chance', outcome_code: 'draw_or_away', odds: 1.42, line: null, raw_label: 'X2' },

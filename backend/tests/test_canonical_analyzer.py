@@ -190,6 +190,9 @@ def test_canonical_line_middle_uses_subject_key_before_display_name():
     )
 
     assert len(opportunities) == 1
+    assert opportunities[0].subject_type == "player"
+    assert opportunities[0].subject_key == "ply_lundberg"
+    assert opportunities[0].subject_name == "Nikola Jokić"
     assert {(leg.bookmaker_id, leg.outcome_code, leg.line) for leg in opportunities[0].legs} == {
         ("mozzart", "over", 16.5),
         ("meridian", "under", 18.5),
