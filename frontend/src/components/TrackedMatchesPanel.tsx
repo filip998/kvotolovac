@@ -184,7 +184,7 @@ export default function TrackedMatchesPanel({
       return (
         <EmptyState
           title="No upcoming fetched matches stored right now"
-          message="Tracked odds only lists matches that are still upcoming in the current stored board."
+          message="Tracked odds lists upcoming matches across all selected sports. Try widening the sport filter or clearing the bookmaker filter."
         />
       );
     }
@@ -227,6 +227,13 @@ export default function TrackedMatchesPanel({
                 )}
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className="inline-flex items-center rounded-full border border-border/70 bg-bg/60 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-secondary"
+                      title={primary.sport}
+                      aria-label={primary.sport}
+                    >
+                      {primary.sport === 'football' ? '⚽' : '🏀'}
+                    </span>
                     <span className="text-[11px] font-medium uppercase tracking-wider text-accent">
                       {primary.league_name}
                     </span>

@@ -1,4 +1,4 @@
-import type { Discrepancy } from '../api/types';
+import type { Edge } from '../api/types';
 
 export type StakeCalculatorMode =
   | 'balanced'
@@ -49,17 +49,19 @@ function ceilToStep(value: number, step: number) {
   return Math.ceil((value - Number.EPSILON) / step) * step;
 }
 
-function hasMiddleWindow(discrepancy: Discrepancy) {
-  return discrepancy.gap > 0 && discrepancy.middle_profit_margin != null;
+function hasMiddleWindow(edge: Edge) {
+  return (edge.gap ?? 0) > 0 && edge.middle_profit_margin != null;
 }
 
-function hasNonNegativeFloor(discrepancy: Discrepancy) {
-  return discrepancy.profit_margin >= 0;
+function hasNonNegativeFloor(edge: Edge) {
+  return (edge.profit_margin ?? Number.NEGATIVE_INFINITY) >= 0;
 }
 
-function calculateBalancedStakes(discrepancy: Discrepancy, totalUnits: number) {
-  const totalOdds = discrepancy.odds_a + discrepancy.odds_b;
-  const stakeA = totalUnits * (discrepancy.odds_b / totalOdds);
+function calculateBalancedStakes(edge: Edge, totalUnits: number) {
+  const oddsA = edge.leg_a.odds;
+  const oddsB = edge.leg_b.odds;
+  const totalOdds = oddsA + oddsB;
+  const stakeA = totalUnits * (oddsB / totalOdds);
   const stakeB = totalUnits - stakeA;
 
   return {
@@ -69,15 +71,15 @@ function calculateBalancedStakes(discrepancy: Discrepancy, totalUnits: number) {
 }
 
 function calculateScenarioProfits(
-  discrepancy: Discrepancy,
+  edge: Edge,
   stakeA: number,
   stakeB: number,
   totalStake: number
 ) {
-  const profitIfAWins = normalizeFloat(stakeA * discrepancy.odds_a - totalStake);
-  const profitIfBWins = normalizeFloat(stakeB * discrepancy.odds_b - totalStake);
-  const middleProfit = hasMiddleWindow(discrepancy)
-    ? normalizeFloat(stakeA * discrepancy.odds_a + stakeB * discrepancy.odds_b - totalStake)
+  const profitIfAWins = normalizeFloat(stakeA * edge.leg_a.odds - totalStake);
+  const profitIfBWins = normalizeFloat(stakeB * edge.leg_b.odds - totalStake);
+  const middleProfit = hasMiddleWindow(edge)
+    ? normalizeFloat(stakeA * edge.leg_a.odds + stakeB * edge.leg_b.odds - totalStake)
     : null;
 
   return {
@@ -88,13 +90,13 @@ function calculateScenarioProfits(
 }
 
 function buildLabels(
-  discrepancy: Discrepancy,
+  edge: Edge,
   mode: StakeCalculatorMode,
   worstCaseProfit: number
 ): StakeCalculatorLabel[] {
   const labels: StakeCalculatorLabel[] = [];
 
-  if (!hasMiddleWindow(discrepancy)) {
+  if (!hasMiddleWindow(edge)) {
     labels.push({ text: 'Same-threshold arb', tone: 'accent' });
   }
 
@@ -108,7 +110,7 @@ function buildLabels(
 
   if (worstCaseProfit < 0) {
     labels.push({ text: 'Not guaranteed', tone: 'warning' });
-  } else if (hasMiddleWindow(discrepancy) && worstCaseProfit === 0) {
+  } else if (hasMiddleWindow(edge) && worstCaseProfit === 0) {
     labels.push({ text: 'Breakeven floor', tone: 'muted' });
   }
 
@@ -116,14 +118,14 @@ function buildLabels(
 }
 
 function buildPlan(
-  discrepancy: Discrepancy,
+  edge: Edge,
   mode: StakeCalculatorMode,
   stakeA: number,
   stakeB: number
 ): StakeCalculatorPlan {
   const totalStake = normalizeFloat(stakeA + stakeB);
   const { profitIfAWins, profitIfBWins, middleProfit } = calculateScenarioProfits(
-    discrepancy,
+    edge,
     stakeA,
     stakeB,
     totalStake
@@ -140,18 +142,16 @@ function buildPlan(
     worstCaseProfit,
     middleProfit,
     isGuaranteed: worstCaseProfit >= 0,
-    labels: buildLabels(discrepancy, mode, worstCaseProfit),
+    labels: buildLabels(edge, mode, worstCaseProfit),
   };
 }
 
-export function getAvailableStakeCalculatorModes(
-  discrepancy: Discrepancy
-): StakeCalculatorMode[] {
-  if (!hasMiddleWindow(discrepancy)) {
+export function getAvailableStakeCalculatorModes(edge: Edge): StakeCalculatorMode[] {
+  if (!hasMiddleWindow(edge)) {
     return ['balanced'];
   }
 
-  if (hasNonNegativeFloor(discrepancy)) {
+  if (hasNonNegativeFloor(edge)) {
     return ['balanced', 'aggressive-middle', 'conservative-rounded'];
   }
 
@@ -159,7 +159,7 @@ export function getAvailableStakeCalculatorModes(
 }
 
 export function calculateStakePlan(
-  discrepancy: Discrepancy,
+  edge: Edge,
   totalUnits: number,
   mode: StakeCalculatorMode
 ): StakeCalculatorPlan | null {
@@ -167,30 +167,30 @@ export function calculateStakePlan(
     return null;
   }
 
-  if (!getAvailableStakeCalculatorModes(discrepancy).includes(mode)) {
+  if (!getAvailableStakeCalculatorModes(edge).includes(mode)) {
     return null;
   }
 
-  const balanced = calculateBalancedStakes(discrepancy, totalUnits);
+  const balanced = calculateBalancedStakes(edge, totalUnits);
 
   if (mode === 'balanced') {
-    return buildPlan(discrepancy, mode, balanced.stakeA, balanced.stakeB);
+    return buildPlan(edge, mode, balanced.stakeA, balanced.stakeB);
   }
 
   if (mode === 'aggressive-middle') {
     const shift = normalizeFloat(totalUnits * AGGRESSIVE_SHIFT_RATIO);
 
-    if (discrepancy.odds_a > discrepancy.odds_b + EPSILON) {
+    if (edge.leg_a.odds > edge.leg_b.odds + EPSILON) {
       const stakeA = clamp(balanced.stakeA + shift, 0, totalUnits);
-      return buildPlan(discrepancy, mode, stakeA, totalUnits - stakeA);
+      return buildPlan(edge, mode, stakeA, totalUnits - stakeA);
     }
 
-    if (discrepancy.odds_b > discrepancy.odds_a + EPSILON) {
+    if (edge.leg_b.odds > edge.leg_a.odds + EPSILON) {
       const stakeB = clamp(balanced.stakeB + shift, 0, totalUnits);
-      return buildPlan(discrepancy, mode, totalUnits - stakeB, stakeB);
+      return buildPlan(edge, mode, totalUnits - stakeB, stakeB);
     }
 
-    return buildPlan(discrepancy, mode, balanced.stakeA, balanced.stakeB);
+    return buildPlan(edge, mode, balanced.stakeA, balanced.stakeB);
   }
 
   const candidateStakeAs = new Set<number>([
@@ -201,7 +201,7 @@ export function calculateStakePlan(
 
   const candidates = Array.from(candidateStakeAs).map((candidateStakeA) =>
     buildPlan(
-      discrepancy,
+      edge,
       mode,
       normalizeFloat(candidateStakeA),
       normalizeFloat(totalUnits - candidateStakeA)
@@ -221,6 +221,6 @@ export function calculateStakePlan(
   return candidates[0] ?? null;
 }
 
-export const getAvailableModesForDiscrepancy = getAvailableStakeCalculatorModes;
-export const getStakeCalculatorModesForDiscrepancy = getAvailableStakeCalculatorModes;
-export const calculateStakePlanForDiscrepancy = calculateStakePlan;
+export const getAvailableModesForEdge = getAvailableStakeCalculatorModes;
+export const calculateStakePlanForEdge = calculateStakePlan;
+

@@ -148,6 +148,40 @@ export interface Opportunity {
   is_active: boolean;
 }
 
+export type EdgeSport = 'basketball' | 'football';
+
+export interface EdgeLeg {
+  bookmaker_id: string;
+  bookmaker_name: string;
+  outcome_code: string;
+  line: number | null;
+  odds: number;
+  source_url?: string | null;
+  bookmaker_match_id?: string | null;
+}
+
+export interface Edge {
+  id: string;
+  source: 'discrepancy' | 'opportunity';
+  source_id: number;
+  sport: EdgeSport;
+  match_id: string;
+  resolved_event_id?: string | null;
+  home_team: string | null;
+  away_team: string | null;
+  league_name: string | null;
+  start_time: string | null;
+  market_type: string;
+  player_name: string | null;
+  profit_margin: number | null;
+  middle_profit_margin: number | null;
+  gap: number | null;
+  detected_at: string | null;
+  leg_a: EdgeLeg;
+  leg_b: EdgeLeg;
+  opportunity_type?: string;
+}
+
 export interface UnresolvedOdds {
   id: number;
   bookmaker_id: string;

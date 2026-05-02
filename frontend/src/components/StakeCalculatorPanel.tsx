@@ -1,13 +1,13 @@
 import { useMemo, useState } from 'react';
-import type { Discrepancy } from '../api/types';
+import type { Edge } from '../api/types';
 import {
   formatGap,
   formatOdds,
   formatSignedUnits,
-  formatThreshold,
   formatUnits,
   roundUnitsDisplayValue,
 } from '../utils/format';
+import { formatLegLineLabel, formatOutcomeLabel } from '../utils/edgeFormatting';
 import {
   calculateStakePlan,
   getAvailableStakeCalculatorModes,
@@ -16,7 +16,7 @@ import {
 } from '../utils/stakeCalculator';
 
 interface StakeCalculatorPanelProps {
-  discrepancy: Discrepancy;
+  edge: Edge;
   totalUnits: number;
 }
 
@@ -88,13 +88,13 @@ function SummaryPill({
 }
 
 export default function StakeCalculatorPanel({
-  discrepancy: d,
+  edge,
   totalUnits,
 }: StakeCalculatorPanelProps) {
-  const availableModes = useMemo(() => getAvailableStakeCalculatorModes(d), [d]);
+  const availableModes = useMemo(() => getAvailableStakeCalculatorModes(edge), [edge]);
   const [selectedMode, setSelectedMode] = useState<StakeCalculatorMode>(availableModes[0]);
   const activeMode = availableModes.includes(selectedMode) ? selectedMode : availableModes[0];
-  const plan = useMemo(() => calculateStakePlan(d, totalUnits, activeMode), [d, totalUnits, activeMode]);
+  const plan = useMemo(() => calculateStakePlan(edge, totalUnits, activeMode), [edge, totalUnits, activeMode]);
 
   if (!plan) {
     return null;
@@ -102,6 +102,25 @@ export default function StakeCalculatorPanel({
 
   const middleValueClass =
     plan.middleProfit !== null ? resultValueClass(plan.middleProfit) : 'text-text-secondary';
+
+  const legALineLabel = formatLegLineLabel(edge.leg_a, edge.market_type);
+  const legBLineLabel = formatLegLineLabel(edge.leg_b, edge.market_type);
+  const legAOutcomeLabel = formatOutcomeLabel(
+    edge.leg_a.outcome_code,
+    edge.market_type,
+    edge.leg_a.line
+  );
+  const legBOutcomeLabel = formatOutcomeLabel(
+    edge.leg_b.outcome_code,
+    edge.market_type,
+    edge.leg_b.line
+  );
+  const legADetail = legALineLabel
+    ? `${legAOutcomeLabel} ${legALineLabel} @ ${formatOdds(edge.leg_a.odds)}`
+    : `${legAOutcomeLabel} @ ${formatOdds(edge.leg_a.odds)}`;
+  const legBDetail = legBLineLabel
+    ? `${legBOutcomeLabel} ${legBLineLabel} @ ${formatOdds(edge.leg_b.odds)}`
+    : `${legBOutcomeLabel} @ ${formatOdds(edge.leg_b.odds)}`;
 
   return (
     <div className="rounded-lg border border-border/70 bg-bg/45 p-3">
@@ -139,13 +158,13 @@ export default function StakeCalculatorPanel({
 
       <div className="mt-3 divide-y divide-border/70 rounded-md border border-border/70 bg-bg/70 px-3">
         <StakeSplitRow
-          bookmaker={d.bookmaker_a_name}
-          detail={`Over ${formatThreshold(d.threshold_a)} @ ${formatOdds(d.odds_a)}`}
+          bookmaker={edge.leg_a.bookmaker_name}
+          detail={legADetail}
           value={`${formatUnits(plan.stakeA)}u`}
         />
         <StakeSplitRow
-          bookmaker={d.bookmaker_b_name}
-          detail={`Under ${formatThreshold(d.threshold_b)} @ ${formatOdds(d.odds_b)}`}
+          bookmaker={edge.leg_b.bookmaker_name}
+          detail={legBDetail}
           value={`${formatUnits(plan.stakeB)}u`}
         />
       </div>
@@ -165,9 +184,11 @@ export default function StakeCalculatorPanel({
           label="Middle profit"
           value={plan.middleProfit !== null ? `${formatSignedUnits(plan.middleProfit)}u` : '—'}
           detail={
-            plan.middleProfit !== null
-              ? `${formatGap(d.gap)} pt middle window when both tickets cash.`
-              : 'Unavailable on same-threshold arbitrage.'
+            plan.middleProfit !== null && edge.gap != null
+              ? `${formatGap(edge.gap)} pt middle window when both tickets cash.`
+              : plan.middleProfit !== null
+                ? 'Both tickets cash in the middle window.'
+                : 'Unavailable on same-line arbitrage.'
           }
           valueClassName={middleValueClass}
         />

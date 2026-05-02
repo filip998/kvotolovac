@@ -1,6 +1,5 @@
-import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
 import {
   useCanonicalTeams,
   useMergeCanonicalTeam,
@@ -10,34 +9,18 @@ import {
   useDiscrepancies,
   useMatches,
   useOpportunities,
-  useOutcomeOffers,
   useSystemStatus,
   useTeamReviewCases,
   useUnresolvedOdds,
 } from '../api/hooks';
-import type { Discrepancy, DiscrepancyFilters, Match, Opportunity, OutcomeOffer } from '../api/types';
-import {
-  formatDateTime,
-  formatGap,
-  formatHandicapLine,
-  formatOdds,
-  formatPercentage,
-  formatRelativeTime,
-  formatThreshold,
-  isHandicapMarket,
-  profitColor,
-} from '../utils/format';
-import { MARKET_TYPE_LABELS } from '../utils/constants';
+import type { DiscrepancyFilters } from '../api/types';
 import FilterBar from '../components/FilterBar';
 import BookmakerFilterDeck from '../components/BookmakerFilterDeck';
-import BookmakerBadge from '../components/BookmakerBadge';
+import EdgeRow from '../components/EdgeRow';
 import EmptyState from '../components/EmptyState';
 import LoadingSpinner from '../components/LoadingSpinner';
-import MatchAccordion from '../components/MatchAccordion';
 import PageShell from '../components/PageShell';
-import SortControls from '../components/SortControls';
 import CanonicalTeamsPanel from '../components/CanonicalTeamsPanel';
-import StakeCalculatorPanel from '../components/StakeCalculatorPanel';
 import TeamReviewPanel from '../components/TeamReviewPanel';
 import TrackedMatchesPanel from '../components/TrackedMatchesPanel';
 import UnresolvedOddsPanel from '../components/UnresolvedOddsPanel';
@@ -49,104 +32,19 @@ import {
 import { useBookmakerFilter } from '../hooks/useBookmakerFilter';
 import { buildSearchIndex, filterSearchIndex, normalizeSearchText } from '../utils/search';
 import { groupUnresolvedOdds } from '../utils/unresolvedWarnings';
+import { buildEdges } from '../utils/edgeAdapter';
 
-interface MatchGroup {
-  matchId: string;
-  homeTeam: string;
-  awayTeam: string;
-  startTime: string;
-  discrepancies: Discrepancy[];
-}
+type DashboardTab = 'opportunities' | 'tracked' | 'teams' | 'canonical' | 'warnings';
+type SportFilter = 'both' | 'basketball' | 'football';
 
-interface LeagueGroup {
-  league: string;
-  matches: MatchGroup[];
-}
+const SPORT_FILTER_OPTIONS: { value: SportFilter; label: string }[] = [
+  { value: 'both', label: 'All sports' },
+  { value: 'basketball', label: 'Basketball' },
+  { value: 'football', label: 'Football' },
+];
 
-type DashboardTab = 'discrepancies' | 'football' | 'tracked' | 'teams' | 'canonical' | 'warnings';
-type ViewMode = 'by-match' | 'flat';
-
-interface FootballMatchRow {
-  match: Match;
-  offers: OutcomeOffer[];
-  opportunities: Opportunity[];
-}
-
-const FOOTBALL_OUTCOME_LABELS: Record<string, string> = {
-  under: '0-2',
-  over: '3+',
-  home: '1',
-  draw: 'X',
-  away: '2',
-  home_or_draw: '1X',
-  draw_or_away: 'X2',
-  home_or_away: '12',
-};
-function footballTotalGoalsLabel(outcomeCode: string, line?: number | null) {
-  if (line == null || !Number.isFinite(line)) {
-    return outcomeCode;
-  }
-  const boundary = Math.floor(line);
-  if (outcomeCode === 'under') {
-    return `0-${boundary}`;
-  }
-  if (outcomeCode === 'over') {
-    return `${boundary + 1}+`;
-  }
-  return outcomeCode;
-}
-
-function footballOutcomeLabel(code: string, marketType?: string, line?: number | null) {
-  if (marketType === 'football_total_goals') {
-    return footballTotalGoalsLabel(code, line);
-  }
-  return FOOTBALL_OUTCOME_LABELS[code] || code;
-}
-
-function marketTypeLabel(marketType: string) {
-  return MARKET_TYPE_LABELS[marketType as keyof typeof MARKET_TYPE_LABELS] || marketType;
-}
-
-function footballMiddleWindowLabel(opportunity: Opportunity) {
-  const overLeg = opportunity.legs.find(
-    (leg) => leg.market_type === 'football_total_goals' && leg.outcome_code === 'over'
-  );
-  const underLeg = opportunity.legs.find(
-    (leg) => leg.market_type === 'football_total_goals' && leg.outcome_code === 'under'
-  );
-  if (overLeg?.line == null || underLeg?.line == null) {
-    return 'middle window';
-  }
-  const firstGoal = Math.floor(overLeg.line) + 1;
-  const lastGoal = Math.floor(underLeg.line);
-  if (firstGoal === lastGoal) {
-    return `exactly ${firstGoal} goals`;
-  }
-  return `${firstGoal}-${lastGoal} goals`;
-}
-
-function footballOpportunityLabel(opportunity: Opportunity) {
-  if (opportunity.opportunity_type === 'same_line_arbitrage') {
-    return `Total goals ${opportunity.line ?? 2.5}`;
-  }
-  if (opportunity.opportunity_type === 'middle') {
-    return `Goals middle: ${footballMiddleWindowLabel(opportunity)}`;
-  }
-  return 'Result combo';
-}
-
-function footballOpportunityDescription(opportunity: Opportunity) {
-  if (opportunity.opportunity_type === 'same_line_arbitrage') {
-    return `Both sides cover the same ${opportunity.line ?? 2.5} goals line.`;
-  }
-  if (opportunity.opportunity_type === 'middle') {
-    return 'Both tickets win in the middle window; outside ROI is shown separately.';
-  }
-  return 'Exact result paired with the complementary double chance.';
-}
-
-function bookmakerName(bookmakerId: string, fallback?: string | null) {
-  return fallback || bookmakerId;
+function sportFilterToParam(value: SportFilter): string | undefined {
+  return value === 'both' ? undefined : value;
 }
 
 export default function Dashboard() {
@@ -161,13 +59,13 @@ export default function Dashboard() {
     sort_by: 'profit_margin',
     sort_order: 'desc',
   });
-  const [activeTab, setActiveTab] = useState<DashboardTab>('discrepancies');
-  const [viewMode, setViewMode] = useState<ViewMode>('flat');
+  const [activeTab, setActiveTab] = useState<DashboardTab>('opportunities');
   const [searchQuery, setSearchQuery] = useState('');
   const [diagnosticsSport, setDiagnosticsSport] = useState<'basketball' | 'football'>('basketball');
+  const [opportunitiesSport, setOpportunitiesSport] = useState<SportFilter>('both');
+  const [trackedSport, setTrackedSport] = useState<SportFilter>('both');
   const appliedSearchQuery = useDeferredValue(searchQuery);
-  const [collapsedLeagues, setCollapsedLeagues] = useState<Set<string>>(new Set());
-  const [expandedFlatCalculatorIds, setExpandedFlatCalculatorIds] = useState<Set<number>>(new Set());
+  const [expandedFlatCalculatorIds, setExpandedFlatCalculatorIds] = useState<Set<string>>(new Set());
   const [teamReviewMessage, setTeamReviewMessage] = useState<string | null>(null);
   const [canonicalTeamMessage, setCanonicalTeamMessage] = useState<string | null>(null);
   const [selectedCanonicalMergeSourceId, setSelectedCanonicalMergeSourceId] = useState<number | null>(
@@ -195,25 +93,13 @@ export default function Dashboard() {
     setStakeUnitsInput(formatDashboardStakeUnitsInput(stakeUnits));
   }, [stakeUnits]);
 
-  const toggleLeague = useCallback((league: string) => {
-    setCollapsedLeagues((prev) => {
-      const next = new Set(prev);
-      if (next.has(league)) {
-        next.delete(league);
-      } else {
-        next.add(league);
-      }
-      return next;
-    });
-  }, []);
-
-  const toggleFlatCalculator = useCallback((discrepancyId: number) => {
+  const toggleFlatCalculator = useCallback((edgeId: string) => {
     setExpandedFlatCalculatorIds((prev) => {
       const next = new Set(prev);
-      if (next.has(discrepancyId)) {
-        next.delete(discrepancyId);
+      if (next.has(edgeId)) {
+        next.delete(edgeId);
       } else {
-        next.add(discrepancyId);
+        next.add(edgeId);
       }
       return next;
     });
@@ -234,19 +120,35 @@ export default function Dashboard() {
   const discrepancyFilters = useMemo(
     () => ({
       ...filters,
+      sport: sportFilterToParam(opportunitiesSport),
       search: activeSearchLabel || undefined,
       bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
     }),
-    [activeSearchLabel, filters, selectedBookmakerIds]
+    [activeSearchLabel, filters, opportunitiesSport, selectedBookmakerIds]
   );
 
   const {
     data: discrepancies,
-    isLoading,
-    isError,
-    error,
+    isLoading: discrepanciesLoading,
+    isError: discrepanciesError,
+    error: discrepanciesLoadError,
     refetch: refetchDiscrepancies,
-  } = useDiscrepancies(discrepancyFilters, { enabled: activeTab === 'discrepancies' });
+  } = useDiscrepancies(discrepancyFilters, { enabled: activeTab === 'opportunities' });
+  const {
+    data: opportunities,
+    isLoading: opportunitiesLoading,
+    isError: opportunitiesError,
+    error: opportunitiesLoadError,
+    refetch: refetchOpportunities,
+  } = useOpportunities(
+    {
+      sport: sportFilterToParam(opportunitiesSport),
+      limit: 200,
+      loadAll: true,
+      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
+    },
+    { enabled: activeTab === 'opportunities' }
+  );
   const {
     data: matches,
     isLoading: matchesLoading,
@@ -254,55 +156,12 @@ export default function Dashboard() {
     error: matchesLoadError,
   } = useMatches(
     {
-      sport: 'basketball',
+      sport: sportFilterToParam(trackedSport),
       limit: 200,
       loadAll: true,
       bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
     },
     { enabled: activeTab === 'tracked' }
-  );
-  const {
-    data: footballMatches,
-    isLoading: footballMatchesLoading,
-    isError: footballMatchesError,
-    error: footballMatchesLoadError,
-  } = useMatches(
-    {
-      sport: 'football',
-      limit: 200,
-      loadAll: true,
-      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
-    },
-    { enabled: activeTab === 'football' }
-  );
-  const {
-    data: footballOffers,
-    isLoading: footballOffersLoading,
-    isError: footballOffersError,
-    error: footballOffersLoadError,
-  } = useOutcomeOffers(
-    {
-      sport: 'football',
-      limit: 500,
-      loadAll: true,
-      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
-    },
-    { enabled: activeTab === 'football' }
-  );
-  const {
-    data: footballOpportunities,
-    isLoading: footballOpportunitiesLoading,
-    isError: footballOpportunitiesError,
-    error: footballOpportunitiesLoadError,
-    refetch: refetchFootballOpportunities,
-  } = useOpportunities(
-    {
-      sport: 'football',
-      limit: 200,
-      loadAll: true,
-      bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
-    },
-    { enabled: activeTab === 'football' }
   );
   const {
     data: unresolvedOdds,
@@ -354,29 +213,30 @@ export default function Dashboard() {
   const mergeCanonicalTeam = useMergeCanonicalTeam();
   const unmergeCanonicalTeam = useUnmergeCanonicalTeam();
 
+  const opportunitiesPanelLoading = discrepanciesLoading || opportunitiesLoading;
+  const opportunitiesPanelError =
+    (discrepanciesError ? (discrepanciesLoadError as Error)?.message : null) ||
+    (opportunitiesError ? (opportunitiesLoadError as Error)?.message : null);
+
   const isInitialScanInProgress =
-    activeTab === 'discrepancies' && !!status?.scan.in_progress && !status.last_scrape_at;
+    activeTab === 'opportunities' && !!status?.scan.in_progress && !status.last_scrape_at;
   const isTimeoutError =
-    typeof (error as Error | undefined)?.message === 'string' &&
-    (error as Error).message.toLowerCase().includes('timeout');
+    typeof (discrepanciesLoadError as Error | undefined)?.message === 'string' &&
+    (discrepanciesLoadError as Error).message.toLowerCase().includes('timeout');
 
   useEffect(() => {
     const scanInProgress = !!status?.scan.in_progress;
     const scanJustFinished = previousScanInProgressRef.current && !scanInProgress;
 
-    if (scanJustFinished && activeTab === 'discrepancies') {
+    if (scanJustFinished && activeTab === 'opportunities') {
       void queryClient.invalidateQueries({ queryKey: ['discrepancies'] });
+      void queryClient.invalidateQueries({ queryKey: ['opportunities'] });
       void refetchDiscrepancies();
+      void refetchOpportunities();
     }
     if (scanJustFinished && activeTab === 'warnings') {
       void queryClient.invalidateQueries({ queryKey: ['unresolvedOdds'] });
       void refetchUnresolvedOdds();
-    }
-    if (scanJustFinished && activeTab === 'football') {
-      void queryClient.invalidateQueries({ queryKey: ['matches'] });
-      void queryClient.invalidateQueries({ queryKey: ['outcomeOffers'] });
-      void queryClient.invalidateQueries({ queryKey: ['opportunities'] });
-      void refetchFootballOpportunities();
     }
     if (scanJustFinished && activeTab === 'teams') {
       void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
@@ -392,121 +252,68 @@ export default function Dashboard() {
     activeTab,
     queryClient,
     refetchDiscrepancies,
-    refetchFootballOpportunities,
+    refetchOpportunities,
     refetchCanonicalTeams,
     refetchTeamReviewCases,
     refetchUnresolvedOdds,
     status?.scan.in_progress,
   ]);
 
-  const discrepancySearchIndex = useMemo(
+  const minGapFilter = filters.min_gap ?? 0;
+  const marketTypeFilter = filters.market_type;
+  const leagueFilter = filters.league;
+
+  const edges = useMemo(() => {
+    let all = buildEdges(discrepancies, opportunities, opportunitiesSport);
+    if (marketTypeFilter) {
+      all = all.filter((edge) => edge.market_type === marketTypeFilter);
+    }
+    if (leagueFilter) {
+      all = all.filter((edge) => edge.league_name === leagueFilter);
+    }
+    if (minGapFilter > 0) {
+      all = all.filter((edge) => (edge.gap ?? 0) >= minGapFilter);
+    }
+    return all;
+  }, [discrepancies, opportunities, opportunitiesSport, marketTypeFilter, leagueFilter, minGapFilter]);
+
+  const sortedEdges = useMemo(() => {
+    const sortBy = filters.sort_by ?? 'profit_margin';
+    const sortOrder = filters.sort_order ?? 'desc';
+    const direction = sortOrder === 'desc' ? -1 : 1;
+    const ranked = [...edges];
+    ranked.sort((a, b) => {
+      const aVal = (a[sortBy as keyof typeof a] as number | null | undefined) ?? Number.NEGATIVE_INFINITY;
+      const bVal = (b[sortBy as keyof typeof b] as number | null | undefined) ?? Number.NEGATIVE_INFINITY;
+      if (aVal === bVal) return 0;
+      return aVal < bVal ? -direction : direction;
+    });
+    return ranked;
+  }, [edges, filters.sort_by, filters.sort_order]);
+
+  const edgeSearchIndex = useMemo(
     () =>
-      buildSearchIndex(discrepancies ?? [], (discrepancy) => [
-        discrepancy.home_team,
-        discrepancy.away_team,
-        `${discrepancy.home_team} ${discrepancy.away_team}`,
-        discrepancy.player_name,
+      buildSearchIndex(sortedEdges, (edge) => [
+        edge.home_team,
+        edge.away_team,
+        edge.home_team && edge.away_team ? `${edge.home_team} ${edge.away_team}` : null,
+        edge.player_name,
       ]),
-    [discrepancies]
+    [sortedEdges]
   );
 
-  const filteredDiscrepancies = useMemo(
-    () => filterSearchIndex(discrepancySearchIndex, appliedSearchQuery),
-    [appliedSearchQuery, discrepancySearchIndex]
+  const filteredEdges = useMemo(
+    () => filterSearchIndex(edgeSearchIndex, appliedSearchQuery),
+    [appliedSearchQuery, edgeSearchIndex]
   );
-  const grouped = useMemo<LeagueGroup[]>(() => {
-    if (!filteredDiscrepancies) return [];
 
-    const leagueMap = new Map<string, Map<string, MatchGroup>>();
-
-    for (const d of filteredDiscrepancies) {
-      if (!leagueMap.has(d.league_name)) {
-        leagueMap.set(d.league_name, new Map());
-      }
-      const matchMap = leagueMap.get(d.league_name)!;
-      if (!matchMap.has(d.match_id)) {
-        matchMap.set(d.match_id, {
-          matchId: d.match_id,
-          homeTeam: d.home_team,
-          awayTeam: d.away_team,
-          startTime: d.detected_at,
-          discrepancies: [],
-        });
-      }
-      matchMap.get(d.match_id)!.discrepancies.push(d);
-    }
-
-    const result: LeagueGroup[] = [];
-    for (const [league, matchMap] of leagueMap) {
-      result.push({
-        league,
-        matches: Array.from(matchMap.values()),
-      });
-    }
-    return result;
-  }, [filteredDiscrepancies]);
   const unresolvedWarningGroups = useMemo(
     () => groupUnresolvedOdds(unresolvedOdds ?? []),
     [unresolvedOdds]
   );
-  const footballOpportunitiesByMatch = useMemo(() => {
-    const byMatch = new Map<string, Opportunity[]>();
-    for (const opportunity of footballOpportunities ?? []) {
-      const list = byMatch.get(opportunity.match_id) ?? [];
-      list.push(opportunity);
-      byMatch.set(opportunity.match_id, list);
-    }
-    for (const list of byMatch.values()) {
-      list.sort(
-        (left, right) =>
-          (right.profit_margin ?? Number.NEGATIVE_INFINITY) -
-          (left.profit_margin ?? Number.NEGATIVE_INFINITY)
-      );
-    }
-    return byMatch;
-  }, [footballOpportunities]);
-  const footballOffersByMatch = useMemo(() => {
-    const byMatch = new Map<string, OutcomeOffer[]>();
-    for (const offer of footballOffers ?? []) {
-      const list = byMatch.get(offer.match_id) ?? [];
-      list.push(offer);
-      byMatch.set(offer.match_id, list);
-    }
-    return byMatch;
-  }, [footballOffers]);
-  const footballRows = useMemo<FootballMatchRow[]>(() => {
-    const rows = (footballMatches ?? []).map((match) => ({
-      match,
-      offers: footballOffersByMatch.get(match.id) ?? [],
-      opportunities: footballOpportunitiesByMatch.get(match.id) ?? [],
-    }));
-    rows.sort((left, right) => {
-      const leftMargin = left.opportunities[0]?.profit_margin ?? Number.NEGATIVE_INFINITY;
-      const rightMargin = right.opportunities[0]?.profit_margin ?? Number.NEGATIVE_INFINITY;
-      if (leftMargin !== rightMargin) return rightMargin - leftMargin;
-      return (left.match.start_time ?? '').localeCompare(right.match.start_time ?? '');
-    });
-    return rows;
-  }, [footballMatches, footballOffersByMatch, footballOpportunitiesByMatch]);
-  const footballSearchIndex = useMemo(
-    () =>
-      buildSearchIndex(footballRows, (row) => [
-        row.match.home_team,
-        row.match.away_team,
-        row.match.league_name,
-        ...row.match.available_bookmakers.map((bookmaker) => bookmaker.name),
-      ]),
-    [footballRows]
-  );
-  const filteredFootballRows = useMemo(
-    () => filterSearchIndex(footballSearchIndex, appliedSearchQuery),
-    [appliedSearchQuery, footballSearchIndex]
-  );
 
-  const discrepancyCount = discrepancies?.length ?? 0;
-  const footballOpportunityCount = footballOpportunities?.length ?? 0;
-  const filteredDiscrepancyCount = filteredDiscrepancies.length;
-  const filteredFootballCount = filteredFootballRows.length;
+  const opportunityCount = edges.length;
+  const filteredOpportunityCount = filteredEdges.length;
   const unresolvedCount = unresolvedWarningGroups.length;
   const teamReviewCount = teamReviewCases?.filter((row) => row.status === 'pending').length ?? 0;
   const canonicalTeamCount =
@@ -615,12 +422,15 @@ export default function Dashboard() {
     );
   };
 
-  const discrepancyContent = useMemo(() => {
-    if (isLoading) {
+  const edgeContent = useMemo(() => {
+    if (opportunitiesPanelLoading) {
       return <LoadingSpinner />;
     }
 
-    if (isInitialScanInProgress && (isTimeoutError || !discrepancies || discrepancies.length === 0)) {
+    if (
+      isInitialScanInProgress &&
+      (isTimeoutError || filteredEdges.length === 0)
+    ) {
       return (
         <div className="rounded-lg border border-border bg-surface p-6">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -647,408 +457,89 @@ export default function Dashboard() {
       );
     }
 
-    if (isError) {
+    if (opportunitiesPanelError) {
       return (
         <div className="rounded-lg border border-danger/30 bg-danger/10 p-6 text-center">
-          <p className="text-sm text-danger">
-            Failed to load discrepancies: {(error as Error)?.message || 'Unknown error'}
-          </p>
+          <p className="text-sm text-danger">Failed to load opportunities: {opportunitiesPanelError}</p>
         </div>
       );
     }
 
-    if (hasSearchQuery && (!discrepancies || filteredDiscrepancyCount === 0)) {
+    if (hasSearchQuery && filteredOpportunityCount === 0 && opportunityCount > 0) {
       return (
         <EmptyState
-          title={`No discrepancy rows match "${activeSearchLabel}"`}
-          message="Search checks matchup and player names after your current bookmaker, market, and gap filters."
+          title={`No opportunities match "${activeSearchLabel}"`}
+          message="Search checks matchup, league, and player names after your current bookmaker, market, and gap filters."
         />
       );
     }
 
-    if (!discrepancies || discrepancies.length === 0) {
+    if (filteredEdges.length === 0) {
       return (
         <EmptyState
-          title="No discrepancies right now"
+          title="No opportunities right now"
           message="Scraping may still be working normally. Switch to tracked odds to inspect upcoming matches and player markets."
         />
       );
     }
 
-    if (viewMode === 'flat') {
-      return (
-        <div className="overflow-hidden rounded-lg border border-border bg-surface">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-[11px] font-medium uppercase tracking-wider text-text-muted">
-                  <th className="px-4 py-2.5 text-left">Player / Market</th>
-                  <th className="px-4 py-2.5 text-left">Match</th>
-                  <th className="px-4 py-2.5 text-right">Edge</th>
-                  <th className="hidden px-4 py-2.5 text-right md:table-cell">Middle</th>
-                  <th className="hidden px-4 py-2.5 text-left sm:table-cell">Over</th>
-                  <th className="hidden px-4 py-2.5 text-left sm:table-cell">Under</th>
-                  <th className="px-4 py-2.5 text-right">Gap</th>
-                  <th className="hidden px-4 py-2.5 text-right lg:table-cell">Time</th>
-                  <th className="px-4 py-2.5"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredDiscrepancies.map((d) => {
-                  const marketLabel = MARKET_TYPE_LABELS[d.market_type] || d.market_type;
-                  const calculatorPanelId = `flat-calculator-${d.id}`;
-                  const isCalculatorExpanded = expandedFlatCalculatorIds.has(d.id);
-
-                  return (
-                    <Fragment key={d.id}>
-                      <tr className="border-t border-border transition hover:bg-surface-raised">
-                        <td className="px-4 py-2.5">
-                          <div className="font-medium text-text">
-                            {d.player_name || marketLabel}
-                          </div>
-                          {d.player_name && (
-                            <div className="text-[11px] text-text-muted">{marketLabel}</div>
-                          )}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <div className="text-text-secondary">
-                            {d.home_team} vs {d.away_team}
-                          </div>
-                          <div className="text-[11px] text-text-muted">{d.league_name}</div>
-                        </td>
-                        <td
-                          className={`px-4 py-2.5 text-right font-mono font-bold ${profitColor(d.profit_margin)}`}
-                        >
-                          {formatPercentage(d.profit_margin)}
-                        </td>
-                        <td className="hidden px-4 py-2.5 text-right md:table-cell">
-                          {d.middle_profit_margin != null && d.gap > 0 ? (
-                            <span className={`font-mono font-bold ${profitColor(d.middle_profit_margin)}`}>
-                              {formatPercentage(d.middle_profit_margin)}
-                            </span>
-                          ) : (
-                            <span className="text-text-muted">—</span>
-                          )}
-                        </td>
-                        <td className="hidden px-4 py-2.5 sm:table-cell">
-                          <div className="flex items-center gap-1.5">
-                            <BookmakerBadge name={d.bookmaker_a_name} compact />
-                            <span className="font-mono text-text-secondary">
-                              {isHandicapMarket(d.market_type)
-                                ? formatHandicapLine(d.threshold_a, 'home')
-                                : formatThreshold(d.threshold_a)}{' '}
-                              @ {formatOdds(d.odds_a)}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="hidden px-4 py-2.5 sm:table-cell">
-                          <div className="flex items-center gap-1.5">
-                            <BookmakerBadge name={d.bookmaker_b_name} compact />
-                            <span className="font-mono text-text-secondary">
-                              {isHandicapMarket(d.market_type)
-                                ? formatHandicapLine(d.threshold_b, 'away')
-                                : formatThreshold(d.threshold_b)}{' '}
-                              @ {formatOdds(d.odds_b)}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-2.5 text-right font-mono text-text-secondary">
-                          {formatGap(d.gap)}
-                        </td>
-                        <td className="hidden px-4 py-2.5 text-right text-text-muted lg:table-cell">
-                          {formatRelativeTime(d.detected_at)}
-                        </td>
-                        <td className="px-4 py-2.5 text-right">
-                          <div className="flex items-center justify-end gap-3">
-                            <button
-                              type="button"
-                              aria-expanded={isCalculatorExpanded}
-                              aria-controls={calculatorPanelId}
-                              aria-label={`${isCalculatorExpanded ? 'Hide' : 'View'} stake calculator for ${d.player_name || marketLabel} in ${d.home_team} vs ${d.away_team}`}
-                              onClick={() => toggleFlatCalculator(d.id)}
-                              className="text-[11px] font-medium text-text-muted transition hover:text-text"
-                            >
-                              {isCalculatorExpanded ? 'Hide' : 'View'}
-                            </button>
-                            <Link
-                              to={`/matches/${d.match_id}${sharedSearch}`}
-                              aria-label={`View ${d.player_name || marketLabel} for ${d.home_team} vs ${d.away_team}`}
-                              className="text-xs font-medium text-text-muted transition hover:text-accent"
-                            >
-                              →
-                            </Link>
-                          </div>
-                        </td>
-                      </tr>
-                      {isCalculatorExpanded && (
-                        <tr className="border-t border-border bg-bg/20">
-                          <td colSpan={9} className="px-4 py-3">
-                            <div id={calculatorPanelId}>
-                              <StakeCalculatorPanel discrepancy={d} totalUnits={stakeUnits} />
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      );
-    }
-
     return (
-      <div className="space-y-8">
-        {grouped.map((lg) => (
-          <section key={lg.league}>
-            <button
-              onClick={() => toggleLeague(lg.league)}
-              className="mb-3 flex w-full items-center gap-2 text-left"
-            >
-              <span
-                className={`text-xs text-text-muted transition-transform ${
-                  collapsedLeagues.has(lg.league) ? '' : 'rotate-90'
-                }`}
-              >
-                ▶
-              </span>
-              <h3 className="text-sm font-semibold uppercase tracking-wide text-accent">{lg.league}</h3>
-              <span className="font-mono text-xs text-text-muted">
-                {lg.matches.reduce((sum, m) => sum + m.discrepancies.length, 0)}
-              </span>
-            </button>
-            {!collapsedLeagues.has(lg.league) && (
-              <div className="space-y-3">
-                {lg.matches.map((mg) => (
-                  <MatchAccordion
-                    key={mg.matchId}
-                    matchId={mg.matchId}
-                    homeTeam={mg.homeTeam}
-                    awayTeam={mg.awayTeam}
-                    startTime={mg.startTime}
-                    discrepancies={mg.discrepancies}
-                    totalUnits={stakeUnits}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-        ))}
+      <div className="overflow-hidden rounded-lg border border-border bg-surface">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-[11px] font-medium uppercase tracking-wider text-text-muted">
+                <th className="px-4 py-2.5 text-left">Player / Market</th>
+                <th className="px-4 py-2.5 text-left">Match</th>
+                <th className="px-4 py-2.5 text-right">Edge</th>
+                <th className="hidden px-4 py-2.5 text-right md:table-cell">Middle</th>
+                <th className="hidden px-4 py-2.5 text-left sm:table-cell">Side A</th>
+                <th className="hidden px-4 py-2.5 text-left sm:table-cell">Side B</th>
+                <th className="px-4 py-2.5 text-right">Gap</th>
+                <th className="hidden px-4 py-2.5 text-right lg:table-cell">Time</th>
+                <th className="px-4 py-2.5"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredEdges.map((edge) => (
+                <EdgeRow
+                  key={edge.id}
+                  edge={edge}
+                  totalUnits={stakeUnits}
+                  isCalculatorExpanded={expandedFlatCalculatorIds.has(edge.id)}
+                  onToggleCalculator={toggleFlatCalculator}
+                  sharedSearch={sharedSearch}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     );
   }, [
     activeSearchLabel,
-    collapsedLeagues,
-    discrepancies,
-    error,
-    filteredDiscrepancies,
-    filteredDiscrepancyCount,
-    grouped,
-    hasSearchQuery,
-    isError,
-    isInitialScanInProgress,
-    isLoading,
-    isTimeoutError,
     expandedFlatCalculatorIds,
+    filteredEdges,
+    filteredOpportunityCount,
+    hasSearchQuery,
+    isInitialScanInProgress,
+    isTimeoutError,
+    opportunitiesPanelError,
+    opportunitiesPanelLoading,
+    opportunityCount,
     sharedSearch,
     stakeUnits,
     status,
     toggleFlatCalculator,
-    toggleLeague,
-    viewMode,
   ]);
 
-  const footballContent = useMemo(() => {
-    const isFootballLoading =
-      footballMatchesLoading || footballOffersLoading || footballOpportunitiesLoading;
-    const footballError =
-      (footballMatchesError ? (footballMatchesLoadError as Error)?.message : null) ||
-      (footballOffersError ? (footballOffersLoadError as Error)?.message : null) ||
-      (footballOpportunitiesError ? (footballOpportunitiesLoadError as Error)?.message : null);
-
-    if (isFootballLoading) {
-      return <LoadingSpinner />;
-    }
-
-    if (footballError) {
-      return (
-        <div className="rounded-lg border border-danger/30 bg-danger/10 p-6 text-center">
-          <p className="text-sm text-danger">Failed to load football board: {footballError}</p>
-        </div>
-      );
-    }
-
-    if (!footballRows.length) {
-      return (
-        <EmptyState
-          title="No football games in the current snapshot"
-          message="Enable football in the backend config and run a scrape to populate MaxBet and BalkanBet football markets."
-        />
-      );
-    }
-
-    if (hasSearchQuery && filteredFootballCount === 0) {
-      return (
-        <EmptyState
-          title={`No football games match "${activeSearchLabel}"`}
-          message="Search checks team, league, and bookmaker names after your current bookmaker filter."
-        />
-      );
-    }
-
-    return (
-      <div className="space-y-3">
-        {filteredFootballRows.map((row) => {
-          const marketLabels = Array.from(
-            new Set(row.offers.map((offer) => marketTypeLabel(offer.market_type)))
-          ).sort((left, right) => left.localeCompare(right));
-          const topOpportunity = row.opportunities[0];
-
-          return (
-            <section
-              key={row.match.id}
-              className={`rounded-lg border p-4 ${
-                topOpportunity?.profit_margin != null
-                  ? 'border-accent/25 bg-accent/[0.04]'
-                  : 'border-border bg-surface'
-              }`}
-            >
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
-                    <span>{row.match.league_name || row.match.league_id}</span>
-                    <span>·</span>
-                    <span>{formatDateTime(row.match.start_time)}</span>
-                  </div>
-                  <h3 className="mt-1 text-lg font-semibold text-text">
-                    {row.match.home_team} <span className="text-text-muted">vs</span>{' '}
-                    {row.match.away_team}
-                  </h3>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {row.match.available_bookmakers.map((bookmaker) => (
-                      <BookmakerBadge key={bookmaker.id} name={bookmaker.name} />
-                    ))}
-                    {marketLabels.map((label) => (
-                      <span
-                        key={label}
-                        className="rounded-full border border-border bg-bg px-2 py-0.5 text-[11px] font-medium text-text-secondary"
-                      >
-                        {label}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="rounded-md border border-border bg-bg px-3 py-2 text-right">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-text-muted">
-                    Best edge
-                  </div>
-                  <div
-                    className={`mt-1 font-mono text-lg font-semibold ${
-                      topOpportunity?.profit_margin != null
-                        ? profitColor(topOpportunity.profit_margin)
-                        : 'text-text-muted'
-                    }`}
-                  >
-                    {topOpportunity?.profit_margin != null
-                      ? formatPercentage(topOpportunity.profit_margin)
-                      : '—'}
-                  </div>
-                </div>
-              </div>
-
-              {row.opportunities.length > 0 ? (
-                <div className="mt-4 space-y-2">
-                  {row.opportunities.map((opportunity) => (
-                    <div
-                      key={opportunity.id}
-                      className="rounded-md border border-border bg-bg p-3"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <div className="font-medium text-text">
-                            {footballOpportunityLabel(opportunity)}
-                          </div>
-                          <div className="text-xs text-text-muted">
-                            {footballOpportunityDescription(opportunity)}
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          {opportunity.profit_margin != null && (
-                            <div className={`font-mono text-sm font-semibold ${profitColor(opportunity.profit_margin)}`}>
-                              {formatPercentage(opportunity.profit_margin)}
-                            </div>
-                          )}
-                          {opportunity.opportunity_type === 'middle' &&
-                            opportunity.middle_profit_margin != null && (
-                              <div className="mt-0.5 text-[11px] text-text-muted">
-                                Middle{' '}
-                                <span className={profitColor(opportunity.middle_profit_margin)}>
-                                  {formatPercentage(opportunity.middle_profit_margin)}
-                                </span>
-                              </div>
-                            )}
-                        </div>
-                      </div>
-                      <div className="mt-3 grid gap-2 md:grid-cols-2">
-                        {opportunity.legs.map((leg) => (
-                          <div
-                            key={`${opportunity.id}-${leg.bookmaker_id}-${leg.market_type}-${leg.outcome_code}`}
-                            className="flex items-center justify-between rounded border border-border bg-surface px-3 py-2"
-                          >
-                            <div className="min-w-0">
-                              <BookmakerBadge name={bookmakerName(leg.bookmaker_id, leg.bookmaker_name)} />
-                              <div className="mt-1 text-xs text-text-muted">
-                                {marketTypeLabel(leg.market_type)} ·{' '}
-                                {footballOutcomeLabel(leg.outcome_code, leg.market_type, leg.line)}
-                              </div>
-                            </div>
-                            <div className="font-mono text-base font-semibold text-text">
-                              {formatOdds(leg.odds)}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="mt-4 rounded-md border border-border bg-bg px-3 py-2 text-sm text-text-secondary">
-                  No positive football opportunity on this game yet; offers are still tracked for coverage.
-                </p>
-              )}
-            </section>
-          );
-        })}
-      </div>
-    );
-  }, [
-    activeSearchLabel,
-    filteredFootballCount,
-    filteredFootballRows,
-    footballMatchesError,
-    footballMatchesLoadError,
-    footballMatchesLoading,
-    footballOffersError,
-    footballOffersLoadError,
-    footballOffersLoading,
-    footballOpportunitiesError,
-    footballOpportunitiesLoadError,
-    footballOpportunitiesLoading,
-    footballRows.length,
-    hasSearchQuery,
-  ]);
 
   return (
     <PageShell
       eyebrow="Live board"
         title={
-          activeTab === 'discrepancies'
+          activeTab === 'opportunities'
             ? 'Find exploitable line gaps before the market closes.'
-            : activeTab === 'football'
-              ? 'Track football outcome opportunities across the fastest books.'
             : activeTab === 'tracked'
               ? 'Inspect the stored board even when no gap is flashing.'
               : activeTab === 'teams'
@@ -1058,10 +549,8 @@ export default function Dashboard() {
                   : 'Inspect odds that still need manual review.'
         }
         description={
-          activeTab === 'discrepancies'
-            ? 'Snapshot grouped by league and matchup. Work downward from the highest-margin thresholds.'
-            : activeTab === 'football'
-              ? 'All supported football games with MaxBet/BalkanBet coverage, 2.5 goals, match result, and double-chance pairs.'
+          activeTab === 'opportunities'
+            ? 'Every detected edge across basketball and football, ranked by margin. Filter by sport to narrow the board.'
             : activeTab === 'tracked'
               ? 'Open tracked matches to review player markets, bookmaker prices, and discrepancy-linked lines.'
               : activeTab === 'teams'
@@ -1080,16 +569,16 @@ export default function Dashboard() {
           <div className="flex flex-wrap items-center gap-4">
             <div className="flex gap-1">
               <button
-                onClick={() => switchTab('discrepancies')}
+                onClick={() => switchTab('opportunities')}
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                  activeTab === 'discrepancies'
+                  activeTab === 'opportunities'
                     ? 'bg-surface-raised text-text'
                     : 'text-text-muted hover:text-text'
                 }`}
               >
-                Discrepancies
-                {activeTab === 'discrepancies' && discrepancyCount > 0 && (
-                  <span className="ml-1.5 font-mono text-xs text-accent">{discrepancyCount}</span>
+                Opportunities
+                {activeTab === 'opportunities' && opportunityCount > 0 && (
+                  <span className="ml-1.5 font-mono text-xs text-accent">{opportunityCount}</span>
                 )}
               </button>
               <button
@@ -1101,21 +590,6 @@ export default function Dashboard() {
                 }`}
               >
                 Tracked odds
-              </button>
-              <button
-                onClick={() => switchTab('football')}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                  activeTab === 'football'
-                    ? 'bg-surface-raised text-text'
-                    : 'text-text-muted hover:text-text'
-                }`}
-              >
-                Football
-                {activeTab === 'football' && footballOpportunityCount > 0 && (
-                  <span className="ml-1.5 font-mono text-xs text-accent">
-                    {footballOpportunityCount}
-                  </span>
-                )}
               </button>
               <button
                 onClick={() => switchTab('teams')}
@@ -1159,48 +633,35 @@ export default function Dashboard() {
                 )}
               </button>
             </div>
-            {activeTab === 'discrepancies' && (
-              <div className="ml-auto flex items-center gap-3">
-                <div className="flex items-center gap-1 rounded-md bg-surface-raised p-0.5">
-                  <button
-                    onClick={() => setViewMode('flat')}
-                    aria-label="Flat list view"
-                    aria-pressed={viewMode === 'flat'}
-                    className={`rounded px-2 py-1 text-xs font-medium transition ${
-                      viewMode === 'flat'
-                        ? 'bg-bg text-text'
-                        : 'text-text-muted hover:text-text-secondary'
-                    }`}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                      <line x1="3" y1="6" x2="21" y2="6" />
-                      <line x1="3" y1="12" x2="21" y2="12" />
-                      <line x1="3" y1="18" x2="21" y2="18" />
-                    </svg>
-                  </button>
-                  <button
-                    onClick={() => setViewMode('by-match')}
-                    aria-label="Group by match view"
-                    aria-pressed={viewMode === 'by-match'}
-                    className={`rounded px-2 py-1 text-xs font-medium transition ${
-                      viewMode === 'by-match'
-                        ? 'bg-bg text-text'
-                        : 'text-text-muted hover:text-text-secondary'
-                    }`}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                      <rect x="3" y="3" width="7" height="7" rx="1" />
-                      <rect x="14" y="3" width="7" height="7" rx="1" />
-                      <rect x="3" y="14" width="7" height="7" rx="1" />
-                      <rect x="14" y="14" width="7" height="7" rx="1" />
-                    </svg>
-                  </button>
-                </div>
-                <SortControls filters={filters} onChange={setFilters} />
-              </div>
-            )}
           </div>
-          {activeTab === 'discrepancies' && (
+          {(activeTab === 'opportunities' || activeTab === 'tracked') && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-muted">
+                Sport
+              </span>
+              {SPORT_FILTER_OPTIONS.map((option) => {
+                const value = option.value;
+                const selected =
+                  activeTab === 'opportunities' ? opportunitiesSport : trackedSport;
+                const setter =
+                  activeTab === 'opportunities' ? setOpportunitiesSport : setTrackedSport;
+                return (
+                  <button
+                    key={value}
+                    onClick={() => setter(value)}
+                    className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                      selected === value
+                        ? 'bg-surface-raised text-text'
+                        : 'text-text-muted hover:text-text'
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {activeTab === 'opportunities' && (
             <>
               <div className="rounded-lg border border-border bg-surface p-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1253,22 +714,12 @@ export default function Dashboard() {
               <OfferSearchStrip
                 value={searchQuery}
                 onChange={setSearchQuery}
-                scopeLabel="Discrepancies"
+                scopeLabel="Opportunities"
                 placeholder="Search team or player names, e.g. PAOK or Nunn"
-                resultCount={filteredDiscrepancyCount}
-                totalCount={discrepancyCount}
+                resultCount={filteredOpportunityCount}
+                totalCount={opportunityCount}
               />
             </>
-          )}
-          {activeTab === 'football' && (
-            <OfferSearchStrip
-              value={searchQuery}
-              onChange={setSearchQuery}
-              scopeLabel="Football"
-              placeholder="Search team, league, or bookmaker names"
-              resultCount={filteredFootballCount}
-              totalCount={footballRows.length}
-            />
           )}
           {(activeTab === 'teams' || activeTab === 'canonical' || activeTab === 'warnings') && (
             <div className="flex items-center gap-2">
@@ -1292,10 +743,8 @@ export default function Dashboard() {
           )}
         </section>
 
-        {activeTab === 'discrepancies' ? (
-          discrepancyContent
-        ) : activeTab === 'football' ? (
-          footballContent
+        {activeTab === 'opportunities' ? (
+          edgeContent
         ) : activeTab === 'tracked' ? (
           <TrackedMatchesPanel
             matches={matches || []}

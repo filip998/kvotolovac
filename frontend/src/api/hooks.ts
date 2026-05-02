@@ -204,6 +204,17 @@ export function useDiscrepancies(
         await delay();
         let results = [...mockDiscrepancies];
 
+        if (filters.sport) {
+          const sportByMatchId = new Map(mockMatches.map((match) => [match.id, match.sport]));
+          results = results.filter((d) => {
+            const matchSport = sportByMatchId.get(d.match_id);
+            if (matchSport) {
+              return matchSport === filters.sport;
+            }
+            const inferred = d.market_type.startsWith('football_') ? 'football' : 'basketball';
+            return inferred === filters.sport;
+          });
+        }
         if (filters.league) {
           results = results.filter((d) => d.league_name === filters.league);
         }
