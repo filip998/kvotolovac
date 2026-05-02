@@ -43,6 +43,16 @@ Copy `.env.example` to `.env` and adjust:
 - `POST /api/v1/scrape/trigger` now rejects with `409` while a scan is already running, so callers do not queue duplicate full cycles behind the background scheduler.
 - Normalization, storage, canonical opportunity analysis, and notifications run after scraping. The legacy `discrepancies` split has been removed from the primary cycle.
 
+## Unified offer pipeline
+
+The scheduler now discovers scraper work through explicit capabilities rather than hardcoded basketball/football branches:
+
+- `threshold_odds` capabilities scrape existing over/under rows into `RawOddsData` and persist them in `odds`/`odds_history` for compatibility with match odds and history APIs.
+- `outcome_offer` capabilities scrape one-outcome rows into `RawOutcomeOffer` and persist them in `outcome_offers` for compatibility with `/api/v1/market-offers`.
+- Both lanes normalize into current snapshot rows, then feed the same canonical offer adapter and `analyze_canonical_offers()` pass. `opportunities` is the only public edge output.
+
+The compatibility tables remain intentionally separate in this phase. Explicit migration tooling or a durable canonical-offer table belongs to the dedicated schema evolution work in issue #47.
+
 ## Legacy discrepancy removal
 
 - Canonical `opportunities` are the primary analysis output and notification source.

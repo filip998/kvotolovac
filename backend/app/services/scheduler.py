@@ -4,12 +4,19 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from ..config import settings
-from ..models.schemas import RawOddsData, RawOutcomeOffer, TeamReviewDiagnostic
-from ..scrapers.base import BaseScraper
+from ..models.schemas import (
+    NormalizedOdds,
+    NormalizedOutcomeOffer,
+    RawOddsData,
+    RawOutcomeOffer,
+    TeamReviewDiagnostic,
+    UnresolvedOddsDiagnostic,
+)
+from ..scrapers.base import BaseScraper, ScraperCapability
 from ..scrapers.registry import registry
 from ..models.schemas import ScanProgressOut
 from ..services.league_registry import league_country, league_display_name
@@ -69,6 +76,21 @@ class _CanonicalAnalysisResult:
     opportunities: tuple = ()
 
 
+@dataclass(frozen=True)
+class _ScrapeBatch:
+    capability: ScraperCapability
+    raw_odds: tuple[RawOddsData, ...] = ()
+    raw_outcome_offers: tuple[RawOutcomeOffer, ...] = ()
+
+
+@dataclass
+class _NormalizedPipelineBatch:
+    odds: list[NormalizedOdds] = field(default_factory=list)
+    outcome_offers: list[NormalizedOutcomeOffer] = field(default_factory=list)
+    unresolved_odds: list[UnresolvedOddsDiagnostic] = field(default_factory=list)
+    team_review_cases: list[TeamReviewDiagnostic] = field(default_factory=list)
+
+
 def _is_auto_alias_candidate(case) -> bool:
     return (
         case.review_kind in {"alias_suggestion", "candidate_search"}
@@ -84,13 +106,107 @@ def _is_auto_alias_candidate(case) -> bool:
     )
 
 
-def _enabled_threshold_league_ids(scraper: BaseScraper, enabled_sports: set[str]) -> list[str]:
-    league_ids: list[str] = []
-    for sport, sport_leagues in scraper.get_supported_odds_leagues().items():
-        if sport not in enabled_sports:
-            continue
-        league_ids.extend(sport_leagues)
-    return list(dict.fromkeys(league_ids))
+def _enabled_scraper_capabilities(
+    scraper: BaseScraper,
+    enabled_sports: set[str],
+) -> list[ScraperCapability]:
+    return [
+        capability
+        for capability in scraper.get_scraper_capabilities()
+        if capability.sport in enabled_sports
+    ]
+
+
+def _normalize_pipeline_batch(
+    raw_odds: list[RawOddsData],
+    raw_outcome_offers: list[RawOutcomeOffer],
+    *,
+    log_unresolved_shared_platform: bool = True,
+) -> _NormalizedPipelineBatch:
+    normalized_odds, unresolved_odds, team_review_cases = normalize_odds_with_diagnostics(
+        raw_odds,
+        log_unresolved_shared_platform=log_unresolved_shared_platform,
+    )
+    (
+        normalized_outcome_offers,
+        unresolved_outcome_offers,
+        outcome_team_review_cases,
+    ) = normalize_outcome_offers_with_diagnostics(raw_outcome_offers)
+    return _NormalizedPipelineBatch(
+        odds=normalized_odds,
+        outcome_offers=normalized_outcome_offers,
+        unresolved_odds=[*unresolved_odds, *unresolved_outcome_offers],
+        team_review_cases=[*team_review_cases, *outcome_team_review_cases],
+    )
+
+
+async def _persist_match_for_offer_row(
+    row: NormalizedOdds | NormalizedOutcomeOffer,
+    *,
+    seen_matches: set[str],
+) -> None:
+    if row.match_id in seen_matches:
+        return
+    await odds_store.upsert_league(
+        id=row.league_id,
+        name=league_display_name(row.league_id),
+        sport=row.sport,
+        country=league_country(row.league_id),
+    )
+    await odds_store.upsert_match(
+        id=row.match_id,
+        league_id=row.league_id,
+        home_team=row.home_team,
+        away_team=row.away_team,
+        sport=row.sport,
+        home_team_id=row.home_team_id,
+        away_team_id=row.away_team_id,
+        start_time=row.start_time,
+    )
+    seen_matches.add(row.match_id)
+
+
+async def _persist_normalized_pipeline_batch(
+    batch: _NormalizedPipelineBatch,
+    *,
+    cycle_scraped_at: str,
+    seen_matches: set[str],
+) -> None:
+    for odds in batch.odds:
+        await _persist_match_for_offer_row(odds, seen_matches=seen_matches)
+        await odds_store.upsert_odds(odds, scraped_at=cycle_scraped_at)
+    for offer in batch.outcome_offers:
+        await _persist_match_for_offer_row(offer, seen_matches=seen_matches)
+        await odds_store.upsert_outcome_offer(
+            offer,
+            scraped_at=cycle_scraped_at,
+        )
+
+
+def _publish_benchmark_snapshot(
+    batch: _NormalizedPipelineBatch,
+    *,
+    scrape_duration_ms: int,
+    cycle_started_at: float,
+    seen_matches: set[str],
+) -> None:
+    matches_per_bm: dict[str, int] = defaultdict(int)
+    odds_per_bm: dict[str, int] = defaultdict(int)
+    seen_match_per_bm: dict[str, set[str]] = defaultdict(set)
+    for row in [*batch.odds, *batch.outcome_offers]:
+        odds_per_bm[row.bookmaker_id] += 1
+        if row.match_id not in seen_match_per_bm[row.bookmaker_id]:
+            seen_match_per_bm[row.bookmaker_id].add(row.match_id)
+            matches_per_bm[row.bookmaker_id] += 1
+    benchmark_recorder.record_phase_durations(
+        scrape_duration_ms=scrape_duration_ms,
+        cycle_duration_ms=int((time.perf_counter() - cycle_started_at) * 1000),
+    )
+    benchmark_recorder.publish(
+        matches_per_bookmaker=dict(matches_per_bm),
+        odds_per_bookmaker=dict(odds_per_bm),
+        total_unique_matches=len(seen_matches),
+    )
 
 
 async def _load_current_canonical_analysis(match_ids: set[str]) -> _CanonicalAnalysisResult:
@@ -826,6 +942,27 @@ class Scheduler:
             )
         return raw
 
+    async def _scrape_capability(
+        self,
+        scraper: BaseScraper,
+        capability: ScraperCapability,
+    ) -> _ScrapeBatch:
+        if capability.lane == "threshold_odds":
+            if capability.league_id is None:
+                raise ValueError("threshold_odds capability is missing league_id")
+            return _ScrapeBatch(
+                capability=capability,
+                raw_odds=tuple(await self._scrape_one(scraper, capability.league_id)),
+            )
+        if capability.lane == "outcome_offer":
+            return _ScrapeBatch(
+                capability=capability,
+                raw_outcome_offers=tuple(
+                    await self._scrape_outcome_one(scraper, capability.sport)
+                ),
+            )
+        raise ValueError(f"Unsupported scraper capability lane: {capability.lane}")
+
     async def _run_cycle_once(self) -> dict:
         """Execute one full scrape → normalize → analyze → store → notify cycle."""
         try:
@@ -843,34 +980,27 @@ class Scheduler:
             scrapers = registry.get_all()
             enabled_sports = set(settings.enabled_sport_list)
             scrape_started_at = time.perf_counter()
-            scrape_tasks = [
-                self._scrape_one(scraper, league_id)
+            scrape_capabilities = [
+                (scraper, capability)
                 for scraper in scrapers
-                for league_id in _enabled_threshold_league_ids(scraper, enabled_sports)
+                for capability in _enabled_scraper_capabilities(scraper, enabled_sports)
             ]
-            outcome_scrape_tasks = [
-                self._scrape_outcome_one(scraper, sport)
-                for scraper in scrapers
-                for sport in scraper.get_supported_outcome_sports()
-                if sport in enabled_sports
+            scrape_tasks = [
+                self._scrape_capability(scraper, capability)
+                for scraper, capability in scrape_capabilities
             ]
             self._scan_phase = "scraping"
-            self._scan_total_tasks = len(scrape_tasks) + len(outcome_scrape_tasks)
-            self._scan_active_tasks = len(scrape_tasks) + len(outcome_scrape_tasks)
+            self._scan_total_tasks = len(scrape_tasks)
+            self._scan_active_tasks = len(scrape_tasks)
             scrape_batches = await asyncio.gather(*scrape_tasks) if scrape_tasks else []
-            outcome_scrape_batches = (
-                await asyncio.gather(*outcome_scrape_tasks)
-                if outcome_scrape_tasks
-                else []
-            )
-            all_raw = [item for batch in scrape_batches for item in batch]
+            all_raw = [item for batch in scrape_batches for item in batch.raw_odds]
             all_raw_outcome_offers = [
-                item for batch in outcome_scrape_batches for item in batch
+                item for batch in scrape_batches for item in batch.raw_outcome_offers
             ]
             scrape_duration_ms = int((time.perf_counter() - scrape_started_at) * 1000)
             logger.info(
                 "Scrape phase complete: %d tasks, %d raw odds items, %d raw outcome offers in %d ms",
-                len(scrape_tasks) + len(outcome_scrape_tasks),
+                len(scrape_tasks),
                 len(all_raw),
                 len(all_raw_outcome_offers),
                 scrape_duration_ms,
@@ -886,26 +1016,21 @@ class Scheduler:
             self._scan_phase = "normalizing"
             normalized = []
             normalized_outcome_offers = []
+            normalized_batch = _NormalizedPipelineBatch()
             seen_matches: set[str] = set()
             opportunities = []
             canonical_shadow = _CanonicalShadowResult()
             notified = 0
             pending_auto_merges: list[tuple[int, int]] = []
-            (
-                normalized,
-                unresolved_odds,
-                team_review_cases,
-            ) = normalize_odds_with_diagnostics(
+            normalized_batch = _normalize_pipeline_batch(
                 all_raw,
+                all_raw_outcome_offers,
                 log_unresolved_shared_platform=False,
             )
-            (
-                normalized_outcome_offers,
-                unresolved_outcome_offers,
-                outcome_team_review_cases,
-            ) = normalize_outcome_offers_with_diagnostics(all_raw_outcome_offers)
-            unresolved_odds = [*unresolved_odds, *unresolved_outcome_offers]
-            team_review_cases = [*team_review_cases, *outcome_team_review_cases]
+            normalized = normalized_batch.odds
+            normalized_outcome_offers = normalized_batch.outcome_offers
+            unresolved_odds = normalized_batch.unresolved_odds
+            team_review_cases = normalized_batch.team_review_cases
             applied_auto_aliases: list[tuple[str, str, str]] = []
             applied_auto_merges: list[tuple[int, int]] = []
             try:
@@ -934,66 +1059,24 @@ class Scheduler:
                         pending_auto_merges
                     )
                 if auto_approved_team_reviews or applied_auto_merges:
-                    (
-                        normalized,
-                        unresolved_odds,
-                        team_review_cases,
-                    ) = normalize_odds_with_diagnostics(all_raw)
-                    (
-                        normalized_outcome_offers,
-                        unresolved_outcome_offers,
-                        outcome_team_review_cases,
-                    ) = normalize_outcome_offers_with_diagnostics(all_raw_outcome_offers)
-                    unresolved_odds = [*unresolved_odds, *unresolved_outcome_offers]
-                    team_review_cases = [*team_review_cases, *outcome_team_review_cases]
+                    normalized_batch = _normalize_pipeline_batch(
+                        all_raw,
+                        all_raw_outcome_offers,
+                    )
+                    normalized = normalized_batch.odds
+                    normalized_outcome_offers = normalized_batch.outcome_offers
+                    unresolved_odds = normalized_batch.unresolved_odds
+                    team_review_cases = normalized_batch.team_review_cases
                 else:
                     log_unresolved_shared_platform_diagnostics(unresolved_odds)
 
                 self._scan_phase = "storing"
                 cycle_scraped_at = datetime.utcnow().isoformat()
-                for o in normalized:
-                    if o.match_id not in seen_matches:
-                        await odds_store.upsert_league(
-                            id=o.league_id,
-                            name=league_display_name(o.league_id),
-                            sport=o.sport,
-                            country=league_country(o.league_id),
-                        )
-                        await odds_store.upsert_match(
-                            id=o.match_id,
-                            league_id=o.league_id,
-                            home_team=o.home_team,
-                            away_team=o.away_team,
-                            sport=o.sport,
-                            home_team_id=o.home_team_id,
-                            away_team_id=o.away_team_id,
-                            start_time=o.start_time,
-                        )
-                        seen_matches.add(o.match_id)
-                    await odds_store.upsert_odds(o, scraped_at=cycle_scraped_at)
-                for offer in normalized_outcome_offers:
-                    if offer.match_id not in seen_matches:
-                        await odds_store.upsert_league(
-                            id=offer.league_id,
-                            name=league_display_name(offer.league_id),
-                            sport=offer.sport,
-                            country=league_country(offer.league_id),
-                        )
-                        await odds_store.upsert_match(
-                            id=offer.match_id,
-                            league_id=offer.league_id,
-                            home_team=offer.home_team,
-                            away_team=offer.away_team,
-                            sport=offer.sport,
-                            home_team_id=offer.home_team_id,
-                            away_team_id=offer.away_team_id,
-                            start_time=offer.start_time,
-                        )
-                        seen_matches.add(offer.match_id)
-                    await odds_store.upsert_outcome_offer(
-                        offer,
-                        scraped_at=cycle_scraped_at,
-                    )
+                await _persist_normalized_pipeline_batch(
+                    normalized_batch,
+                    cycle_scraped_at=cycle_scraped_at,
+                    seen_matches=seen_matches,
+                )
                 await resolve_and_persist_events(
                     raw_odds=all_raw,
                     raw_outcome_offers=all_raw_outcome_offers,
@@ -1064,29 +1147,11 @@ class Scheduler:
                 # downstream phases (normalize/store/analyze/notify) succeeded so
                 # operators can still see scrape-side timings on failed cycles.
                 try:
-                    matches_per_bm: dict[str, int] = defaultdict(int)
-                    odds_per_bm: dict[str, int] = defaultdict(int)
-                    seen_match_per_bm: dict[str, set[str]] = defaultdict(set)
-                    for o in normalized:
-                        odds_per_bm[o.bookmaker_id] += 1
-                        if o.match_id not in seen_match_per_bm[o.bookmaker_id]:
-                            seen_match_per_bm[o.bookmaker_id].add(o.match_id)
-                            matches_per_bm[o.bookmaker_id] += 1
-                    for offer in normalized_outcome_offers:
-                        odds_per_bm[offer.bookmaker_id] += 1
-                        if offer.match_id not in seen_match_per_bm[offer.bookmaker_id]:
-                            seen_match_per_bm[offer.bookmaker_id].add(offer.match_id)
-                            matches_per_bm[offer.bookmaker_id] += 1
-                    benchmark_recorder.record_phase_durations(
+                    _publish_benchmark_snapshot(
+                        normalized_batch,
                         scrape_duration_ms=scrape_duration_ms,
-                        cycle_duration_ms=int(
-                            (time.perf_counter() - cycle_started_at) * 1000
-                        ),
-                    )
-                    benchmark_recorder.publish(
-                        matches_per_bookmaker=dict(matches_per_bm),
-                        odds_per_bookmaker=dict(odds_per_bm),
-                        total_unique_matches=len(seen_matches),
+                        cycle_started_at=cycle_started_at,
+                        seen_matches=seen_matches,
                     )
                 except Exception:
                     logger.exception("Failed to publish scraper benchmark snapshot")
