@@ -1887,6 +1887,258 @@ async def test_replace_cycle_outputs_and_snapshot_rolls_back_atomically_on_failu
 
 
 @pytest.mark.asyncio
+async def test_replace_cycle_outputs_hides_uncommitted_writer_changes_from_shared_reads(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from dataclasses import dataclass
+
+    @dataclass
+    class _DiscrepancyRow:
+        match_id: str
+        resolved_event_id: str | None
+        market_type: str
+        player_name: str | None
+        bookmaker_a_id: str
+        bookmaker_a_match_id: str | None
+        bookmaker_b_id: str
+        bookmaker_b_match_id: str | None
+        threshold_a: float
+        threshold_b: float
+        odds_a: float | None
+        odds_b: float | None
+        gap: float
+        profit_margin: float | None
+        middle_profit_margin: float | None
+
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("old", "euroleague", "Partizan", "Crvena Zvezda")
+    await odds_store.upsert_match("new", "euroleague", "Bayern", "Real Madrid")
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="old",
+            bookmaker_id="mozzart",
+            league_id="euroleague",
+            home_team="Partizan",
+            away_team="Crvena Zvezda",
+            market_type="player_points",
+            player_name="Old Player",
+            threshold=10.5,
+            over_odds=1.8,
+            under_odds=2.0,
+        ),
+        scraped_at="old-snapshot",
+    )
+    await odds_store.set_current_snapshot("old-snapshot")
+    await odds_store.insert_discrepancy(
+        "old",
+        "player_points",
+        "Old Player",
+        "mozzart",
+        "maxbet",
+        10.5,
+        12.5,
+        1.8,
+        1.9,
+        2.0,
+        0.02,
+    )
+
+    original_set_current_snapshot_tx = odds_store._set_current_snapshot_tx
+    writer_paused = asyncio.Event()
+    allow_commit = asyncio.Event()
+
+    async def pausing_set_current_snapshot_tx(db, snapshot_at):
+        writer_paused.set()
+        await allow_commit.wait()
+        await original_set_current_snapshot_tx(db, snapshot_at)
+
+    monkeypatch.setattr(
+        odds_store,
+        "_set_current_snapshot_tx",
+        pausing_set_current_snapshot_tx,
+    )
+
+    writer_task = asyncio.create_task(
+        odds_store.replace_cycle_outputs_and_activate_snapshot(
+            resolved_events=[
+                ResolvedEventIn(
+                    id="evt-new",
+                    sport="basketball",
+                    start_time="2030-01-01T20:00:00+00:00",
+                    primary_match_id="new",
+                    confidence=0.99,
+                    method="exact",
+                )
+            ],
+            resolved_event_members=[
+                ResolvedEventMemberIn(
+                    resolved_event_id="evt-new",
+                    match_id="new",
+                    bookmaker_id="maxbet",
+                    confidence=0.99,
+                )
+            ],
+            event_review_cases=[],
+            odds=[],
+            outcome_offers=[],
+            unresolved_odds=[],
+            team_review_cases=[],
+            auto_approved_team_reviews=[],
+            opportunities=[],
+            discrepancies=[
+                _DiscrepancyRow(
+                    match_id="new",
+                    resolved_event_id="evt-new",
+                    market_type="player_points",
+                    player_name="New Player",
+                    bookmaker_a_id="mozzart",
+                    bookmaker_a_match_id=None,
+                    bookmaker_b_id="maxbet",
+                    bookmaker_b_match_id=None,
+                    threshold_a=10.5,
+                    threshold_b=12.5,
+                    odds_a=1.8,
+                    odds_b=1.9,
+                    gap=2.0,
+                    profit_margin=0.03,
+                    middle_profit_margin=None,
+                )
+            ],
+            detected_at="new-snapshot",
+            snapshot_at="new-snapshot",
+        )
+    )
+    await asyncio.wait_for(writer_paused.wait(), timeout=1)
+
+    try:
+        status_during = await odds_store.get_system_status()
+        discrepancies_during = await odds_store.get_discrepancies()
+        assert status_during.last_scrape_at == "old-snapshot"
+        assert [d.match_id for d in discrepancies_during] == ["old"]
+        assert await odds_store.get_resolved_event("evt-new") is None
+    finally:
+        allow_commit.set()
+
+    await writer_task
+    status_after = await odds_store.get_system_status()
+    discrepancies_after = await odds_store.get_discrepancies()
+    assert status_after.last_scrape_at == "new-snapshot"
+    assert [d.match_id for d in discrepancies_after] == ["new"]
+    assert await odds_store.get_resolved_event("evt-new") is not None
+
+
+@pytest.mark.asyncio
+async def test_replace_cycle_outputs_supports_default_memory_database():
+    await close_db()
+    await init_db()
+    try:
+        result = await odds_store.replace_cycle_outputs_and_activate_snapshot(
+            resolved_events=[],
+            resolved_event_members=[],
+            event_review_cases=[],
+            odds=[],
+            outcome_offers=[],
+            unresolved_odds=[],
+            team_review_cases=[],
+            auto_approved_team_reviews=[],
+            opportunities=[],
+            discrepancies=[],
+            detected_at="memory-snapshot",
+            snapshot_at="memory-snapshot",
+        )
+        status = await odds_store.get_system_status()
+
+        assert result["discrepancies"] == 0
+        assert status.last_scrape_at == "memory-snapshot"
+    finally:
+        await close_db()
+
+
+@pytest.mark.asyncio
+async def test_default_memory_database_hides_uncommitted_writer_changes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await close_db()
+    await init_db()
+    try:
+        await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+        await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+        await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+        await odds_store.upsert_match(
+            "old",
+            "euroleague",
+            "Partizan",
+            "Crvena Zvezda",
+        )
+        await odds_store.upsert_match("new", "euroleague", "Bayern", "Real Madrid")
+        await odds_store.set_current_snapshot("old-snapshot")
+        await odds_store.insert_discrepancy(
+            "old",
+            "player_points",
+            "Old Player",
+            "mozzart",
+            "maxbet",
+            10.5,
+            12.5,
+            1.8,
+            1.9,
+            2.0,
+            0.02,
+        )
+
+        original_set_current_snapshot_tx = odds_store._set_current_snapshot_tx
+        writer_paused = asyncio.Event()
+        allow_commit = asyncio.Event()
+
+        async def pausing_set_current_snapshot_tx(db, snapshot_at):
+            writer_paused.set()
+            await allow_commit.wait()
+            await original_set_current_snapshot_tx(db, snapshot_at)
+
+        monkeypatch.setattr(
+            odds_store,
+            "_set_current_snapshot_tx",
+            pausing_set_current_snapshot_tx,
+        )
+
+        writer_task = asyncio.create_task(
+            odds_store.replace_cycle_outputs_and_activate_snapshot(
+                resolved_events=[],
+                resolved_event_members=[],
+                event_review_cases=[],
+                odds=[],
+                outcome_offers=[],
+                unresolved_odds=[],
+                team_review_cases=[],
+                auto_approved_team_reviews=[],
+                opportunities=[],
+                discrepancies=[],
+                detected_at="new-snapshot",
+                snapshot_at="new-snapshot",
+            )
+        )
+        await asyncio.wait_for(writer_paused.wait(), timeout=1)
+
+        try:
+            status_during = await odds_store.get_system_status()
+            discrepancies_during = await odds_store.get_discrepancies()
+            assert status_during.last_scrape_at == "old-snapshot"
+            assert [d.match_id for d in discrepancies_during] == ["old"]
+        finally:
+            allow_commit.set()
+
+        await writer_task
+        status_after = await odds_store.get_system_status()
+        discrepancies_after = await odds_store.get_discrepancies()
+        assert status_after.last_scrape_at == "new-snapshot"
+        assert discrepancies_after == []
+    finally:
+        await close_db()
+
+
+@pytest.mark.asyncio
 async def test_upsert_odds_bulk_writes_current_history_and_sources():
     await odds_store.upsert_bookmaker("mozzart", "Mozzart")
     await odds_store.upsert_league("euroleague", "Euroleague", "basketball")

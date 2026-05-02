@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+import tempfile
+
 import aiosqlite
 
 _SCHEMA = """
@@ -319,6 +322,21 @@ CREATE TABLE IF NOT EXISTS scrape_state (
 """
 
 _db_connection: aiosqlite.Connection | None = None
+_db_path: str | None = None
+_db_uri: bool = False
+_db_temp_path: str | None = None
+
+
+def _connection_target(db_path: str) -> tuple[str, bool, str | None]:
+    if db_path == ":memory:":
+        temp_file = tempfile.NamedTemporaryFile(
+            prefix="kvotolovac-memory-",
+            suffix=".db",
+            delete=False,
+        )
+        temp_file.close()
+        return temp_file.name, False, temp_file.name
+    return db_path, db_path.startswith("file:"), None
 
 
 async def _table_has_foreign_key(
@@ -854,11 +872,25 @@ async def get_db() -> aiosqlite.Connection:
     return _db_connection
 
 
+async def open_db_connection(db_path: str | None = None) -> aiosqlite.Connection:
+    if db_path is None:
+        active_db_path = _db_path
+        active_uri = _db_uri
+    else:
+        active_db_path, active_uri, _ = _connection_target(db_path)
+    if active_db_path is None:
+        raise RuntimeError("Database not initialised – call init_db() first")
+    conn = await aiosqlite.connect(active_db_path, uri=active_uri)
+    conn.row_factory = aiosqlite.Row
+    await conn.execute("PRAGMA busy_timeout = 5000")
+    await conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
 async def init_db(db_path: str = ":memory:") -> aiosqlite.Connection:
-    global _db_connection
-    _db_connection = await aiosqlite.connect(db_path)
-    _db_connection.row_factory = aiosqlite.Row
-    await _db_connection.execute("PRAGMA busy_timeout = 5000")
+    global _db_connection, _db_path, _db_uri, _db_temp_path
+    _db_path, _db_uri, _db_temp_path = _connection_target(db_path)
+    _db_connection = await open_db_connection()
     await _db_connection.execute("PRAGMA foreign_keys = OFF")
     await _db_connection.executescript(_SCHEMA)
     await _ensure_schema_compatibility(_db_connection)
@@ -868,7 +900,16 @@ async def init_db(db_path: str = ":memory:") -> aiosqlite.Connection:
 
 
 async def close_db() -> None:
-    global _db_connection
+    global _db_connection, _db_path, _db_uri, _db_temp_path
     if _db_connection is not None:
         await _db_connection.close()
         _db_connection = None
+    if _db_temp_path is not None:
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                Path(_db_temp_path + suffix).unlink()
+            except FileNotFoundError:
+                pass
+        _db_temp_path = None
+    _db_path = None
+    _db_uri = False

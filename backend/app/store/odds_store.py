@@ -9,7 +9,7 @@ from typing import Optional
 import aiosqlite
 
 from ..config import settings
-from ..database import get_db
+from ..database import get_db, open_db_connection
 from ..models.schemas import (
     BookmakerOut,
     CanonicalOffer,
@@ -3368,71 +3368,74 @@ async def replace_cycle_outputs_and_activate_snapshot(
         for d in discrepancies
     ]
 
-    db = await get_db()
-    await db.execute("BEGIN IMMEDIATE")
+    db = await open_db_connection()
     try:
-        resolved_event_count = await _upsert_resolved_events_bulk_tx(
-            db,
-            resolved_events,
-        )
-        resolved_event_member_count = await _link_resolved_event_members_bulk_tx(
-            db,
-            resolved_event_members,
-        )
-        event_review_case_count = await _upsert_event_review_cases_bulk_tx(
-            db,
-            event_review_cases,
-        )
-        odds_count = await _upsert_odds_bulk_tx(
-            db,
-            odds,
-            scraped_at=snapshot_at,
-        )
-        outcome_offer_count = await _upsert_outcome_offers_bulk_tx(
-            db,
-            outcome_offers,
-            scraped_at=snapshot_at,
-        )
-        unresolved_count = await _insert_unresolved_odds_bulk_tx(
-            db,
-            unresolved_odds,
-            scraped_at=snapshot_at,
-        )
-        team_review_ids = await _insert_team_review_cases_bulk_tx(
-            db,
-            team_review_cases,
-            scraped_at=snapshot_at,
-        )
-        auto_review_ids = await _insert_team_review_cases_bulk_tx(
-            db,
-            auto_approved_team_reviews,
-            scraped_at=snapshot_at,
-            mark_approved=True,
-        )
-        await db.execute("UPDATE opportunities SET is_active = FALSE")
-        if opportunity_rows:
-            await db.executemany(
-                """INSERT INTO opportunities
-                   (sport, match_id, resolved_event_id, opportunity_type, market_type, line, profit_margin,
-                    middle_profit_margin, legs, detected_at, is_active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)""",
-                opportunity_rows,
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            resolved_event_count = await _upsert_resolved_events_bulk_tx(
+                db,
+                resolved_events,
             )
-        await db.execute("UPDATE discrepancies SET is_active = FALSE")
-        if discrepancy_rows:
-            await db.executemany(
-                """INSERT INTO discrepancies
-                   (match_id, resolved_event_id, market_type, player_name,
-                    bookmaker_a_id, bookmaker_a_match_id, bookmaker_b_id, bookmaker_b_match_id,
-                    threshold_a, threshold_b, odds_a, odds_b, gap, profit_margin, middle_profit_margin)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                discrepancy_rows,
+            resolved_event_member_count = await _link_resolved_event_members_bulk_tx(
+                db,
+                resolved_event_members,
             )
-        await _set_current_snapshot_tx(db, snapshot_at)
-        await db.commit()
-    except Exception:
-        await db.rollback()
-        raise
+            event_review_case_count = await _upsert_event_review_cases_bulk_tx(
+                db,
+                event_review_cases,
+            )
+            odds_count = await _upsert_odds_bulk_tx(
+                db,
+                odds,
+                scraped_at=snapshot_at,
+            )
+            outcome_offer_count = await _upsert_outcome_offers_bulk_tx(
+                db,
+                outcome_offers,
+                scraped_at=snapshot_at,
+            )
+            unresolved_count = await _insert_unresolved_odds_bulk_tx(
+                db,
+                unresolved_odds,
+                scraped_at=snapshot_at,
+            )
+            team_review_ids = await _insert_team_review_cases_bulk_tx(
+                db,
+                team_review_cases,
+                scraped_at=snapshot_at,
+            )
+            auto_review_ids = await _insert_team_review_cases_bulk_tx(
+                db,
+                auto_approved_team_reviews,
+                scraped_at=snapshot_at,
+                mark_approved=True,
+            )
+            await db.execute("UPDATE opportunities SET is_active = FALSE")
+            if opportunity_rows:
+                await db.executemany(
+                    """INSERT INTO opportunities
+                       (sport, match_id, resolved_event_id, opportunity_type, market_type, line, profit_margin,
+                        middle_profit_margin, legs, detected_at, is_active)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)""",
+                    opportunity_rows,
+                )
+            await db.execute("UPDATE discrepancies SET is_active = FALSE")
+            if discrepancy_rows:
+                await db.executemany(
+                    """INSERT INTO discrepancies
+                       (match_id, resolved_event_id, market_type, player_name,
+                        bookmaker_a_id, bookmaker_a_match_id, bookmaker_b_id, bookmaker_b_match_id,
+                        threshold_a, threshold_b, odds_a, odds_b, gap, profit_margin, middle_profit_margin)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    discrepancy_rows,
+                )
+            await _set_current_snapshot_tx(db, snapshot_at)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+    finally:
+        await db.close()
     return {
         "resolved_events": resolved_event_count,
         "resolved_event_members": resolved_event_member_count,
