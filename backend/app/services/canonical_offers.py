@@ -56,6 +56,8 @@ def canonical_offers_from_normalized_odds(
     *,
     event_id: str | None = None,
     bookmaker_match_id: str | None = None,
+    subject_key_override: str | None = None,
+    subject_name_override: str | None = None,
     scraped_at: str | None = None,
     period: str | None = None,
     scope: str | None = None,
@@ -65,6 +67,8 @@ def canonical_offers_from_normalized_odds(
         odds,
         event_id=event_id,
         bookmaker_match_id=bookmaker_match_id,
+        subject_key_override=subject_key_override,
+        subject_name_override=subject_name_override,
         period=period,
         scope=scope,
     )
@@ -101,10 +105,16 @@ def canonical_market_from_normalized_odds(
     *,
     event_id: str | None = None,
     bookmaker_match_id: str | None = None,
+    subject_key_override: str | None = None,
+    subject_name_override: str | None = None,
     period: str | None = None,
     scope: str | None = None,
 ) -> CanonicalMarket:
     subject_type, subject_key, subject_name = _subject_from_normalized_odds(odds)
+    if subject_key_override is not None:
+        subject_key = subject_key_override
+    if subject_name_override is not None:
+        subject_name = subject_name_override
     market_type = canonical_market_type(odds.market_type)
     line = _normalize_line(odds.threshold)
     market_key = build_market_key(

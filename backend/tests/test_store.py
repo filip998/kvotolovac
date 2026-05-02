@@ -216,9 +216,9 @@ async def test_current_canonical_offers_use_active_resolved_event_identity():
             method="manual",
         )
     )
-    for match_id, bookmaker_id in (
-        ("bookmaker-match-a", "mozzart"),
-        ("bookmaker-match-b", "maxbet"),
+    for match_id, bookmaker_id, player_name in (
+        ("bookmaker-match-a", "mozzart", "Nikola Jokić"),
+        ("bookmaker-match-b", "maxbet", "N. Jokic"),
     ):
         await odds_store.link_resolved_event_member(
             ResolvedEventMemberIn(
@@ -236,7 +236,7 @@ async def test_current_canonical_offers_use_active_resolved_event_identity():
                 home_team="Partizan",
                 away_team="Crvena Zvezda",
                 market_type="player_points",
-                player_name="Nikola Jovic",
+                player_name=player_name,
                 threshold=16.5,
                 over_odds=1.91,
                 under_odds=None,
@@ -252,6 +252,88 @@ async def test_current_canonical_offers_use_active_resolved_event_identity():
     assert len(offers) == 2
     assert {offer.market.event_id for offer in offers} == {"resolved-partizan-zvezda"}
     assert len({offer.market_key for offer in offers}) == 1
+    assert {offer.market.subject_name for offer in offers} == {"Nikola Jokić"}
+    assert {offer.market.subject_key for offer in offers} == {
+        offers[0].market.subject_key
+    }
+    assert offers[0].market.subject_key
+    assert offers[0].market.subject_key.startswith("ply_")
+
+
+@pytest.mark.asyncio
+async def test_current_canonical_offers_capture_snapshot_once(monkeypatch):
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_league("premier_league", "Premier League", "football")
+    await odds_store.upsert_match(
+        "basketball-match",
+        "euroleague",
+        "Partizan",
+        "Crvena Zvezda",
+        sport="basketball",
+    )
+    await odds_store.upsert_match(
+        "football-match",
+        "premier_league",
+        "Team Alpha",
+        "Team Beta",
+        sport="football",
+    )
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    stable_snapshot = "2030-01-01T19:55:00+00:00"
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="basketball-match",
+            bookmaker_id="mozzart",
+            league_id="euroleague",
+            sport="basketball",
+            home_team="Partizan",
+            away_team="Crvena Zvezda",
+            market_type="player_points",
+            player_name="Nikola Jovic",
+            threshold=16.5,
+            over_odds=1.91,
+            under_odds=None,
+        ),
+        scraped_at=stable_snapshot,
+    )
+    await odds_store.upsert_outcome_offer(
+        NormalizedOutcomeOffer(
+            match_id="football-match",
+            bookmaker_id="maxbet",
+            league_id="premier_league",
+            sport="football",
+            home_team="Team Alpha",
+            away_team="Team Beta",
+            market_type="football_total_goals",
+            outcome_code="over",
+            odds=1.85,
+            line=2.5,
+        ),
+        scraped_at=stable_snapshot,
+    )
+    calls = 0
+
+    async def fake_snapshot_filter(db, alias):
+        nonlocal calls
+        calls += 1
+        return f"{alias}.scraped_at = ?", [stable_snapshot]
+
+    monkeypatch.setattr(
+        odds_store,
+        "_current_or_legacy_snapshot_filter",
+        fake_snapshot_filter,
+    )
+
+    offers = await odds_store.get_current_canonical_offers_for_matches(
+        ["basketball-match", "football-match"]
+    )
+
+    assert calls == 1
+    assert [(offer.bookmaker_id, offer.scraped_at) for offer in offers] == [
+        ("mozzart", stable_snapshot),
+        ("maxbet", stable_snapshot),
+    ]
 
 
 @pytest.mark.asyncio
