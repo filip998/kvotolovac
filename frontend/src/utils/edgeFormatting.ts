@@ -65,10 +65,16 @@ export function formatLegLineLabel(leg: EdgeLeg, marketType: string): string {
 }
 
 function footballOpportunityHeadline(edge: Edge): string {
-  if (edge.opportunity_type === 'same_line_arbitrage') {
+  if (
+    edge.opportunity_type === 'same_line_arbitrage' &&
+    edge.market_type === 'football_total_goals'
+  ) {
     return `Total goals ${edge.leg_a.line ?? edge.leg_b.line ?? 2.5}`;
   }
   if (edge.opportunity_type === 'middle') {
+    if (edge.market_type !== 'football_total_goals') {
+      return `${marketTypeLabel(edge.market_type)} middle`;
+    }
     const overLeg =
       edge.leg_a.outcome_code === 'over'
         ? edge.leg_a

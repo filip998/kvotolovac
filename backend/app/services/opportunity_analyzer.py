@@ -18,6 +18,9 @@ class Opportunity:
     middle_profit_margin: float | None
     legs: list[OpportunityLeg]
     resolved_event_id: str | None = None
+    subject_type: str | None = None
+    subject_key: str | None = None
+    subject_name: str | None = None
     market_keys: tuple[str, ...] = ()
 
 

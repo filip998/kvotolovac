@@ -328,6 +328,11 @@ async def test_scheduler_runs_canonical_shadow_analysis_for_current_snapshot():
     assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
         ("middle", "player_points")
     ]
+    assert opportunities[0].subject_type == "player"
+    assert opportunities[0].subject_key is not None
+    assert opportunities[0].subject_key.startswith("ply_")
+    assert opportunities[0].subject_name == "Sasha Vezenkov"
+    assert len(opportunities[0].market_keys) == 2
 
 
 @pytest.mark.asyncio
@@ -373,6 +378,9 @@ async def test_scheduler_persists_canonical_basketball_total_opportunity():
     assert len(opportunities) == 1
     assert opportunities[0].opportunity_type == "middle"
     assert opportunities[0].market_type == "game_total"
+    assert opportunities[0].subject_type == "event"
+    assert opportunities[0].subject_key is None
+    assert opportunities[0].subject_name is None
     assert [(leg.bookmaker_id, leg.outcome_code, leg.line) for leg in opportunities[0].legs] == [
         ("alpha", "over", 160.5),
         ("beta", "under", 162.5),
@@ -593,6 +601,8 @@ async def test_scheduler_persists_canonical_football_total_opportunity(
     assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
         ("middle", "football_total_goals")
     ]
+    assert opportunities[0].subject_type == "event"
+    assert opportunities[0].market_keys
     assert [(leg.bookmaker_id, leg.outcome_code, leg.line) for leg in opportunities[0].legs] == [
         ("alpha", "over", 2.5),
         ("beta", "under", 3.5),
@@ -647,6 +657,8 @@ async def test_scheduler_persists_canonical_football_complementary_opportunity(
     assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
         ("complementary_outcomes", "football_result_double_chance")
     ]
+    assert opportunities[0].subject_type == "event"
+    assert len(opportunities[0].market_keys) == 2
 
 
 @pytest.mark.asyncio
@@ -685,6 +697,8 @@ async def test_scheduler_shadow_analysis_handles_tennis_outcome_offers(
     assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
         ("same_line_arbitrage", "match_winner")
     ]
+    assert opportunities[0].subject_type == "event"
+    assert len(opportunities[0].market_keys) == 1
 
 
 @pytest.mark.asyncio

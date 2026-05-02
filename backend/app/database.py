@@ -179,9 +179,13 @@ CREATE TABLE IF NOT EXISTS opportunities (
     resolved_event_id TEXT REFERENCES resolved_events(id),
     opportunity_type TEXT NOT NULL,
     market_type TEXT NOT NULL,
+    subject_type TEXT,
+    subject_key TEXT,
+    subject_name TEXT,
     line REAL,
     profit_margin REAL,
     middle_profit_margin REAL,
+    market_keys TEXT NOT NULL DEFAULT '[]',
     legs TEXT NOT NULL DEFAULT '[]',
     detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_active BOOLEAN DEFAULT TRUE
@@ -488,9 +492,13 @@ async def _rebuild_opportunities(conn: aiosqlite.Connection) -> None:
             resolved_event_id TEXT REFERENCES resolved_events(id),
             opportunity_type TEXT NOT NULL,
             market_type TEXT NOT NULL,
+            subject_type TEXT,
+            subject_key TEXT,
+            subject_name TEXT,
             line REAL,
             profit_margin REAL,
             middle_profit_margin REAL,
+            market_keys TEXT NOT NULL DEFAULT '[]',
             legs TEXT NOT NULL DEFAULT '[]',
             detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             is_active BOOLEAN DEFAULT TRUE
@@ -506,9 +514,13 @@ async def _rebuild_opportunities(conn: aiosqlite.Connection) -> None:
             resolved_event_id,
             opportunity_type,
             market_type,
+            subject_type,
+            subject_key,
+            subject_name,
             line,
             profit_margin,
             middle_profit_margin,
+            market_keys,
             legs,
             detected_at,
             is_active
@@ -528,9 +540,13 @@ async def _rebuild_opportunities(conn: aiosqlite.Connection) -> None:
             END,
             opportunity_type,
             market_type,
+            subject_type,
+            subject_key,
+            subject_name,
             line,
             profit_margin,
             middle_profit_margin,
+            market_keys,
             legs,
             detected_at,
             is_active
@@ -751,9 +767,13 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
                resolved_event_id TEXT REFERENCES resolved_events(id),
                opportunity_type TEXT NOT NULL,
                market_type TEXT NOT NULL,
+               subject_type TEXT,
+               subject_key TEXT,
+               subject_name TEXT,
                line REAL,
                profit_margin REAL,
                middle_profit_margin REAL,
+               market_keys TEXT NOT NULL DEFAULT '[]',
                legs TEXT NOT NULL DEFAULT '[]',
                detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                is_active BOOLEAN DEFAULT TRUE
@@ -770,6 +790,16 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
     if opportunity_columns and "resolved_event_id" not in existing_opportunities:
         await conn.execute(
             "ALTER TABLE opportunities ADD COLUMN resolved_event_id TEXT REFERENCES resolved_events(id)"
+        )
+    if opportunity_columns and "subject_type" not in existing_opportunities:
+        await conn.execute("ALTER TABLE opportunities ADD COLUMN subject_type TEXT")
+    if opportunity_columns and "subject_key" not in existing_opportunities:
+        await conn.execute("ALTER TABLE opportunities ADD COLUMN subject_key TEXT")
+    if opportunity_columns and "subject_name" not in existing_opportunities:
+        await conn.execute("ALTER TABLE opportunities ADD COLUMN subject_name TEXT")
+    if opportunity_columns and "market_keys" not in existing_opportunities:
+        await conn.execute(
+            "ALTER TABLE opportunities ADD COLUMN market_keys TEXT NOT NULL DEFAULT '[]'"
         )
     if opportunity_columns and not await _table_has_foreign_key(
         conn,
