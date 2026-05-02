@@ -811,43 +811,53 @@ def _resolved_event_row(event: ResolvedEventIn) -> tuple:
 async def upsert_resolved_events_bulk(events: list[ResolvedEventIn]) -> int:
     if not events:
         return 0
-    rows = [_resolved_event_row(event) for event in events]
     db = await get_db()
     await db.execute("BEGIN IMMEDIATE")
     try:
-        await db.executemany(
-            """INSERT INTO resolved_events (
-                   id,
-                   sport,
-                   start_time,
-                   primary_match_id,
-                   status,
-                   confidence,
-                   method,
-                   display_home_team,
-                   display_away_team,
-                   display_league_name,
-                   metadata
-               )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET
-                   sport = excluded.sport,
-                   start_time = excluded.start_time,
-                   primary_match_id = excluded.primary_match_id,
-                   status = excluded.status,
-                   confidence = excluded.confidence,
-                   method = excluded.method,
-                   display_home_team = excluded.display_home_team,
-                   display_away_team = excluded.display_away_team,
-                   display_league_name = excluded.display_league_name,
-                   metadata = excluded.metadata,
-                   updated_at = CURRENT_TIMESTAMP""",
-            rows,
-        )
+        count = await _upsert_resolved_events_bulk_tx(db, events)
         await db.commit()
     except Exception:
         await db.rollback()
         raise
+    return count
+
+
+async def _upsert_resolved_events_bulk_tx(
+    db: aiosqlite.Connection,
+    events: list[ResolvedEventIn],
+) -> int:
+    if not events:
+        return 0
+    rows = [_resolved_event_row(event) for event in events]
+    await db.executemany(
+        """INSERT INTO resolved_events (
+               id,
+               sport,
+               start_time,
+               primary_match_id,
+               status,
+               confidence,
+               method,
+               display_home_team,
+               display_away_team,
+               display_league_name,
+               metadata
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+               sport = excluded.sport,
+               start_time = excluded.start_time,
+               primary_match_id = excluded.primary_match_id,
+               status = excluded.status,
+               confidence = excluded.confidence,
+               method = excluded.method,
+               display_home_team = excluded.display_home_team,
+               display_away_team = excluded.display_away_team,
+               display_league_name = excluded.display_league_name,
+               metadata = excluded.metadata,
+               updated_at = CURRENT_TIMESTAMP""",
+        rows,
+    )
     return len(rows)
 
 
@@ -977,83 +987,93 @@ async def link_resolved_event_members_bulk(
 ) -> int:
     if not members:
         return 0
+    db = await get_db()
+    await db.execute("BEGIN IMMEDIATE")
+    try:
+        count = await _link_resolved_event_members_bulk_tx(db, members)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    return count
+
+
+async def _link_resolved_event_members_bulk_tx(
+    db: aiosqlite.Connection,
+    members: list[ResolvedEventMemberIn],
+) -> int:
+    if not members:
+        return 0
     rows = [_resolved_event_member_row(member) for member in members]
     source_rows = [
         (member.match_id, member.bookmaker_id, member.source_url)
         for member in members
     ]
-    db = await get_db()
-    await db.execute("BEGIN IMMEDIATE")
-    try:
-        await db.executemany(
-            """INSERT INTO resolved_event_members (
-                   resolved_event_id,
-                   match_id,
-                   bookmaker_id,
-                   orientation,
-                   confidence,
-                   status,
-                   source_url,
-                   source_league_id,
-                   source_league_name,
-                   source_home_team,
-                   source_away_team,
-                   source_start_time,
-                   evidence,
-                   metadata
-               )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(match_id, bookmaker_id) DO UPDATE SET
-                    resolved_event_id = excluded.resolved_event_id,
-                    orientation = excluded.orientation,
-                    confidence = excluded.confidence,
-                   status = excluded.status,
-                   source_url = COALESCE(excluded.source_url, resolved_event_members.source_url),
-                   source_league_id = COALESCE(
-                       excluded.source_league_id,
-                       resolved_event_members.source_league_id
-                   ),
-                   source_league_name = COALESCE(
-                       excluded.source_league_name,
-                       resolved_event_members.source_league_name
-                   ),
-                   source_home_team = COALESCE(
-                       excluded.source_home_team,
-                       resolved_event_members.source_home_team
-                   ),
-                   source_away_team = COALESCE(
-                       excluded.source_away_team,
-                       resolved_event_members.source_away_team
-                   ),
-                   source_start_time = COALESCE(
-                       excluded.source_start_time,
-                       resolved_event_members.source_start_time
-                    ),
-                    evidence = excluded.evidence,
-                    metadata = excluded.metadata,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE NOT (
-                    EXISTS (
-                        SELECT 1
-                        FROM resolved_events existing_event
-                        WHERE existing_event.id = resolved_event_members.resolved_event_id
-                          AND existing_event.status = 'active'
-                          AND existing_event.method IN ('manual', 'manual_review')
-                    )
-                    AND NOT EXISTS (
-                        SELECT 1
-                        FROM resolved_events incoming_event
-                        WHERE incoming_event.id = excluded.resolved_event_id
-                          AND incoming_event.method IN ('manual', 'manual_review')
-                    )
-                )""",
-            rows,
-        )
-        await _upsert_match_bookmaker_sources_bulk_tx(db, source_rows)
-        await db.commit()
-    except Exception:
-        await db.rollback()
-        raise
+    await db.executemany(
+        """INSERT INTO resolved_event_members (
+               resolved_event_id,
+               match_id,
+               bookmaker_id,
+               orientation,
+               confidence,
+               status,
+               source_url,
+               source_league_id,
+               source_league_name,
+               source_home_team,
+               source_away_team,
+               source_start_time,
+               evidence,
+               metadata
+           )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(match_id, bookmaker_id) DO UPDATE SET
+                resolved_event_id = excluded.resolved_event_id,
+                orientation = excluded.orientation,
+                confidence = excluded.confidence,
+               status = excluded.status,
+               source_url = COALESCE(excluded.source_url, resolved_event_members.source_url),
+               source_league_id = COALESCE(
+                   excluded.source_league_id,
+                   resolved_event_members.source_league_id
+               ),
+               source_league_name = COALESCE(
+                   excluded.source_league_name,
+                   resolved_event_members.source_league_name
+               ),
+               source_home_team = COALESCE(
+                   excluded.source_home_team,
+                   resolved_event_members.source_home_team
+               ),
+               source_away_team = COALESCE(
+                   excluded.source_away_team,
+                   resolved_event_members.source_away_team
+               ),
+               source_start_time = COALESCE(
+                   excluded.source_start_time,
+                   resolved_event_members.source_start_time
+                ),
+                evidence = excluded.evidence,
+                metadata = excluded.metadata,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE NOT (
+                EXISTS (
+                    SELECT 1
+                    FROM resolved_events existing_event
+                    WHERE existing_event.id = resolved_event_members.resolved_event_id
+                      AND existing_event.status = 'active'
+                      AND existing_event.method IN ('manual', 'manual_review')
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM resolved_events incoming_event
+                    WHERE incoming_event.id = excluded.resolved_event_id
+                      AND incoming_event.method IN ('manual', 'manual_review')
+                )
+            )""",
+        rows,
+    )
+    await _upsert_match_bookmaker_sources_bulk_tx(db, source_rows)
     return len(rows)
 
 
@@ -1326,53 +1346,63 @@ def _event_review_case_row(case: EventReviewCaseIn) -> tuple:
 async def upsert_event_review_cases_bulk(cases: list[EventReviewCaseIn]) -> int:
     if not cases:
         return 0
-    rows = [_event_review_case_row(case) for case in cases]
     db = await get_db()
     await db.execute("BEGIN IMMEDIATE")
     try:
-        await db.executemany(
-            """INSERT INTO event_review_cases (
-                   fingerprint,
-                   sport,
-                   start_time,
-                   primary_match_id,
-                   candidate_resolved_event_id,
-                   candidate_match_ids,
-                   reason_code,
-                   confidence,
-                   method,
-                   source_bookmaker_ids,
-                   source_league_labels,
-                   evidence,
-                   metadata,
-                   status
-               )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(fingerprint) DO UPDATE SET
-                   sport = excluded.sport,
-                   start_time = excluded.start_time,
-                   primary_match_id = excluded.primary_match_id,
-                   candidate_resolved_event_id = excluded.candidate_resolved_event_id,
-                   candidate_match_ids = excluded.candidate_match_ids,
-                   reason_code = excluded.reason_code,
-                   confidence = excluded.confidence,
-                   method = excluded.method,
-                   source_bookmaker_ids = excluded.source_bookmaker_ids,
-                   source_league_labels = excluded.source_league_labels,
-                   evidence = excluded.evidence,
-                   metadata = excluded.metadata,
-                   status = CASE
-                       WHEN event_review_cases.status IN ('accepted', 'declined')
-                       THEN event_review_cases.status
-                       ELSE excluded.status
-                   END,
-                   updated_at = CURRENT_TIMESTAMP""",
-            rows,
-        )
+        count = await _upsert_event_review_cases_bulk_tx(db, cases)
         await db.commit()
     except Exception:
         await db.rollback()
         raise
+    return count
+
+
+async def _upsert_event_review_cases_bulk_tx(
+    db: aiosqlite.Connection,
+    cases: list[EventReviewCaseIn],
+) -> int:
+    if not cases:
+        return 0
+    rows = [_event_review_case_row(case) for case in cases]
+    await db.executemany(
+        """INSERT INTO event_review_cases (
+               fingerprint,
+               sport,
+               start_time,
+               primary_match_id,
+               candidate_resolved_event_id,
+               candidate_match_ids,
+               reason_code,
+               confidence,
+               method,
+               source_bookmaker_ids,
+               source_league_labels,
+               evidence,
+               metadata,
+               status
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(fingerprint) DO UPDATE SET
+               sport = excluded.sport,
+               start_time = excluded.start_time,
+               primary_match_id = excluded.primary_match_id,
+               candidate_resolved_event_id = excluded.candidate_resolved_event_id,
+               candidate_match_ids = excluded.candidate_match_ids,
+               reason_code = excluded.reason_code,
+               confidence = excluded.confidence,
+               method = excluded.method,
+               source_bookmaker_ids = excluded.source_bookmaker_ids,
+               source_league_labels = excluded.source_league_labels,
+               evidence = excluded.evidence,
+               metadata = excluded.metadata,
+               status = CASE
+                   WHEN event_review_cases.status IN ('accepted', 'declined')
+                   THEN event_review_cases.status
+                   ELSE excluded.status
+               END,
+               updated_at = CURRENT_TIMESTAMP""",
+        rows,
+    )
     return len(rows)
 
 
@@ -3288,6 +3318,9 @@ async def deactivate_all_discrepancies() -> None:
 
 async def replace_cycle_outputs_and_activate_snapshot(
     *,
+    resolved_events: list[ResolvedEventIn],
+    resolved_event_members: list[ResolvedEventMemberIn],
+    event_review_cases: list[EventReviewCaseIn],
     odds: list[NormalizedOdds],
     outcome_offers: list[NormalizedOutcomeOffer],
     unresolved_odds: list[UnresolvedOddsDiagnostic],
@@ -3338,6 +3371,18 @@ async def replace_cycle_outputs_and_activate_snapshot(
     db = await get_db()
     await db.execute("BEGIN IMMEDIATE")
     try:
+        resolved_event_count = await _upsert_resolved_events_bulk_tx(
+            db,
+            resolved_events,
+        )
+        resolved_event_member_count = await _link_resolved_event_members_bulk_tx(
+            db,
+            resolved_event_members,
+        )
+        event_review_case_count = await _upsert_event_review_cases_bulk_tx(
+            db,
+            event_review_cases,
+        )
         odds_count = await _upsert_odds_bulk_tx(
             db,
             odds,
@@ -3389,6 +3434,9 @@ async def replace_cycle_outputs_and_activate_snapshot(
         await db.rollback()
         raise
     return {
+        "resolved_events": resolved_event_count,
+        "resolved_event_members": resolved_event_member_count,
+        "event_review_cases": event_review_case_count,
         "odds": odds_count,
         "outcome_offers": outcome_offer_count,
         "unresolved_odds": unresolved_count,

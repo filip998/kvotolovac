@@ -460,6 +460,21 @@ class EventResolverResult:
     review_cases: int
 
 
+@dataclass(frozen=True)
+class EventResolutionRows:
+    events: list[ResolvedEventIn]
+    members: list[ResolvedEventMemberIn]
+    review_cases: list[EventReviewCaseIn]
+
+
+@dataclass(frozen=True)
+class EventResolutionBatch:
+    result: EventResolverResult
+    events: list[ResolvedEventIn]
+    members: list[ResolvedEventMemberIn]
+    review_cases: list[EventReviewCaseIn]
+
+
 def _league_source(raw_league_id: str, bookmaker_id: str) -> tuple[str, str]:
     resolution = resolve_league(raw_league_id, bookmaker_id=bookmaker_id)
     return resolution.league_id, resolution.display_name
@@ -1156,10 +1171,10 @@ def build_event_resolution_groups(
     )
 
 
-async def persist_event_resolution_groups(
+def build_event_resolution_rows(
     resolutions: list[EventResolutionGroup],
     review_cases: list[EventReviewCaseIn],
-) -> EventResolverResult:
+) -> EventResolutionRows:
     events: list[ResolvedEventIn] = []
     members: list[ResolvedEventMemberIn] = []
     for resolution in resolutions:
@@ -1218,15 +1233,66 @@ async def persist_event_resolution_groups(
                 )
             )
 
-    await odds_store.upsert_resolved_events_bulk(events)
-    await odds_store.link_resolved_event_members_bulk(members)
-    persisted_review_cases = await odds_store.upsert_event_review_cases_bulk(review_cases)
+    return EventResolutionRows(
+        events=events,
+        members=members,
+        review_cases=review_cases,
+    )
+
+
+async def persist_event_resolution_groups(
+    resolutions: list[EventResolutionGroup],
+    review_cases: list[EventReviewCaseIn],
+) -> EventResolverResult:
+    rows = build_event_resolution_rows(resolutions, review_cases)
+
+    await odds_store.upsert_resolved_events_bulk(rows.events)
+    await odds_store.link_resolved_event_members_bulk(rows.members)
+    persisted_review_cases = await odds_store.upsert_event_review_cases_bulk(
+        rows.review_cases
+    )
 
     return EventResolverResult(
-        candidates=len(members),
-        resolved_events=len(resolutions),
-        resolved_event_members=len(members),
+        candidates=len(rows.members),
+        resolved_events=len(rows.events),
+        resolved_event_members=len(rows.members),
         review_cases=persisted_review_cases,
+    )
+
+
+def prepare_event_resolution(
+    *,
+    raw_odds: list[RawOddsData],
+    raw_outcome_offers: list[RawOutcomeOffer],
+    normalized_odds: list[NormalizedOdds],
+    normalized_outcome_offers: list[NormalizedOutcomeOffer],
+) -> EventResolutionBatch:
+    candidates = extract_event_candidates(
+        raw_odds=raw_odds,
+        raw_outcome_offers=raw_outcome_offers,
+        normalized_odds=normalized_odds,
+        normalized_outcome_offers=normalized_outcome_offers,
+    )
+    resolutions, review_cases = build_event_resolution_groups(candidates)
+    rows = build_event_resolution_rows(resolutions, review_cases)
+    result = EventResolverResult(
+        candidates=len(candidates),
+        resolved_events=len(rows.events),
+        resolved_event_members=len(rows.members),
+        review_cases=len(rows.review_cases),
+    )
+    logger.info(
+        "Resolved %d source-event candidates into %d events (%d members, %d review cases)",
+        result.candidates,
+        result.resolved_events,
+        result.resolved_event_members,
+        result.review_cases,
+    )
+    return EventResolutionBatch(
+        result=result,
+        events=rows.events,
+        members=rows.members,
+        review_cases=rows.review_cases,
     )
 
 
@@ -1237,24 +1303,20 @@ async def resolve_and_persist_events(
     normalized_odds: list[NormalizedOdds],
     normalized_outcome_offers: list[NormalizedOutcomeOffer],
 ) -> EventResolverResult:
-    candidates = extract_event_candidates(
+    batch = prepare_event_resolution(
         raw_odds=raw_odds,
         raw_outcome_offers=raw_outcome_offers,
         normalized_odds=normalized_odds,
         normalized_outcome_offers=normalized_outcome_offers,
     )
-    resolutions, review_cases = build_event_resolution_groups(candidates)
-    result = await persist_event_resolution_groups(resolutions, review_cases)
-    logger.info(
-        "Resolved %d source-event candidates into %d events (%d members, %d review cases)",
-        len(candidates),
-        result.resolved_events,
-        result.resolved_event_members,
-        result.review_cases,
+    await odds_store.upsert_resolved_events_bulk(batch.events)
+    await odds_store.link_resolved_event_members_bulk(batch.members)
+    persisted_review_cases = await odds_store.upsert_event_review_cases_bulk(
+        batch.review_cases
     )
     return EventResolverResult(
-        candidates=len(candidates),
-        resolved_events=result.resolved_events,
-        resolved_event_members=result.resolved_event_members,
-        review_cases=result.review_cases,
+        candidates=batch.result.candidates,
+        resolved_events=batch.result.resolved_events,
+        resolved_event_members=batch.result.resolved_event_members,
+        review_cases=persisted_review_cases,
     )

@@ -739,6 +739,36 @@ async def test_scheduler_run_cycle_keeps_previous_snapshot_if_store_fails_mid_ba
 
 
 @pytest.mark.asyncio
+async def test_scheduler_run_cycle_rolls_back_event_resolution_if_snapshot_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _register_test_scrapers(
+        StubScraper(
+            "mozzart",
+            payload_by_league={"euroleague": [_raw_odds("mozzart", 10.5)]},
+        ),
+        StubScraper(
+            "maxbet",
+            payload_by_league={"euroleague": [_raw_odds("maxbet", 12.5)]},
+        ),
+    )
+
+    async def failing_set_current_snapshot_tx(db, snapshot_at):
+        raise RuntimeError("simulated snapshot failure")
+
+    monkeypatch.setattr(
+        odds_store,
+        "_set_current_snapshot_tx",
+        failing_set_current_snapshot_tx,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated snapshot failure"):
+        await Scheduler(interval_minutes=1).run_cycle()
+
+    assert await odds_store.list_resolved_events() == []
+
+
+@pytest.mark.asyncio
 async def test_scheduler_run_cycle_auto_saves_anchored_alias_same_scrape():
     _register_test_scrapers(
         StubScraper(

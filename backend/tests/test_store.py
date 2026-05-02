@@ -1781,6 +1781,36 @@ async def test_replace_cycle_outputs_and_snapshot_rolls_back_atomically_on_failu
 
     with pytest.raises(Exception):
         await odds_store.replace_cycle_outputs_and_activate_snapshot(
+            resolved_events=[
+                ResolvedEventIn(
+                    id="evt-new",
+                    sport="basketball",
+                    start_time="2030-01-01T20:00:00+00:00",
+                    primary_match_id="new",
+                    confidence=0.99,
+                    method="exact",
+                )
+            ],
+            resolved_event_members=[
+                ResolvedEventMemberIn(
+                    resolved_event_id="evt-new",
+                    match_id="new",
+                    bookmaker_id="maxbet",
+                    confidence=0.99,
+                )
+            ],
+            event_review_cases=[
+                EventReviewCaseIn(
+                    fingerprint="event-review-new",
+                    sport="basketball",
+                    start_time="2030-01-01T20:00:00+00:00",
+                    primary_match_id="new",
+                    candidate_resolved_event_id="evt-new",
+                    candidate_match_ids=["new"],
+                    reason_code="candidate_event_equivalence",
+                    source_bookmaker_ids=["maxbet"],
+                )
+            ],
             odds=[
                 NormalizedOdds(
                     match_id="old",
@@ -1852,6 +1882,8 @@ async def test_replace_cycle_outputs_and_snapshot_rolls_back_atomically_on_failu
     current = await odds_store.get_odds_for_match("old")
     assert len(current) == 1
     assert current[0].over_odds == 1.8
+    assert await odds_store.get_resolved_event("evt-new") is None
+    assert await odds_store.get_event_review_case_by_fingerprint("event-review-new") is None
 
 
 @pytest.mark.asyncio

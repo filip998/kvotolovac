@@ -7,7 +7,12 @@ from collections import defaultdict
 from datetime import datetime
 
 from ..config import settings
-from ..models.schemas import RawOddsData, RawOutcomeOffer, TeamReviewDiagnostic
+from ..models.schemas import (
+    RawOddsData,
+    RawOutcomeOffer,
+    ResolvedEventMemberOut,
+    TeamReviewDiagnostic,
+)
 from ..scrapers.base import BaseScraper
 from ..scrapers.registry import registry
 from ..models.schemas import ScanProgressOut
@@ -26,7 +31,7 @@ from ..services.event_resolver import (
     _is_unsafe_compound_subset_match,
     _normalize_merge_pairings,
     _same_time_slot_orientation,
-    resolve_and_persist_events,
+    prepare_event_resolution,
 )
 from ..services.opportunity_analyzer import analyze_outcome_offers
 from ..services.outcome_normalizer import normalize_outcome_offers_with_diagnostics
@@ -72,6 +77,75 @@ def _is_auto_alias_candidate(case) -> bool:
 
 def _candidate_merge_source_ids(case) -> set[int]:
     return _contextual_merge_source_ids(case)
+
+
+def _pending_event_member_out(
+    member,
+    *,
+    synthetic_id: int,
+) -> ResolvedEventMemberOut:
+    return ResolvedEventMemberOut(
+        **member.model_dump(),
+        id=synthetic_id,
+    )
+
+
+def _pending_event_members_for_matches(
+    *,
+    event_members,
+    event_methods_by_id: dict[str, str],
+    match_ids: set[str],
+    bookmaker_ids: set[str],
+    event_methods: tuple[str, ...] = (
+        "exact",
+        "auto_fuzzy_high",
+        "manual",
+        "manual_review",
+    ),
+) -> list[ResolvedEventMemberOut]:
+    if not match_ids or not bookmaker_ids:
+        return []
+
+    pending_members: list[ResolvedEventMemberOut] = []
+    allowed_methods = set(event_methods)
+    for index, member in enumerate(event_members):
+        if member.match_id not in match_ids or member.bookmaker_id not in bookmaker_ids:
+            continue
+        if member.status != "active":
+            continue
+        method = event_methods_by_id.get(member.resolved_event_id)
+        if method not in allowed_methods:
+            continue
+        pending_members.append(
+            _pending_event_member_out(member, synthetic_id=-(index + 1))
+        )
+    return pending_members
+
+
+def _merge_committed_and_pending_event_members(
+    committed_members: list[ResolvedEventMemberOut],
+    pending_members: list[ResolvedEventMemberOut],
+    *,
+    protected_manual_keys: set[tuple[str, str]],
+) -> list[ResolvedEventMemberOut]:
+    by_member_key = {
+        (member.match_id, member.bookmaker_id): member
+        for member in committed_members
+    }
+    for member in pending_members:
+        member_key = (member.match_id, member.bookmaker_id)
+        if member_key in protected_manual_keys:
+            continue
+        by_member_key[member_key] = member
+    return sorted(
+        by_member_key.values(),
+        key=lambda member: (
+            member.resolved_event_id,
+            member.id,
+            member.match_id,
+            member.bookmaker_id,
+        ),
+    )
 
 
 class Scheduler:
@@ -983,12 +1057,22 @@ class Scheduler:
                     (time.perf_counter() - prerequisite_db_started_at) * 1000
                 )
                 event_resolve_started_at = time.perf_counter()
-                await resolve_and_persist_events(
+                event_resolution = prepare_event_resolution(
                     raw_odds=all_raw,
                     raw_outcome_offers=all_raw_outcome_offers,
                     normalized_odds=normalized,
                     normalized_outcome_offers=normalized_outcome_offers,
                 )
+                event_methods_by_id = {
+                    event.id: event.method
+                    for event in event_resolution.events
+                    if event.id is not None
+                }
+                pending_event_primary_match_ids = {
+                    event.id: event.primary_match_id
+                    for event in event_resolution.events
+                    if event.id is not None
+                }
                 event_resolve_duration_ms = int(
                     (time.perf_counter() - event_resolve_started_at) * 1000
                 )
@@ -998,10 +1082,30 @@ class Scheduler:
 
                 self._scan_phase = "analyzing"
                 event_lookup_started_at = time.perf_counter()
-                discrepancy_event_members = (
+                discrepancy_committed_event_members = (
                     await odds_store.get_eligible_resolved_event_members_for_odds(
                         normalized
                     )
+                )
+                discrepancy_manual_event_members = (
+                    await odds_store.get_eligible_resolved_event_members_for_odds(
+                        normalized,
+                        event_methods=("manual", "manual_review"),
+                    )
+                )
+                discrepancy_pending_event_members = _pending_event_members_for_matches(
+                    event_members=event_resolution.members,
+                    event_methods_by_id=event_methods_by_id,
+                    match_ids={odds.match_id for odds in normalized},
+                    bookmaker_ids={odds.bookmaker_id for odds in normalized},
+                )
+                discrepancy_event_members = _merge_committed_and_pending_event_members(
+                    discrepancy_committed_event_members,
+                    discrepancy_pending_event_members,
+                    protected_manual_keys={
+                        (member.match_id, member.bookmaker_id)
+                        for member in discrepancy_manual_event_members
+                    },
                 )
                 discrepancy_event_primary_match_ids = (
                     await odds_store.get_resolved_event_primary_match_ids(
@@ -1011,10 +1115,35 @@ class Scheduler:
                         ]
                     )
                 )
-                opportunity_event_members = (
+                discrepancy_event_primary_match_ids.update(
+                    pending_event_primary_match_ids
+                )
+                opportunity_committed_event_members = (
                     await odds_store.get_eligible_resolved_event_members_for_outcome_offers(
                         normalized_outcome_offers
                     )
+                )
+                opportunity_manual_event_members = (
+                    await odds_store.get_eligible_resolved_event_members_for_outcome_offers(
+                        normalized_outcome_offers,
+                        event_methods=("manual", "manual_review"),
+                    )
+                )
+                opportunity_pending_event_members = _pending_event_members_for_matches(
+                    event_members=event_resolution.members,
+                    event_methods_by_id=event_methods_by_id,
+                    match_ids={offer.match_id for offer in normalized_outcome_offers},
+                    bookmaker_ids={
+                        offer.bookmaker_id for offer in normalized_outcome_offers
+                    },
+                )
+                opportunity_event_members = _merge_committed_and_pending_event_members(
+                    opportunity_committed_event_members,
+                    opportunity_pending_event_members,
+                    protected_manual_keys={
+                        (member.match_id, member.bookmaker_id)
+                        for member in opportunity_manual_event_members
+                    },
                 )
                 opportunity_event_primary_match_ids = (
                     await odds_store.get_resolved_event_primary_match_ids(
@@ -1023,6 +1152,9 @@ class Scheduler:
                             for member in opportunity_event_members
                         ]
                     )
+                )
+                opportunity_event_primary_match_ids.update(
+                    pending_event_primary_match_ids
                 )
                 event_lookup_duration_ms = int(
                     (time.perf_counter() - event_lookup_started_at) * 1000
@@ -1045,6 +1177,9 @@ class Scheduler:
                 self._scan_phase = "storing"
                 snapshot_store_started_at = time.perf_counter()
                 await odds_store.replace_cycle_outputs_and_activate_snapshot(
+                    resolved_events=event_resolution.events,
+                    resolved_event_members=event_resolution.members,
+                    event_review_cases=event_resolution.review_cases,
                     odds=normalized,
                     outcome_offers=normalized_outcome_offers,
                     unresolved_odds=unresolved_odds,
