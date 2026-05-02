@@ -1268,3 +1268,200 @@ async def test_legacy_fallback_groups_recent_rows_before_snapshot_exists():
     assert status.total_matches == 2
     assert status.total_odds == 2
     assert status.last_scrape_at == "2026-04-11T20:05:00.000001"
+
+
+@pytest.mark.asyncio
+async def test_insert_discrepancies_bulk_matches_per_row_path():
+    """Bulk insert path produces the same DB rows as the per-row path.
+
+    Regression for the analyzer-phase slowness that surfaced after the
+    basketball handicap rollout: per-row commits made a single cycle hold
+    the SQLite write transaction for 5–7 minutes (≈ ``insert_discrepancy``
+    × 100k+).  ``insert_discrepancies_bulk`` collapses that to a single
+    transaction.  This test verifies semantic equivalence.
+    """
+    from dataclasses import dataclass
+
+    @dataclass
+    class _Row:
+        match_id: str
+        market_type: str
+        player_name: str | None
+        bookmaker_a_id: str
+        bookmaker_b_id: str
+        threshold_a: float
+        threshold_b: float
+        odds_a: float | None
+        odds_b: float | None
+        gap: float
+        profit_margin: float | None
+        middle_profit_margin: float | None = None
+        resolved_event_id: str | None = None
+        bookmaker_a_match_id: str | None = None
+        bookmaker_b_match_id: str | None = None
+
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("mPB", "euroleague", "Partizan", "Crvena Zvezda")
+    await odds_store.upsert_match("mAB", "euroleague", "Atlas", "Bayern")
+    # Per-bookmaker match-id columns FK to matches.id, so the alternate
+    # IDs the bulk test uses below must exist.
+    await odds_store.upsert_match("mPB-mozz", "euroleague", "Partizan", "Crvena Zvezda")
+    await odds_store.upsert_match("mPB-maxbet", "euroleague", "Partizan", "Crvena Zvezda")
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+
+    rows = [
+        _Row(
+            match_id="mPB",
+            market_type="player_points",
+            player_name="Mike James",
+            bookmaker_a_id="mozzart",
+            bookmaker_b_id="meridian",
+            threshold_a=18.5,
+            threshold_b=20.5,
+            odds_a=1.85,
+            odds_b=1.90,
+            gap=2.0,
+            profit_margin=0.025,
+            middle_profit_margin=0.85,
+        ),
+        _Row(
+            match_id="mPB",
+            market_type="home_handicap_ot",
+            player_name=None,
+            bookmaker_a_id="mozzart",
+            bookmaker_b_id="maxbet",
+            threshold_a=-3.5,
+            threshold_b=-2.5,
+            odds_a=1.95,
+            odds_b=1.85,
+            gap=1.0,
+            profit_margin=0.012,
+            middle_profit_margin=None,  # exercise the NULL path
+            bookmaker_a_match_id="mPB-mozz",
+            bookmaker_b_match_id="mPB-maxbet",
+        ),
+        _Row(
+            match_id="mAB",
+            market_type="game_total_ot",
+            player_name=None,
+            bookmaker_a_id="meridian",
+            bookmaker_b_id="maxbet",
+            threshold_a=205.5,
+            threshold_b=205.5,
+            odds_a=1.92,
+            odds_b=1.92,
+            gap=0.0,
+            profit_margin=None,  # exercise the NULL profit path
+            middle_profit_margin=0.40,
+        ),
+    ]
+
+    inserted = await odds_store.insert_discrepancies_bulk(rows)
+    assert inserted == 3
+
+    discs = await odds_store.get_discrepancies()
+    by_market = {(d.match_id, d.market_type, d.player_name): d for d in discs}
+    assert len(discs) == 3
+
+    pb_player = by_market[("mPB", "player_points", "Mike James")]
+    assert pb_player.threshold_a == 18.5
+    assert pb_player.threshold_b == 20.5
+    assert pb_player.odds_a == 1.85
+    assert pb_player.middle_profit_margin == 0.85
+    # Default fallback: bookmaker_*_match_id should equal match_id when
+    # the dataclass leaves them as None.
+    assert pb_player.bookmaker_a_match_id == "mPB"
+    assert pb_player.bookmaker_b_match_id == "mPB"
+
+    pb_handicap = by_market[("mPB", "home_handicap_ot", None)]
+    # Signed threshold preserved through the bulk path.
+    assert pb_handicap.threshold_a == -3.5
+    assert pb_handicap.threshold_b == -2.5
+    # NULL middle_profit_margin should round-trip as None, not 0.0.
+    assert pb_handicap.middle_profit_margin is None
+    # Explicit per-bookmaker match-ids are preserved.
+    assert pb_handicap.bookmaker_a_match_id == "mPB-mozz"
+    assert pb_handicap.bookmaker_b_match_id == "mPB-maxbet"
+
+    ab = by_market[("mAB", "game_total_ot", None)]
+    assert ab.profit_margin is None
+    assert ab.middle_profit_margin == 0.40
+    assert ab.gap == 0.0
+
+
+@pytest.mark.asyncio
+async def test_insert_discrepancies_bulk_handles_empty_input():
+    """Empty input is a no-op and must not start a transaction."""
+    inserted = await odds_store.insert_discrepancies_bulk([])
+    assert inserted == 0
+    discs = await odds_store.get_discrepancies()
+    assert discs == []
+
+
+@pytest.mark.asyncio
+async def test_insert_opportunities_bulk_matches_per_row_path():
+    """Bulk-insert opportunities produce the same DB rows as per-row inserts."""
+    from app.models.schemas import OpportunityLeg
+    from app.services.opportunity_analyzer import Opportunity
+
+    await odds_store.upsert_league("uefa", "UEFA", "football")
+    await odds_store.upsert_match("f-m1", "uefa", "Bayern", "Real Madrid")
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+
+    opportunities = [
+        Opportunity(
+            sport="football",
+            match_id="f-m1",
+            opportunity_type="football_result_double_chance",
+            market_type="football_double_chance",
+            line=None,
+            profit_margin=0.012,
+            middle_profit_margin=None,
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id="mozzart",
+                    bookmaker_name="Mozzart",
+                    market_type="football_result",
+                    outcome_code="home",
+                    odds=2.5,
+                    line=None,
+                    raw_label="1",
+                ),
+                OpportunityLeg(
+                    bookmaker_id="maxbet",
+                    bookmaker_name="MaxBet",
+                    market_type="football_double_chance",
+                    outcome_code="draw_or_away",
+                    odds=1.42,
+                    line=None,
+                    raw_label="X2",
+                ),
+            ],
+        ),
+    ]
+
+    inserted = await odds_store.insert_opportunities_bulk(
+        opportunities, detected_at="2026-05-02T16:00:00+00:00"
+    )
+    assert inserted == 1
+
+    opps = await odds_store.get_opportunities()
+    assert len(opps) == 1
+    assert opps[0].profit_margin == 0.012
+    assert opps[0].middle_profit_margin is None
+    assert opps[0].sport == "football"
+    assert len(opps[0].legs) == 2
+    assert opps[0].legs[0].outcome_code == "home"
+    assert opps[0].legs[1].outcome_code == "draw_or_away"
+
+
+@pytest.mark.asyncio
+async def test_insert_opportunities_bulk_handles_empty_input():
+    """Empty input is a no-op."""
+    inserted = await odds_store.insert_opportunities_bulk(
+        [], detected_at="2026-05-02T16:00:00+00:00"
+    )
+    assert inserted == 0

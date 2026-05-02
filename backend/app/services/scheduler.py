@@ -1010,30 +1010,12 @@ class Scheduler:
                     event_members=opportunity_event_members,
                     event_primary_match_ids=opportunity_event_primary_match_ids,
                 )
-                for opportunity in opportunities:
-                    await odds_store.insert_opportunity(
-                        opportunity,
-                        detected_at=cycle_scraped_at,
-                    )
+                await odds_store.insert_opportunities_bulk(
+                    opportunities,
+                    detected_at=cycle_scraped_at,
+                )
 
-                for d in discrepancies:
-                    await odds_store.insert_discrepancy(
-                        match_id=d.match_id,
-                        market_type=d.market_type,
-                        player_name=d.player_name,
-                        bookmaker_a_id=d.bookmaker_a_id,
-                        bookmaker_b_id=d.bookmaker_b_id,
-                        threshold_a=d.threshold_a,
-                        threshold_b=d.threshold_b,
-                        odds_a=d.odds_a,
-                        odds_b=d.odds_b,
-                        gap=d.gap,
-                        profit_margin=d.profit_margin,
-                        middle_profit_margin=d.middle_profit_margin,
-                        resolved_event_id=d.resolved_event_id,
-                        bookmaker_a_match_id=d.bookmaker_a_match_id,
-                        bookmaker_b_match_id=d.bookmaker_b_match_id,
-                    )
+                await odds_store.insert_discrepancies_bulk(discrepancies)
 
                 self._scan_phase = "notifying"
                 notified = await self._notification_service.notify_discrepancies(

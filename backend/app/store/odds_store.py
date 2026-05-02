@@ -1804,6 +1804,54 @@ async def insert_opportunity(opportunity, *, detected_at: str) -> int:
     return cursor.lastrowid or 0
 
 
+async def insert_opportunities_bulk(opportunities, *, detected_at: str) -> int:
+    """Insert a batch of opportunities in a single transaction.
+
+    Equivalent to calling :func:`insert_opportunity` once per item but
+    issues a single ``BEGIN IMMEDIATE`` / ``executemany`` / ``commit``
+    instead of one round-trip-and-fsync per row.  A scrape cycle can
+    produce thousands of opportunities (especially after the basketball
+    handicap rollout), so the per-row path serialised the SQLite write
+    transaction for minutes; the bulk path collapses that to one short
+    transaction so the merge endpoints aren't blocked on
+    ``is_cycle_in_progress`` for the whole analyse phase.
+
+    Returns the number of rows inserted.
+    """
+    if not opportunities:
+        return 0
+    db = await get_db()
+    rows = [
+        (
+            opp.sport,
+            opp.match_id,
+            opp.resolved_event_id,
+            opp.opportunity_type,
+            opp.market_type,
+            opp.line,
+            opp.profit_margin,
+            opp.middle_profit_margin,
+            json.dumps([leg.model_dump() for leg in opp.legs]),
+            detected_at,
+        )
+        for opp in opportunities
+    ]
+    await db.execute("BEGIN IMMEDIATE")
+    try:
+        await db.executemany(
+            """INSERT INTO opportunities
+               (sport, match_id, resolved_event_id, opportunity_type, market_type, line, profit_margin,
+                middle_profit_margin, legs, detected_at, is_active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)""",
+            rows,
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    return len(rows)
+
+
 def _row_to_opportunity(row: aiosqlite.Row) -> OpportunityOut:
     data = _row_to_dict(row)
     raw_legs = data.get("legs")
@@ -2233,6 +2281,62 @@ async def insert_discrepancy(
     )
     await db.commit()
     return cursor.lastrowid or 0
+
+
+async def insert_discrepancies_bulk(discrepancies) -> int:
+    """Insert a batch of analyzer-emitted discrepancies in one transaction.
+
+    Equivalent to calling :func:`insert_discrepancy` once per item but
+    issues a single ``BEGIN IMMEDIATE`` / ``executemany`` / ``commit``
+    instead of one fsync'd commit per row.  After the basketball
+    handicap rollout the analyzer routinely emits 100k+ rows per cycle,
+    which under the per-row path took 5–7 minutes and held the SQLite
+    write lock for the whole analyse phase — long enough for every
+    merge endpoint to keep returning 409 ``Cycle in progress``.
+
+    Falls back to the same column resolution as :func:`insert_discrepancy`,
+    including the ``bookmaker_*_match_id or match_id`` defaults.
+
+    Returns the number of rows inserted.
+    """
+    if not discrepancies:
+        return 0
+    db = await get_db()
+    rows = [
+        (
+            d.match_id,
+            d.resolved_event_id,
+            d.market_type,
+            d.player_name,
+            d.bookmaker_a_id,
+            d.bookmaker_a_match_id or d.match_id,
+            d.bookmaker_b_id,
+            d.bookmaker_b_match_id or d.match_id,
+            d.threshold_a,
+            d.threshold_b,
+            d.odds_a,
+            d.odds_b,
+            d.gap,
+            d.profit_margin,
+            d.middle_profit_margin,
+        )
+        for d in discrepancies
+    ]
+    await db.execute("BEGIN IMMEDIATE")
+    try:
+        await db.executemany(
+            """INSERT INTO discrepancies
+               (match_id, resolved_event_id, market_type, player_name,
+                bookmaker_a_id, bookmaker_a_match_id, bookmaker_b_id, bookmaker_b_match_id,
+                threshold_a, threshold_b, odds_a, odds_b, gap, profit_margin, middle_profit_margin)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    return len(rows)
 
 
 async def deactivate_all_discrepancies() -> None:
