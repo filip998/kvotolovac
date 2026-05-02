@@ -430,6 +430,60 @@ async def test_scheduler_shadow_counts_same_line_best_direction_once():
 
 
 @pytest.mark.asyncio
+async def test_scheduler_shadow_preserves_same_line_player_market_identity():
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds(
+                        "alpha",
+                        18.5,
+                        over_odds=2.10,
+                        under_odds=1.50,
+                        player_name="Sasha Vezenkov",
+                    ),
+                    _raw_odds(
+                        "alpha",
+                        18.5,
+                        over_odds=2.10,
+                        under_odds=1.50,
+                        player_name="Facundo Campazzo",
+                    ),
+                ]
+            },
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds(
+                        "beta",
+                        18.5,
+                        over_odds=2.00,
+                        under_odds=2.10,
+                        player_name="Sasha Vezenkov",
+                    ),
+                    _raw_odds(
+                        "beta",
+                        18.5,
+                        over_odds=2.00,
+                        under_odds=2.10,
+                        player_name="Facundo Campazzo",
+                    ),
+                ]
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["discrepancies_found"] == 2
+    assert result["canonical_opportunities_found"] == 2
+    assert result["canonical_shadow_warnings"] == []
+
+
+@pytest.mark.asyncio
 async def test_scheduler_shadow_analysis_handles_tennis_outcome_offers(
     monkeypatch: pytest.MonkeyPatch,
 ):

@@ -171,9 +171,9 @@ def _basketball_same_line_shadow_legacy_key(
     opportunity,
     canonical_offers,
 ) -> tuple[str, tuple[str, str]] | None:
-    market_key = _opportunity_market_key(opportunity, canonical_offers)
-    if market_key is None:
+    if len(opportunity.market_keys) != 1:
         return None
+    market_key = opportunity.market_keys[0]
     over_offers = {
         offer.bookmaker_id: offer
         for offer in canonical_offers
@@ -189,29 +189,6 @@ def _basketball_same_line_shadow_legacy_key(
     if abs(first.odds - second.odds) < 0.05:
         return None
     return market_key, tuple(sorted((first.bookmaker_id, second.bookmaker_id)))
-
-
-def _opportunity_market_key(opportunity, canonical_offers) -> str | None:
-    candidate_keys: set[str] | None = None
-    for leg in opportunity.legs:
-        leg_keys = {
-            offer.market_key for offer in canonical_offers if _offer_matches_leg(offer, leg)
-        }
-        candidate_keys = leg_keys if candidate_keys is None else candidate_keys & leg_keys
-    if candidate_keys is not None and len(candidate_keys) == 1:
-        return next(iter(candidate_keys))
-    return None
-
-
-def _offer_matches_leg(offer, leg) -> bool:
-    return (
-        offer.bookmaker_id == leg.bookmaker_id
-        and offer.outcome_code == leg.outcome_code
-        and offer.odds == leg.odds
-        and offer.market.line == leg.line
-        and offer.market.source_market_type == leg.market_type
-        and (offer.market.bookmaker_match_id or offer.market.match_id) == leg.match_id
-    )
 
 
 def _candidate_merge_source_ids(case) -> set[int]:
