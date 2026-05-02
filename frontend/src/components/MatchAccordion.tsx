@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import type { Discrepancy } from '../api/types';
+import { groupDiscrepanciesByMarket } from '../utils/discrepancyGrouping';
 import { formatDateTime } from '../utils/format';
-import DiscrepancyCard from './DiscrepancyCard';
+import MarketSummaryCard from './MarketSummaryCard';
 
 interface MatchAccordionProps {
   matchId: string;
@@ -23,6 +24,23 @@ export default function MatchAccordion({
 }: MatchAccordionProps) {
   const location = useLocation();
   const [isOpen, setIsOpen] = useState(true);
+
+  // Group by (market_type, player_name) — match_id is constant within the
+  // accordion. Groups inherit the desc-by-best-margin ordering we need
+  // for the dashboard, so the most attractive market shows first.
+  const groups = useMemo(() => {
+    const all = groupDiscrepanciesByMarket(discrepancies);
+    return all
+      .slice()
+      .sort((a, b) => b.best.profit_margin - a.best.profit_margin);
+  }, [discrepancies]);
+
+  const totalLines = discrepancies.length;
+  const groupCount = groups.length;
+  const summary =
+    groupCount === totalLines
+      ? `${totalLines}`
+      : `${groupCount} markets · ${totalLines} lines`;
 
   return (
     <div className="rounded-lg border border-border bg-surface">
@@ -47,13 +65,13 @@ export default function MatchAccordion({
             <div className="mt-0.5 text-xs text-text-muted">{formatDateTime(startTime)}</div>
           </div>
         </div>
-        <span className="font-mono text-xs text-text-secondary">{discrepancies.length}</span>
+        <span className="font-mono text-xs text-text-secondary">{summary}</span>
       </button>
 
       {isOpen && (
         <div className="space-y-3 border-t border-border px-4 pb-4 pt-3">
-          {discrepancies.map((d) => (
-            <DiscrepancyCard key={d.id} discrepancy={d} totalUnits={totalUnits} />
+          {groups.map((group) => (
+            <MarketSummaryCard key={group.key} group={group} totalUnits={totalUnits} />
           ))}
         </div>
       )}
