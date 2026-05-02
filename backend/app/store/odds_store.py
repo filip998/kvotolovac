@@ -12,6 +12,7 @@ from ..config import settings
 from ..database import get_db
 from ..models.schemas import (
     BookmakerOut,
+    CanonicalOffer,
     CanonicalTeamOut,
     DiscrepancyDetail,
     DiscrepancyOut,
@@ -40,6 +41,11 @@ from ..models.schemas import (
     UnresolvedOddsDiagnostic,
     UnresolvedOddsOut,
 )
+from ..services.canonical_offers import (
+    canonical_offer_from_normalized_outcome_offer,
+    canonical_offers_from_normalized_odds,
+)
+from ..services.event_player_resolver import build_event_scoped_player_odds
 
 
 def _row_to_dict(row: aiosqlite.Row) -> dict:
@@ -1487,6 +1493,21 @@ async def get_current_normalized_odds_for_matches(
     if snapshot_filter is None:
         return []
 
+    return await _get_normalized_odds_for_matches_snapshot(
+        db,
+        selected_match_ids,
+        snapshot_filter=snapshot_filter,
+        snapshot_params=snapshot_params,
+    )
+
+
+async def _get_normalized_odds_for_matches_snapshot(
+    db: aiosqlite.Connection,
+    selected_match_ids: list[str],
+    *,
+    snapshot_filter: str,
+    snapshot_params: list[object],
+) -> list[NormalizedOdds]:
     placeholders = _sql_placeholders(selected_match_ids)
     rows = await db.execute_fetchall(
         f"""SELECT o.match_id,
@@ -1503,7 +1524,8 @@ async def get_current_normalized_odds_for_matches(
                    o.threshold,
                    o.over_odds,
                    o.under_odds,
-                   m.start_time
+                   m.start_time,
+                   o.scraped_at
             FROM odds o
             JOIN matches m ON m.id = o.match_id
             LEFT JOIN match_bookmaker_sources s
@@ -1529,6 +1551,21 @@ async def get_current_normalized_outcome_offers_for_matches(
     if snapshot_filter is None:
         return []
 
+    return await _get_normalized_outcome_offers_for_matches_snapshot(
+        db,
+        selected_match_ids,
+        snapshot_filter=snapshot_filter,
+        snapshot_params=snapshot_params,
+    )
+
+
+async def _get_normalized_outcome_offers_for_matches_snapshot(
+    db: aiosqlite.Connection,
+    selected_match_ids: list[str],
+    *,
+    snapshot_filter: str,
+    snapshot_params: list[object],
+) -> list[NormalizedOutcomeOffer]:
     placeholders = _sql_placeholders(selected_match_ids)
     rows = await db.execute_fetchall(
         f"""SELECT o.match_id,
@@ -1545,7 +1582,8 @@ async def get_current_normalized_outcome_offers_for_matches(
                    o.odds,
                    o.line,
                    o.raw_label,
-                   m.start_time
+                   m.start_time,
+                   o.scraped_at
             FROM outcome_offers o
             JOIN matches m ON m.id = o.match_id
             LEFT JOIN match_bookmaker_sources s
@@ -1557,6 +1595,96 @@ async def get_current_normalized_outcome_offers_for_matches(
         [*selected_match_ids, *snapshot_params],
     )
     return [NormalizedOutcomeOffer(**_row_to_dict(row)) for row in rows]
+
+
+async def get_current_canonical_offers_for_matches(
+    match_ids: list[str],
+) -> list[CanonicalOffer]:
+    selected_match_ids = list(dict.fromkeys(match_ids))
+    if not selected_match_ids:
+        return []
+
+    db = await get_db()
+    snapshot_filter, snapshot_params = await _current_or_legacy_snapshot_filter(db, "o")
+    if snapshot_filter is None:
+        return []
+
+    odds_rows = await _get_normalized_odds_for_matches_snapshot(
+        db,
+        selected_match_ids,
+        snapshot_filter=snapshot_filter,
+        snapshot_params=snapshot_params,
+    )
+    outcome_offer_rows = await _get_normalized_outcome_offers_for_matches_snapshot(
+        db,
+        selected_match_ids,
+        snapshot_filter=snapshot_filter,
+        snapshot_params=snapshot_params,
+    )
+    resolved_event_members = await _eligible_resolved_event_members_for_offer_rows(
+        [*odds_rows, *outcome_offer_rows]
+    )
+    resolved_event_ids = _resolved_event_ids_for_offer_rows(
+        [*odds_rows, *outcome_offer_rows],
+        resolved_event_members,
+    )
+    event_scoped_player_odds = {
+        id(item.odds): item
+        for item in build_event_scoped_player_odds(odds_rows, resolved_event_members)
+    }
+    canonical_offers: list[CanonicalOffer] = []
+    for odds in odds_rows:
+        player_identity = event_scoped_player_odds.get(id(odds))
+        canonical_offers.extend(
+            canonical_offers_from_normalized_odds(
+                odds,
+                event_id=resolved_event_ids.get((odds.match_id, odds.bookmaker_id)),
+                subject_key_override=(
+                    player_identity.event_scoped_player_key
+                    if player_identity is not None
+                    else None
+                ),
+                subject_name_override=(
+                    player_identity.event_player_display_name
+                    if player_identity is not None
+                    else None
+                ),
+            )
+        )
+    for offer in outcome_offer_rows:
+        canonical_offers.append(
+            canonical_offer_from_normalized_outcome_offer(
+                offer,
+                event_id=resolved_event_ids.get((offer.match_id, offer.bookmaker_id)),
+            )
+        )
+    return canonical_offers
+
+
+async def _eligible_resolved_event_members_for_offer_rows(
+    rows: list[NormalizedOdds | NormalizedOutcomeOffer],
+) -> list[ResolvedEventMemberOut]:
+    row_keys = {(row.match_id, row.bookmaker_id) for row in rows}
+    if not row_keys:
+        return []
+
+    return await get_eligible_resolved_event_members_for_matches(
+        sorted({match_id for match_id, _ in row_keys}),
+        bookmaker_ids=sorted({bookmaker_id for _, bookmaker_id in row_keys}),
+    )
+
+
+def _resolved_event_ids_for_offer_rows(
+    rows: list[NormalizedOdds | NormalizedOutcomeOffer],
+    members: list[ResolvedEventMemberOut],
+) -> dict[tuple[str, str], str]:
+    row_keys = {(row.match_id, row.bookmaker_id) for row in rows}
+    event_ids: dict[tuple[str, str], str] = {}
+    for member in members:
+        key = (member.match_id, member.bookmaker_id)
+        if key in row_keys and key not in event_ids:
+            event_ids[key] = member.resolved_event_id
+    return event_ids
 
 
 # ── Odds ───────────────────────────────────────────────────
