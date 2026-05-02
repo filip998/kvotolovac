@@ -1,6 +1,5 @@
 import { useQuery, useMutation } from '@tanstack/react-query';
 import client from './client';
-import { normalizeSearchText } from '../utils/search';
 import type {
   Bookmaker,
   CanonicalTeam,
@@ -21,9 +20,7 @@ import type {
   OpportunityFilters,
   OutcomeOffer,
   OutcomeOfferFilters,
-  Discrepancy,
   SystemStatus,
-  DiscrepancyFilters,
   TeamReviewAction,
   TeamReviewApproval,
   TeamReviewApprovalInput,
@@ -37,7 +34,6 @@ import {
   mockLeagues,
   mockMatches,
   mockOddsOffers,
-  mockDiscrepancies,
   mockOpportunities,
   mockFootballOutcomeOffers,
   mockUnresolvedOdds,
@@ -187,125 +183,6 @@ function resolveMockTeamReviewApproval(
     savedTeamId: createdTeam.id,
     savedTeamName: createdTeam.display_name,
   };
-}
-
-// --- Discrepancies ---
-
-export function useDiscrepancies(
-  filters: DiscrepancyFilters = {},
-  options: { enabled?: boolean } = {}
-) {
-  const shouldLoadAll = !!filters.loadAll;
-
-  return useQuery<Discrepancy[]>({
-    queryKey: ['discrepancies', filters],
-    queryFn: async () => {
-      if (USE_MOCK) {
-        await delay();
-        let results = [...mockDiscrepancies];
-
-        if (filters.sport) {
-          const sportByMatchId = new Map(mockMatches.map((match) => [match.id, match.sport]));
-          results = results.filter((d) => {
-            const matchSport = sportByMatchId.get(d.match_id);
-            if (matchSport) {
-              return matchSport === filters.sport;
-            }
-            const inferred = d.market_type.startsWith('football_') ? 'football' : 'basketball';
-            return inferred === filters.sport;
-          });
-        }
-        if (filters.league) {
-          results = results.filter((d) => d.league_name === filters.league);
-        }
-        if (filters.bookmaker_ids?.length) {
-          const selected = new Set(filters.bookmaker_ids);
-          results = results.filter(
-            (d) => selected.has(d.bookmaker_a_id) || selected.has(d.bookmaker_b_id)
-          );
-        }
-        if (filters.market_type) {
-          results = results.filter((d) => d.market_type === filters.market_type);
-        }
-        if (filters.search) {
-          const normalizedQuery = normalizeSearchText(filters.search);
-          results = results.filter((d) =>
-            normalizeSearchText(
-              [
-                d.home_team,
-                d.away_team,
-                `${d.home_team} ${d.away_team}`,
-                d.player_name,
-              ]
-                .filter(Boolean)
-                .join(' ')
-            ).includes(normalizedQuery)
-          );
-        }
-        if (filters.min_gap !== undefined && filters.min_gap > 0) {
-          results = results.filter((d) => d.gap >= filters.min_gap!);
-        }
-
-        const sortBy = filters.sort_by || 'profit_margin';
-        const sortOrder = filters.sort_order || 'desc';
-        results.sort((a, b) => {
-          const aVal = (a[sortBy as keyof Discrepancy] as number | null | undefined) ?? Number.NEGATIVE_INFINITY;
-          const bVal = (b[sortBy as keyof Discrepancy] as number | null | undefined) ?? Number.NEGATIVE_INFINITY;
-          return sortOrder === 'desc' ? bVal - aVal : aVal - bVal;
-        });
-
-        return results;
-      }
-
-      const { loadAll, ...requestFilters } = filters;
-      const serializedFilters = {
-        ...requestFilters,
-        bookmaker_ids: serializeArrayParam(requestFilters.bookmaker_ids),
-      };
-      if (!loadAll) {
-        const { data } = await client.get<Discrepancy[]>('/discrepancies', {
-          params: serializedFilters,
-        });
-        return data;
-      }
-
-      const pageSize = requestFilters.limit ?? 200;
-      const initialOffset = requestFilters.offset ?? 0;
-      const allDiscrepancies: Discrepancy[] = [];
-
-      for (let offset = initialOffset; ; offset += pageSize) {
-        const { data } = await client.get<Discrepancy[]>('/discrepancies', {
-          params: { ...serializedFilters, limit: pageSize, offset },
-        });
-        allDiscrepancies.push(...data);
-        if (data.length < pageSize) {
-          break;
-        }
-      }
-
-      return allDiscrepancies;
-    },
-    enabled: options.enabled ?? true,
-    placeholderData: (previousData) => previousData,
-    staleTime: 30000,
-    refetchInterval: options.enabled === false ? false : shouldLoadAll ? false : 30000,
-  });
-}
-
-export function useDiscrepancy(id: number) {
-  return useQuery<Discrepancy>({
-    queryKey: ['discrepancy', id],
-    queryFn: async () => {
-      if (USE_MOCK) {
-        await delay();
-        const d = mockDiscrepancies.find((d) => d.id === id);
-        if (!d) throw new Error('Not found');
-        return d;
-      }
-      const { data } = await client.get<Discrepancy>(`/discrepancies/${id}`);
-      return data;
-    },
-  });
 }
 
 // --- Generic opportunities / outcome offers ---
@@ -821,7 +698,7 @@ export function useMergeCanonicalTeam() {
           merged_team_name: targetTeam.display_name,
           matches_scraped: 0,
           odds_scraped: 0,
-          discrepancies_found: 0,
+          opportunities_found: 0,
         };
       }
 
@@ -1009,7 +886,6 @@ export function useMergeMatches() {
           reassigned_odds: 0,
           reassigned_odds_history: 0,
           reassigned_outcome_offers: 0,
-          reassigned_discrepancies: 0,
           reassigned_opportunities: 0,
           deleted_source_matches: payload.source_match_ids.length,
         };
@@ -1052,7 +928,6 @@ export function useMergeEvents() {
             const match = mockMatches.find((m) => m.id === matchId);
             return count + (match?.available_bookmakers.length ?? 0);
           }, 0),
-          discrepancies_rebuilt: 0,
           opportunities_rebuilt: 0,
         };
       }

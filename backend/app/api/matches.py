@@ -190,7 +190,6 @@ async def merge_matches(payload: MatchMergeIn) -> MatchMergeOut:
         reassigned_odds=counts["reassigned_odds"],
         reassigned_odds_history=counts["reassigned_odds_history"],
         reassigned_outcome_offers=counts["reassigned_outcome_offers"],
-        reassigned_discrepancies=counts["reassigned_discrepancies"],
         reassigned_opportunities=counts["reassigned_opportunities"],
         deleted_source_matches=counts["deleted_source_matches"],
     )

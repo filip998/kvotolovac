@@ -687,77 +687,7 @@ async def test_get_unresolved_odds_respects_current_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_insert_and_get_discrepancy():
-    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
-    await odds_store.upsert_match("m1", "euroleague", "Partizan", "Crvena Zvezda")
-    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
-    await odds_store.upsert_bookmaker("meridian", "Meridian")
-
-    disc_id = await odds_store.insert_discrepancy(
-        match_id="m1",
-        market_type="player_points",
-        player_name="Iffe Lundberg",
-        bookmaker_a_id="mozzart",
-        bookmaker_b_id="meridian",
-        threshold_a=16.5,
-        threshold_b=18.5,
-        odds_a=1.85,
-        odds_b=2.00,
-        gap=2.0,
-        profit_margin=0.04,
-        middle_profit_margin=0.96,
-    )
-    assert disc_id > 0
-
-    discs = await odds_store.get_discrepancies()
-    assert len(discs) == 1
-    assert discs[0].gap == 2.0
-    assert discs[0].middle_profit_margin == 0.96
-
-
-@pytest.mark.asyncio
-async def test_get_discrepancies_filters_by_search_before_pagination():
-    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
-    await odds_store.upsert_match("m1", "euroleague", "Partizan", "Crvena Zvezda")
-    await odds_store.upsert_match("m2", "euroleague", "Monaco", "Barcelona")
-    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
-    await odds_store.upsert_bookmaker("meridian", "Meridian")
-
-    await odds_store.insert_discrepancy(
-        match_id="m2",
-        market_type="player_points",
-        player_name="Mike James",
-        bookmaker_a_id="mozzart",
-        bookmaker_b_id="meridian",
-        threshold_a=16.5,
-        threshold_b=18.5,
-        odds_a=1.85,
-        odds_b=2.00,
-        gap=2.0,
-        profit_margin=0.20,
-    )
-    await odds_store.insert_discrepancy(
-        match_id="m1",
-        market_type="player_points",
-        player_name="Kendrick Nunn",
-        bookmaker_a_id="mozzart",
-        bookmaker_b_id="meridian",
-        threshold_a=14.5,
-        threshold_b=16.5,
-        odds_a=1.85,
-        odds_b=2.00,
-        gap=2.0,
-        profit_margin=0.01,
-    )
-
-    discs = await odds_store.get_discrepancies(search="nunn", limit=1)
-
-    assert len(discs) == 1
-    assert discs[0].player_name == "Kendrick Nunn"
-
-
-@pytest.mark.asyncio
-async def test_discrepancy_leg_match_id_migration_preserves_foreign_keys(
+async def test_legacy_discrepancies_table_is_dropped(
     tmp_path,
     monkeypatch,
 ):
@@ -786,11 +716,11 @@ async def test_discrepancy_leg_match_id_migration_preserves_foreign_keys(
 
     await init_db(str(legacy_db_path))
     db = await get_db()
-    rows = await db.execute_fetchall("PRAGMA foreign_key_list(discrepancies)")
-    foreign_keys = {(row[3], row[2]) for row in rows}
+    rows = await db.execute_fetchall(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'discrepancies'"
+    )
 
-    assert ("bookmaker_a_match_id", "matches") in foreign_keys
-    assert ("bookmaker_b_match_id", "matches") in foreign_keys
+    assert rows == []
 
 
 @pytest.mark.asyncio
@@ -821,8 +751,6 @@ async def test_resolved_event_id_migration_preserves_foreign_keys(
                    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                    is_active BOOLEAN DEFAULT TRUE
                );
-               INSERT INTO discrepancies (resolved_event_id, market_type)
-               VALUES ('missing-event', 'player_points');
                CREATE TABLE opportunities (
                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                    sport TEXT NOT NULL,
@@ -855,31 +783,15 @@ async def test_resolved_event_id_migration_preserves_foreign_keys(
 
     await init_db(str(legacy_db_path))
     db = await get_db()
-    discrepancy_fks = await db.execute_fetchall("PRAGMA foreign_key_list(discrepancies)")
     opportunity_fks = await db.execute_fetchall("PRAGMA foreign_key_list(opportunities)")
 
     assert ("resolved_event_id", "resolved_events") in {
-        (row[3], row[2]) for row in discrepancy_fks
-    }
-    assert ("resolved_event_id", "resolved_events") in {
         (row[3], row[2]) for row in opportunity_fks
     }
-    discrepancy_stale_rows = await db.execute_fetchall(
-        "SELECT COUNT(*) AS count FROM discrepancies WHERE resolved_event_id IS NULL"
-    )
     opportunity_stale_rows = await db.execute_fetchall(
         "SELECT COUNT(*) AS count FROM opportunities WHERE resolved_event_id IS NULL"
     )
-    assert discrepancy_stale_rows[0]["count"] == 1
     assert opportunity_stale_rows[0]["count"] == 1
-
-    with pytest.raises(aiosqlite.IntegrityError):
-        await db.execute(
-            "INSERT INTO discrepancies (resolved_event_id, market_type) VALUES (?, ?)",
-            ("still-missing-event", "player_points"),
-        )
-        await db.commit()
-    await db.rollback()
 
     with pytest.raises(aiosqlite.IntegrityError):
         await db.execute(
@@ -941,100 +853,9 @@ async def test_event_review_case_fk_failure_rolls_back_connection():
     )
 
     assert case_id > 0
-
-
-@pytest.mark.asyncio
-async def test_get_discrepancies_filters_by_involved_bookmakers():
-    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
-    await odds_store.upsert_match("m1", "euroleague", "Partizan", "Crvena Zvezda")
-    await odds_store.upsert_match("m2", "euroleague", "Monaco", "Barcelona")
-    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
-    await odds_store.upsert_bookmaker("meridian", "Meridian")
-    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
-
-    await odds_store.insert_discrepancy(
-        match_id="m1",
-        market_type="player_points",
-        player_name="Iffe Lundberg",
-        bookmaker_a_id="mozzart",
-        bookmaker_b_id="meridian",
-        threshold_a=16.5,
-        threshold_b=18.5,
-        odds_a=1.85,
-        odds_b=2.00,
-        gap=2.0,
-        profit_margin=0.04,
-    )
-    await odds_store.insert_discrepancy(
-        match_id="m2",
-        market_type="player_points",
-        player_name="Mike James",
-        bookmaker_a_id="maxbet",
-        bookmaker_b_id="mozzart",
-        threshold_a=19.5,
-        threshold_b=21.5,
-        odds_a=1.9,
-        odds_b=1.85,
-        gap=2.0,
-        profit_margin=0.03,
-    )
-
-    discs = await odds_store.get_discrepancies(bookmaker_ids=["meridian"])
-
-    assert len(discs) == 1
-    assert discs[0].bookmaker_b_id == "meridian"
-
-
-@pytest.mark.asyncio
-async def test_get_discrepancy_detail():
-    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
-    await odds_store.upsert_match("m1", "euroleague", "Partizan", "Zvezda")
-    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
-    await odds_store.upsert_bookmaker("meridian", "Meridian")
-    await odds_store.upsert_match_bookmaker_source(
-        match_id="m1",
-        bookmaker_id="mozzart",
-        source_url="https://example.com/mozzart/m1",
-    )
-    await odds_store.upsert_match_bookmaker_source(
-        match_id="m1",
-        bookmaker_id="meridian",
-        source_url="https://example.com/meridian/m1",
-    )
-
-    disc_id = await odds_store.insert_discrepancy(
-        match_id="m1", market_type="player_points", player_name="Lundberg",
-        bookmaker_a_id="mozzart", bookmaker_b_id="meridian",
-        threshold_a=16.5, threshold_b=18.5,
-        odds_a=1.85, odds_b=2.0, gap=2.0, profit_margin=0.04, middle_profit_margin=0.96,
-    )
-    detail = await odds_store.get_discrepancy(disc_id)
-    assert detail is not None
-    assert detail.bookmaker_a_name == "Mozzart"
-    assert detail.bookmaker_a_source_url == "https://example.com/mozzart/m1"
-    assert detail.bookmaker_b_source_url == "https://example.com/meridian/m1"
-    assert detail.home_team == "Partizan"
-    assert detail.middle_profit_margin == 0.96
-
-
-@pytest.mark.asyncio
-async def test_deactivate_discrepancies():
-    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
-    await odds_store.upsert_match("m1", "euroleague", "A", "B")
-    await odds_store.upsert_bookmaker("a", "A")
-    await odds_store.upsert_bookmaker("b", "B")
-
-    await odds_store.insert_discrepancy(
-        "m1", "player_points", "P", "a", "b", 10, 12, 1.9, 2.0, 2.0, 0.03
-    )
-    await odds_store.deactivate_all_discrepancies()
-    active = await odds_store.get_discrepancies(active_only=True)
-    assert len(active) == 0
-
-
 @pytest.mark.asyncio
 async def test_notifications_crud():
-    nid = await odds_store.insert_notification("discrepancy", "Test", "msg", {"gap": 2.0})
+    nid = await odds_store.insert_notification("opportunity", "Test", "msg", {"gap": 2.0})
     assert nid > 0
     notifs = await odds_store.get_notifications()
     assert len(notifs) == 1
@@ -1121,34 +942,6 @@ async def test_cleanup_retained_data_prunes_stale_snapshot_rows(monkeypatch: pyt
         ),
         scraped_at=current_snapshot_at,
     )
-    await odds_store.insert_discrepancy(
-        "stale",
-        "player_points",
-        "Saben Lee",
-        "meridian",
-        "mozzart",
-        13.5,
-        15.5,
-        1.8,
-        1.95,
-        2.0,
-        0.03,
-    )
-    await odds_store.deactivate_all_discrepancies()
-    active_discrepancy_id = await odds_store.insert_discrepancy(
-        "fresh",
-        "player_points",
-        "Tamir Blatt",
-        "meridian",
-        "mozzart",
-        6.5,
-        8.5,
-        2.09,
-        1.95,
-        2.0,
-        0.04,
-    )
-
     old_case_id = await odds_store.insert_team_review_case(
         TeamReviewDiagnostic(
             bookmaker_id="meridian",
@@ -1183,10 +976,10 @@ async def test_cleanup_retained_data_prunes_stale_snapshot_rows(monkeypatch: pyt
     )
 
     old_notification_id = await odds_store.insert_notification(
-        "discrepancy", "Old Alert", "body", {"gap": 2.0}
+        "opportunity", "Old Alert", "body", {"gap": 2.0}
     )
     recent_notification_id = await odds_store.insert_notification(
-        "discrepancy", "Recent Alert", "body", {"gap": 2.0}
+        "opportunity", "Recent Alert", "body", {"gap": 2.0}
     )
     db = await get_db()
     await db.execute(
@@ -1207,9 +1000,6 @@ async def test_cleanup_retained_data_prunes_stale_snapshot_rows(monkeypatch: pyt
     unresolved_rows = await db.execute_fetchall(
         "SELECT raw_team_name, scraped_at FROM unresolved_odds ORDER BY id"
     )
-    discrepancy_rows = await db.execute_fetchall(
-        "SELECT id, is_active FROM discrepancies ORDER BY id"
-    )
     history_rows = await db.execute_fetchall(
         "SELECT match_id, scraped_at FROM odds_history ORDER BY id"
     )
@@ -1226,9 +1016,6 @@ async def test_cleanup_retained_data_prunes_stale_snapshot_rows(monkeypatch: pyt
     assert [(row["raw_team_name"], row["scraped_at"]) for row in unresolved_rows] == [
         ("Maccabi Tel Aviv", current_snapshot_at)
     ]
-    assert [(row["id"], row["is_active"]) for row in discrepancy_rows] == [
-        (active_discrepancy_id, 1)
-    ]
     assert [(row["match_id"], row["scraped_at"]) for row in history_rows] == [
         ("fresh", current_snapshot_at)
     ]
@@ -1239,7 +1026,6 @@ async def test_cleanup_retained_data_prunes_stale_snapshot_rows(monkeypatch: pyt
     assert counts == {
         "deleted_stale_odds": 1,
         "deleted_stale_unresolved_odds": 1,
-        "deleted_inactive_discrepancies": 1,
         "deleted_odds_history": 1,
         "deleted_team_review_cases": 1,
         "deleted_notifications": 2,
@@ -1256,10 +1042,10 @@ async def test_cleanup_retained_data_keeps_recent_notifications_when_enabled(
 
     current_snapshot_at = "2026-04-20T12:00:00"
     old_notification_id = await odds_store.insert_notification(
-        "discrepancy", "Old Alert", "body", {"gap": 2.0}
+        "opportunity", "Old Alert", "body", {"gap": 2.0}
     )
     recent_notification_id = await odds_store.insert_notification(
-        "discrepancy", "Recent Alert", "body", {"gap": 2.0}
+        "opportunity", "Recent Alert", "body", {"gap": 2.0}
     )
 
     db = await get_db()
@@ -1312,7 +1098,7 @@ async def test_cleanup_retained_data_uses_isolated_connection_for_transaction(
     monkeypatch.setattr(odds_store.aiosqlite, "connect", fake_connect)
 
     old_notification_id = await odds_store.insert_notification(
-        "discrepancy", "Old Alert", "body", {"gap": 2.0}
+        "opportunity", "Old Alert", "body", {"gap": 2.0}
     )
     db = await get_db()
     await db.execute(
@@ -1327,7 +1113,7 @@ async def test_cleanup_retained_data_uses_isolated_connection_for_transaction(
     await pause_delete.wait()
 
     insert_task = asyncio.create_task(
-        odds_store.insert_notification("discrepancy", "Concurrent Alert", "body", {"gap": 2.5})
+        odds_store.insert_notification("opportunity", "Concurrent Alert", "body", {"gap": 2.5})
     )
     await asyncio.sleep(0)
     allow_delete.set()

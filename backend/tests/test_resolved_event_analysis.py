@@ -5,12 +5,13 @@ import pytest
 from app.models.schemas import (
     NormalizedOdds,
     NormalizedOutcomeOffer,
+    OpportunityLeg,
     ResolvedEventIn,
     ResolvedEventMemberIn,
     ResolvedEventMemberOut,
 )
 from app.services.analyzer import analyze
-from app.services.opportunity_analyzer import analyze_outcome_offers
+from app.services.opportunity_analyzer import Opportunity, analyze_outcome_offers
 from app.store import odds_store
 
 
@@ -319,7 +320,7 @@ async def test_store_helpers_exclude_non_eligible_event_methods_from_analysis():
 
 
 @pytest.mark.asyncio
-async def test_discrepancy_storage_uses_leg_match_ids_for_source_urls():
+async def test_opportunity_storage_uses_leg_match_ids_for_source_urls():
     await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
     await odds_store.upsert_bookmaker("mozzart", "Mozzart")
     await odds_store.upsert_bookmaker("meridian", "Meridian")
@@ -350,31 +351,48 @@ async def test_discrepancy_storage_uses_leg_match_ids_for_source_urls():
         source_url="https://meridian.example/event",
     )
 
-    await odds_store.insert_discrepancy(
-        match_id="match-mozzart",
-        resolved_event_id=None,
-        market_type="player_points",
-        player_name="Nikola Jokić",
-        bookmaker_a_id="mozzart",
-        bookmaker_a_match_id="match-mozzart",
-        bookmaker_b_id="meridian",
-        bookmaker_b_match_id="match-meridian",
-        threshold_a=12.5,
-        threshold_b=14.5,
-        odds_a=2.05,
-        odds_b=2.05,
-        gap=2.0,
-        profit_margin=0.025,
+    await odds_store.insert_opportunity(
+        Opportunity(
+            sport="basketball",
+            match_id="match-mozzart",
+            resolved_event_id=None,
+            opportunity_type="middle",
+            market_type="player_points",
+            subject_type="player",
+            subject_name="Nikola Jokić",
+            line=None,
+            profit_margin=0.025,
+            middle_profit_margin=0.5,
+            legs=[
+                OpportunityLeg(
+                    match_id="match-mozzart",
+                    bookmaker_id="mozzart",
+                    market_type="player_points",
+                    outcome_code="over",
+                    line=12.5,
+                    odds=2.05,
+                ),
+                OpportunityLeg(
+                    match_id="match-meridian",
+                    bookmaker_id="meridian",
+                    market_type="player_points",
+                    outcome_code="under",
+                    line=14.5,
+                    odds=2.05,
+                ),
+            ],
+        ),
+        detected_at=START_TIME,
     )
 
-    stored = await odds_store.get_discrepancies()
+    stored = await odds_store.get_opportunities()
 
     assert len(stored) == 1
     assert stored[0].match_id == "match-mozzart"
-    assert stored[0].bookmaker_a_match_id == "match-mozzart"
-    assert stored[0].bookmaker_b_match_id == "match-meridian"
-    assert stored[0].bookmaker_a_source_url == "https://mozzart.example/event"
-    assert stored[0].bookmaker_b_source_url == "https://meridian.example/event"
+    assert stored[0].legs[0].match_id == "match-mozzart"
+    assert stored[0].legs[1].match_id == "match-meridian"
+    assert stored[0].legs[0].source_url == "https://mozzart.example/event"
+    assert stored[0].legs[1].source_url == "https://meridian.example/event"
 
 
 @pytest.mark.asyncio

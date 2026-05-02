@@ -58,7 +58,6 @@ export default function EventReview() {
           );
           void queryClient.invalidateQueries({ queryKey: ['eventReviewCases'] });
           void queryClient.invalidateQueries({ queryKey: ['matches'] });
-          void queryClient.invalidateQueries({ queryKey: ['discrepancies'] });
           void queryClient.invalidateQueries({ queryKey: ['opportunities'] });
           void refetch();
         },

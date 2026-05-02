@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.analyzer import Discrepancy
+from app.models.schemas import OpportunityLeg
+from app.services.opportunity_analyzer import Opportunity
 from app.services.notifications import (
     InAppNotificationProvider,
     NotificationProvider,
@@ -11,19 +12,33 @@ from app.services.notifications import (
 from app.store import odds_store
 
 
-def _make_disc(gap: float, player: str = "Lundberg") -> Discrepancy:
-    return Discrepancy(
+def _make_opportunity(gap: float, subject: str = "Lundberg") -> Opportunity:
+    return Opportunity(
+        sport="basketball",
         match_id="m1",
+        opportunity_type="middle",
         market_type="player_points",
-        player_name=player,
-        bookmaker_a_id="mozzart",
-        bookmaker_b_id="meridian",
-        threshold_a=16.5,
-        threshold_b=16.5 + gap,
-        odds_a=1.85,
-        odds_b=2.00,
-        gap=gap,
+        line=None,
         profit_margin=-0.04,
+        middle_profit_margin=0.5,
+        subject_type="player",
+        subject_name=subject,
+        legs=[
+            OpportunityLeg(
+                bookmaker_id="mozzart",
+                market_type="player_points",
+                outcome_code="over",
+                line=16.5,
+                odds=1.85,
+            ),
+            OpportunityLeg(
+                bookmaker_id="meridian",
+                market_type="player_points",
+                outcome_code="under",
+                line=16.5 + gap,
+                odds=2.00,
+            ),
+        ],
     )
 
 
@@ -37,7 +52,7 @@ async def test_notification_provider_interface():
 @pytest.mark.asyncio
 async def test_in_app_provider_stores_notification():
     provider = InAppNotificationProvider()
-    await provider.send("discrepancy", "Test Alert", "body", {"gap": 2.0})
+    await provider.send("opportunity", "Test Alert", "body", {"gap": 2.0})
     notifs = await odds_store.get_notifications()
     assert len(notifs) == 1
     assert notifs[0].title == "Test Alert"
@@ -48,8 +63,8 @@ async def test_notification_service_threshold_filter():
     service = NotificationService(gap_threshold=2.0)
     service.register_provider(InAppNotificationProvider())
 
-    discs = [_make_disc(1.0), _make_disc(2.5)]
-    count = await service.notify_discrepancies(discs)
+    opportunities = [_make_opportunity(1.0), _make_opportunity(2.5)]
+    count = await service.notify_opportunities(opportunities)
     assert count == 1  # only gap=2.5 meets threshold
 
     notifs = await odds_store.get_notifications()
@@ -59,8 +74,8 @@ async def test_notification_service_threshold_filter():
 @pytest.mark.asyncio
 async def test_notification_service_no_providers():
     service = NotificationService(gap_threshold=1.0)
-    discs = [_make_disc(2.0)]
-    count = await service.notify_discrepancies(discs)
+    opportunities = [_make_opportunity(2.0)]
+    count = await service.notify_opportunities(opportunities)
     assert count == 0
 
 
@@ -70,8 +85,8 @@ async def test_notification_service_multiple_providers():
     service.register_provider(InAppNotificationProvider())
     service.register_provider(InAppNotificationProvider())
 
-    discs = [_make_disc(2.0)]
-    count = await service.notify_discrepancies(discs)
+    opportunities = [_make_opportunity(2.0)]
+    count = await service.notify_opportunities(opportunities)
     assert count == 1
 
     # Both providers should have stored a notification

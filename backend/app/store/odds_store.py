@@ -14,8 +14,6 @@ from ..models.schemas import (
     BookmakerOut,
     CanonicalOffer,
     CanonicalTeamOut,
-    DiscrepancyDetail,
-    DiscrepancyOut,
     EventReviewCaseIn,
     EventReviewCaseOut,
     EventReviewVariantOut,
@@ -1232,7 +1230,6 @@ async def merge_matches(
             "reassigned_odds": 0,
             "reassigned_odds_history": 0,
             "reassigned_outcome_offers": 0,
-            "reassigned_discrepancies": 0,
             "reassigned_opportunities": 0,
             "deleted_source_matches": 0,
         }
@@ -1385,15 +1382,7 @@ async def merge_matches(
             [target_match_id, *params],
         )
 
-        # 6. discrepancies: bulk update; no UNIQUE constraint. The duplicate
-        #    rows will be deactivated on the next discrepancy detection cycle.
-        reassigned_disc_cur = await db.execute(
-            f"UPDATE discrepancies SET match_id = ? WHERE match_id IN ({placeholders})",
-            [target_match_id, *params],
-        )
-        reassigned_disc = reassigned_disc_cur.rowcount or 0
-
-        # 7. opportunities: bulk update; no UNIQUE constraint. Active duplicates
+        # 6. opportunities: bulk update; no UNIQUE constraint. Active duplicates
         #    are deactivated on the next opportunity analysis cycle.
         reassigned_opportunities_cur = await db.execute(
             f"UPDATE opportunities SET match_id = ? WHERE match_id IN ({placeholders})",
@@ -1401,7 +1390,7 @@ async def merge_matches(
         )
         reassigned_opportunities = reassigned_opportunities_cur.rowcount or 0
 
-        # 8. Delete the now-empty source match rows.
+        # 7. Delete the now-empty source match rows.
         deleted_cur = await db.execute(
             f"DELETE FROM matches WHERE id IN ({placeholders})",
             params,
@@ -1417,7 +1406,6 @@ async def merge_matches(
         "reassigned_odds": reassigned_odds,
         "reassigned_odds_history": reassigned_history,
         "reassigned_outcome_offers": reassigned_outcome_offers,
-        "reassigned_discrepancies": reassigned_disc,
         "reassigned_opportunities": reassigned_opportunities,
         "deleted_source_matches": deleted_matches,
     }
@@ -1974,57 +1962,7 @@ async def get_opportunities(
     if sport:
         conditions.append("op.sport = ?")
         params.append(sport)
-    if not include_legacy_discrepancy_overlap:
-        conditions.append(
-            """NOT (
-                   op.sport = ?
-                   AND EXISTS (
-                       SELECT 1
-                       FROM discrepancies d
-                       WHERE d.is_active = TRUE
-                         AND d.market_type = op.market_type
-                         AND (
-                             d.match_id = op.match_id
-                             OR (
-                                 d.resolved_event_id IS NOT NULL
-                                 AND d.resolved_event_id = op.resolved_event_id
-                             )
-                         )
-                         AND (
-                             (op.subject_type = 'player' AND d.player_name = op.subject_name)
-                             OR (
-                                 COALESCE(op.subject_type, 'event') != 'player'
-                                 AND d.player_name IS NULL
-                             )
-                         )
-                         AND EXISTS (
-                             SELECT 1
-                             FROM json_each(op.legs) AS over_leg
-                             WHERE json_extract(over_leg.value, '$.bookmaker_id') = d.bookmaker_a_id
-                               AND json_extract(over_leg.value, '$.outcome_code') = 'over'
-                               AND CAST(json_extract(over_leg.value, '$.line') AS REAL) = d.threshold_a
-                               AND (
-                                   json_extract(over_leg.value, '$.match_id') IS NULL
-                                   OR json_extract(over_leg.value, '$.match_id') =
-                                      COALESCE(d.bookmaker_a_match_id, d.match_id)
-                               )
-                         )
-                         AND EXISTS (
-                             SELECT 1
-                             FROM json_each(op.legs) AS under_leg
-                             WHERE json_extract(under_leg.value, '$.bookmaker_id') = d.bookmaker_b_id
-                               AND json_extract(under_leg.value, '$.outcome_code') = 'under'
-                               AND CAST(json_extract(under_leg.value, '$.line') AS REAL) = d.threshold_b
-                               AND (
-                                   json_extract(under_leg.value, '$.match_id') IS NULL
-                                   OR json_extract(under_leg.value, '$.match_id') =
-                                      COALESCE(d.bookmaker_b_match_id, d.match_id)
-                               )
-                         )
-                   )
-               )"""
-        )
-        params.append("basketball")
+    _ = include_legacy_discrepancy_overlap
     if market_type:
         conditions.append("op.market_type = ?")
         params.append(market_type)
@@ -2389,154 +2327,6 @@ async def mark_team_review_case_declined(case_id: int) -> None:
     await db.commit()
 
 
-# ── Discrepancies ──────────────────────────────────────────
-
-async def insert_discrepancy(
-    match_id: str,
-    market_type: str,
-    player_name: str | None,
-    bookmaker_a_id: str,
-    bookmaker_b_id: str,
-    threshold_a: float,
-    threshold_b: float,
-    odds_a: float | None,
-    odds_b: float | None,
-    gap: float,
-    profit_margin: float | None,
-    middle_profit_margin: float | None = None,
-    resolved_event_id: str | None = None,
-    bookmaker_a_match_id: str | None = None,
-    bookmaker_b_match_id: str | None = None,
-) -> int:
-    db = await get_db()
-    cursor = await db.execute(
-        """INSERT INTO discrepancies
-           (match_id, resolved_event_id, market_type, player_name,
-            bookmaker_a_id, bookmaker_a_match_id, bookmaker_b_id, bookmaker_b_match_id,
-            threshold_a, threshold_b, odds_a, odds_b, gap, profit_margin, middle_profit_margin)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            match_id, resolved_event_id, market_type, player_name,
-            bookmaker_a_id, bookmaker_a_match_id or match_id,
-            bookmaker_b_id, bookmaker_b_match_id or match_id,
-            threshold_a, threshold_b,
-            odds_a, odds_b, gap, profit_margin, middle_profit_margin,
-        ),
-    )
-    await db.commit()
-    return cursor.lastrowid or 0
-
-
-async def deactivate_all_discrepancies() -> None:
-    db = await get_db()
-    await db.execute("UPDATE discrepancies SET is_active = FALSE")
-    await db.commit()
-
-
-async def get_discrepancies(
-    sport: str | None = None,
-    league_id: str | None = None,
-    bookmaker_ids: list[str] | None = None,
-    market_type: str | None = None,
-    search: str | None = None,
-    min_gap: float | None = None,
-    sort_by: str = "profit_margin",
-    sort_order: str = "desc",
-    limit: int = 50,
-    offset: int = 0,
-    active_only: bool = True,
-) -> list[DiscrepancyDetail]:
-    db = await get_db()
-    q = """SELECT d.*, m.home_team, m.away_team, l.name as league_name,
-                  ba.name as bookmaker_a_name, sa.source_url as bookmaker_a_source_url,
-                  bb.name as bookmaker_b_name, sb.source_url as bookmaker_b_source_url
-           FROM discrepancies d
-           LEFT JOIN matches m ON d.match_id = m.id
-           LEFT JOIN leagues l ON m.league_id = l.id
-            LEFT JOIN bookmakers ba ON d.bookmaker_a_id = ba.id
-            LEFT JOIN bookmakers bb ON d.bookmaker_b_id = bb.id
-            LEFT JOIN match_bookmaker_sources sa
-              ON sa.match_id = COALESCE(d.bookmaker_a_match_id, d.match_id)
-             AND sa.bookmaker_id = d.bookmaker_a_id
-            LEFT JOIN match_bookmaker_sources sb
-              ON sb.match_id = COALESCE(d.bookmaker_b_match_id, d.match_id)
-             AND sb.bookmaker_id = d.bookmaker_b_id"""
-    conditions = []
-    params: list = []
-
-    if active_only:
-        conditions.append("d.is_active = TRUE")
-    if market_type:
-        conditions.append("d.market_type = ?")
-        params.append(market_type)
-    if bookmaker_ids:
-        placeholders = _sql_placeholders(bookmaker_ids)
-        conditions.append(
-            f"(d.bookmaker_a_id IN ({placeholders}) OR d.bookmaker_b_id IN ({placeholders}))"
-        )
-        params.extend(bookmaker_ids)
-        params.extend(bookmaker_ids)
-    if min_gap is not None:
-        conditions.append("d.gap >= ?")
-        params.append(min_gap)
-    if league_id:
-        conditions.append("m.league_id = ?")
-        params.append(league_id)
-    if sport:
-        conditions.append("l.sport = ?")
-        params.append(sport)
-    normalized_search = _normalize_search_text(search)
-    if normalized_search:
-        await db.create_function("normalize_search_text", 1, _normalize_search_text)
-        search_like = f"%{normalized_search}%"
-        conditions.append(
-            """normalize_search_text(printf(
-                '%s %s %s %s',
-                COALESCE(m.home_team, ''),
-                COALESCE(m.away_team, ''),
-                printf('%s %s', COALESCE(m.home_team, ''), COALESCE(m.away_team, '')),
-                COALESCE(d.player_name, '')
-            )) LIKE ?"""
-        )
-        params.append(search_like)
-
-    if conditions:
-        q += " WHERE " + " AND ".join(conditions)
-
-    allowed_sort = {"profit_margin", "middle_profit_margin", "gap", "detected_at", "odds_a", "odds_b"}
-    col = sort_by if sort_by in allowed_sort else "profit_margin"
-    order = "DESC" if sort_order.lower() == "desc" else "ASC"
-    q += f" ORDER BY d.{col} {order} LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
-
-    rows = await db.execute_fetchall(q, params)
-    return [DiscrepancyDetail(**_row_to_dict(r)) for r in rows]
-
-
-async def get_discrepancy(disc_id: int) -> DiscrepancyDetail | None:
-    db = await get_db()
-    rows = await db.execute_fetchall(
-        """SELECT d.*, m.home_team, m.away_team,
-                  ba.name as bookmaker_a_name, sa.source_url as bookmaker_a_source_url,
-                  bb.name as bookmaker_b_name, sb.source_url as bookmaker_b_source_url
-           FROM discrepancies d
-           LEFT JOIN matches m ON d.match_id = m.id
-            LEFT JOIN bookmakers ba ON d.bookmaker_a_id = ba.id
-            LEFT JOIN bookmakers bb ON d.bookmaker_b_id = bb.id
-            LEFT JOIN match_bookmaker_sources sa
-              ON sa.match_id = COALESCE(d.bookmaker_a_match_id, d.match_id)
-             AND sa.bookmaker_id = d.bookmaker_a_id
-            LEFT JOIN match_bookmaker_sources sb
-              ON sb.match_id = COALESCE(d.bookmaker_b_match_id, d.match_id)
-             AND sb.bookmaker_id = d.bookmaker_b_id
-            WHERE d.id = ?""",
-        (disc_id,),
-    )
-    if not rows:
-        return None
-    return DiscrepancyDetail(**_row_to_dict(rows[0]))
-
-
 # ── Notifications ──────────────────────────────────────────
 
 async def insert_notification(
@@ -2577,10 +2367,6 @@ async def cleanup_retained_data(current_snapshot_at: str) -> dict[str, int]:
             "DELETE FROM unresolved_odds WHERE scraped_at IS NULL OR scraped_at != ?",
             (current_snapshot_at,),
         )
-        deleted_inactive_discrepancies_cur = await db.execute(
-            "DELETE FROM discrepancies WHERE is_active = FALSE"
-        )
-
         if settings.odds_history_retention_days > 0:
             odds_history_cutoff = _retention_cutoff(
                 current_snapshot_at, settings.odds_history_retention_days
@@ -2639,7 +2425,6 @@ async def cleanup_retained_data(current_snapshot_at: str) -> dict[str, int]:
     return {
         "deleted_stale_odds": deleted_stale_odds_cur.rowcount or 0,
         "deleted_stale_unresolved_odds": deleted_unresolved_cur.rowcount or 0,
-        "deleted_inactive_discrepancies": deleted_inactive_discrepancies_cur.rowcount or 0,
         "deleted_odds_history": deleted_odds_history_cur.rowcount or 0,
         "deleted_team_review_cases": deleted_team_reviews_cur.rowcount or 0,
         "deleted_notifications": deleted_notifications_cur.rowcount or 0,
@@ -2684,7 +2469,7 @@ async def get_system_status(
             )
             matches_count = matches_row[0][0]
             odds_count = odds_row[0][0]
-    disc_row = await db.execute_fetchall("SELECT COUNT(*) as c FROM discrepancies WHERE is_active = TRUE")
+    opportunity_row = await db.execute_fetchall("SELECT COUNT(*) as c FROM opportunities WHERE is_active = TRUE")
     bm_row = await db.execute_fetchall("SELECT COUNT(*) as c FROM bookmakers WHERE is_active = TRUE")
 
     return SystemStatus(
@@ -2692,7 +2477,7 @@ async def get_system_status(
         last_scrape_at=last_scrape_at,
         total_matches=matches_count,
         total_odds=odds_count,
-        total_discrepancies=disc_row[0][0],
+        total_opportunities=opportunity_row[0][0],
         active_bookmakers=bm_row[0][0],
         scheduler_running=scheduler_running,
         scan=scan_progress or ScanProgressOut(),

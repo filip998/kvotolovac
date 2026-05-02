@@ -5,7 +5,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 [project]
 name = "kvotolovac"
 version = "0.1.0"
-description = "Odds comparison tool for Serbian bookmakers — basketball betting line discrepancy detection"
+description = "Odds comparison tool for Serbian bookmakers — canonical betting opportunity detection"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

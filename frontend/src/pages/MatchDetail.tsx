@@ -1,5 +1,5 @@
 import { useParams, Link } from 'react-router-dom';
-import { useMatch, useMatchOdds, useDiscrepancies } from '../api/hooks';
+import { useMatch, useMatchOdds } from '../api/hooks';
 import { formatDateTime } from '../utils/format';
 import { MARKET_TYPE_LABELS } from '../utils/constants';
 import OddsTable from '../components/OddsTable';
@@ -24,7 +24,6 @@ export default function MatchDetail() {
   } = useBookmakerFilter();
   const { data: match, isLoading: matchLoading } = useMatch(id!);
   const { data: odds, isLoading: oddsLoading } = useMatchOdds(id!);
-  const { data: discrepancies } = useDiscrepancies();
 
   const filteredOdds =
     selectedBookmakerIds.length === 0
@@ -73,16 +72,6 @@ export default function MatchDetail() {
     )
   ).sort((a, b) => a.localeCompare(b));
 
-  const matchDiscrepancies =
-    discrepancies?.filter((d) => {
-      if (d.match_id !== id) return false;
-      if (selectedBookmakerIds.length === 0) return true;
-      return (
-        selectedBookmakerIds.includes(d.bookmaker_a_id) ||
-        selectedBookmakerIds.includes(d.bookmaker_b_id)
-      );
-    }) || [];
-
   return (
     <div className="space-y-6">
       <Link
@@ -99,10 +88,6 @@ export default function MatchDetail() {
       >
         {/* Inline stats */}
         <div className="flex flex-wrap items-center gap-6">
-          <div className="flex items-baseline gap-1.5">
-            <span className="font-mono text-lg font-semibold text-text">{matchDiscrepancies.length}</span>
-            <span className="text-xs text-text-muted">discrepancies</span>
-          </div>
           <div className="flex items-baseline gap-1.5">
             <span className="font-mono text-lg font-semibold text-text">{filteredOdds.length}</span>
             <span className="text-xs text-text-muted">
@@ -156,7 +141,6 @@ export default function MatchDetail() {
                 key={group.key}
                 title={group.title}
                 offers={group.offers}
-                discrepancies={matchDiscrepancies}
               />
             ))}
           </section>

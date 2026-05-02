@@ -284,27 +284,6 @@ CREATE TABLE IF NOT EXISTS team_merge_history (
     merged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS discrepancies (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    match_id TEXT REFERENCES matches(id),
-    resolved_event_id TEXT REFERENCES resolved_events(id),
-    market_type TEXT NOT NULL,
-    player_name TEXT,
-    bookmaker_a_id TEXT,
-    bookmaker_a_match_id TEXT REFERENCES matches(id),
-    bookmaker_b_id TEXT,
-    bookmaker_b_match_id TEXT REFERENCES matches(id),
-    threshold_a REAL,
-    threshold_b REAL,
-    odds_a REAL,
-    odds_b REAL,
-    gap REAL,
-    profit_margin REAL,
-    middle_profit_margin REAL,
-    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    is_active BOOLEAN DEFAULT TRUE
-);
-
 CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     type TEXT NOT NULL,
@@ -399,87 +378,6 @@ async def _rebuild_matches(conn: aiosqlite.Connection) -> None:
     )
     await conn.execute("DROP TABLE matches")
     await conn.execute("ALTER TABLE matches__new RENAME TO matches")
-
-
-async def _rebuild_discrepancies(conn: aiosqlite.Connection) -> None:
-    await conn.execute(
-        """
-        CREATE TABLE discrepancies__new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_id TEXT REFERENCES matches(id),
-            resolved_event_id TEXT REFERENCES resolved_events(id),
-            market_type TEXT NOT NULL,
-            player_name TEXT,
-            bookmaker_a_id TEXT,
-            bookmaker_a_match_id TEXT REFERENCES matches(id),
-            bookmaker_b_id TEXT,
-            bookmaker_b_match_id TEXT REFERENCES matches(id),
-            threshold_a REAL,
-            threshold_b REAL,
-            odds_a REAL,
-            odds_b REAL,
-            gap REAL,
-            profit_margin REAL,
-            middle_profit_margin REAL,
-            detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            is_active BOOLEAN DEFAULT TRUE
-        )
-        """
-    )
-    await conn.execute(
-        """
-        INSERT INTO discrepancies__new (
-            id,
-            match_id,
-            resolved_event_id,
-            market_type,
-            player_name,
-            bookmaker_a_id,
-            bookmaker_a_match_id,
-            bookmaker_b_id,
-            bookmaker_b_match_id,
-            threshold_a,
-            threshold_b,
-            odds_a,
-            odds_b,
-            gap,
-            profit_margin,
-            middle_profit_margin,
-            detected_at,
-            is_active
-        )
-        SELECT
-            id,
-            match_id,
-            CASE
-                WHEN resolved_event_id IS NULL THEN NULL
-                WHEN EXISTS (
-                    SELECT 1
-                    FROM resolved_events
-                    WHERE resolved_events.id = discrepancies.resolved_event_id
-                ) THEN resolved_event_id
-                ELSE NULL
-            END,
-            market_type,
-            player_name,
-            bookmaker_a_id,
-            bookmaker_a_match_id,
-            bookmaker_b_id,
-            bookmaker_b_match_id,
-            threshold_a,
-            threshold_b,
-            odds_a,
-            odds_b,
-            gap,
-            profit_margin,
-            middle_profit_margin,
-            detected_at,
-            is_active
-        FROM discrepancies
-        """
-    )
-    await conn.execute("DROP TABLE discrepancies")
-    await conn.execute("ALTER TABLE discrepancies__new RENAME TO discrepancies")
 
 
 async def _rebuild_opportunities(conn: aiosqlite.Connection) -> None:
@@ -690,47 +588,7 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
             "ALTER TABLE unresolved_odds ADD COLUMN sport TEXT NOT NULL DEFAULT 'basketball'"
         )
 
-    columns = await conn.execute_fetchall("PRAGMA table_info(discrepancies)")
-    existing = {row[1] for row in columns}
-    if "middle_profit_margin" not in existing:
-        await conn.execute("ALTER TABLE discrepancies ADD COLUMN middle_profit_margin REAL")
-    if columns and "resolved_event_id" not in existing:
-        await conn.execute(
-            "ALTER TABLE discrepancies ADD COLUMN resolved_event_id TEXT REFERENCES resolved_events(id)"
-        )
-    if columns and "bookmaker_a_match_id" not in existing:
-        await conn.execute(
-            "ALTER TABLE discrepancies ADD COLUMN bookmaker_a_match_id TEXT REFERENCES matches(id)"
-        )
-    if columns and "bookmaker_b_match_id" not in existing:
-        await conn.execute(
-            "ALTER TABLE discrepancies ADD COLUMN bookmaker_b_match_id TEXT REFERENCES matches(id)"
-        )
-    if columns and (
-        not await _table_has_foreign_key(
-            conn,
-            table_name="discrepancies",
-            from_column="resolved_event_id",
-            target_table="resolved_events",
-        )
-        or not await _table_has_foreign_key(
-            conn,
-            table_name="discrepancies",
-            from_column="bookmaker_a_match_id",
-            target_table="matches",
-        )
-        or not await _table_has_foreign_key(
-            conn,
-            table_name="discrepancies",
-            from_column="bookmaker_b_match_id",
-            target_table="matches",
-        )
-    ):
-        await _rebuild_discrepancies(conn)
-    await conn.execute(
-        """CREATE INDEX IF NOT EXISTS idx_discrepancies_resolved_event_active
-           ON discrepancies (resolved_event_id, is_active)"""
-    )
+    await conn.execute("DROP TABLE IF EXISTS discrepancies")
 
     await conn.execute(
         """CREATE TABLE IF NOT EXISTS outcome_offers (

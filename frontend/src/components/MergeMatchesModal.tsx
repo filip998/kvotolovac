@@ -45,7 +45,6 @@ export default function MergeMatchesModal({ matches, onClose, onMerged }: MergeM
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['matches'] }),
-        queryClient.invalidateQueries({ queryKey: ['discrepancies'] }),
         queryClient.invalidateQueries({ queryKey: ['opportunities'] }),
         queryClient.invalidateQueries({ queryKey: ['eventReviewCases'] }),
         queryClient.invalidateQueries({ queryKey: ['matchOdds'] }),

@@ -19,8 +19,8 @@ async def list_opportunities(
     include_legacy_discrepancy_overlap: bool = Query(
         False,
         description=(
-            "Compatibility guard for the current Dashboard: basketball canonical "
-            "opportunities overlap legacy discrepancies unless explicitly included."
+            "Deprecated no-op retained for clients created before the legacy "
+            "discrepancies split was removed."
         ),
     ),
     limit: int = Query(100, ge=1, le=500),

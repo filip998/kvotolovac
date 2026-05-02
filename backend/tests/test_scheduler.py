@@ -226,7 +226,7 @@ async def test_scheduler_run_cycle():
     result = await s.run_cycle()
     assert result["matches_scraped"] > 0
     assert result["odds_scraped"] > 0
-    assert result["discrepancies_found"] > 0
+    assert result["opportunities_found"] > 0
     assert "notifications_sent" in result
     assert isinstance(result["notifications_sent"], int)
 
@@ -247,7 +247,7 @@ async def test_scheduler_run_cycle_overlaps_scraper_tasks():
     assert len(recorder["finishes"]) == 3
     assert result["matches_scraped"] == 0
     assert result["odds_scraped"] == 0
-    assert result["discrepancies_found"] == 0
+    assert result["opportunities_found"] == 0
 
 
 @pytest.mark.asyncio
@@ -305,7 +305,7 @@ async def test_scheduler_threshold_scrape_runs_only_enabled_sport_leagues(
 
 
 @pytest.mark.asyncio
-async def test_scheduler_runs_canonical_shadow_analysis_for_current_snapshot():
+async def test_scheduler_runs_canonical_analysis_for_current_snapshot():
     _register_test_scrapers(
         StubScraper(
             "alpha",
@@ -319,7 +319,6 @@ async def test_scheduler_runs_canonical_shadow_analysis_for_current_snapshot():
 
     result = await Scheduler(interval_minutes=1).run_cycle()
 
-    assert result["discrepancies_found"] == 1
     assert result["opportunities_found"] == 1
     assert result["canonical_offers_analyzed"] == 4
     assert result["canonical_opportunities_found"] == 1
@@ -372,7 +371,6 @@ async def test_scheduler_persists_canonical_basketball_total_opportunity():
 
     result = await Scheduler(interval_minutes=1).run_cycle()
 
-    assert result["discrepancies_found"] == 1
     assert result["opportunities_found"] == 1
     opportunities = await odds_store.get_opportunities(sport="basketball")
     assert len(opportunities) == 1
@@ -388,7 +386,7 @@ async def test_scheduler_persists_canonical_basketball_total_opportunity():
 
 
 @pytest.mark.asyncio
-async def test_scheduler_shadow_ignores_canonical_only_basketball_same_line_arbitrage():
+async def test_scheduler_persists_canonical_only_basketball_same_line_arbitrage():
     _register_test_scrapers(
         StubScraper(
             "alpha",
@@ -406,14 +404,13 @@ async def test_scheduler_shadow_ignores_canonical_only_basketball_same_line_arbi
 
     result = await Scheduler(interval_minutes=1).run_cycle()
 
-    assert result["discrepancies_found"] == 0
     assert result["opportunities_found"] == 2
     assert result["canonical_opportunities_found"] == 2
     assert result["canonical_shadow_warnings"] == []
 
 
 @pytest.mark.asyncio
-async def test_scheduler_shadow_matches_same_line_player_markets_with_shared_leg_fields():
+async def test_scheduler_persists_same_line_player_markets_with_shared_leg_fields():
     _register_test_scrapers(
         StubScraper(
             "alpha",
@@ -461,14 +458,13 @@ async def test_scheduler_shadow_matches_same_line_player_markets_with_shared_leg
 
     result = await Scheduler(interval_minutes=1).run_cycle()
 
-    assert result["discrepancies_found"] == 2
     assert result["opportunities_found"] == 2
     assert result["canonical_opportunities_found"] == 2
     assert result["canonical_shadow_warnings"] == []
 
 
 @pytest.mark.asyncio
-async def test_scheduler_shadow_counts_same_line_best_direction_once():
+async def test_scheduler_persists_same_line_best_direction_once():
     _register_test_scrapers(
         StubScraper(
             "alpha",
@@ -490,14 +486,13 @@ async def test_scheduler_shadow_counts_same_line_best_direction_once():
 
     result = await Scheduler(interval_minutes=1).run_cycle()
 
-    assert result["discrepancies_found"] == 1
     assert result["opportunities_found"] == 2
     assert result["canonical_opportunities_found"] == 2
     assert result["canonical_shadow_warnings"] == []
 
 
 @pytest.mark.asyncio
-async def test_scheduler_shadow_preserves_same_line_player_market_identity():
+async def test_scheduler_preserves_same_line_player_market_identity():
     _register_test_scrapers(
         StubScraper(
             "alpha",
@@ -545,7 +540,6 @@ async def test_scheduler_shadow_preserves_same_line_player_market_identity():
 
     result = await Scheduler(interval_minutes=1).run_cycle()
 
-    assert result["discrepancies_found"] == 2
     assert result["opportunities_found"] == 2
     assert result["canonical_opportunities_found"] == 2
     assert result["canonical_shadow_warnings"] == []
@@ -702,7 +696,7 @@ async def test_scheduler_shadow_analysis_handles_tennis_outcome_offers(
 
 
 @pytest.mark.asyncio
-async def test_scheduler_canonical_analysis_failure_preserves_discrepancies(
+async def test_scheduler_canonical_analysis_failure_deactivates_stale_opportunities(
     monkeypatch: pytest.MonkeyPatch,
 ):
     async def fail_canonical_analysis(match_ids: set[str]):
@@ -764,10 +758,9 @@ async def test_scheduler_canonical_analysis_failure_preserves_discrepancies(
 
     result = await Scheduler(interval_minutes=1).run_cycle()
 
-    assert result["discrepancies_found"] == 1
     assert result["opportunities_found"] == 0
     assert result["canonical_shadow_warnings"] == ["canonical_analysis_failed"]
-    assert len(await odds_store.get_discrepancies(market_type="player_points")) == 1
+    assert await odds_store.get_opportunities(sport="basketball") == []
     assert await odds_store.get_opportunities(sport="football") == []
 
 
@@ -896,7 +889,7 @@ async def test_scheduler_run_cycle_isolates_scraper_failures():
 
     assert result["matches_scraped"] == 1
     assert result["odds_scraped"] == 2
-    assert result["discrepancies_found"] == 1
+    assert result["opportunities_found"] == 1
     assert result["notifications_sent"] == 0
 
 
@@ -920,7 +913,7 @@ async def test_scheduler_run_cycle_isolates_malformed_scraper_returns():
 
     assert result["matches_scraped"] == 1
     assert result["odds_scraped"] == 2
-    assert result["discrepancies_found"] == 1
+    assert result["opportunities_found"] == 1
     assert result["notifications_sent"] == 0
 
 
@@ -944,7 +937,7 @@ async def test_scheduler_run_cycle_isolates_malformed_scraper_items():
 
     assert result["matches_scraped"] == 1
     assert result["odds_scraped"] == 2
-    assert result["discrepancies_found"] == 1
+    assert result["opportunities_found"] == 1
     assert result["notifications_sent"] == 0
 
 
@@ -1015,7 +1008,6 @@ async def test_scheduler_run_cycle_returns_expected_output_shape():
         "matches_scraped",
         "odds_scraped",
         "outcome_offers_scraped",
-        "discrepancies_found",
         "opportunities_found",
         "canonical_offers_analyzed",
         "canonical_opportunities_found",
@@ -1026,7 +1018,6 @@ async def test_scheduler_run_cycle_returns_expected_output_shape():
         "matches_scraped",
         "odds_scraped",
         "outcome_offers_scraped",
-        "discrepancies_found",
         "opportunities_found",
         "canonical_offers_analyzed",
         "canonical_opportunities_found",
@@ -1048,7 +1039,6 @@ async def test_scheduler_run_cycle_calls_retention_cleanup(
         return {
             "deleted_stale_odds": 0,
             "deleted_stale_unresolved_odds": 0,
-            "deleted_inactive_discrepancies": 0,
             "deleted_odds_history": 0,
             "deleted_team_review_cases": 0,
             "deleted_notifications": 0,

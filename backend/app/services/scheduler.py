@@ -19,7 +19,6 @@ from ..services.normalizer import (
     normalize_odds_with_diagnostics,
     resolve_team_name,
 )
-from ..services.analyzer import analyze
 from ..services.canonical_analyzer import analyze_canonical_offers
 from ..services.event_resolver import (
     CANONICAL_TEAM_AUTO_MERGE_THRESHOLD,
@@ -31,7 +30,6 @@ from ..services.event_resolver import (
     _same_time_slot_orientation,
     resolve_and_persist_events,
 )
-from ..services.opportunity_analyzer import analyze_outcome_offers
 from ..services.outcome_normalizer import normalize_outcome_offers_with_diagnostics
 from ..services.notifications import NotificationService, InAppNotificationProvider
 from ..services.scrape_window import (
@@ -119,89 +117,6 @@ async def _load_current_canonical_analysis(match_ids: set[str]) -> _CanonicalAna
         offers=tuple(canonical_offers),
         opportunities=tuple(canonical_opportunities),
     )
-
-
-def _canonical_shadow_result(
-    canonical_analysis: _CanonicalAnalysisResult,
-    *,
-    legacy_discrepancy_count: int,
-    legacy_opportunity_count: int,
-) -> _CanonicalShadowResult:
-    expected_count = legacy_discrepancy_count + legacy_opportunity_count
-    legacy_equivalent_count = _legacy_equivalent_shadow_count(
-        canonical_analysis.opportunities,
-        canonical_analysis.offers,
-    )
-    warnings: tuple[str, ...] = ()
-    if legacy_equivalent_count != expected_count:
-        warnings = (
-            "canonical_shadow_count_mismatch "
-            f"legacy={expected_count} "
-            f"canonical_legacy_equivalent={legacy_equivalent_count} "
-            f"canonical_total={len(canonical_analysis.opportunities)}",
-        )
-    return _CanonicalShadowResult(
-        offers_analyzed=len(canonical_analysis.offers),
-        opportunities_found=len(canonical_analysis.opportunities),
-        warnings=warnings,
-    )
-
-
-def _legacy_equivalent_shadow_count(opportunities, canonical_offers) -> int:
-    count = 0
-    basketball_same_line_keys: set[tuple[str, tuple[str, str]]] = set()
-
-    for opportunity in opportunities:
-        if opportunity.sport == "basketball":
-            if opportunity.opportunity_type == "same_line_arbitrage":
-                key = _basketball_same_line_shadow_legacy_key(
-                    opportunity,
-                    canonical_offers,
-                )
-                if key is not None:
-                    basketball_same_line_keys.add(key)
-                continue
-            count += 1
-            continue
-        if _is_legacy_equivalent_shadow_opportunity(opportunity):
-            count += 1
-
-    return count + len(basketball_same_line_keys)
-
-
-def _is_legacy_equivalent_shadow_opportunity(opportunity) -> bool:
-    if opportunity.sport == "basketball":
-        return True
-    if opportunity.sport == "football":
-        return opportunity.market_type in {
-            "football_total_goals",
-            "football_result_double_chance",
-        }
-    return False
-
-
-def _basketball_same_line_shadow_legacy_key(
-    opportunity,
-    canonical_offers,
-) -> tuple[str, tuple[str, str]] | None:
-    if len(opportunity.market_keys) != 1:
-        return None
-    market_key = opportunity.market_keys[0]
-    over_offers = {
-        offer.bookmaker_id: offer
-        for offer in canonical_offers
-        if offer.market_key == market_key and offer.outcome_code == "over"
-    }
-    leg_bookmakers = [leg.bookmaker_id for leg in opportunity.legs]
-    if len(leg_bookmakers) != 2:
-        return None
-    first = over_offers.get(leg_bookmakers[0])
-    second = over_offers.get(leg_bookmakers[1])
-    if first is None or second is None:
-        return None
-    if abs(first.odds - second.odds) < 0.05:
-        return None
-    return market_key, tuple(sorted((first.bookmaker_id, second.bookmaker_id)))
 
 
 def _candidate_merge_source_ids(case) -> set[int]:
@@ -972,9 +887,7 @@ class Scheduler:
             normalized = []
             normalized_outcome_offers = []
             seen_matches: set[str] = set()
-            discrepancies = []
             opportunities = []
-            legacy_outcome_opportunities = []
             canonical_shadow = _CanonicalShadowResult()
             notified = 0
             pending_auto_merges: list[tuple[int, int]] = []
@@ -1103,43 +1016,6 @@ class Scheduler:
                 await odds_store.set_current_snapshot(cycle_scraped_at)
 
                 self._scan_phase = "analyzing"
-                await odds_store.deactivate_all_discrepancies()
-                discrepancy_event_members = (
-                    await odds_store.get_eligible_resolved_event_members_for_odds(
-                        normalized
-                    )
-                )
-                discrepancy_event_primary_match_ids = (
-                    await odds_store.get_resolved_event_primary_match_ids(
-                        [
-                            member.resolved_event_id
-                            for member in discrepancy_event_members
-                        ]
-                    )
-                )
-                discrepancies = analyze(
-                    normalized,
-                    event_members=discrepancy_event_members,
-                    event_primary_match_ids=discrepancy_event_primary_match_ids,
-                )
-                opportunity_event_members = (
-                    await odds_store.get_eligible_resolved_event_members_for_outcome_offers(
-                        normalized_outcome_offers
-                    )
-                )
-                opportunity_event_primary_match_ids = (
-                    await odds_store.get_resolved_event_primary_match_ids(
-                        [
-                            member.resolved_event_id
-                            for member in opportunity_event_members
-                        ]
-                    )
-                )
-                legacy_outcome_opportunities = analyze_outcome_offers(
-                    normalized_outcome_offers,
-                    event_members=opportunity_event_members,
-                    event_primary_match_ids=opportunity_event_primary_match_ids,
-                )
                 canonical_analysis = _CanonicalAnalysisResult()
                 canonical_analysis_failed = False
                 try:
@@ -1159,34 +1035,14 @@ class Scheduler:
                             detected_at=cycle_scraped_at,
                         )
 
-                for d in discrepancies:
-                    await odds_store.insert_discrepancy(
-                        match_id=d.match_id,
-                        market_type=d.market_type,
-                        player_name=d.player_name,
-                        bookmaker_a_id=d.bookmaker_a_id,
-                        bookmaker_b_id=d.bookmaker_b_id,
-                        threshold_a=d.threshold_a,
-                        threshold_b=d.threshold_b,
-                        odds_a=d.odds_a,
-                        odds_b=d.odds_b,
-                        gap=d.gap,
-                        profit_margin=d.profit_margin,
-                        middle_profit_margin=d.middle_profit_margin,
-                        resolved_event_id=d.resolved_event_id,
-                        bookmaker_a_match_id=d.bookmaker_a_match_id,
-                        bookmaker_b_match_id=d.bookmaker_b_match_id,
-                    )
-
                 if canonical_analysis_failed:
                     canonical_shadow = _CanonicalShadowResult(
                         warnings=("canonical_analysis_failed",)
                     )
                 else:
-                    canonical_shadow = _canonical_shadow_result(
-                        canonical_analysis,
-                        legacy_discrepancy_count=len(discrepancies),
-                        legacy_opportunity_count=len(legacy_outcome_opportunities),
+                    canonical_shadow = _CanonicalShadowResult(
+                        offers_analyzed=len(canonical_analysis.offers),
+                        opportunities_found=len(canonical_analysis.opportunities),
                     )
                 if canonical_shadow.warnings:
                     logger.warning(
@@ -1195,9 +1051,7 @@ class Scheduler:
                     )
 
                 self._scan_phase = "notifying"
-                notified = await self._notification_service.notify_discrepancies(
-                    discrepancies
-                )
+                notified = await self._notification_service.notify_opportunities(opportunities)
             except Exception:
                 await odds_store.rollback_pending_transaction()
                 if applied_auto_merges:
@@ -1248,7 +1102,6 @@ class Scheduler:
                 "matches_scraped": len(seen_matches),
                 "odds_scraped": len(normalized),
                 "outcome_offers_scraped": len(normalized_outcome_offers),
-                "discrepancies_found": len(discrepancies),
                 "opportunities_found": len(opportunities),
                 "canonical_offers_analyzed": canonical_shadow.offers_analyzed,
                 "canonical_opportunities_found": canonical_shadow.opportunities_found,

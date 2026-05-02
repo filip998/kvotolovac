@@ -42,5 +42,5 @@ async def trigger_scrape():
         message="Scrape completed",
         matches_scraped=result["matches_scraped"],
         odds_scraped=result["odds_scraped"],
-        discrepancies_found=result["discrepancies_found"],
+        opportunities_found=result["opportunities_found"],
     )

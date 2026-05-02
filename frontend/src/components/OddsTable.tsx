@@ -1,24 +1,14 @@
-import type { OddsOffer, Discrepancy } from '../api/types';
+import type { OddsOffer } from '../api/types';
 import { formatHandicapLine, formatOdds, formatThreshold, isHandicapMarket } from '../utils/format';
 import BookmakerBadge from './BookmakerBadge';
 
 interface OddsTableProps {
   offers: OddsOffer[];
-  discrepancies?: Discrepancy[];
   title: string;
 }
 
-export default function OddsTable({ offers, discrepancies = [], title }: OddsTableProps) {
+export default function OddsTable({ offers, title }: OddsTableProps) {
   if (offers.length === 0) return null;
-
-  const discrepancyKeys = new Set<string>();
-  for (const d of discrepancies) {
-    discrepancyKeys.add(`${d.bookmaker_a_id}-${d.threshold_a}`);
-    discrepancyKeys.add(`${d.bookmaker_b_id}-${d.threshold_b}`);
-  }
-
-  const isHighlighted = (bookId: string, threshold: number) =>
-    discrepancyKeys.has(`${bookId}-${threshold}`);
 
   // Handicap rows have a different mental model: the "threshold" is the
   // home team's expected margin (signed) and the over/under odds map to
@@ -48,18 +38,13 @@ export default function OddsTable({ offers, discrepancies = [], title }: OddsTab
           </thead>
           <tbody>
             {offers.map((offer) => {
-              const highlighted = isHighlighted(offer.bookmaker_id, offer.threshold);
               const lineDisplay = isHandicapMarket(offer.market_type)
                 ? formatHandicapLine(offer.threshold, 'home')
                 : formatThreshold(offer.threshold);
               return (
                 <tr
                   key={offer.id}
-                  className={`border-t border-border transition ${
-                    highlighted
-                      ? 'bg-accent/[0.06]'
-                      : 'hover:bg-surface-raised'
-                  }`}
+                  className="border-t border-border transition hover:bg-surface-raised"
                 >
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-2">
@@ -69,12 +54,7 @@ export default function OddsTable({ offers, discrepancies = [], title }: OddsTab
                           href={offer.source_url}
                           ariaLabel={`Open ${offer.bookmaker_name} match page`}
                         />
-                        {highlighted && (
-                          <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
-                            OPP
-                          </span>
-                      )}
-                    </div>
+                     </div>
                   </td>
                   <td className="px-4 py-2.5 text-right font-mono text-text-secondary">
                     {lineDisplay}
