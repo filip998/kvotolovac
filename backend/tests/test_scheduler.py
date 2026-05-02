@@ -38,14 +38,15 @@ def _raw_odds(
     *,
     over_odds: float = 1.9,
     under_odds: float = 1.9,
-    player_name: str = "Sasha Vezenkov",
+    player_name: str | None = "Sasha Vezenkov",
+    market_type: str = "player_points",
 ) -> RawOddsData:
     return RawOddsData(
         bookmaker_id=bookmaker_id,
         league_id="euroleague",
         home_team="Olympiacos",
         away_team="Real Madrid",
-        market_type="player_points",
+        market_type=market_type,
         player_name=player_name,
         threshold=threshold,
         over_odds=over_odds,
@@ -61,6 +62,7 @@ def _raw_outcome_offer(
     sport: str = "tennis",
     market_type: str = "tennis_match_winner",
     odds: float = 2.1,
+    line: float | None = None,
 ) -> RawOutcomeOffer:
     return RawOutcomeOffer(
         bookmaker_id=bookmaker_id,
@@ -71,6 +73,7 @@ def _raw_outcome_offer(
         market_type=market_type,
         outcome_code=outcome_code,
         odds=odds,
+        line=line,
         raw_label=outcome_code,
         start_time="2030-01-01T20:00:00+00:00",
     )
@@ -317,10 +320,63 @@ async def test_scheduler_runs_canonical_shadow_analysis_for_current_snapshot():
     result = await Scheduler(interval_minutes=1).run_cycle()
 
     assert result["discrepancies_found"] == 1
-    assert result["opportunities_found"] == 0
+    assert result["opportunities_found"] == 1
     assert result["canonical_offers_analyzed"] == 4
     assert result["canonical_opportunities_found"] == 1
     assert result["canonical_shadow_warnings"] == []
+    opportunities = await odds_store.get_opportunities(sport="basketball")
+    assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
+        ("middle", "player_points")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_persists_canonical_basketball_total_opportunity():
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds(
+                        "alpha",
+                        160.5,
+                        over_odds=1.90,
+                        under_odds=1.80,
+                        player_name=None,
+                        market_type="game_total",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds(
+                        "beta",
+                        162.5,
+                        over_odds=1.70,
+                        under_odds=2.10,
+                        player_name=None,
+                        market_type="game_total",
+                    )
+                ]
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["discrepancies_found"] == 1
+    assert result["opportunities_found"] == 1
+    opportunities = await odds_store.get_opportunities(sport="basketball")
+    assert len(opportunities) == 1
+    assert opportunities[0].opportunity_type == "middle"
+    assert opportunities[0].market_type == "game_total"
+    assert [(leg.bookmaker_id, leg.outcome_code, leg.line) for leg in opportunities[0].legs] == [
+        ("alpha", "over", 160.5),
+        ("beta", "under", 162.5),
+    ]
 
 
 @pytest.mark.asyncio
@@ -343,6 +399,7 @@ async def test_scheduler_shadow_ignores_canonical_only_basketball_same_line_arbi
     result = await Scheduler(interval_minutes=1).run_cycle()
 
     assert result["discrepancies_found"] == 0
+    assert result["opportunities_found"] == 2
     assert result["canonical_opportunities_found"] == 2
     assert result["canonical_shadow_warnings"] == []
 
@@ -397,6 +454,7 @@ async def test_scheduler_shadow_matches_same_line_player_markets_with_shared_leg
     result = await Scheduler(interval_minutes=1).run_cycle()
 
     assert result["discrepancies_found"] == 2
+    assert result["opportunities_found"] == 2
     assert result["canonical_opportunities_found"] == 2
     assert result["canonical_shadow_warnings"] == []
 
@@ -425,6 +483,7 @@ async def test_scheduler_shadow_counts_same_line_best_direction_once():
     result = await Scheduler(interval_minutes=1).run_cycle()
 
     assert result["discrepancies_found"] == 1
+    assert result["opportunities_found"] == 2
     assert result["canonical_opportunities_found"] == 2
     assert result["canonical_shadow_warnings"] == []
 
@@ -479,8 +538,115 @@ async def test_scheduler_shadow_preserves_same_line_player_market_identity():
     result = await Scheduler(interval_minutes=1).run_cycle()
 
     assert result["discrepancies_found"] == 2
+    assert result["opportunities_found"] == 2
     assert result["canonical_opportunities_found"] == 2
     assert result["canonical_shadow_warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_persists_canonical_football_total_opportunity(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "enabled_sports", "football")
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            leagues=(),
+            outcome_sports=("football",),
+            outcome_payload_by_sport={
+                "football": [
+                    _raw_outcome_offer(
+                        "alpha",
+                        "over",
+                        sport="football",
+                        market_type="football_total_goals",
+                        odds=1.90,
+                        line=2.5,
+                    )
+                ],
+            },
+        ),
+        StubScraper(
+            "beta",
+            leagues=(),
+            outcome_sports=("football",),
+            outcome_payload_by_sport={
+                "football": [
+                    _raw_outcome_offer(
+                        "beta",
+                        "under",
+                        sport="football",
+                        market_type="football_total_goals",
+                        odds=2.10,
+                        line=3.5,
+                    )
+                ],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["opportunities_found"] == 1
+    assert result["canonical_opportunities_found"] == 1
+    opportunities = await odds_store.get_opportunities(sport="football")
+    assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
+        ("middle", "football_total_goals")
+    ]
+    assert [(leg.bookmaker_id, leg.outcome_code, leg.line) for leg in opportunities[0].legs] == [
+        ("alpha", "over", 2.5),
+        ("beta", "under", 3.5),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_persists_canonical_football_complementary_opportunity(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "enabled_sports", "football")
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            leagues=(),
+            outcome_sports=("football",),
+            outcome_payload_by_sport={
+                "football": [
+                    _raw_outcome_offer(
+                        "alpha",
+                        "home",
+                        sport="football",
+                        market_type="football_result",
+                        odds=2.10,
+                    )
+                ],
+            },
+        ),
+        StubScraper(
+            "beta",
+            leagues=(),
+            outcome_sports=("football",),
+            outcome_payload_by_sport={
+                "football": [
+                    _raw_outcome_offer(
+                        "beta",
+                        "draw_or_away",
+                        sport="football",
+                        market_type="football_double_chance",
+                        odds=2.10,
+                    )
+                ],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["opportunities_found"] == 1
+    assert result["canonical_opportunities_found"] == 1
+    opportunities = await odds_store.get_opportunities(sport="football")
+    assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
+        ("complementary_outcomes", "football_result_double_chance")
+    ]
 
 
 @pytest.mark.asyncio
@@ -511,10 +677,84 @@ async def test_scheduler_shadow_analysis_handles_tennis_outcome_offers(
 
     assert result["odds_scraped"] == 0
     assert result["outcome_offers_scraped"] == 2
-    assert result["opportunities_found"] == 0
+    assert result["opportunities_found"] == 1
     assert result["canonical_offers_analyzed"] == 2
     assert result["canonical_opportunities_found"] == 1
     assert result["canonical_shadow_warnings"] == []
+    opportunities = await odds_store.get_opportunities(sport="tennis")
+    assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
+        ("same_line_arbitrage", "match_winner")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_canonical_analysis_failure_preserves_discrepancies(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def fail_canonical_analysis(match_ids: set[str]):
+        raise RuntimeError("canonical boom")
+
+    monkeypatch.setattr(
+        "app.services.scheduler._load_current_canonical_analysis",
+        fail_canonical_analysis,
+    )
+    await odds_store.upsert_league("premier-league", "Premier League", "football")
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    await odds_store.upsert_bookmaker("balkanbet", "BalkanBet")
+    await odds_store.upsert_match(
+        id="stale-football-match",
+        league_id="premier-league",
+        sport="football",
+        home_team="Arsenal",
+        away_team="Chelsea",
+        start_time="2030-01-01T20:00:00+00:00",
+    )
+    await odds_store.insert_opportunity(
+        Opportunity(
+            sport="football",
+            match_id="stale-football-match",
+            opportunity_type="same_line_arbitrage",
+            market_type="football_total_goals",
+            line=2.5,
+            profit_margin=0.02,
+            middle_profit_margin=None,
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id="maxbet",
+                    market_type="football_total_goals",
+                    outcome_code="under",
+                    line=2.5,
+                    odds=1.95,
+                ),
+                OpportunityLeg(
+                    bookmaker_id="balkanbet",
+                    market_type="football_total_goals",
+                    outcome_code="over",
+                    line=2.5,
+                    odds=2.10,
+                ),
+            ],
+        ),
+        detected_at="2029-01-01T00:00:00",
+    )
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={"euroleague": [_raw_odds("alpha", 18.5)]},
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={"euroleague": [_raw_odds("beta", 20.5)]},
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["discrepancies_found"] == 1
+    assert result["opportunities_found"] == 0
+    assert result["canonical_shadow_warnings"] == ["canonical_analysis_failed"]
+    assert len(await odds_store.get_discrepancies(market_type="player_points")) == 1
+    assert await odds_store.get_opportunities(sport="football") == []
 
 
 @pytest.mark.asyncio

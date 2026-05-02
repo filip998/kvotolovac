@@ -65,6 +65,12 @@ class _CanonicalShadowResult:
     warnings: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class _CanonicalAnalysisResult:
+    offers: tuple = ()
+    opportunities: tuple = ()
+
+
 def _is_auto_alias_candidate(case) -> bool:
     return (
         case.review_kind in {"alias_suggestion", "candidate_search"}
@@ -89,12 +95,7 @@ def _enabled_threshold_league_ids(scraper: BaseScraper, enabled_sports: set[str]
     return list(dict.fromkeys(league_ids))
 
 
-async def _run_canonical_shadow_analysis(
-    *,
-    match_ids: set[str],
-    legacy_discrepancy_count: int,
-    legacy_opportunity_count: int,
-) -> _CanonicalShadowResult:
+async def _load_current_canonical_analysis(match_ids: set[str]) -> _CanonicalAnalysisResult:
     canonical_offers = await odds_store.get_current_canonical_offers_for_matches(
         sorted(match_ids)
     )
@@ -114,10 +115,22 @@ async def _run_canonical_shadow_analysis(
         canonical_offers,
         event_primary_match_ids=event_primary_match_ids,
     )
+    return _CanonicalAnalysisResult(
+        offers=tuple(canonical_offers),
+        opportunities=tuple(canonical_opportunities),
+    )
+
+
+def _canonical_shadow_result(
+    canonical_analysis: _CanonicalAnalysisResult,
+    *,
+    legacy_discrepancy_count: int,
+    legacy_opportunity_count: int,
+) -> _CanonicalShadowResult:
     expected_count = legacy_discrepancy_count + legacy_opportunity_count
     legacy_equivalent_count = _legacy_equivalent_shadow_count(
-        canonical_opportunities,
-        canonical_offers,
+        canonical_analysis.opportunities,
+        canonical_analysis.offers,
     )
     warnings: tuple[str, ...] = ()
     if legacy_equivalent_count != expected_count:
@@ -125,11 +138,11 @@ async def _run_canonical_shadow_analysis(
             "canonical_shadow_count_mismatch "
             f"legacy={expected_count} "
             f"canonical_legacy_equivalent={legacy_equivalent_count} "
-            f"canonical_total={len(canonical_opportunities)}",
+            f"canonical_total={len(canonical_analysis.opportunities)}",
         )
     return _CanonicalShadowResult(
-        offers_analyzed=len(canonical_offers),
-        opportunities_found=len(canonical_opportunities),
+        offers_analyzed=len(canonical_analysis.offers),
+        opportunities_found=len(canonical_analysis.opportunities),
         warnings=warnings,
     )
 
@@ -961,6 +974,7 @@ class Scheduler:
             seen_matches: set[str] = set()
             discrepancies = []
             opportunities = []
+            legacy_outcome_opportunities = []
             canonical_shadow = _CanonicalShadowResult()
             notified = 0
             pending_auto_merges: list[tuple[int, int]] = []
@@ -1108,7 +1122,6 @@ class Scheduler:
                     event_members=discrepancy_event_members,
                     event_primary_match_ids=discrepancy_event_primary_match_ids,
                 )
-                await odds_store.deactivate_opportunities()
                 opportunity_event_members = (
                     await odds_store.get_eligible_resolved_event_members_for_outcome_offers(
                         normalized_outcome_offers
@@ -1122,16 +1135,29 @@ class Scheduler:
                         ]
                     )
                 )
-                opportunities = analyze_outcome_offers(
+                legacy_outcome_opportunities = analyze_outcome_offers(
                     normalized_outcome_offers,
                     event_members=opportunity_event_members,
                     event_primary_match_ids=opportunity_event_primary_match_ids,
                 )
-                for opportunity in opportunities:
-                    await odds_store.insert_opportunity(
-                        opportunity,
-                        detected_at=cycle_scraped_at,
+                canonical_analysis = _CanonicalAnalysisResult()
+                canonical_analysis_failed = False
+                try:
+                    canonical_analysis = await _load_current_canonical_analysis(
+                        match_ids=seen_matches,
                     )
+                except Exception:
+                    canonical_analysis_failed = True
+                    logger.exception("Canonical opportunity analysis failed")
+                opportunities = list(canonical_analysis.opportunities)
+
+                await odds_store.deactivate_opportunities()
+                if not canonical_analysis_failed:
+                    for opportunity in opportunities:
+                        await odds_store.insert_opportunity(
+                            opportunity,
+                            detected_at=cycle_scraped_at,
+                        )
 
                 for d in discrepancies:
                     await odds_store.insert_discrepancy(
@@ -1152,21 +1178,20 @@ class Scheduler:
                         bookmaker_b_match_id=d.bookmaker_b_match_id,
                     )
 
-                try:
-                    canonical_shadow = await _run_canonical_shadow_analysis(
-                        match_ids=seen_matches,
-                        legacy_discrepancy_count=len(discrepancies),
-                        legacy_opportunity_count=len(opportunities),
-                    )
-                    if canonical_shadow.warnings:
-                        logger.warning(
-                            "Canonical shadow analysis warnings: %s",
-                            ", ".join(canonical_shadow.warnings),
-                        )
-                except Exception:
-                    logger.exception("Canonical shadow analysis failed")
+                if canonical_analysis_failed:
                     canonical_shadow = _CanonicalShadowResult(
-                        warnings=("canonical_shadow_failed",)
+                        warnings=("canonical_analysis_failed",)
+                    )
+                else:
+                    canonical_shadow = _canonical_shadow_result(
+                        canonical_analysis,
+                        legacy_discrepancy_count=len(discrepancies),
+                        legacy_opportunity_count=len(legacy_outcome_opportunities),
+                    )
+                if canonical_shadow.warnings:
+                    logger.warning(
+                        "Canonical shadow analysis warnings: %s",
+                        ", ".join(canonical_shadow.warnings),
                     )
 
                 self._scan_phase = "notifying"
