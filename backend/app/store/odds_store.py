@@ -12,6 +12,7 @@ from ..config import settings
 from ..database import get_db
 from ..models.schemas import (
     BookmakerOut,
+    CanonicalOffer,
     CanonicalTeamOut,
     DiscrepancyDetail,
     DiscrepancyOut,
@@ -39,6 +40,10 @@ from ..models.schemas import (
     TeamReviewOut,
     UnresolvedOddsDiagnostic,
     UnresolvedOddsOut,
+)
+from ..services.canonical_offers import (
+    canonical_offer_from_normalized_outcome_offer,
+    canonical_offers_from_normalized_odds,
 )
 
 
@@ -1500,10 +1505,11 @@ async def get_current_normalized_odds_for_matches(
                    s.source_url,
                    o.market_type,
                    o.player_name,
-                   o.threshold,
-                   o.over_odds,
-                   o.under_odds,
-                   m.start_time
+                    o.threshold,
+                    o.over_odds,
+                    o.under_odds,
+                    m.start_time,
+                    o.scraped_at
             FROM odds o
             JOIN matches m ON m.id = o.match_id
             LEFT JOIN match_bookmaker_sources s
@@ -1542,10 +1548,11 @@ async def get_current_normalized_outcome_offers_for_matches(
                    s.source_url,
                    o.market_type,
                    o.outcome_code,
-                   o.odds,
-                   o.line,
-                   o.raw_label,
-                   m.start_time
+                    o.odds,
+                    o.line,
+                    o.raw_label,
+                    m.start_time,
+                    o.scraped_at
             FROM outcome_offers o
             JOIN matches m ON m.id = o.match_id
             LEFT JOIN match_bookmaker_sources s
@@ -1557,6 +1564,57 @@ async def get_current_normalized_outcome_offers_for_matches(
         [*selected_match_ids, *snapshot_params],
     )
     return [NormalizedOutcomeOffer(**_row_to_dict(row)) for row in rows]
+
+
+async def get_current_canonical_offers_for_matches(
+    match_ids: list[str],
+) -> list[CanonicalOffer]:
+    selected_match_ids = list(dict.fromkeys(match_ids))
+    if not selected_match_ids:
+        return []
+
+    odds_rows = await get_current_normalized_odds_for_matches(selected_match_ids)
+    outcome_offer_rows = await get_current_normalized_outcome_offers_for_matches(
+        selected_match_ids
+    )
+    resolved_event_ids = await _resolved_event_ids_for_offer_rows(
+        [*odds_rows, *outcome_offer_rows]
+    )
+    canonical_offers: list[CanonicalOffer] = []
+    for odds in odds_rows:
+        canonical_offers.extend(
+            canonical_offers_from_normalized_odds(
+                odds,
+                event_id=resolved_event_ids.get((odds.match_id, odds.bookmaker_id)),
+            )
+        )
+    for offer in outcome_offer_rows:
+        canonical_offers.append(
+            canonical_offer_from_normalized_outcome_offer(
+                offer,
+                event_id=resolved_event_ids.get((offer.match_id, offer.bookmaker_id)),
+            )
+        )
+    return canonical_offers
+
+
+async def _resolved_event_ids_for_offer_rows(
+    rows: list[NormalizedOdds | NormalizedOutcomeOffer],
+) -> dict[tuple[str, str], str]:
+    row_keys = {(row.match_id, row.bookmaker_id) for row in rows}
+    if not row_keys:
+        return {}
+
+    members = await get_eligible_resolved_event_members_for_matches(
+        sorted({match_id for match_id, _ in row_keys}),
+        bookmaker_ids=sorted({bookmaker_id for _, bookmaker_id in row_keys}),
+    )
+    event_ids: dict[tuple[str, str], str] = {}
+    for member in members:
+        key = (member.match_id, member.bookmaker_id)
+        if key in row_keys and key not in event_ids:
+            event_ids[key] = member.resolved_event_id
+    return event_ids
 
 
 # ── Odds ───────────────────────────────────────────────────
