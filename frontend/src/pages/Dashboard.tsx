@@ -16,7 +16,7 @@ import {
 import type { DiscrepancyFilters } from '../api/types';
 import FilterBar from '../components/FilterBar';
 import BookmakerFilterDeck from '../components/BookmakerFilterDeck';
-import EdgeRow from '../components/EdgeRow';
+import EdgeGroupRow from '../components/EdgeRow';
 import EmptyState from '../components/EmptyState';
 import LoadingSpinner from '../components/LoadingSpinner';
 import PageShell from '../components/PageShell';
@@ -33,6 +33,7 @@ import { useBookmakerFilter } from '../hooks/useBookmakerFilter';
 import { buildSearchIndex, filterSearchIndex, normalizeSearchText } from '../utils/search';
 import { groupUnresolvedOdds } from '../utils/unresolvedWarnings';
 import { buildEdges } from '../utils/edgeAdapter';
+import { groupEdgesByMarket } from '../utils/edgeGrouping';
 
 type DashboardTab = 'opportunities' | 'tracked' | 'teams' | 'canonical' | 'warnings';
 type SportFilter = 'both' | 'basketball' | 'football';
@@ -277,34 +278,36 @@ export default function Dashboard() {
     return all;
   }, [discrepancies, opportunities, opportunitiesSport, marketTypeFilter, leagueFilter, minGapFilter]);
 
-  const sortedEdges = useMemo(() => {
+  const edgeGroups = useMemo(() => groupEdgesByMarket(edges), [edges]);
+
+  const sortedGroups = useMemo(() => {
     const sortBy = filters.sort_by ?? 'profit_margin';
     const sortOrder = filters.sort_order ?? 'desc';
     const direction = sortOrder === 'desc' ? -1 : 1;
-    const ranked = [...edges];
+    const ranked = [...edgeGroups];
     ranked.sort((a, b) => {
-      const aVal = (a[sortBy as keyof typeof a] as number | null | undefined) ?? Number.NEGATIVE_INFINITY;
-      const bVal = (b[sortBy as keyof typeof b] as number | null | undefined) ?? Number.NEGATIVE_INFINITY;
+      const aVal = (a.best[sortBy as keyof typeof a.best] as number | null | undefined) ?? Number.NEGATIVE_INFINITY;
+      const bVal = (b.best[sortBy as keyof typeof b.best] as number | null | undefined) ?? Number.NEGATIVE_INFINITY;
       if (aVal === bVal) return 0;
       return aVal < bVal ? -direction : direction;
     });
     return ranked;
-  }, [edges, filters.sort_by, filters.sort_order]);
+  }, [edgeGroups, filters.sort_by, filters.sort_order]);
 
-  const edgeSearchIndex = useMemo(
+  const groupSearchIndex = useMemo(
     () =>
-      buildSearchIndex(sortedEdges, (edge) => [
-        edge.home_team,
-        edge.away_team,
-        edge.home_team && edge.away_team ? `${edge.home_team} ${edge.away_team}` : null,
-        edge.player_name,
+      buildSearchIndex(sortedGroups, (group) => [
+        group.homeTeam,
+        group.awayTeam,
+        group.homeTeam && group.awayTeam ? `${group.homeTeam} ${group.awayTeam}` : null,
+        group.playerName,
       ]),
-    [sortedEdges]
+    [sortedGroups]
   );
 
-  const filteredEdges = useMemo(
-    () => filterSearchIndex(edgeSearchIndex, appliedSearchQuery),
-    [appliedSearchQuery, edgeSearchIndex]
+  const filteredGroups = useMemo(
+    () => filterSearchIndex(groupSearchIndex, appliedSearchQuery),
+    [appliedSearchQuery, groupSearchIndex]
   );
 
   const unresolvedWarningGroups = useMemo(
@@ -312,8 +315,8 @@ export default function Dashboard() {
     [unresolvedOdds]
   );
 
-  const opportunityCount = edges.length;
-  const filteredOpportunityCount = filteredEdges.length;
+  const opportunityCount = edgeGroups.length;
+  const filteredOpportunityCount = filteredGroups.length;
   const unresolvedCount = unresolvedWarningGroups.length;
   const teamReviewCount = teamReviewCases?.filter((row) => row.status === 'pending').length ?? 0;
   const canonicalTeamCount =
@@ -429,7 +432,7 @@ export default function Dashboard() {
 
     if (
       isInitialScanInProgress &&
-      (isTimeoutError || filteredEdges.length === 0)
+      (isTimeoutError || filteredGroups.length === 0)
     ) {
       return (
         <div className="rounded-lg border border-border bg-surface p-6">
@@ -474,7 +477,7 @@ export default function Dashboard() {
       );
     }
 
-    if (filteredEdges.length === 0) {
+    if (filteredGroups.length === 0) {
       return (
         <EmptyState
           title="No opportunities right now"
@@ -491,22 +494,22 @@ export default function Dashboard() {
               <tr className="border-b border-border text-[11px] font-medium uppercase tracking-wider text-text-muted">
                 <th className="px-4 py-2.5 text-left">Player / Market</th>
                 <th className="px-4 py-2.5 text-left">Match</th>
-                <th className="px-4 py-2.5 text-right">Edge</th>
+                <th className="px-4 py-2.5 text-right">Best edge</th>
                 <th className="hidden px-4 py-2.5 text-right md:table-cell">Middle</th>
-                <th className="hidden px-4 py-2.5 text-left sm:table-cell">Side A</th>
-                <th className="hidden px-4 py-2.5 text-left sm:table-cell">Side B</th>
+                <th className="hidden px-4 py-2.5 text-left sm:table-cell">Best side A</th>
+                <th className="hidden px-4 py-2.5 text-left sm:table-cell">Best side B</th>
                 <th className="px-4 py-2.5 text-right">Gap</th>
                 <th className="hidden px-4 py-2.5 text-right lg:table-cell">Time</th>
                 <th className="px-4 py-2.5"></th>
               </tr>
             </thead>
             <tbody>
-              {filteredEdges.map((edge) => (
-                <EdgeRow
-                  key={edge.id}
-                  edge={edge}
+              {filteredGroups.map((group) => (
+                <EdgeGroupRow
+                  key={group.key}
+                  group={group}
                   totalUnits={stakeUnits}
-                  isCalculatorExpanded={expandedFlatCalculatorIds.has(edge.id)}
+                  isCalculatorExpanded={expandedFlatCalculatorIds.has(group.key)}
                   onToggleCalculator={toggleFlatCalculator}
                   sharedSearch={sharedSearch}
                 />
@@ -519,7 +522,7 @@ export default function Dashboard() {
   }, [
     activeSearchLabel,
     expandedFlatCalculatorIds,
-    filteredEdges,
+    filteredGroups,
     filteredOpportunityCount,
     hasSearchQuery,
     isInitialScanInProgress,

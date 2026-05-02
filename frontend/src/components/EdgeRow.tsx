@@ -1,4 +1,4 @@
-import { Fragment } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { Edge } from '../api/types';
 import {
@@ -9,14 +9,15 @@ import {
   profitColor,
 } from '../utils/format';
 import { edgeMarketHeadline, formatLegLineLabel, formatOutcomeLabel } from '../utils/edgeFormatting';
+import type { EdgeGroup } from '../utils/edgeGrouping';
 import BookmakerBadge from './BookmakerBadge';
 import StakeCalculatorPanel from './StakeCalculatorPanel';
 
-interface EdgeRowProps {
-  edge: Edge;
+interface EdgeGroupRowProps {
+  group: EdgeGroup;
   totalUnits: number;
   isCalculatorExpanded: boolean;
-  onToggleCalculator: (edgeId: string) => void;
+  onToggleCalculator: (groupKey: string) => void;
   sharedSearch: string;
 }
 
@@ -48,80 +49,160 @@ function SportPill({ sport }: { sport: Edge['sport'] }) {
   );
 }
 
-export default function EdgeRow({
+function LineRow({
   edge,
+  selected,
+  onSelect,
+}: {
+  edge: Edge;
+  selected: boolean;
+  onSelect: (edge: Edge) => void;
+}) {
+  const lineALabel = formatLegLineLabel(edge.leg_a, edge.market_type);
+  const lineBLabel = formatLegLineLabel(edge.leg_b, edge.market_type);
+  const outcomeALabel = formatOutcomeLabel(edge.leg_a.outcome_code, edge.market_type, edge.leg_a.line);
+  const outcomeBLabel = formatOutcomeLabel(edge.leg_b.outcome_code, edge.market_type, edge.leg_b.line);
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(edge)}
+      aria-selected={selected}
+      className={`flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2 text-left text-xs transition ${
+        selected
+          ? 'border-accent/50 bg-accent/[0.10]'
+          : 'border-border/60 bg-bg/60 hover:border-border-hover'
+      }`}
+    >
+      <div className="flex flex-1 flex-wrap items-center gap-3">
+        <span className={`font-mono font-semibold ${edge.profit_margin != null ? profitColor(edge.profit_margin) : 'text-text-muted'}`}>
+          {edge.profit_margin != null ? formatPercentage(edge.profit_margin) : '—'}
+        </span>
+        <div className="flex items-center gap-1.5">
+          <BookmakerBadge name={edge.leg_a.bookmaker_name} compact />
+          <span className="font-mono text-text-secondary">
+            {outcomeALabel}
+            {lineALabel ? ` ${lineALabel}` : ''} @ {formatOdds(edge.leg_a.odds)}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <BookmakerBadge name={edge.leg_b.bookmaker_name} compact />
+          <span className="font-mono text-text-secondary">
+            {outcomeBLabel}
+            {lineBLabel ? ` ${lineBLabel}` : ''} @ {formatOdds(edge.leg_b.odds)}
+          </span>
+        </div>
+      </div>
+      <span className="font-mono text-text-muted">
+        {edge.gap != null ? `${formatGap(edge.gap)} pt` : '—'}
+      </span>
+    </button>
+  );
+}
+
+export default function EdgeGroupRow({
+  group,
   totalUnits,
   isCalculatorExpanded,
   onToggleCalculator,
   sharedSearch,
-}: EdgeRowProps) {
-  const headline = edgeMarketHeadline(edge);
-  const calculatorPanelId = `flat-calculator-${edge.id}`;
+}: EdgeGroupRowProps) {
+  // null sentinel = "track current group.best across refetches".
+  // Only set to a real id when the user explicitly picks a ladder line.
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [showLadder, setShowLadder] = useState(false);
+
+  const selected = useMemo(() => {
+    if (selectedId === null) return group.best;
+    return group.lines.find((line) => line.source_id === selectedId) ?? group.best;
+  }, [group.best, group.lines, selectedId]);
+
+  const headline = edgeMarketHeadline(selected);
+  const calculatorPanelId = `flat-calculator-${group.key}`;
+  const lineCount = group.lines.length;
+  const hasLadder = lineCount > 1;
   const ariaLabel = `${isCalculatorExpanded ? 'Hide' : 'View'} stake calculator for ${
-    edge.player_name || headline
-  } in ${edge.home_team ?? '?'} vs ${edge.away_team ?? '?'}`;
+    selected.player_name || headline
+  } in ${selected.home_team ?? '?'} vs ${selected.away_team ?? '?'}`;
 
   return (
     <Fragment>
       <tr className="border-t border-border transition hover:bg-surface-raised">
         <td className="px-4 py-2.5">
           <div className="flex items-center gap-1.5">
-            <SportPill sport={edge.sport} />
-            <span className="font-medium text-text">{edge.player_name || headline}</span>
+            <SportPill sport={selected.sport} />
+            <span className="font-medium text-text">{selected.player_name || headline}</span>
+            {hasLadder && (
+              <span
+                className="rounded-full border border-border/70 bg-bg/60 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-secondary"
+                title={`${lineCount} lines in this market`}
+              >
+                {lineCount} lines
+              </span>
+            )}
           </div>
-          {edge.player_name && (
+          {selected.player_name && (
             <div className="text-[11px] text-text-muted">{headline}</div>
           )}
         </td>
         <td className="px-4 py-2.5">
           <div className="text-text-secondary">
-            {edge.home_team ?? '—'} vs {edge.away_team ?? '—'}
+            {selected.home_team ?? '—'} vs {selected.away_team ?? '—'}
           </div>
-          <div className="text-[11px] text-text-muted">{edge.league_name}</div>
+          <div className="text-[11px] text-text-muted">{selected.league_name}</div>
         </td>
         <td
           className={`px-4 py-2.5 text-right font-mono font-bold ${
-            edge.profit_margin != null ? profitColor(edge.profit_margin) : 'text-text-muted'
+            selected.profit_margin != null ? profitColor(selected.profit_margin) : 'text-text-muted'
           }`}
         >
-          {edge.profit_margin != null ? formatPercentage(edge.profit_margin) : '—'}
+          {selected.profit_margin != null ? formatPercentage(selected.profit_margin) : '—'}
         </td>
         <td className="hidden px-4 py-2.5 text-right md:table-cell">
-          {edge.middle_profit_margin != null && (edge.gap ?? 0) > 0 ? (
-            <span className={`font-mono font-bold ${profitColor(edge.middle_profit_margin)}`}>
-              {formatPercentage(edge.middle_profit_margin)}
+          {selected.middle_profit_margin != null && (selected.gap ?? 0) > 0 ? (
+            <span className={`font-mono font-bold ${profitColor(selected.middle_profit_margin)}`}>
+              {formatPercentage(selected.middle_profit_margin)}
             </span>
           ) : (
             <span className="text-text-muted">—</span>
           )}
         </td>
         <td className="hidden px-4 py-2.5 sm:table-cell">
-          <LegCell edge={edge} side="a" />
+          <LegCell edge={selected} side="a" />
         </td>
         <td className="hidden px-4 py-2.5 sm:table-cell">
-          <LegCell edge={edge} side="b" />
+          <LegCell edge={selected} side="b" />
         </td>
         <td className="px-4 py-2.5 text-right font-mono text-text-secondary">
-          {edge.gap != null ? formatGap(edge.gap) : '—'}
+          {selected.gap != null ? formatGap(selected.gap) : '—'}
         </td>
         <td className="hidden px-4 py-2.5 text-right text-text-muted lg:table-cell">
-          {formatRelativeTime(edge.detected_at)}
+          {formatRelativeTime(selected.detected_at)}
         </td>
         <td className="px-4 py-2.5 text-right">
           <div className="flex items-center justify-end gap-3">
+            {hasLadder && (
+              <button
+                type="button"
+                aria-expanded={showLadder}
+                onClick={() => setShowLadder((prev) => !prev)}
+                className="text-[11px] font-medium text-text-muted transition hover:text-text"
+              >
+                {showLadder ? 'Hide lines' : `Show ${lineCount} lines`}
+              </button>
+            )}
             <button
               type="button"
               aria-expanded={isCalculatorExpanded}
               aria-controls={calculatorPanelId}
               aria-label={ariaLabel}
-              onClick={() => onToggleCalculator(edge.id)}
+              onClick={() => onToggleCalculator(group.key)}
               className="text-[11px] font-medium text-text-muted transition hover:text-text"
             >
-              {isCalculatorExpanded ? 'Hide' : 'View'}
+              {isCalculatorExpanded ? 'Hide calc' : 'Calc'}
             </button>
             <Link
-              to={`/matches/${edge.match_id}${sharedSearch}`}
-              aria-label={`View ${edge.player_name || headline} for ${edge.home_team ?? ''} vs ${edge.away_team ?? ''}`}
+              to={`/matches/${selected.match_id}${sharedSearch}`}
+              aria-label={`View ${selected.player_name || headline} for ${selected.home_team ?? ''} vs ${selected.away_team ?? ''}`}
               className="text-xs font-medium text-text-muted transition hover:text-accent"
             >
               →
@@ -129,11 +210,27 @@ export default function EdgeRow({
           </div>
         </td>
       </tr>
+      {hasLadder && showLadder && (
+        <tr className="border-t border-border bg-bg/15">
+          <td colSpan={9} className="px-4 py-3">
+            <div className="space-y-1.5">
+              {group.lines.map((line) => (
+                <LineRow
+                  key={`${group.key}-${line.id}`}
+                  edge={line}
+                  selected={line.id === selected.id}
+                  onSelect={(picked) => setSelectedId(picked.source_id)}
+                />
+              ))}
+            </div>
+          </td>
+        </tr>
+      )}
       {isCalculatorExpanded && (
         <tr className="border-t border-border bg-bg/20">
           <td colSpan={9} className="px-4 py-3">
             <div id={calculatorPanelId}>
-              <StakeCalculatorPanel edge={edge} totalUnits={totalUnits} />
+              <StakeCalculatorPanel edge={selected} totalUnits={totalUnits} />
             </div>
           </td>
         </tr>
