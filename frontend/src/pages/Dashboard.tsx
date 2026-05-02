@@ -33,6 +33,7 @@ import { buildSearchIndex, filterSearchIndex, normalizeSearchText } from '../uti
 import { groupUnresolvedOdds } from '../utils/unresolvedWarnings';
 import { buildOpportunityEdges } from '../utils/edgeAdapter';
 import { groupEdgesByMarket } from '../utils/edgeGrouping';
+import { normalizeOpportunityMarketType } from '../utils/constants';
 
 type DashboardTab = 'opportunities' | 'tracked' | 'teams' | 'canonical' | 'warnings';
 type SportFilter = 'both' | 'basketball' | 'football' | 'tennis';
@@ -117,6 +118,7 @@ export default function Dashboard() {
     const normalized = updateStakeUnits(parsed);
     setStakeUnitsInput(formatDashboardStakeUnitsInput(normalized));
   };
+  const opportunityMarketTypeFilter = normalizeOpportunityMarketType(filters.market_type);
 
   const {
     data: opportunities,
@@ -127,7 +129,7 @@ export default function Dashboard() {
   } = useOpportunities(
     {
       sport: sportFilterToParam(opportunitiesSport),
-      market_type: filters.market_type,
+      market_type: opportunityMarketTypeFilter,
       limit: 200,
       loadAll: true,
       bookmaker_ids: selectedBookmakerIds.length > 0 ? selectedBookmakerIds : undefined,
@@ -243,7 +245,7 @@ export default function Dashboard() {
   ]);
 
   const minGapFilter = filters.min_gap ?? 0;
-  const marketTypeFilter = filters.market_type;
+  const marketTypeFilter = opportunityMarketTypeFilter;
   const leagueFilter = filters.league;
 
   const edges = useMemo(() => {
