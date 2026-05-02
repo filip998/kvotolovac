@@ -1948,6 +1948,7 @@ async def get_opportunities(
     sport: str | None = None,
     bookmaker_ids: list[str] | None = None,
     market_type: str | None = None,
+    include_legacy_discrepancy_overlap: bool = True,
     limit: int = 100,
     offset: int = 0,
 ) -> list[OpportunityOut]:
@@ -1961,6 +1962,9 @@ async def get_opportunities(
     if sport:
         conditions.append("op.sport = ?")
         params.append(sport)
+    if not include_legacy_discrepancy_overlap:
+        conditions.append("op.sport != ?")
+        params.append("basketball")
     if market_type:
         conditions.append("op.market_type = ?")
         params.append(market_type)

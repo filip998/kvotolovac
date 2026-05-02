@@ -1151,8 +1151,8 @@ class Scheduler:
                     logger.exception("Canonical opportunity analysis failed")
                 opportunities = list(canonical_analysis.opportunities)
 
+                await odds_store.deactivate_opportunities()
                 if not canonical_analysis_failed:
-                    await odds_store.deactivate_opportunities()
                     for opportunity in opportunities:
                         await odds_store.insert_opportunity(
                             opportunity,

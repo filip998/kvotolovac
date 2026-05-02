@@ -698,6 +698,45 @@ async def test_scheduler_canonical_analysis_failure_preserves_discrepancies(
         "app.services.scheduler._load_current_canonical_analysis",
         fail_canonical_analysis,
     )
+    await odds_store.upsert_league("premier-league", "Premier League", "football")
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    await odds_store.upsert_bookmaker("balkanbet", "BalkanBet")
+    await odds_store.upsert_match(
+        id="stale-football-match",
+        league_id="premier-league",
+        sport="football",
+        home_team="Arsenal",
+        away_team="Chelsea",
+        start_time="2030-01-01T20:00:00+00:00",
+    )
+    await odds_store.insert_opportunity(
+        Opportunity(
+            sport="football",
+            match_id="stale-football-match",
+            opportunity_type="same_line_arbitrage",
+            market_type="football_total_goals",
+            line=2.5,
+            profit_margin=0.02,
+            middle_profit_margin=None,
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id="maxbet",
+                    market_type="football_total_goals",
+                    outcome_code="under",
+                    line=2.5,
+                    odds=1.95,
+                ),
+                OpportunityLeg(
+                    bookmaker_id="balkanbet",
+                    market_type="football_total_goals",
+                    outcome_code="over",
+                    line=2.5,
+                    odds=2.10,
+                ),
+            ],
+        ),
+        detected_at="2029-01-01T00:00:00",
+    )
     _register_test_scrapers(
         StubScraper(
             "alpha",
@@ -715,6 +754,7 @@ async def test_scheduler_canonical_analysis_failure_preserves_discrepancies(
     assert result["opportunities_found"] == 0
     assert result["canonical_shadow_warnings"] == ["canonical_analysis_failed"]
     assert len(await odds_store.get_discrepancies(market_type="player_points")) == 1
+    assert await odds_store.get_opportunities(sport="football") == []
 
 
 @pytest.mark.asyncio

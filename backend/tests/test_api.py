@@ -12,6 +12,7 @@ from app.main import app
 from app.models.schemas import (
     NormalizedOdds,
     NormalizedOutcomeOffer,
+    OpportunityLeg,
     RawOddsData,
     TeamReviewDiagnostic,
     UnresolvedOddsDiagnostic,
@@ -21,7 +22,7 @@ from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
 from app.services.scheduler import scheduler
 from app.services.normalizer import normalize_team_name
-from app.services.opportunity_analyzer import analyze_outcome_offers
+from app.services.opportunity_analyzer import Opportunity, analyze_outcome_offers
 from app.services.team_registry import create_canonical_team, remember_team_alias
 from app.store import odds_store
 
@@ -295,6 +296,69 @@ async def test_football_market_offers_and_opportunities_api(client: AsyncClient)
     )
     assert no_match_resp.status_code == 200
     assert no_match_resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_opportunities_api_hides_basketball_overlap_by_default(client: AsyncClient):
+    await odds_store.upsert_league("euroleague", "EuroLeague", "basketball")
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_match(
+        id="basketball-match",
+        league_id="euroleague",
+        sport="basketball",
+        home_team="Olympiacos",
+        away_team="Real Madrid",
+        start_time="2030-01-01T20:00:00+00:00",
+    )
+    await odds_store.insert_opportunity(
+        Opportunity(
+            sport="basketball",
+            match_id="basketball-match",
+            opportunity_type="middle",
+            market_type="player_points",
+            line=18.5,
+            profit_margin=0.02,
+            middle_profit_margin=0.50,
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id="mozzart",
+                    market_type="player_points",
+                    outcome_code="over",
+                    line=18.5,
+                    odds=1.90,
+                ),
+                OpportunityLeg(
+                    bookmaker_id="meridian",
+                    market_type="player_points",
+                    outcome_code="under",
+                    line=20.5,
+                    odds=2.10,
+                ),
+            ],
+        ),
+        detected_at="2030-01-01T20:00:00",
+    )
+
+    default_resp = await client.get("/api/v1/opportunities")
+    basketball_resp = await client.get(
+        "/api/v1/opportunities",
+        params={"sport": "basketball"},
+    )
+    opt_in_resp = await client.get(
+        "/api/v1/opportunities",
+        params={
+            "sport": "basketball",
+            "include_legacy_discrepancy_overlap": "true",
+        },
+    )
+
+    assert default_resp.status_code == 200
+    assert basketball_resp.status_code == 200
+    assert opt_in_resp.status_code == 200
+    assert default_resp.json() == []
+    assert basketball_resp.json() == []
+    assert [row["sport"] for row in opt_in_resp.json()] == ["basketball"]
 
 
 @pytest.mark.asyncio
