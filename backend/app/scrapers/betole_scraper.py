@@ -68,17 +68,23 @@ _GAME_TOTAL_OT_LINE = ThresholdLine("50445", "50444", "overUnderOvertime", "game
 
 # OT-inclusive Asian handicap (full game). BetOle's existing
 # /restapi/offer/sr/sport/B/mob basketball list call already returns
-# params["handicapOvertime"] and odds codes 50431 ("1" = home covers) /
-# 50430 ("2" = away covers) on the same response — no new HTTP needed.
+# params["handicapOvertime"] and odds codes 50430 ("2" = home covers) /
+# 50431 ("1" = away covers) on the same response — no new HTTP needed.
 # Each match exposes one main line per match (no ladder).
 #
 # BetOle is on the same Tipster white-label platform as MerkurXTip /
-# OktagonBet, and shares their convention: ``handicapOvertime`` is
-# **team1's expected margin** (positive = team1=home favoured), so the
-# parser uses ``threshold = +line`` WITHOUT a sign flip — opposite of
-# MaxBet/AdmiralBet/PinnBet/Mozzart.
+# OktagonBet / 365 / SoccerBet, and they all share the same
+# *home-perspective signed* convention: ``handicapOvertime`` is the home
+# team's signed Asian-handicap line (negative = home favourite, positive
+# = home underdog — same as Mozzart's ``Hendikep -X`` UI).  Our analyzer
+# expects ``threshold`` to be the home expected margin (positive = home
+# favoured), so we negate the parsed line in `_parse_handicap_match`.
+# The odds codes are *also* opposite of historical comments: 50430 (``"2"``)
+# pays when the home team covers and 50431 (``"1"``) when the away team
+# covers — verified live by checking the ladder direction (home cover
+# odds fall as the line grows in favour of the favourite).
 _HANDICAP_OT_LINE = ThresholdLine(
-    "50431", "50430", "handicapOvertime", "home_handicap_ot",
+    "50430", "50431", "handicapOvertime", "home_handicap_ot",
 )
 
 _CANONICAL_LEAGUES: dict[str, str] = {
@@ -246,10 +252,13 @@ def _parse_regular_match(match: dict) -> list[RawOddsData]:
 def _parse_handicap_match(match: dict) -> list[RawOddsData]:
     """Parse OT-inclusive Asian handicap rows from a regular-feed match.
 
-    BetOle stores ``handicapOvertime`` as team1's expected margin
-    (positive = team1=home favoured), so we forward the value as
-    ``threshold`` without sign flip. Outcome ``"1"`` (code 50431) pays
-    when home covers; ``"2"`` (50430) pays when away covers.
+    BetOle stores ``handicapOvertime`` as the home team's *signed*
+    Asian-handicap line (negative = home favourite, positive = home
+    underdog), matching Mozzart's ``Hendikep -X`` UI convention.  Our
+    canonical analyzer convention is the opposite (positive = home
+    expected margin, i.e., positive when home is favoured), so we negate
+    the parsed value when storing the threshold.  Outcome ``"2"`` (code
+    50430) pays when home covers; ``"1"`` (50431) pays when away covers.
     """
     home_team = (match.get("home") or "").strip()
     away_team = (match.get("away") or "").strip()
@@ -262,9 +271,10 @@ def _parse_handicap_match(match: dict) -> list[RawOddsData]:
     line_str = params.get(_HANDICAP_OT_LINE.param_key)
     if line_str is None or line_str == "":
         return []
-    threshold = _parse_float(line_str)
-    if threshold is None:
+    line = _parse_float(line_str)
+    if line is None:
         return []
+    threshold = -line
 
     over_odds = _parse_float(odds.get(_HANDICAP_OT_LINE.over_code))
     under_odds = _parse_float(odds.get(_HANDICAP_OT_LINE.under_code))

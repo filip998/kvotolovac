@@ -105,30 +105,32 @@ _GAME_TOTAL_OT_LINES: tuple[ThresholdLine, ...] = (
 # params['handicapOvertime'] through ['handicapOvertime13'] and the matching
 # odds codes 50430–50443 (lines 1–7) plus 51624–51635 (lines 8–13). 365 is
 # on the same Tipster white-label platform as MerkurXTip / OktagonBet /
-# BetOle and shares their convention: ``handicapOvertime`` is **team1's
-# expected margin** (positive = team1=home favoured), so the parser uses
-# ``threshold = +line`` WITHOUT a sign flip.
+# BetOle / SoccerBet and shares their convention: ``handicapOvertime`` is
+# the home team's *signed* Asian-handicap line (negative = home favourite,
+# positive = home underdog — same as Mozzart's ``Hendikep -X`` UI).  Our
+# canonical analyzer convention is the *opposite* (positive threshold =
+# home expected margin), so we negate the parsed value when storing.
 #
-# Mapping derived empirically from a live match (Orlando vs Detroit, line
-# values vs odds): the odd-numbered code in each pair holds "1" (team1
-# covers) and the even code holds "2" (team2 covers); pairs are allocated
-# sequentially as the ladder index N grows. Lines 1–7 occupy codes
-# 50430–50443; codes 50444–50457 belong to OT totals; lines 8–13 resume
-# at 51624–51635.
+# The bet codes are also *opposite* of historical comments: in each pair
+# the *even* code (50430, 50432, ..., 50442, 51624, ...) holds the "2"
+# outcome which pays when the **home team covers**, and the *odd* code
+# (50431, 50433, ..., 50443, 51625, ...) pays when the **away team
+# covers**.  Verified live by checking the ladder direction (home cover
+# odds fall as the line grows in the favourite's favour).
 _HANDICAP_OT_LINES: tuple[ThresholdLine, ...] = (
-    ThresholdLine("50431", "50430", "handicapOvertime",  "home_handicap_ot"),
-    ThresholdLine("50433", "50432", "handicapOvertime2", "home_handicap_ot"),
-    ThresholdLine("50435", "50434", "handicapOvertime3", "home_handicap_ot"),
-    ThresholdLine("50437", "50436", "handicapOvertime4", "home_handicap_ot"),
-    ThresholdLine("50439", "50438", "handicapOvertime5", "home_handicap_ot"),
-    ThresholdLine("50441", "50440", "handicapOvertime6", "home_handicap_ot"),
-    ThresholdLine("50443", "50442", "handicapOvertime7", "home_handicap_ot"),
-    ThresholdLine("51625", "51624", "handicapOvertime8", "home_handicap_ot"),
-    ThresholdLine("51627", "51626", "handicapOvertime9", "home_handicap_ot"),
-    ThresholdLine("51629", "51628", "handicapOvertime10", "home_handicap_ot"),
-    ThresholdLine("51631", "51630", "handicapOvertime11", "home_handicap_ot"),
-    ThresholdLine("51633", "51632", "handicapOvertime12", "home_handicap_ot"),
-    ThresholdLine("51635", "51634", "handicapOvertime13", "home_handicap_ot"),
+    ThresholdLine("50430", "50431", "handicapOvertime",  "home_handicap_ot"),
+    ThresholdLine("50432", "50433", "handicapOvertime2", "home_handicap_ot"),
+    ThresholdLine("50434", "50435", "handicapOvertime3", "home_handicap_ot"),
+    ThresholdLine("50436", "50437", "handicapOvertime4", "home_handicap_ot"),
+    ThresholdLine("50438", "50439", "handicapOvertime5", "home_handicap_ot"),
+    ThresholdLine("50440", "50441", "handicapOvertime6", "home_handicap_ot"),
+    ThresholdLine("50442", "50443", "handicapOvertime7", "home_handicap_ot"),
+    ThresholdLine("51624", "51625", "handicapOvertime8", "home_handicap_ot"),
+    ThresholdLine("51626", "51627", "handicapOvertime9", "home_handicap_ot"),
+    ThresholdLine("51628", "51629", "handicapOvertime10", "home_handicap_ot"),
+    ThresholdLine("51630", "51631", "handicapOvertime11", "home_handicap_ot"),
+    ThresholdLine("51632", "51633", "handicapOvertime12", "home_handicap_ot"),
+    ThresholdLine("51634", "51635", "handicapOvertime13", "home_handicap_ot"),
 )
 
 _SUPPORTED_PLAYER_PARAM_KEYS = {line.param_key for line in _PLAYER_THRESHOLD_LINES}
@@ -287,6 +289,10 @@ def _parse_total_match(match: dict, lines: tuple[ThresholdLine, ...]) -> list[Ra
         threshold = _parse_float(params.get(line.param_key))
         if threshold is None:
             continue
+        if line.market_type == "home_handicap_ot":
+            # Source carries the home-perspective signed line (negative =
+            # home favourite); analyzer expects positive = home favoured.
+            threshold = -threshold
 
         over_odds = _parse_float(odds.get(line.over_code))
         under_odds = _parse_float(odds.get(line.under_code))

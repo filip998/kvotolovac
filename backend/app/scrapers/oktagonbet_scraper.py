@@ -113,20 +113,23 @@ _GAME_TOTAL_OT_LINES = [
     ("51647", "51646", "overUnderOvertime13"),
 ]
 
-# OT-inclusive Asian handicap (full game). OktagonBet's basketball totals
+# OT-inclusive Asian handicap (full game). OktagonBet's existing
 # list call already returns ``params["handicapOvertime"]`` and odds codes
-# 50431 ("1" = team1=home covers) / 50430 ("2" = team2=away covers) on the
-# same response — no new HTTP needed. Each match exposes only one main line
+# 50430 ("2" = home covers) / 50431 ("1" = away covers) on the same
+# response — no new HTTP needed. Each match exposes only one main line
 # (no ladder).
 #
-# OktagonBet's sign convention matches MerkurXTip (the same Tipster
-# white-label platform): ``handicapOvertime`` is **team1's expected margin**
-# (positive = team1 favoured), so the parser uses ``threshold = +line``
-# WITHOUT a sign flip — this is the *opposite* of MaxBet/AdmiralBet/PinnBet/
-# Mozzart which store team1's signed Asian handicap (negative = team1
-# favoured).
+# OktagonBet's sign convention matches the rest of the Tipster platform
+# (MerkurXTip / BetOle / 365 / SoccerBet): ``handicapOvertime`` is the
+# home team's *signed* Asian-handicap line (negative = home favourite,
+# positive = home underdog — same as Mozzart's ``Hendikep -X`` UI).  Our
+# canonical analyzer convention is the opposite (positive threshold =
+# home expected margin = home favoured), so we negate the parsed value
+# in `_parse_handicap_ot_match`.  Verified live by checking ladder
+# direction: home cover odds fall as the line grows in the favourite's
+# favour.
 _HANDICAP_OT_LINES: list[tuple[str, str, str]] = [
-    ("50431", "50430", "handicapOvertime"),
+    ("50430", "50431", "handicapOvertime"),
 ]
 
 _LEAGUE_PREFIX = "igrači ~"
@@ -400,11 +403,13 @@ def _parse_game_total_ot_match(match: dict) -> list[RawOddsData]:
 def _parse_handicap_ot_match(match: dict) -> list[RawOddsData]:
     """Parse OT-inclusive Asian handicap rows from a list-mode match.
 
-    OktagonBet stores ``handicapOvertime`` as **team1's expected margin**
-    (positive = team1=home favoured), so we forward the value as-is into
-    ``threshold`` (no sign flip), since the analyzer canonical convention
-    is "positive threshold = home favoured". Outcome ``"1"`` (odds code
-    50431) pays when home covers; ``"2"`` (50430) pays when away covers.
+    OktagonBet stores ``handicapOvertime`` as the home team's *signed*
+    Asian-handicap line (negative = home favourite, positive = home
+    underdog — matches Mozzart's ``Hendikep -X`` UI).  Our canonical
+    analyzer convention is the opposite (positive = home expected margin
+    = home favoured), so we negate the parsed value when storing the
+    threshold.  Outcome ``"2"`` (odds code 50430) pays when the home
+    team covers; ``"1"`` (50431) pays when the away team covers.
     """
     if _is_player_market(match):
         return []
@@ -423,9 +428,10 @@ def _parse_handicap_ot_match(match: dict) -> list[RawOddsData]:
         if line_str is None or line_str == "":
             continue
         try:
-            threshold = float(line_str)
+            line = float(line_str)
         except (TypeError, ValueError):
             continue
+        threshold = -line
 
         over_odds = odds.get(over_code)
         under_odds = odds.get(under_code)

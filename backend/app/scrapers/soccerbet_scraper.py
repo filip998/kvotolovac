@@ -125,9 +125,19 @@ _GAME_TOTAL_LINES: tuple[ThresholdLine, ...] = (
 #
 # SoccerBet is on the Tipster white-label platform and shares its sign
 # convention with MerkurXTip / OktagonBet / BetOle / 365: ``hcp=`` value
-# is **team1's expected margin** (positive = team1 favoured), so the
-# parser uses ``threshold = +line`` WITHOUT a sign flip.
-_HANDICAP_OT_LINE = ThresholdLine(50431, 50430, "home_handicap_ot")
+# is **team1's signed Asian-handicap line** displayed from the home team's
+# perspective with negative = home favourite (matching Mozzart's
+# ``Hendikep -X`` UI convention).  Furthermore, the bet codes are
+# *opposite* of what the comments historically claimed: code 50430 (``"2"``)
+# pays when the **home team covers** and 50431 (``"1"``) when the
+# **away team covers** — verified live by checking that as the line grows
+# in the favourite's favour the home-cover odds fall and the away-cover
+# odds rise (the standard Asian-handicap ladder pattern).
+#
+# Canonical convention: ``threshold = -hcp`` so that positive threshold
+# means home expected margin > 0 (home favoured), and ``over_odds`` is the
+# home-cover price.
+_HANDICAP_OT_LINE = ThresholdLine(50430, 50431, "home_handicap_ot")
 
 _CANONICAL_LEAGUES: dict[str, str] = {
     "nba": "nba",
@@ -180,15 +190,21 @@ def _parse_total_spec(specifier: object) -> float | None:
 def _parse_handicap_spec(specifier: object) -> float | None:
     """Parse a SoccerBet handicap specifier like ``hcp=-1.5`` or ``hcp=9.5``.
 
-    The value is signed; positive = team1=home favoured, negative = team1
-    underdog. The analyzer's canonical convention is identical (positive
-    threshold = home favoured), so we forward the value without sign flip.
+    SoccerBet's ``hcp=`` carries the **home team's signed handicap line**
+    (negative = home favourite, positive = home underdog — same convention
+    Mozzart shows in its ``Hendikep -X`` UI).  Our canonical analyzer
+    convention is the opposite (positive = home expected margin), so we
+    negate the parsed value.  ``hcp=0`` is a valid pick'em line and must
+    not be silently dropped by truthy fallbacks.
     """
     if not isinstance(specifier, str):
         return None
     if not specifier.startswith("hcp="):
         return None
-    return _parse_float(specifier.removeprefix("hcp="))
+    raw = _parse_float(specifier.removeprefix("hcp="))
+    if raw is None:
+        return None
+    return -raw
 
 
 def _normalize_league_key(raw_league_name: str | None) -> str:
