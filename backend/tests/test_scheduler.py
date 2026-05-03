@@ -374,6 +374,148 @@ async def test_scheduler_runs_canonical_analysis_for_current_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_scheduler_player_props_scope_filters_non_player_threshold_markets(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "scrape_market_scope", "player_props")
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds(
+                        "alpha",
+                        18.5,
+                        market_type="points",
+                    ),
+                    _raw_odds(
+                        "alpha",
+                        155.5,
+                        market_type="game_total",
+                        player_name=None,
+                    ),
+                ],
+            },
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds("beta", 20.5),
+                    _raw_odds(
+                        "beta",
+                        158.5,
+                        market_type="game_total",
+                        player_name=None,
+                    ),
+                ],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["odds_scraped"] == 2
+    assert result["outcome_offers_scraped"] == 0
+    assert result["opportunities_found"] == 1
+    opportunities = await odds_store.get_opportunities(sport="basketball")
+    assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
+        ("middle", "player_points")
+    ]
+    stored_odds = await odds_store.get_odds_for_match(opportunities[0].match_id)
+    assert {row.market_type for row in stored_odds} == {"player_points"}
+
+
+@pytest.mark.asyncio
+async def test_scheduler_player_props_scope_keeps_context_rows_for_shared_platform_props(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "scrape_market_scope", "player_props")
+    _register_test_scrapers(
+        StubScraper(
+            "meridian",
+            payload_by_league={
+                "euroleague": [
+                    RawOddsData(
+                        bookmaker_id="meridian",
+                        league_id="nba",
+                        home_team="Minnesota",
+                        away_team="Houston",
+                        market_type="game_total",
+                        player_name=None,
+                        threshold=219.5,
+                        over_odds=1.9,
+                        under_odds=1.9,
+                        start_time="2030-01-01T20:00:00+00:00",
+                    )
+                ],
+            },
+        ),
+        StubScraper(
+            "maxbet",
+            payload_by_league={
+                "euroleague": [
+                    RawOddsData(
+                        bookmaker_id="maxbet",
+                        league_id="nba",
+                        home_team="Houston",
+                        away_team="Kevin Durant",
+                        market_type="player_points",
+                        player_name="Kevin Durant",
+                        threshold=23.5,
+                        over_odds=1.85,
+                        under_odds=1.95,
+                        start_time="2030-01-01T20:00:00+00:00",
+                    )
+                ],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["matches_scraped"] == 1
+    assert result["odds_scraped"] == 1
+    matches = await odds_store.get_matches(sport="basketball")
+    assert len(matches) == 1
+    assert matches[0].home_team == "Minnesota Timberwolves"
+    assert matches[0].away_team == "Houston Rockets"
+    stored_odds = await odds_store.get_odds_for_match(matches[0].id)
+    assert [(row.market_type, row.player_name) for row in stored_odds] == [
+        ("player_points", "Kevin Durant")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_player_props_scope_skips_outcome_offer_capabilities(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "enabled_sports", "football")
+    monkeypatch.setattr(settings, "scrape_market_scope", "player_props")
+    outcome_calls: list[str] = []
+
+    class RecordingOutcomeScraper(StubScraper):
+        async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+            outcome_calls.append(sport)
+            return [_raw_outcome_offer("alpha", "home", sport=sport)]
+
+    _register_test_scrapers(
+        RecordingOutcomeScraper(
+            "alpha",
+            leagues=(),
+            outcome_sports=("football",),
+        )
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert outcome_calls == []
+    assert result["odds_scraped"] == 0
+    assert result["outcome_offers_scraped"] == 0
+    assert result["opportunities_found"] == 0
+
+
+@pytest.mark.asyncio
 async def test_scheduler_persists_canonical_basketball_total_opportunity():
     _register_test_scrapers(
         StubScraper(

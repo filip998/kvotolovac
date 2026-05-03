@@ -23,6 +23,7 @@ from ..services.league_registry import league_country, league_display_name
 from ..services.normalizer import (
     ANCHORED_AUTO_APPLY_THRESHOLD,
     log_unresolved_shared_platform_diagnostics,
+    normalize_market_type,
     normalize_odds_with_diagnostics,
     resolve_team_name,
 )
@@ -113,8 +114,57 @@ def _enabled_scraper_capabilities(
     return [
         capability
         for capability in scraper.get_scraper_capabilities()
-        if capability.sport in enabled_sports
+        if _is_enabled_scraper_capability(capability, enabled_sports)
     ]
+
+
+def _is_enabled_scraper_capability(
+    capability: ScraperCapability,
+    enabled_sports: set[str],
+) -> bool:
+    if capability.sport not in enabled_sports:
+        return False
+    if (
+        settings.scrape_market_scope == "player_props"
+        and capability.lane == "outcome_offer"
+    ):
+        return False
+    return True
+
+
+def _is_player_market_type(market_type: str) -> bool:
+    return normalize_market_type(market_type).startswith("player_")
+
+
+def _filter_normalized_pipeline_batch_by_market_scope(
+    batch: _NormalizedPipelineBatch,
+) -> _NormalizedPipelineBatch:
+    if settings.scrape_market_scope != "player_props":
+        return batch
+    return _NormalizedPipelineBatch(
+        odds=[row for row in batch.odds if _is_player_market_type(row.market_type)],
+        outcome_offers=[],
+        unresolved_odds=[
+            row for row in batch.unresolved_odds if _is_player_market_type(row.market_type)
+        ],
+        team_review_cases=batch.team_review_cases,
+    )
+
+
+def _event_resolution_batch_for_market_scope(
+    full_batch: _NormalizedPipelineBatch,
+    persisted_batch: _NormalizedPipelineBatch,
+) -> _NormalizedPipelineBatch:
+    if settings.scrape_market_scope != "player_props":
+        return full_batch
+
+    persisted_match_ids = {row.match_id for row in persisted_batch.odds}
+    return _NormalizedPipelineBatch(
+        odds=[row for row in full_batch.odds if row.match_id in persisted_match_ids],
+        outcome_offers=[],
+        unresolved_odds=full_batch.unresolved_odds,
+        team_review_cases=full_batch.team_review_cases,
+    )
 
 
 def _normalize_pipeline_batch(
@@ -1028,10 +1078,17 @@ class Scheduler:
             canonical_shadow = _CanonicalShadowResult()
             notified = 0
             pending_auto_merges: list[tuple[int, int]] = []
-            normalized_batch = _normalize_pipeline_batch(
+            full_normalized_batch = _normalize_pipeline_batch(
                 all_raw,
                 all_raw_outcome_offers,
                 log_unresolved_shared_platform=False,
+            )
+            normalized_batch = _filter_normalized_pipeline_batch_by_market_scope(
+                full_normalized_batch
+            )
+            event_resolution_batch = _event_resolution_batch_for_market_scope(
+                full_normalized_batch,
+                normalized_batch,
             )
             normalized = normalized_batch.odds
             normalized_outcome_offers = normalized_batch.outcome_offers
@@ -1066,9 +1123,16 @@ class Scheduler:
                         pending_auto_merges
                     )
                 if auto_approved_team_reviews or applied_auto_merges:
-                    normalized_batch = _normalize_pipeline_batch(
+                    full_normalized_batch = _normalize_pipeline_batch(
                         all_raw,
                         all_raw_outcome_offers,
+                    )
+                    normalized_batch = _filter_normalized_pipeline_batch_by_market_scope(
+                        full_normalized_batch
+                    )
+                    event_resolution_batch = _event_resolution_batch_for_market_scope(
+                        full_normalized_batch,
+                        normalized_batch,
                     )
                     normalized = normalized_batch.odds
                     normalized_outcome_offers = normalized_batch.outcome_offers
@@ -1087,8 +1151,8 @@ class Scheduler:
                 await resolve_and_persist_events(
                     raw_odds=all_raw,
                     raw_outcome_offers=all_raw_outcome_offers,
-                    normalized_odds=normalized,
-                    normalized_outcome_offers=normalized_outcome_offers,
+                    normalized_odds=event_resolution_batch.odds,
+                    normalized_outcome_offers=event_resolution_batch.outcome_offers,
                 )
                 for unresolved in unresolved_odds:
                     await odds_store.insert_unresolved_odds(
