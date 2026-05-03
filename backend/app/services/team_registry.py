@@ -370,6 +370,23 @@ def _find_resolution_by_exact_alias(
     )
 
 
+@lru_cache(maxsize=65536)
+def _find_resolution_by_exact_alias_cached(
+    db_path: str,
+    raw_key: str,
+    sport: str,
+    bookmaker_id: str,
+) -> TeamAliasResolution | None:
+    del db_path
+    with _connect() as conn:
+        return _find_resolution_by_exact_alias(
+            conn,
+            raw_key=raw_key,
+            sport=sport,
+            bookmaker_id=bookmaker_id,
+        )
+
+
 def _resolve_existing_team(
     conn: sqlite3.Connection,
     *,
@@ -499,6 +516,7 @@ def clear_team_registry_cache(*, reset_bootstrap: bool = True) -> None:
     if reset_bootstrap:
         _bootstrap_db_path = None
         _schema_db_path = None
+    _find_resolution_by_exact_alias_cached.cache_clear()
     _load_team_search_rows.cache_clear()
     _load_canonical_team_list_rows.cache_clear()
 
@@ -516,13 +534,12 @@ def resolve_team_alias(
         return None
 
     _ensure_bootstrapped()
-    with _connect() as conn:
-        return _find_resolution_by_exact_alias(
-            conn,
-            raw_key=raw_key,
-            sport=sport,
-            bookmaker_id=_normalize_bookmaker_key(bookmaker_id),
-        )
+    return _find_resolution_by_exact_alias_cached(
+        settings.db_path,
+        raw_key,
+        sport,
+        _normalize_bookmaker_key(bookmaker_id),
+    )
 
 
 def remember_team_alias(
