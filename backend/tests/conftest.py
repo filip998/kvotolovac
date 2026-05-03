@@ -45,6 +45,13 @@ def wide_scrape_lookahead(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def all_market_scrape_scope(monkeypatch):
+    """Preserve full-market coverage in tests unless a test opts into player-only mode."""
+    monkeypatch.setattr(settings, "scrape_market_scope", "all")
+    yield
+
+
 @pytest.fixture
 def league_registry_file(tmp_path, monkeypatch):
     source_path = Path(settings.league_registry_path)

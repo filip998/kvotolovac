@@ -23,6 +23,7 @@ from ..services.league_registry import league_country, league_display_name
 from ..services.normalizer import (
     ANCHORED_AUTO_APPLY_THRESHOLD,
     log_unresolved_shared_platform_diagnostics,
+    normalize_market_type,
     normalize_odds_with_diagnostics,
     resolve_team_name,
 )
@@ -113,8 +114,32 @@ def _enabled_scraper_capabilities(
     return [
         capability
         for capability in scraper.get_scraper_capabilities()
-        if capability.sport in enabled_sports
+        if _is_enabled_scraper_capability(capability, enabled_sports)
     ]
+
+
+def _is_enabled_scraper_capability(
+    capability: ScraperCapability,
+    enabled_sports: set[str],
+) -> bool:
+    if capability.sport not in enabled_sports:
+        return False
+    if (
+        settings.scrape_market_scope == "player_props"
+        and capability.lane == "outcome_offer"
+    ):
+        return False
+    return True
+
+
+def _is_player_market_type(market_type: str) -> bool:
+    return normalize_market_type(market_type).startswith("player_")
+
+
+def _filter_raw_odds_by_market_scope(rows: list[RawOddsData]) -> list[RawOddsData]:
+    if settings.scrape_market_scope != "player_props":
+        return rows
+    return [row for row in rows if _is_player_market_type(row.market_type)]
 
 
 def _normalize_pipeline_batch(
@@ -859,9 +884,11 @@ class Scheduler:
             )
             return []
 
-        filtered_raw = filter_raw_odds_by_lookahead(raw)
-        dropped_count = len(raw) - len(filtered_raw)
-        raw = filtered_raw
+        lookahead_filtered_raw = filter_raw_odds_by_lookahead(raw)
+        lookahead_dropped_count = len(raw) - len(lookahead_filtered_raw)
+        market_filtered_raw = _filter_raw_odds_by_market_scope(lookahead_filtered_raw)
+        market_dropped_count = len(lookahead_filtered_raw) - len(market_filtered_raw)
+        raw = market_filtered_raw
         duration_ms = int((time.perf_counter() - started_at) * 1000)
         self._scan_completed_tasks += 1
         self._scan_active_tasks = max(0, self._scan_active_tasks - 1)
@@ -878,12 +905,19 @@ class Scheduler:
             duration_ms,
             len(raw),
         )
-        if dropped_count:
+        if lookahead_dropped_count:
             logger.info(
                 "Scraper %s dropped %d items outside %dh lookahead",
                 bookmaker_id,
-                dropped_count,
+                lookahead_dropped_count,
                 configured_lookahead_hours(),
+            )
+        if market_dropped_count:
+            logger.info(
+                "Scraper %s dropped %d non-player market items for SCRAPE_MARKET_SCOPE=%s",
+                bookmaker_id,
+                market_dropped_count,
+                settings.scrape_market_scope,
             )
         return raw
 
