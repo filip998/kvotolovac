@@ -8,6 +8,7 @@ import type {
   OutcomeOffer,
   EventReviewCase,
   SystemStatus,
+  ScrapeSettingsResponse,
   TeamReviewCase,
   UnresolvedOdds,
 } from './types';
@@ -1197,4 +1198,44 @@ export const mockSystemStatus: SystemStatus = {
     { id: '365', name: '365', last_scrape: ago(1), is_active: true },
     { id: 'volcanobet', name: 'VolcanoBet', last_scrape: ago(4), is_active: true },
   ],
+};
+
+export const mockScrapeSettings: ScrapeSettingsResponse = {
+  applied: {
+    enabled_bookmakers: mockSystemStatus.bookmaker_status?.map((item) => item.id) ?? [],
+    enabled_sports: ['basketball', 'football'],
+    scrape_market_scope: 'all',
+    scrape_lookahead_hours: 24,
+    scrape_interval_minutes: 10,
+    max_middle_opportunities_per_market: 10,
+    rate_limit_per_second: 1,
+    meridian_rate_limit_per_second: 2,
+    soccerbet_detail_mode: 'partial',
+    merkurxtip_detail_mode: 'partial',
+    notification_gap_threshold: 1.5,
+    persist_inapp_notifications: false,
+  },
+  pending: null,
+  has_pending_changes: false,
+  applied_at: ago(2),
+  pending_at: null,
+  applied_immediately: false,
+  options: {
+    bookmakers: (mockSystemStatus.bookmaker_status ?? []).map((item) => ({
+      id: item.id,
+      name: item.name,
+      enabled: true,
+    })),
+    sports: ['basketball', 'football'],
+    market_scopes: ['all', 'player_props'],
+    detail_modes: ['partial', 'full'],
+    scrape_interval_minutes_min: 1,
+    scrape_interval_minutes_max: 1440,
+    scrape_lookahead_hours_min: 0,
+    scrape_lookahead_hours_max: 87600,
+    max_middle_opportunities_per_market_min: 1,
+    max_middle_opportunities_per_market_max: 1000,
+    rate_limit_per_second_min: 0,
+    rate_limit_per_second_max: 20,
+  },
 };

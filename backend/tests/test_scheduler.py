@@ -13,6 +13,7 @@ from app.models.schemas import (
     OpportunityLeg,
     RawOddsData,
     RawOutcomeOffer,
+    ScrapeRuntimeSettingsUpdate,
     TeamReviewDiagnostic,
 )
 from app.scrapers.base import BaseScraper, ScraperCapability
@@ -20,6 +21,7 @@ from app.services.opportunity_analyzer import Opportunity
 from app.services.scheduler import Scheduler, _normalize_merge_pairings
 from app.services.normalizer import normalize_team_name
 from app.services.notifications import InAppNotificationProvider
+from app.services.runtime_settings import update_scrape_settings
 from app.services.team_registry import (
     create_canonical_team,
     get_canonical_team,
@@ -514,6 +516,60 @@ async def test_scheduler_player_props_scope_skips_outcome_offer_capabilities(
     assert result["odds_scraped"] == 0
     assert result["outcome_offers_scraped"] == 0
     assert result["opportunities_found"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_uses_runtime_enabled_bookmakers():
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={"euroleague": [_raw_odds("alpha", 18.5)]},
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={"euroleague": [_raw_odds("beta", 20.5)]},
+        ),
+    )
+    await update_scrape_settings(
+        ScrapeRuntimeSettingsUpdate(enabled_bookmakers=["alpha"]),
+        apply_immediately=True,
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["odds_scraped"] == 1
+    opportunities = await odds_store.get_opportunities(sport="basketball")
+    assert opportunities == []
+    matches = await odds_store.get_matches(sport="basketball")
+    assert len(matches) == 1
+    stored_odds = await odds_store.get_odds_for_match(matches[0].id)
+    assert {row.bookmaker_id for row in stored_odds} == {"alpha"}
+
+
+@pytest.mark.asyncio
+async def test_scheduler_promotes_pending_settings_on_next_cycle():
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={"euroleague": [_raw_odds("alpha", 18.5)]},
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={"euroleague": [_raw_odds("beta", 20.5)]},
+        ),
+    )
+    await update_scrape_settings(
+        ScrapeRuntimeSettingsUpdate(enabled_bookmakers=["alpha"]),
+        apply_immediately=False,
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["odds_scraped"] == 1
+    matches = await odds_store.get_matches(sport="basketball")
+    assert len(matches) == 1
+    stored_odds = await odds_store.get_odds_for_match(matches[0].id)
+    assert {row.bookmaker_id for row in stored_odds} == {"alpha"}
 
 
 @pytest.mark.asyncio

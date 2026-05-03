@@ -331,6 +331,15 @@ CREATE TABLE IF NOT EXISTS notifications (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS runtime_scrape_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    applied_config TEXT NOT NULL,
+    pending_config TEXT,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    pending_at TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS scrape_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     current_snapshot_id TEXT,
@@ -967,6 +976,17 @@ async def _backfill_snapshot_metadata(conn: aiosqlite.Connection) -> None:
 
 
 async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
+    await conn.execute(
+        """CREATE TABLE IF NOT EXISTS runtime_scrape_settings (
+               id INTEGER PRIMARY KEY CHECK (id = 1),
+               applied_config TEXT NOT NULL,
+               pending_config TEXT,
+               applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+               pending_at TIMESTAMP,
+               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+           )"""
+    )
+
     await conn.execute(
         """CREATE TABLE IF NOT EXISTS scrape_snapshots (
                id TEXT PRIMARY KEY,

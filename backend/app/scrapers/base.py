@@ -78,6 +78,15 @@ class BaseScraper(abc.ABC):
 
         return capabilities
 
+    def set_runtime_rate_limit(self, rate_limit_per_second: float) -> None:
+        http_client = getattr(self, "_http", None)
+        if http_client is not None and hasattr(http_client, "rate_limit_per_second"):
+            http_client.rate_limit_per_second = rate_limit_per_second
+
+    def set_runtime_detail_mode(self, detail_mode: Literal["partial", "full"]) -> None:
+        if hasattr(self, "_detail_mode"):
+            setattr(self, "_detail_mode", detail_mode)
+
     @abc.abstractmethod
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         """Scrape odds for a given league and return raw data."""
