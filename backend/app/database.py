@@ -924,8 +924,45 @@ async def _backfill_snapshot_metadata(conn: aiosqlite.Connection) -> None:
                m.start_time,
                m.status
            FROM outcome_offers oo
-           JOIN matches m ON m.id = oo.match_id
-           WHERE COALESCE(oo.snapshot_id, oo.scraped_at) IS NOT NULL"""
+            JOIN matches m ON m.id = oo.match_id
+            WHERE COALESCE(oo.snapshot_id, oo.scraped_at) IS NOT NULL"""
+    )
+    await conn.execute(
+        """INSERT OR IGNORE INTO match_bookmaker_sources (
+               snapshot_id,
+               match_id,
+               bookmaker_id,
+               source_url,
+               created_at,
+               updated_at
+           )
+           SELECT DISTINCT
+               scoped_sources.snapshot_id,
+               legacy_sources.match_id,
+               legacy_sources.bookmaker_id,
+               legacy_sources.source_url,
+               legacy_sources.created_at,
+               legacy_sources.updated_at
+           FROM match_bookmaker_sources legacy_sources
+           JOIN (
+               SELECT DISTINCT
+                   COALESCE(snapshot_id, scraped_at) AS snapshot_id,
+                   match_id,
+                   bookmaker_id
+               FROM odds
+               WHERE COALESCE(snapshot_id, scraped_at) IS NOT NULL
+               UNION
+               SELECT DISTINCT
+                   COALESCE(snapshot_id, scraped_at) AS snapshot_id,
+                   match_id,
+                   bookmaker_id
+               FROM outcome_offers
+               WHERE COALESCE(snapshot_id, scraped_at) IS NOT NULL
+           ) scoped_sources
+             ON scoped_sources.match_id = legacy_sources.match_id
+            AND scoped_sources.bookmaker_id = legacy_sources.bookmaker_id
+           WHERE legacy_sources.snapshot_id IS NULL
+             AND legacy_sources.source_url IS NOT NULL"""
     )
 
 

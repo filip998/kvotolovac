@@ -1111,13 +1111,15 @@ class Scheduler:
                 self._scan_phase = "analyzing"
                 canonical_analysis = _CanonicalAnalysisResult()
                 canonical_analysis_failed = False
+                canonical_analysis_error: str | None = None
                 try:
                     canonical_analysis = await _load_current_canonical_analysis(
                         match_ids=seen_matches,
                         snapshot_id=snapshot_id,
                     )
-                except Exception:
+                except Exception as exc:
                     canonical_analysis_failed = True
+                    canonical_analysis_error = f"{type(exc).__name__}: {exc}"
                     logger.exception("Canonical opportunity analysis failed")
                 opportunities = list(canonical_analysis.opportunities)
 
@@ -1127,6 +1129,12 @@ class Scheduler:
                         snapshot_at=cycle_scraped_at,
                         opportunities=opportunities,
                         detected_at=cycle_scraped_at,
+                    )
+                else:
+                    await odds_store.mark_scrape_snapshot_analysis_failed(
+                        snapshot_id=snapshot_id,
+                        snapshot_at=cycle_scraped_at,
+                        error=canonical_analysis_error,
                     )
 
                 if canonical_analysis_failed:

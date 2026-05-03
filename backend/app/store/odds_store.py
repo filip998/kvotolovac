@@ -51,6 +51,14 @@ def _row_to_dict(row: aiosqlite.Row) -> dict:
     return dict(row)
 
 
+async def _open_isolated_db_connection() -> aiosqlite.Connection:
+    db = await aiosqlite.connect(settings.db_path)
+    db.row_factory = aiosqlite.Row
+    await db.execute("PRAGMA busy_timeout = 5000")
+    await db.execute("PRAGMA foreign_keys = ON")
+    return db
+
+
 def _json_list(value: object) -> list:
     if not value:
         return []
@@ -414,6 +422,47 @@ async def _get_latest_team_review_snapshot_at(db: aiosqlite.Connection) -> str |
     if not row or not row[0][0]:
         return None
     return row[0][0]
+
+
+async def _get_visible_diagnostic_snapshot(
+    db: aiosqlite.Connection,
+    table_name: str,
+) -> tuple[str | None, str | None]:
+    if table_name not in {"unresolved_odds", "team_review_cases"}:
+        raise ValueError(f"unsupported diagnostic table: {table_name}")
+
+    current_snapshot_id, current_snapshot_at = await _get_current_snapshot(db)
+    newer_than_current = ""
+    params: list[object] = []
+    if current_snapshot_at is not None:
+        newer_than_current = "AND datetime(ss.scraped_at) > datetime(?)"
+        params.append(current_snapshot_at)
+    rows = await db.execute_fetchall(
+        f"""SELECT ss.id, ss.scraped_at
+            FROM scrape_snapshots ss
+            WHERE ss.status = 'analysis_failed'
+              {newer_than_current}
+              AND EXISTS (
+                  SELECT 1
+                  FROM {table_name} d
+                  WHERE d.snapshot_id = ss.id
+              )
+            ORDER BY datetime(ss.scraped_at) DESC, ss.id DESC
+            LIMIT 1""",
+        params,
+    )
+    if rows:
+        return rows[0]["id"], rows[0]["scraped_at"]
+    if current_snapshot_id is not None:
+        return current_snapshot_id, current_snapshot_at
+    if await _has_scrape_snapshots(db):
+        return None, None
+    snapshot_at = (
+        await _get_latest_unresolved_snapshot_at(db)
+        if table_name == "unresolved_odds"
+        else await _get_latest_team_review_snapshot_at(db)
+    )
+    return _snapshot_id_from_scraped_at(snapshot_at) if snapshot_at else None, snapshot_at
 
 
 async def _get_team_review_snapshot_at(db: aiosqlite.Connection) -> str | None:
@@ -822,7 +871,7 @@ async def persist_scrape_snapshot_batch(
 
 
 async def publish_scrape_snapshot(*, snapshot_id: str, snapshot_at: str) -> None:
-    db = await get_db()
+    db = await _open_isolated_db_connection()
     try:
         await db.execute("BEGIN IMMEDIATE")
         await db.execute(
@@ -851,6 +900,31 @@ async def publish_scrape_snapshot(*, snapshot_id: str, snapshot_at: str) -> None
     except Exception:
         await db.rollback()
         raise
+    finally:
+        await db.close()
+
+
+async def mark_scrape_snapshot_analysis_failed(
+    *, snapshot_id: str, snapshot_at: str, error: str | None = None
+) -> None:
+    db = await _open_isolated_db_connection()
+    try:
+        await db.execute("BEGIN IMMEDIATE")
+        await db.execute(
+            """UPDATE scrape_snapshots
+               SET status = 'analysis_failed',
+                   completed_at = ?,
+                   error = ?,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (snapshot_at, error, snapshot_id),
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        await db.close()
 
 
 async def get_matches(
@@ -884,15 +958,15 @@ async def get_matches(
         if bookmaker_ids:
             params.extend(bookmaker_ids)
         q = f"""SELECT m.id,
-                       COALESCE(sm.league_id, m.league_id) AS league_id,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.league_id ELSE m.league_id END AS league_id,
                        l.name as league_name,
-                       COALESCE(sm.sport, m.sport) AS sport,
-                       COALESCE(sm.home_team_id, m.home_team_id) AS home_team_id,
-                       COALESCE(sm.away_team_id, m.away_team_id) AS away_team_id,
-                       COALESCE(sm.home_team, m.home_team) AS home_team,
-                       COALESCE(sm.away_team, m.away_team) AS away_team,
-                       COALESCE(sm.start_time, m.start_time) AS start_time,
-                       COALESCE(sm.status, m.status) AS status,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.sport ELSE m.sport END AS sport,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.home_team_id ELSE m.home_team_id END AS home_team_id,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.away_team_id ELSE m.away_team_id END AS away_team_id,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.home_team ELSE m.home_team END AS home_team,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.away_team ELSE m.away_team END AS away_team,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END AS start_time,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.status ELSE m.status END AS status,
                         (
                             SELECT rem.resolved_event_id
                             FROM resolved_event_members rem
@@ -918,10 +992,11 @@ async def get_matches(
                            rem.resolved_event_id ASC
                            LIMIT 1
                        ) AS resolved_event_id
-               FROM matches m
-               LEFT JOIN snapshot_matches sm
-                 ON sm.snapshot_id = ? AND sm.match_id = m.id
-               LEFT JOIN leagues l ON COALESCE(sm.league_id, m.league_id) = l.id
+                FROM matches m
+                LEFT JOIN snapshot_matches sm
+                  ON sm.snapshot_id = ? AND sm.match_id = m.id
+                LEFT JOIN leagues l
+                  ON CASE WHEN sm.match_id IS NOT NULL THEN sm.league_id ELSE m.league_id END = l.id
                WHERE m.id IN (
                    SELECT o.match_id
                    FROM odds o
@@ -970,24 +1045,27 @@ async def get_matches(
                )"""
     if league_id:
         if current_snapshot_id is not None:
-            q += " AND COALESCE(sm.league_id, m.league_id) = ?"
+            q += " AND CASE WHEN sm.match_id IS NOT NULL THEN sm.league_id ELSE m.league_id END = ?"
         else:
             q += " AND m.league_id = ?"
         params.append(league_id)
     if sport:
         if current_snapshot_id is not None:
-            q += " AND COALESCE(sm.sport, m.sport) = ?"
+            q += " AND CASE WHEN sm.match_id IS NOT NULL THEN sm.sport ELSE m.sport END = ?"
         else:
             q += " AND m.sport = ?"
         params.append(sport)
     if status:
         if current_snapshot_id is not None:
-            q += " AND COALESCE(sm.status, m.status) = ?"
+            q += " AND CASE WHEN sm.match_id IS NOT NULL THEN sm.status ELSE m.status END = ?"
         else:
             q += " AND m.status = ?"
         params.append(status)
     if current_snapshot_id is not None:
-        q += " ORDER BY COALESCE(sm.start_time, m.start_time) ASC LIMIT ? OFFSET ?"
+        q += (
+            " ORDER BY CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END ASC "
+            "LIMIT ? OFFSET ?"
+        )
     else:
         q += " ORDER BY m.start_time ASC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
@@ -1038,15 +1116,15 @@ async def get_match(
             params.extend([current_snapshot_id, current_snapshot_id])
         row = await db.execute_fetchall(
             f"""SELECT m.id,
-                      COALESCE(sm.league_id, m.league_id) AS league_id,
-                      l.name as league_name,
-                      COALESCE(sm.sport, m.sport) AS sport,
-                      COALESCE(sm.home_team_id, m.home_team_id) AS home_team_id,
-                      COALESCE(sm.away_team_id, m.away_team_id) AS away_team_id,
-                      COALESCE(sm.home_team, m.home_team) AS home_team,
-                      COALESCE(sm.away_team, m.away_team) AS away_team,
-                      COALESCE(sm.start_time, m.start_time) AS start_time,
-                      COALESCE(sm.status, m.status) AS status,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.league_id ELSE m.league_id END AS league_id,
+                       l.name as league_name,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.sport ELSE m.sport END AS sport,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.home_team_id ELSE m.home_team_id END AS home_team_id,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.away_team_id ELSE m.away_team_id END AS away_team_id,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.home_team ELSE m.home_team END AS home_team,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.away_team ELSE m.away_team END AS away_team,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END AS start_time,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.status ELSE m.status END AS status,
                       (
                           SELECT rem.resolved_event_id
                           FROM resolved_event_members rem
@@ -1075,8 +1153,9 @@ async def get_match(
                FROM matches m
                LEFT JOIN snapshot_matches sm
                  ON sm.snapshot_id = ? AND sm.match_id = m.id
-               LEFT JOIN leagues l ON COALESCE(sm.league_id, m.league_id) = l.id
-               WHERE m.id = ?{visibility_clause}""",
+                LEFT JOIN leagues l
+                  ON CASE WHEN sm.match_id IS NOT NULL THEN sm.league_id ELSE m.league_id END = l.id
+                WHERE m.id = ?{visibility_clause}""",
             params,
         )
     else:
@@ -1869,6 +1948,8 @@ async def _get_event_review_case_variants_tx(
 ) -> list[EventReviewVariantOut]:
     variants: list[EventReviewVariantOut] = []
     seen: set[tuple[str, str | None]] = set()
+    current_snapshot_id = await _get_current_snapshot_id(db)
+    has_snapshot_mode = await _has_scrape_snapshots(db)
 
     resolved_event_ids = list(
         dict.fromkeys(
@@ -1878,16 +1959,34 @@ async def _get_event_review_case_variants_tx(
         )
     )
     for resolved_event_id in resolved_event_ids:
+        if current_snapshot_id is not None:
+            member_snapshot_clause = "AND rem.snapshot_id = ?"
+            member_params: list[object] = [current_snapshot_id]
+            member_order = ""
+            member_order_params: list[object] = []
+            member_metadata_clause = "AND sm.match_id IS NOT NULL"
+        elif has_snapshot_mode:
+            member_snapshot_clause = "AND 1 = 0"
+            member_params = []
+            member_order = ""
+            member_order_params = []
+            member_metadata_clause = ""
+        else:
+            member_snapshot_clause = "AND rem.snapshot_id IS NULL"
+            member_params = []
+            member_order = ""
+            member_order_params = []
+            member_metadata_clause = ""
         rows = await db.execute_fetchall(
-            """SELECT rem.match_id,
+            f"""SELECT rem.match_id,
                       rem.bookmaker_id,
                       b.name AS bookmaker_name,
-                      m.league_id,
-                      l.name AS league_name,
-                      m.home_team,
-                      m.away_team,
-                      m.start_time,
-                      rem.source_url,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.league_id ELSE m.league_id END AS league_id,
+                       l.name AS league_name,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.home_team ELSE m.home_team END AS home_team,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.away_team ELSE m.away_team END AS away_team,
+                       CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END AS start_time,
+                       rem.source_url,
                       rem.source_league_id,
                       rem.source_league_name,
                       rem.source_home_team,
@@ -1899,10 +1998,30 @@ async def _get_event_review_case_variants_tx(
                FROM resolved_event_members rem
                LEFT JOIN bookmakers b ON b.id = rem.bookmaker_id
                LEFT JOIN matches m ON m.id = rem.match_id
-               LEFT JOIN leagues l ON l.id = m.league_id
+               LEFT JOIN snapshot_matches sm
+                 ON sm.snapshot_id = ? AND sm.match_id = m.id
+               LEFT JOIN leagues l
+                 ON l.id = CASE WHEN sm.match_id IS NOT NULL THEN sm.league_id ELSE m.league_id END
                WHERE rem.resolved_event_id = ?
-               ORDER BY rem.id ASC""",
-            (resolved_event_id,),
+                 {member_snapshot_clause}
+                 {member_metadata_clause}
+               ORDER BY CASE
+                   WHEN EXISTS (
+                       SELECT 1
+                       FROM resolved_events re
+                       WHERE re.id = rem.resolved_event_id
+                         AND re.method IN ('manual', 'manual_review')
+                   ) THEN 0
+                   ELSE 1
+               END,
+               {member_order}
+               rem.id ASC""",
+            [
+                current_snapshot_id,
+                resolved_event_id,
+                *member_params,
+                *member_order_params,
+            ],
         )
         for row in rows:
             key = (row["match_id"], row["bookmaker_id"])
@@ -1919,46 +2038,53 @@ async def _get_event_review_case_variants_tx(
             if match_id
         )
     )
-    if candidate_match_ids:
-        current_snapshot_id = await _get_current_snapshot_id(db)
+    if candidate_match_ids and not (has_snapshot_mode and current_snapshot_id is None):
         placeholders = _sql_placeholders(candidate_match_ids)
         if current_snapshot_id is not None:
             source_snapshot_clause = "AND s.snapshot_id = ?"
             source_params: list[object] = [current_snapshot_id]
+            match_metadata_clause = "AND sm.match_id IS NOT NULL"
         elif await _has_scrape_snapshots(db):
             source_snapshot_clause = "AND 1 = 0"
             source_params = []
+            match_metadata_clause = ""
         else:
             source_snapshot_clause = "AND s.snapshot_id IS NULL"
             source_params = []
+            match_metadata_clause = ""
         rows = await db.execute_fetchall(
             f"""SELECT m.id AS match_id,
                         s.bookmaker_id,
                         b.name AS bookmaker_name,
-                        m.league_id,
-                       l.name AS league_name,
-                       m.home_team,
-                       m.away_team,
-                       m.start_time,
-                       s.source_url,
-                       NULL AS source_league_id,
-                       l.name AS source_league_name,
-                       m.home_team AS source_home_team,
-                       m.away_team AS source_away_team,
-                       m.start_time AS source_start_time,
-                       'as_listed' AS orientation,
-                       NULL AS member_confidence,
-                       '[]' AS member_evidence
-                FROM matches m
-                LEFT JOIN leagues l ON l.id = m.league_id
-                LEFT JOIN match_bookmaker_sources s
-                  ON s.match_id = m.id
-                 {source_snapshot_clause}
-                LEFT JOIN bookmakers b ON b.id = s.bookmaker_id
-                WHERE m.id IN ({placeholders})
-                ORDER BY m.start_time ASC, m.id ASC, s.bookmaker_id ASC,
-                         s.id ASC""",
-            [*source_params, *candidate_match_ids],
+                        CASE WHEN sm.match_id IS NOT NULL THEN sm.league_id ELSE m.league_id END AS league_id,
+                        l.name AS league_name,
+                        CASE WHEN sm.match_id IS NOT NULL THEN sm.home_team ELSE m.home_team END AS home_team,
+                        CASE WHEN sm.match_id IS NOT NULL THEN sm.away_team ELSE m.away_team END AS away_team,
+                        CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END AS start_time,
+                        s.source_url,
+                        NULL AS source_league_id,
+                        l.name AS source_league_name,
+                        CASE WHEN sm.match_id IS NOT NULL THEN sm.home_team ELSE m.home_team END AS source_home_team,
+                        CASE WHEN sm.match_id IS NOT NULL THEN sm.away_team ELSE m.away_team END AS source_away_team,
+                        CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END AS source_start_time,
+                        'as_listed' AS orientation,
+                        NULL AS member_confidence,
+                        '[]' AS member_evidence
+                 FROM matches m
+                 LEFT JOIN snapshot_matches sm
+                   ON sm.snapshot_id = ? AND sm.match_id = m.id
+                 LEFT JOIN leagues l
+                   ON l.id = CASE WHEN sm.match_id IS NOT NULL THEN sm.league_id ELSE m.league_id END
+                 LEFT JOIN match_bookmaker_sources s
+                   ON s.match_id = m.id
+                  {source_snapshot_clause}
+                 LEFT JOIN bookmakers b ON b.id = s.bookmaker_id
+                 WHERE m.id IN ({placeholders})
+                   {match_metadata_clause}
+                 ORDER BY CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END ASC,
+                          m.id ASC, s.bookmaker_id ASC,
+                          s.id ASC""",
+            [current_snapshot_id, *source_params, *candidate_match_ids],
         )
         for row in rows:
             key = (row["match_id"], row["bookmaker_id"])
@@ -1994,15 +2120,19 @@ async def _get_event_review_case_variants_tx(
             bookmaker_names = {row["id"]: row["name"] for row in bookmaker_rows}
             match_rows = await db.execute_fetchall(
                 f"""SELECT m.id AS match_id,
-                           m.league_id,
+                           CASE WHEN sm.match_id IS NOT NULL THEN sm.league_id ELSE m.league_id END AS league_id,
                            l.name AS league_name,
-                           m.home_team,
-                           m.away_team,
-                           m.start_time
+                           CASE WHEN sm.match_id IS NOT NULL THEN sm.home_team ELSE m.home_team END AS home_team,
+                           CASE WHEN sm.match_id IS NOT NULL THEN sm.away_team ELSE m.away_team END AS away_team,
+                           CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END AS start_time
                     FROM matches m
-                    LEFT JOIN leagues l ON l.id = m.league_id
-                    WHERE m.id IN ({placeholders})""",
-                candidate_match_ids,
+                    LEFT JOIN snapshot_matches sm
+                      ON sm.snapshot_id = ? AND sm.match_id = m.id
+                    LEFT JOIN leagues l
+                      ON l.id = CASE WHEN sm.match_id IS NOT NULL THEN sm.league_id ELSE m.league_id END
+                    WHERE m.id IN ({placeholders})
+                      {match_metadata_clause}""",
+                [current_snapshot_id, *candidate_match_ids],
             )
             match_map = {row["match_id"]: _row_to_dict(row) for row in match_rows}
 
@@ -2505,19 +2635,19 @@ async def _get_normalized_odds_for_matches_snapshot(
     rows = await db.execute_fetchall(
         f"""SELECT o.match_id,
                    o.bookmaker_id,
-                   COALESCE(sm.league_id, m.league_id) AS league_id,
-                   COALESCE(sm.sport, m.sport) AS sport,
-                   COALESCE(sm.home_team_id, m.home_team_id, 0) AS home_team_id,
-                   COALESCE(sm.away_team_id, m.away_team_id, 0) AS away_team_id,
-                   COALESCE(sm.home_team, m.home_team) AS home_team,
-                   COALESCE(sm.away_team, m.away_team) AS away_team,
+                   CASE WHEN sm.match_id IS NOT NULL THEN sm.league_id ELSE m.league_id END AS league_id,
+                   CASE WHEN sm.match_id IS NOT NULL THEN sm.sport ELSE m.sport END AS sport,
+                   CASE WHEN sm.match_id IS NOT NULL THEN COALESCE(sm.home_team_id, 0) ELSE COALESCE(m.home_team_id, 0) END AS home_team_id,
+                   CASE WHEN sm.match_id IS NOT NULL THEN COALESCE(sm.away_team_id, 0) ELSE COALESCE(m.away_team_id, 0) END AS away_team_id,
+                   CASE WHEN sm.match_id IS NOT NULL THEN sm.home_team ELSE m.home_team END AS home_team,
+                   CASE WHEN sm.match_id IS NOT NULL THEN sm.away_team ELSE m.away_team END AS away_team,
                    s.source_url AS source_url,
                    o.market_type,
                    o.player_name,
                    o.threshold,
                    o.over_odds,
                    o.under_odds,
-                   COALESCE(sm.start_time, m.start_time) AS start_time,
+                   CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END AS start_time,
                    o.scraped_at
             FROM odds o
             JOIN matches m ON m.id = o.match_id
@@ -2528,7 +2658,8 @@ async def _get_normalized_odds_for_matches_snapshot(
              AND COALESCE(s.snapshot_id, '') = COALESCE(o.snapshot_id, '')
             WHERE o.match_id IN ({placeholders})
               AND {snapshot_filter}
-            ORDER BY COALESCE(sm.start_time, m.start_time) ASC, o.match_id ASC, o.bookmaker_id ASC,
+            ORDER BY CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END ASC,
+                     o.match_id ASC, o.bookmaker_id ASC,
                      o.market_type ASC, o.player_name ASC, o.threshold ASC""",
         [*metadata_params, *selected_match_ids, *snapshot_params],
     )
@@ -2577,19 +2708,19 @@ async def _get_normalized_outcome_offers_for_matches_snapshot(
     rows = await db.execute_fetchall(
         f"""SELECT o.match_id,
                    o.bookmaker_id,
-                   COALESCE(sm.league_id, m.league_id) AS league_id,
-                   COALESCE(sm.sport, m.sport) AS sport,
-                   COALESCE(sm.home_team_id, m.home_team_id, 0) AS home_team_id,
-                   COALESCE(sm.away_team_id, m.away_team_id, 0) AS away_team_id,
-                   COALESCE(sm.home_team, m.home_team) AS home_team,
-                   COALESCE(sm.away_team, m.away_team) AS away_team,
+                   CASE WHEN sm.match_id IS NOT NULL THEN sm.league_id ELSE m.league_id END AS league_id,
+                   CASE WHEN sm.match_id IS NOT NULL THEN sm.sport ELSE m.sport END AS sport,
+                   CASE WHEN sm.match_id IS NOT NULL THEN COALESCE(sm.home_team_id, 0) ELSE COALESCE(m.home_team_id, 0) END AS home_team_id,
+                   CASE WHEN sm.match_id IS NOT NULL THEN COALESCE(sm.away_team_id, 0) ELSE COALESCE(m.away_team_id, 0) END AS away_team_id,
+                   CASE WHEN sm.match_id IS NOT NULL THEN sm.home_team ELSE m.home_team END AS home_team,
+                   CASE WHEN sm.match_id IS NOT NULL THEN sm.away_team ELSE m.away_team END AS away_team,
                    s.source_url AS source_url,
                    o.market_type,
                    o.outcome_code,
                    o.odds,
                    o.line,
                    o.raw_label,
-                   COALESCE(sm.start_time, m.start_time) AS start_time,
+                   CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END AS start_time,
                    o.scraped_at
             FROM outcome_offers o
             JOIN matches m ON m.id = o.match_id
@@ -2600,7 +2731,8 @@ async def _get_normalized_outcome_offers_for_matches_snapshot(
              AND COALESCE(s.snapshot_id, '') = COALESCE(o.snapshot_id, '')
             WHERE o.match_id IN ({placeholders})
               AND {snapshot_filter}
-            ORDER BY COALESCE(sm.start_time, m.start_time) ASC, o.match_id ASC, o.bookmaker_id ASC,
+            ORDER BY CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END ASC,
+                     o.match_id ASC, o.bookmaker_id ASC,
                      o.market_type ASC, o.line ASC, o.outcome_code ASC""",
         [*metadata_params, *selected_match_ids, *snapshot_params],
     )
@@ -2901,7 +3033,7 @@ async def get_outcome_offers(
     params: list[object] = [current_snapshot_id, *snapshot_params]
 
     if sport:
-        conditions.append("COALESCE(sm.sport, m.sport) = ?")
+        conditions.append("CASE WHEN sm.match_id IS NOT NULL THEN sm.sport ELSE m.sport END = ?")
         params.append(sport)
     if match_id:
         conditions.append("o.match_id = ?")
@@ -2916,7 +3048,7 @@ async def get_outcome_offers(
 
     q += " WHERE " + " AND ".join(conditions)
     q += (
-        " ORDER BY COALESCE(sm.start_time, m.start_time) ASC, "
+        " ORDER BY CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END ASC, "
         "o.market_type ASC, o.line ASC, o.outcome_code ASC LIMIT ? OFFSET ?"
     )
     params.extend([limit, offset])
@@ -3002,7 +3134,7 @@ async def publish_opportunities(
     detected_at: str,
 ) -> str:
     publish_id = _new_opportunity_publish_id(detected_at)
-    db = await get_db()
+    db = await _open_isolated_db_connection()
     try:
         await db.execute("BEGIN IMMEDIATE")
         await db.execute(
@@ -3087,6 +3219,8 @@ async def publish_opportunities(
     except Exception:
         await db.rollback()
         raise
+    finally:
+        await db.close()
     return publish_id
 
 
@@ -3121,9 +3255,9 @@ async def get_opportunities(
     current_publish_id = await _get_current_opportunity_publish_id(db)
     current_snapshot_id = await _get_current_snapshot_id(db)
     q = """SELECT op.*,
-                  COALESCE(sm.home_team, m.home_team) AS home_team,
-                  COALESCE(sm.away_team, m.away_team) AS away_team,
-                  COALESCE(sm.start_time, m.start_time) AS start_time,
+                  CASE WHEN sm.match_id IS NOT NULL THEN sm.home_team ELSE m.home_team END AS home_team,
+                  CASE WHEN sm.match_id IS NOT NULL THEN sm.away_team ELSE m.away_team END AS away_team,
+                  CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END AS start_time,
                   l.name AS league_name
            FROM opportunities op
            LEFT JOIN opportunity_publishes pub ON pub.id = op.publish_id
@@ -3131,7 +3265,8 @@ async def get_opportunities(
            LEFT JOIN snapshot_matches sm
              ON sm.snapshot_id = COALESCE(pub.snapshot_id, ?)
             AND sm.match_id = op.match_id
-           LEFT JOIN leagues l ON l.id = COALESCE(sm.league_id, m.league_id)"""
+           LEFT JOIN leagues l
+             ON l.id = CASE WHEN sm.match_id IS NOT NULL THEN sm.league_id ELSE m.league_id END"""
     if current_publish_id is not None:
         conditions = ["op.publish_id = ?", "op.is_active = TRUE"]
         params: list[object] = [current_snapshot_id, current_publish_id]
@@ -3157,7 +3292,7 @@ async def get_opportunities(
         params.extend(bookmaker_ids)
     q += " WHERE " + " AND ".join(conditions)
     q += """ ORDER BY COALESCE(op.profit_margin, -999) DESC,
-                    COALESCE(sm.start_time, m.start_time) ASC,
+                    CASE WHEN sm.match_id IS NOT NULL THEN sm.start_time ELSE m.start_time END ASC,
                     op.id ASC
              LIMIT ? OFFSET ?"""
     params.extend([limit, offset])
@@ -3308,11 +3443,7 @@ async def get_unresolved_odds(
     offset: int = 0,
 ) -> list[UnresolvedOddsOut]:
     db = await get_db()
-    snapshot_id = await _get_current_snapshot_id(db)
-    snapshot_at = await _get_current_snapshot_at(db)
-    if snapshot_id is None:
-        snapshot_at = await _get_latest_unresolved_snapshot_at(db)
-        snapshot_id = _snapshot_id_from_scraped_at(snapshot_at) if snapshot_at else None
+    snapshot_id, snapshot_at = await _get_visible_diagnostic_snapshot(db, "unresolved_odds")
     if snapshot_at is None:
         return []
 
@@ -3425,8 +3556,7 @@ async def get_team_review_cases(
     offset: int = 0,
 ) -> list[TeamReviewOut]:
     db = await get_db()
-    snapshot_id = await _get_current_snapshot_id(db)
-    snapshot_at = await _get_team_review_snapshot_at(db)
+    snapshot_id, snapshot_at = await _get_visible_diagnostic_snapshot(db, "team_review_cases")
     if snapshot_at is None:
         return []
 
@@ -3434,8 +3564,6 @@ async def get_team_review_cases(
            FROM team_review_cases c
            LEFT JOIN bookmakers b ON c.bookmaker_id = b.id
            LEFT JOIN leagues l ON c.scope_league_id = l.id"""
-    if snapshot_id is None:
-        snapshot_id = _snapshot_id_from_scraped_at(snapshot_at)
     conditions = ["c.snapshot_id = ?" if snapshot_id else "c.scraped_at = ?"]
     params: list[object] = [snapshot_id or snapshot_at]
 
@@ -3603,8 +3731,7 @@ def _retention_cutoff(snapshot_at: str, days: int) -> str:
 
 
 async def cleanup_retained_data(current_snapshot_at: str) -> dict[str, int]:
-    db = await aiosqlite.connect(settings.db_path)
-    db.row_factory = aiosqlite.Row
+    db = await _open_isolated_db_connection()
     try:
         await db.execute("BEGIN IMMEDIATE")
         published_snapshot_id, published_snapshot_at = await _get_current_snapshot(db)
@@ -3612,42 +3739,60 @@ async def cleanup_retained_data(current_snapshot_at: str) -> dict[str, int]:
         preserved_snapshot_id = published_snapshot_id or _snapshot_id_from_scraped_at(
             current_snapshot_at
         )
+        preserved_snapshot_ids = [preserved_snapshot_id]
+        newer_failure_params: list[object] = []
+        newer_failure_clause = ""
+        if published_snapshot_at is not None:
+            newer_failure_clause = "AND datetime(scraped_at) > datetime(?)"
+            newer_failure_params.append(published_snapshot_at)
+        failed_snapshot_rows = await db.execute_fetchall(
+            f"""SELECT id
+                FROM scrape_snapshots
+                WHERE status = 'analysis_failed'
+                  {newer_failure_clause}
+                ORDER BY datetime(scraped_at) DESC, id DESC
+                LIMIT 1""",
+            newer_failure_params,
+        )
+        if failed_snapshot_rows and failed_snapshot_rows[0]["id"] not in preserved_snapshot_ids:
+            preserved_snapshot_ids.append(failed_snapshot_rows[0]["id"])
+        preserved_snapshot_placeholders = _sql_placeholders(preserved_snapshot_ids)
         retention_anchor_at = published_snapshot_at or current_snapshot_at
         deleted_stale_odds_cur = await db.execute(
-            """DELETE FROM odds
+            f"""DELETE FROM odds
                WHERE COALESCE(snapshot_id, scraped_at) IS NULL
-                   OR COALESCE(snapshot_id, scraped_at) != ?""",
-            (preserved_snapshot_id,),
+                    OR COALESCE(snapshot_id, scraped_at) NOT IN ({preserved_snapshot_placeholders})""",
+            preserved_snapshot_ids,
         )
         await db.execute(
-            """DELETE FROM outcome_offers
+            f"""DELETE FROM outcome_offers
                WHERE COALESCE(snapshot_id, scraped_at) IS NULL
-                  OR COALESCE(snapshot_id, scraped_at) != ?""",
-            (preserved_snapshot_id,),
+                   OR COALESCE(snapshot_id, scraped_at) NOT IN ({preserved_snapshot_placeholders})""",
+            preserved_snapshot_ids,
         )
         deleted_unresolved_cur = await db.execute(
-            """DELETE FROM unresolved_odds
+            f"""DELETE FROM unresolved_odds
                WHERE COALESCE(snapshot_id, scraped_at) IS NULL
-                  OR COALESCE(snapshot_id, scraped_at) != ?""",
-            (preserved_snapshot_id,),
+                   OR COALESCE(snapshot_id, scraped_at) NOT IN ({preserved_snapshot_placeholders})""",
+            preserved_snapshot_ids,
         )
         await db.execute(
-            """DELETE FROM snapshot_matches
+            f"""DELETE FROM snapshot_matches
                WHERE snapshot_id IS NULL
-                  OR snapshot_id != ?""",
-            (preserved_snapshot_id,),
+                   OR snapshot_id NOT IN ({preserved_snapshot_placeholders})""",
+            preserved_snapshot_ids,
         )
         deleted_match_sources_cur = await db.execute(
-            """DELETE FROM match_bookmaker_sources
+            f"""DELETE FROM match_bookmaker_sources
                WHERE snapshot_id IS NOT NULL
-                 AND snapshot_id != ?""",
-            (preserved_snapshot_id,),
+                  AND snapshot_id NOT IN ({preserved_snapshot_placeholders})""",
+            preserved_snapshot_ids,
         )
         deleted_resolved_event_members_cur = await db.execute(
-            """DELETE FROM resolved_event_members
+            f"""DELETE FROM resolved_event_members
                WHERE snapshot_id IS NOT NULL
-                 AND snapshot_id != ?""",
-            (preserved_snapshot_id,),
+                  AND snapshot_id NOT IN ({preserved_snapshot_placeholders})""",
+            preserved_snapshot_ids,
         )
         if current_publish_id is not None:
             deleted_opportunities_cur = await db.execute(
@@ -3672,33 +3817,33 @@ async def cleanup_retained_data(current_snapshot_at: str) -> dict[str, int]:
                 retention_anchor_at, settings.odds_history_retention_days
             )
             deleted_odds_history_cur = await db.execute(
-                """
+                f"""
                 DELETE FROM odds_history
                 WHERE scraped_at IS NOT NULL
                   AND datetime(scraped_at) < datetime(?)
                   AND (
-                      COALESCE(snapshot_id, scraped_at) IS NULL
-                      OR COALESCE(snapshot_id, scraped_at) != ?
-                  )
+                       COALESCE(snapshot_id, scraped_at) IS NULL
+                       OR COALESCE(snapshot_id, scraped_at) NOT IN ({preserved_snapshot_placeholders})
+                   )
                 """,
-                (odds_history_cutoff, preserved_snapshot_id),
+                [odds_history_cutoff, *preserved_snapshot_ids],
             )
         else:
             deleted_odds_history_cur = await db.execute(
-                """DELETE FROM odds_history
+                f"""DELETE FROM odds_history
                    WHERE COALESCE(snapshot_id, scraped_at) IS NULL
-                      OR COALESCE(snapshot_id, scraped_at) != ?""",
-                (preserved_snapshot_id,),
+                       OR COALESCE(snapshot_id, scraped_at) NOT IN ({preserved_snapshot_placeholders})""",
+                preserved_snapshot_ids,
             )
         deleted_scrape_snapshots_cur = await db.execute(
-            """DELETE FROM scrape_snapshots
-               WHERE id != ?
+            f"""DELETE FROM scrape_snapshots
+               WHERE id NOT IN ({preserved_snapshot_placeholders})
                  AND NOT EXISTS (
                      SELECT 1
                      FROM odds_history h
                      WHERE COALESCE(h.snapshot_id, h.scraped_at) = scrape_snapshots.id
                  )""",
-            (preserved_snapshot_id,),
+            preserved_snapshot_ids,
         )
 
         if settings.team_review_retention_days > 0:
@@ -3706,23 +3851,23 @@ async def cleanup_retained_data(current_snapshot_at: str) -> dict[str, int]:
                 retention_anchor_at, settings.team_review_retention_days
             )
             deleted_team_reviews_cur = await db.execute(
-                """
+                f"""
                 DELETE FROM team_review_cases
                 WHERE scraped_at IS NOT NULL
                   AND datetime(scraped_at) < datetime(?)
                   AND (
-                      COALESCE(snapshot_id, scraped_at) IS NULL
-                      OR COALESCE(snapshot_id, scraped_at) != ?
-                  )
+                       COALESCE(snapshot_id, scraped_at) IS NULL
+                       OR COALESCE(snapshot_id, scraped_at) NOT IN ({preserved_snapshot_placeholders})
+                   )
                 """,
-                (team_review_cutoff, preserved_snapshot_id),
+                [team_review_cutoff, *preserved_snapshot_ids],
             )
         else:
             deleted_team_reviews_cur = await db.execute(
-                """DELETE FROM team_review_cases
+                f"""DELETE FROM team_review_cases
                    WHERE COALESCE(snapshot_id, scraped_at) IS NULL
-                      OR COALESCE(snapshot_id, scraped_at) != ?""",
-                (preserved_snapshot_id,),
+                       OR COALESCE(snapshot_id, scraped_at) NOT IN ({preserved_snapshot_placeholders})""",
+                preserved_snapshot_ids,
             )
 
         if settings.persist_inapp_notifications and settings.notification_retention_days > 0:
