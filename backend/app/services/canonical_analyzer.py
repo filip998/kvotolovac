@@ -29,11 +29,20 @@ class _RuleContext:
     resolved_event_id: str | None
 
 
+@dataclass(frozen=True)
+class _LineMiddleCandidate:
+    low: CanonicalOffer
+    high: CanonicalOffer
+    margin: float
+    middle_margin: float
+
+
 def analyze_canonical_offers(
     offers: Sequence[CanonicalOffer],
     *,
     min_gap: float = 0.0,
     event_primary_match_ids: Mapping[str, str] | None = None,
+    max_middle_opportunities_per_market: int | None = 10,
 ) -> list[Opportunity]:
     """Find two-leg opportunities from canonical bookmaker offers."""
     deduped: dict[tuple, Opportunity] = {}
@@ -45,7 +54,12 @@ def analyze_canonical_offers(
 
     for group in _line_market_groups(offers).values():
         context = _context(group, event_primary_match_ids=event_primary_match_ids)
-        for opportunity in _analyze_line_middle(group, context, min_gap=min_gap):
+        for opportunity in _analyze_line_middle(
+            group,
+            context,
+            min_gap=min_gap,
+            max_opportunities=max_middle_opportunities_per_market,
+        ):
             deduped[_dedupe_key(opportunity)] = opportunity
 
     for group in _event_market_family_groups(offers).values():
@@ -105,8 +119,12 @@ def _analyze_line_middle(
     context: _RuleContext,
     *,
     min_gap: float,
+    max_opportunities: int | None,
 ) -> list[Opportunity]:
-    opportunities: list[Opportunity] = []
+    if max_opportunities is not None and max_opportunities <= 0:
+        return []
+
+    candidates: list[_LineMiddleCandidate] = []
     for first, second in combinations(group, 2):
         if first.bookmaker_id == second.bookmaker_id:
             continue
@@ -134,6 +152,29 @@ def _analyze_line_middle(
         ):
             continue
 
+        if margin is None or middle_margin is None:
+            continue
+        candidates.append(
+            _LineMiddleCandidate(
+                low=low,
+                high=high,
+                margin=margin,
+                middle_margin=middle_margin,
+            )
+        )
+
+    ranked_candidates = sorted(
+        candidates,
+        key=_line_middle_candidate_rank,
+        reverse=True,
+    )
+    if max_opportunities is not None:
+        ranked_candidates = ranked_candidates[:max_opportunities]
+
+    opportunities: list[Opportunity] = []
+    for candidate in ranked_candidates:
+        low = candidate.low
+        high = candidate.high
         subject_type, subject_key, subject_name = _subject_metadata(
             low.market,
             high.market,
@@ -145,8 +186,8 @@ def _analyze_line_middle(
                 opportunity_type="middle",
                 market_type=low.market.market_type,
                 line=low.market.line,
-                profit_margin=margin,
-                middle_profit_margin=middle_margin,
+                profit_margin=candidate.margin,
+                middle_profit_margin=candidate.middle_margin,
                 legs=[_leg(low), _leg(high)],
                 resolved_event_id=context.resolved_event_id,
                 subject_type=subject_type,
@@ -156,6 +197,25 @@ def _analyze_line_middle(
             )
         )
     return opportunities
+
+
+def _line_middle_candidate_rank(candidate: _LineMiddleCandidate) -> tuple[float, ...]:
+    low_line = candidate.low.market.line
+    high_line = candidate.high.market.line
+    if low_line is None or high_line is None:
+        relative_width = 0.0
+        gap = 0.0
+    else:
+        gap = high_line - low_line
+        line_scale = max((abs(low_line) + abs(high_line)) / 2.0, 1.0)
+        relative_width = gap / line_scale
+    return (
+        relative_width,
+        candidate.middle_margin,
+        candidate.margin,
+        gap,
+        min(candidate.low.odds, candidate.high.odds),
+    )
 
 
 def _analyze_complementary_outcomes(
