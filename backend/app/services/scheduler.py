@@ -136,10 +136,35 @@ def _is_player_market_type(market_type: str) -> bool:
     return normalize_market_type(market_type).startswith("player_")
 
 
-def _filter_raw_odds_by_market_scope(rows: list[RawOddsData]) -> list[RawOddsData]:
+def _filter_normalized_pipeline_batch_by_market_scope(
+    batch: _NormalizedPipelineBatch,
+) -> _NormalizedPipelineBatch:
     if settings.scrape_market_scope != "player_props":
-        return rows
-    return [row for row in rows if _is_player_market_type(row.market_type)]
+        return batch
+    return _NormalizedPipelineBatch(
+        odds=[row for row in batch.odds if _is_player_market_type(row.market_type)],
+        outcome_offers=[],
+        unresolved_odds=[
+            row for row in batch.unresolved_odds if _is_player_market_type(row.market_type)
+        ],
+        team_review_cases=batch.team_review_cases,
+    )
+
+
+def _event_resolution_batch_for_market_scope(
+    full_batch: _NormalizedPipelineBatch,
+    persisted_batch: _NormalizedPipelineBatch,
+) -> _NormalizedPipelineBatch:
+    if settings.scrape_market_scope != "player_props":
+        return full_batch
+
+    persisted_match_ids = {row.match_id for row in persisted_batch.odds}
+    return _NormalizedPipelineBatch(
+        odds=[row for row in full_batch.odds if row.match_id in persisted_match_ids],
+        outcome_offers=[],
+        unresolved_odds=full_batch.unresolved_odds,
+        team_review_cases=full_batch.team_review_cases,
+    )
 
 
 def _normalize_pipeline_batch(
@@ -884,11 +909,9 @@ class Scheduler:
             )
             return []
 
-        lookahead_filtered_raw = filter_raw_odds_by_lookahead(raw)
-        lookahead_dropped_count = len(raw) - len(lookahead_filtered_raw)
-        market_filtered_raw = _filter_raw_odds_by_market_scope(lookahead_filtered_raw)
-        market_dropped_count = len(lookahead_filtered_raw) - len(market_filtered_raw)
-        raw = market_filtered_raw
+        filtered_raw = filter_raw_odds_by_lookahead(raw)
+        dropped_count = len(raw) - len(filtered_raw)
+        raw = filtered_raw
         duration_ms = int((time.perf_counter() - started_at) * 1000)
         self._scan_completed_tasks += 1
         self._scan_active_tasks = max(0, self._scan_active_tasks - 1)
@@ -905,19 +928,12 @@ class Scheduler:
             duration_ms,
             len(raw),
         )
-        if lookahead_dropped_count:
+        if dropped_count:
             logger.info(
                 "Scraper %s dropped %d items outside %dh lookahead",
                 bookmaker_id,
-                lookahead_dropped_count,
+                dropped_count,
                 configured_lookahead_hours(),
-            )
-        if market_dropped_count:
-            logger.info(
-                "Scraper %s dropped %d non-player market items for SCRAPE_MARKET_SCOPE=%s",
-                bookmaker_id,
-                market_dropped_count,
-                settings.scrape_market_scope,
             )
         return raw
 
@@ -1062,10 +1078,17 @@ class Scheduler:
             canonical_shadow = _CanonicalShadowResult()
             notified = 0
             pending_auto_merges: list[tuple[int, int]] = []
-            normalized_batch = _normalize_pipeline_batch(
+            full_normalized_batch = _normalize_pipeline_batch(
                 all_raw,
                 all_raw_outcome_offers,
                 log_unresolved_shared_platform=False,
+            )
+            normalized_batch = _filter_normalized_pipeline_batch_by_market_scope(
+                full_normalized_batch
+            )
+            event_resolution_batch = _event_resolution_batch_for_market_scope(
+                full_normalized_batch,
+                normalized_batch,
             )
             normalized = normalized_batch.odds
             normalized_outcome_offers = normalized_batch.outcome_offers
@@ -1100,9 +1123,16 @@ class Scheduler:
                         pending_auto_merges
                     )
                 if auto_approved_team_reviews or applied_auto_merges:
-                    normalized_batch = _normalize_pipeline_batch(
+                    full_normalized_batch = _normalize_pipeline_batch(
                         all_raw,
                         all_raw_outcome_offers,
+                    )
+                    normalized_batch = _filter_normalized_pipeline_batch_by_market_scope(
+                        full_normalized_batch
+                    )
+                    event_resolution_batch = _event_resolution_batch_for_market_scope(
+                        full_normalized_batch,
+                        normalized_batch,
                     )
                     normalized = normalized_batch.odds
                     normalized_outcome_offers = normalized_batch.outcome_offers
@@ -1121,8 +1151,8 @@ class Scheduler:
                 await resolve_and_persist_events(
                     raw_odds=all_raw,
                     raw_outcome_offers=all_raw_outcome_offers,
-                    normalized_odds=normalized,
-                    normalized_outcome_offers=normalized_outcome_offers,
+                    normalized_odds=event_resolution_batch.odds,
+                    normalized_outcome_offers=event_resolution_batch.outcome_offers,
                 )
                 for unresolved in unresolved_odds:
                     await odds_store.insert_unresolved_odds(

@@ -427,6 +427,66 @@ async def test_scheduler_player_props_scope_filters_non_player_threshold_markets
 
 
 @pytest.mark.asyncio
+async def test_scheduler_player_props_scope_keeps_context_rows_for_shared_platform_props(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "scrape_market_scope", "player_props")
+    _register_test_scrapers(
+        StubScraper(
+            "meridian",
+            payload_by_league={
+                "euroleague": [
+                    RawOddsData(
+                        bookmaker_id="meridian",
+                        league_id="nba",
+                        home_team="Minnesota",
+                        away_team="Houston",
+                        market_type="game_total",
+                        player_name=None,
+                        threshold=219.5,
+                        over_odds=1.9,
+                        under_odds=1.9,
+                        start_time="2030-01-01T20:00:00+00:00",
+                    )
+                ],
+            },
+        ),
+        StubScraper(
+            "maxbet",
+            payload_by_league={
+                "euroleague": [
+                    RawOddsData(
+                        bookmaker_id="maxbet",
+                        league_id="nba",
+                        home_team="Houston",
+                        away_team="Kevin Durant",
+                        market_type="player_points",
+                        player_name="Kevin Durant",
+                        threshold=23.5,
+                        over_odds=1.85,
+                        under_odds=1.95,
+                        start_time="2030-01-01T20:00:00+00:00",
+                    )
+                ],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["matches_scraped"] == 1
+    assert result["odds_scraped"] == 1
+    matches = await odds_store.get_matches(sport="basketball")
+    assert len(matches) == 1
+    assert matches[0].home_team == "Minnesota Timberwolves"
+    assert matches[0].away_team == "Houston Rockets"
+    stored_odds = await odds_store.get_odds_for_match(matches[0].id)
+    assert [(row.market_type, row.player_name) for row in stored_odds] == [
+        ("player_points", "Kevin Durant")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_scheduler_player_props_scope_skips_outcome_offer_capabilities(
     monkeypatch: pytest.MonkeyPatch,
 ):
