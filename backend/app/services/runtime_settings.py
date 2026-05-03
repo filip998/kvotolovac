@@ -46,10 +46,13 @@ def _get_settings_lock() -> asyncio.Lock:
     return _SETTINGS_LOCK
 
 
-def default_scrape_runtime_settings() -> ScrapeRuntimeSettings:
+def default_scrape_runtime_settings(
+    *,
+    prefer_registered_bookmakers: bool = True,
+) -> ScrapeRuntimeSettings:
     configured_bookmakers = settings.bookmaker_list
     registered_bookmakers = registry.get_ids()
-    if registered_bookmakers:
+    if prefer_registered_bookmakers and registered_bookmakers:
         enabled_bookmakers = registered_bookmakers
     else:
         enabled_bookmakers = configured_bookmakers
@@ -402,6 +405,9 @@ def _settings_response(
     return ScrapeSettingsResponse(
         applied=applied,
         pending=pending,
+        defaults=validate_scrape_runtime_settings(
+            default_scrape_runtime_settings(prefer_registered_bookmakers=False)
+        ),
         has_pending_changes=pending is not None,
         applied_at=applied_at,
         pending_at=pending_at,

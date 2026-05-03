@@ -368,6 +368,7 @@ export interface ScrapeSettingsOptions {
 export interface ScrapeSettingsResponse {
   applied: ScrapeRuntimeSettings;
   pending: ScrapeRuntimeSettings | null;
+  defaults: ScrapeRuntimeSettings;
   has_pending_changes: boolean;
   applied_at: string | null;
   pending_at: string | null;

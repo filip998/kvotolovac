@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState, type FormEvent, type ReactNode } from 'react';
 import {
   useScrapeSettings,
   useSystemStatus,
@@ -13,6 +13,24 @@ import type {
 } from '../api/types';
 import PageShell from '../components/PageShell';
 
+type NumericSetting =
+  | 'scrape_interval_minutes'
+  | 'scrape_lookahead_hours'
+  | 'max_middle_opportunities_per_market'
+  | 'rate_limit_per_second'
+  | 'meridian_rate_limit_per_second'
+  | 'notification_gap_threshold';
+
+const marketScopeLabels: Record<ScrapeMarketScope, string> = {
+  all: 'All supported markets',
+  player_props: 'Player props only',
+};
+
+const detailModeLabels: Record<ScraperDetailMode, string> = {
+  partial: 'Partial',
+  full: 'Full',
+};
+
 function toggleValue(values: string[], value: string): string[] {
   return values.includes(value)
     ? values.filter((item) => item !== value)
@@ -23,21 +41,240 @@ function settingsKey(values: ScrapeRuntimeSettings): string {
   return JSON.stringify(values);
 }
 
-function FieldLabel({ children }: { children: string }) {
+function titleCase(value: string): string {
+  return value.replace(/_/g, ' ').replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function summarizeBookmakers(
+  enabledIds: string[],
+  options: ScrapeSettingsOptions
+): string {
+  const total = options.bookmakers.length;
+  if (enabledIds.length === 0) {
+    return 'None selected';
+  }
+  if (enabledIds.length === total) {
+    return `All ${total}`;
+  }
+
+  const disabled = options.bookmakers.filter((bookmaker) => !enabledIds.includes(bookmaker.id));
+  if (disabled.length > 0 && disabled.length <= 2) {
+    return `${enabledIds.length} of ${total} · excluding ${disabled
+      .map((bookmaker) => bookmaker.name)
+      .join(', ')}`;
+  }
+
+  return `${enabledIds.length} of ${total} enabled`;
+}
+
+function summarizeList(values: string[], emptyLabel: string): string {
+  if (values.length === 0) {
+    return emptyLabel;
+  }
+  return values.map(titleCase).join(', ');
+}
+
+function SectionTitle({
+  children,
+  description,
+}: {
+  children: string;
+  description?: string;
+}) {
   return (
-    <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-muted">
+    <div className="space-y-1">
+      <h3 className="font-display text-lg font-semibold text-text">{children}</h3>
+      {description && <p className="text-sm text-text-secondary">{description}</p>}
+    </div>
+  );
+}
+
+function DisclosureRow({
+  title,
+  summary,
+  children,
+  defaultOpen = false,
+}: {
+  title: string;
+  summary: string;
+  children: ReactNode;
+  defaultOpen?: boolean;
+}) {
+  return (
+    <details
+      open={defaultOpen}
+      className="group rounded-2xl border border-border bg-surface/80 transition hover:border-border-hover"
+    >
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-3 [&::-webkit-details-marker]:hidden">
+        <div>
+          <div className="text-sm font-semibold text-text">{title}</div>
+          <div className="mt-0.5 text-sm text-text-secondary">{summary}</div>
+        </div>
+        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface-raised text-text-muted transition group-open:rotate-90 group-hover:text-text">
+          ›
+        </span>
+      </summary>
+      <div className="border-t border-border px-4 pb-4 pt-3">{children}</div>
+    </details>
+  );
+}
+
+function ChoiceChip({
+  selected,
+  children,
+  onClick,
+}: {
+  selected: boolean;
+  children: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onClick}
+      className={`rounded-full border px-3 py-1.5 text-sm font-medium transition ${
+        selected
+          ? 'border-accent bg-accent text-bg'
+          : 'border-border bg-bg text-text-secondary hover:border-border-hover hover:text-text'
+      }`}
+    >
       {children}
+    </button>
+  );
+}
+
+function SettingRow({
+  label,
+  description,
+  children,
+  as = 'label',
+  onClick,
+}: {
+  label: string;
+  description?: string;
+  children: ReactNode;
+  as?: 'label' | 'div';
+  onClick?: () => void;
+}) {
+  const Component = as;
+
+  return (
+    <Component
+      onClick={onClick}
+      className={`flex flex-col gap-3 rounded-2xl border border-border bg-surface/80 px-4 py-3 sm:flex-row sm:items-center sm:justify-between ${
+        onClick ? 'cursor-pointer transition hover:border-border-hover' : ''
+      }`}
+    >
+      <span>
+        <span className="block text-sm font-semibold text-text">{label}</span>
+        {description && (
+          <span className="mt-0.5 block text-sm text-text-secondary">{description}</span>
+        )}
+      </span>
+      {children}
+    </Component>
+  );
+}
+
+function NumberControl({
+  value,
+  min,
+  max,
+  step = 1,
+  unit,
+  onChange,
+}: {
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  unit: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <span className="flex w-full items-center rounded-xl border border-border bg-bg px-3 py-2 text-sm text-text transition focus-within:border-accent sm:w-40">
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="min-w-0 flex-1 bg-transparent text-right font-semibold outline-none"
+      />
+      <span className="ml-2 text-xs text-text-muted">{unit}</span>
     </span>
+  );
+}
+
+function SelectControl<TValue extends string>({
+  value,
+  options,
+  getLabel,
+  onChange,
+}: {
+  value: TValue;
+  options: TValue[];
+  getLabel: (value: TValue) => string;
+  onChange: (value: TValue) => void;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(event) => onChange(event.target.value as TValue)}
+      className="w-full rounded-xl border border-border bg-bg px-3 py-2 text-sm font-semibold text-text outline-none transition focus:border-accent sm:w-48"
+    >
+      {options.map((option) => (
+        <option key={option} value={option}>
+          {getLabel(option)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function SwitchControl({
+  checked,
+  ariaLabel,
+  onChange,
+}: {
+  checked: boolean;
+  ariaLabel: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-label={ariaLabel}
+      aria-checked={checked}
+      onClick={(event) => {
+        event.stopPropagation();
+        onChange(!checked);
+      }}
+      className={`flex h-7 w-12 items-center rounded-full p-1 transition ${
+        checked ? 'bg-accent' : 'bg-surface-raised'
+      }`}
+    >
+      <span
+        className={`h-5 w-5 rounded-full bg-bg shadow-sm transition ${
+          checked ? 'translate-x-5' : 'translate-x-0'
+        }`}
+      />
+    </button>
   );
 }
 
 function SettingsForm({
   initialValues,
+  defaultValues,
   options,
   hasPendingChanges,
   scanInProgress,
 }: {
   initialValues: ScrapeRuntimeSettings;
+  defaultValues: ScrapeRuntimeSettings;
   options: ScrapeSettingsOptions;
   hasPendingChanges: boolean;
   scanInProgress: boolean;
@@ -46,8 +283,10 @@ function SettingsForm({
   const [message, setMessage] = useState<string | null>(null);
   const updateSettings = useUpdateScrapeSettings();
   const triggerScrape = useTriggerScrape();
+  const hasLocalChanges = settingsKey(draft) !== settingsKey(initialValues);
+  const draftMatchesDefaults = settingsKey(draft) === settingsKey(defaultValues);
 
-  const setNumber = (field: keyof ScrapeRuntimeSettings, value: string) => {
+  const setNumber = (field: NumericSetting, value: string) => {
     setDraft((current) => ({
       ...current,
       [field]: Number(value),
@@ -59,268 +298,335 @@ function SettingsForm({
     setMessage(null);
     updateSettings.mutate(draft, {
       onSuccess: (result) => {
-        setMessage(
-          result.applied_immediately
-            ? 'Settings saved and applied immediately.'
-            : 'Settings saved as pending. They will apply before the next scrape cycle.'
-        );
+        setMessage(result.applied_immediately ? 'Saved.' : 'Saved · applies on next cycle.');
       },
-      onError: (error) => setMessage(`Failed to save settings: ${error.message}`),
+      onError: (error) => setMessage(`Failed to save: ${error.message}`),
     });
   };
 
+  const resetToDefaults = () => {
+    if (
+      !window.confirm(
+        'Reset the draft to backend defaults? This will not save until you click Save changes.'
+      )
+    ) {
+      return;
+    }
+    setDraft(defaultValues);
+    setMessage('Defaults loaded as a draft. Review and save when ready.');
+  };
+
   return (
-    <form onSubmit={submit} className="space-y-6">
-      <section className="rounded-lg border border-border bg-surface p-5">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold text-text">Scrape controls</h3>
-            <p className="mt-1 text-sm text-text-secondary">
-              Choose which sources and markets participate in future scrape cycles.
-            </p>
-          </div>
-          {hasPendingChanges && (
-            <span className="rounded-full border border-warning px-3 py-1 text-xs font-medium text-warning">
-              Pending next cycle
+    <form onSubmit={submit} className="mx-auto max-w-4xl space-y-6">
+      <div className="rounded-3xl border border-border bg-surface/70 p-4 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span
+              className={`inline-flex items-center gap-2 rounded-full px-3 py-1 font-medium ${
+                scanInProgress
+                  ? 'border border-warning text-warning'
+                  : 'border border-border text-text-secondary'
+              }`}
+            >
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  scanInProgress ? 'bg-warning' : 'bg-accent'
+                }`}
+              />
+              {scanInProgress ? 'Cycle running' : 'Idle'}
             </span>
-          )}
-        </div>
-
-        <div className="grid gap-5 lg:grid-cols-2">
-          <div className="space-y-3">
-            <FieldLabel>Bookmakers</FieldLabel>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {options.bookmakers.map((bookmaker) => (
-                <label
-                  key={bookmaker.id}
-                  className="flex items-center gap-2 rounded-md bg-surface-raised px-3 py-2 text-sm text-text"
-                >
-                  <input
-                    type="checkbox"
-                    checked={draft.enabled_bookmakers.includes(bookmaker.id)}
-                    onChange={() =>
-                      setDraft((current) => ({
-                        ...current,
-                        enabled_bookmakers: toggleValue(current.enabled_bookmakers, bookmaker.id),
-                      }))
-                    }
-                    className="accent-accent"
-                  />
-                  <span>{bookmaker.name}</span>
-                </label>
-              ))}
-            </div>
+            <span className="rounded-full border border-border px-3 py-1 text-text-secondary">
+              {hasPendingChanges ? 'Saved · applies next cycle' : 'Live settings'}
+            </span>
           </div>
 
-          <div className="space-y-4">
-            <div className="space-y-3">
-              <FieldLabel>Sports</FieldLabel>
-              <div className="flex flex-wrap gap-2">
-                {options.sports.map((sport) => (
-                  <button
-                    key={sport}
-                    type="button"
-                    onClick={() =>
-                      setDraft((current) => ({
-                        ...current,
-                        enabled_sports: toggleValue(current.enabled_sports, sport),
-                      }))
-                    }
-                    className={`rounded-md px-3 py-2 text-sm font-medium transition ${
-                      draft.enabled_sports.includes(sport)
-                        ? 'bg-accent text-bg'
-                        : 'bg-surface-raised text-text-secondary hover:text-text'
-                    }`}
-                  >
-                    {sport}
-                  </button>
-                ))}
-              </div>
-            </div>
+          <button
+            type="button"
+            onClick={() => triggerScrape.mutate()}
+            disabled={triggerScrape.isPending || scanInProgress}
+            className="rounded-full border border-border px-4 py-2 text-sm font-semibold text-text transition hover:border-border-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {triggerScrape.isPending ? 'Starting…' : 'Run scrape now'}
+          </button>
+        </div>
+      </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="space-y-2">
-                <FieldLabel>Market scope</FieldLabel>
-                <select
-                  value={draft.scrape_market_scope}
-                  onChange={(event) =>
+      <section className="space-y-3">
+        <SectionTitle description="Keep the common choices visible, tuck the long lists away.">
+          Coverage
+        </SectionTitle>
+
+        <DisclosureRow
+          title="Bookmakers"
+          summary={summarizeBookmakers(draft.enabled_bookmakers, options)}
+        >
+          <div className="mb-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                setDraft((current) => ({
+                  ...current,
+                  enabled_bookmakers: options.bookmakers.map((bookmaker) => bookmaker.id),
+                }))
+              }
+              className="text-sm font-medium text-accent hover:text-accent-dim"
+            >
+              Select all
+            </button>
+            <span className="text-text-muted">·</span>
+            <button
+              type="button"
+              onClick={() =>
+                setDraft((current) => ({
+                  ...current,
+                  enabled_bookmakers: [],
+                }))
+              }
+              className="text-sm font-medium text-text-secondary hover:text-text"
+            >
+              Clear
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {options.bookmakers.map((bookmaker) => (
+              <ChoiceChip
+                key={bookmaker.id}
+                selected={draft.enabled_bookmakers.includes(bookmaker.id)}
+                onClick={() =>
+                  setDraft((current) => ({
+                    ...current,
+                    enabled_bookmakers: toggleValue(current.enabled_bookmakers, bookmaker.id),
+                  }))
+                }
+              >
+                {bookmaker.name}
+              </ChoiceChip>
+            ))}
+          </div>
+        </DisclosureRow>
+
+        <DisclosureRow
+          title="Sports"
+          summary={summarizeList(draft.enabled_sports, 'No sports selected')}
+        >
+          <div className="flex flex-wrap gap-2">
+            {options.sports.map((sport) => (
+              <ChoiceChip
+                key={sport}
+                selected={draft.enabled_sports.includes(sport)}
+                onClick={() =>
+                  setDraft((current) => ({
+                    ...current,
+                    enabled_sports: toggleValue(current.enabled_sports, sport),
+                  }))
+                }
+              >
+                {titleCase(sport)}
+              </ChoiceChip>
+            ))}
+          </div>
+        </DisclosureRow>
+
+        <DisclosureRow
+          title="Markets"
+          summary={marketScopeLabels[draft.scrape_market_scope]}
+        >
+          <div className="flex flex-wrap gap-2">
+            {options.market_scopes.map((scope) => (
+              <ChoiceChip
+                key={scope}
+                selected={draft.scrape_market_scope === scope}
+                onClick={() =>
+                  setDraft((current) => ({
+                    ...current,
+                    scrape_market_scope: scope,
+                  }))
+                }
+              >
+                {marketScopeLabels[scope]}
+              </ChoiceChip>
+            ))}
+          </div>
+        </DisclosureRow>
+      </section>
+
+      <section className="space-y-3">
+        <SectionTitle description="The three numbers that shape every cycle.">
+          Cadence
+        </SectionTitle>
+
+        <div className="space-y-2">
+          <SettingRow label="Refresh every" description="How often automatic cycles should run.">
+            <NumberControl
+              value={draft.scrape_interval_minutes}
+              min={options.scrape_interval_minutes_min}
+              max={options.scrape_interval_minutes_max}
+              unit="min"
+              onChange={(value) => setNumber('scrape_interval_minutes', value)}
+            />
+          </SettingRow>
+
+          <SettingRow label="Lookahead" description="Ignore events that start later than this.">
+            <NumberControl
+              value={draft.scrape_lookahead_hours}
+              min={options.scrape_lookahead_hours_min}
+              max={options.scrape_lookahead_hours_max}
+              unit="hours"
+              onChange={(value) => setNumber('scrape_lookahead_hours', value)}
+            />
+          </SettingRow>
+
+          <SettingRow
+            label="Middles shown per market"
+            description="Caps noisy middle opportunities without hiding arbitrage."
+          >
+            <NumberControl
+              value={draft.max_middle_opportunities_per_market}
+              min={options.max_middle_opportunities_per_market_min}
+              max={options.max_middle_opportunities_per_market_max}
+              unit="rows"
+              onChange={(value) => setNumber('max_middle_opportunities_per_market', value)}
+            />
+          </SettingRow>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <details className="group rounded-3xl border border-border bg-surface/70">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 [&::-webkit-details-marker]:hidden">
+            <div>
+              <h3 className="font-display text-lg font-semibold text-text">Advanced</h3>
+              <p className="mt-1 text-sm text-text-secondary">
+                Rate limits, detail modes, and notification behavior.
+              </p>
+            </div>
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-surface-raised text-text-muted transition group-open:rotate-90 group-hover:text-text">
+              ›
+            </span>
+          </summary>
+
+          <div className="space-y-4 border-t border-border px-5 pb-5 pt-4">
+            <div className="grid gap-2 lg:grid-cols-2">
+              <SettingRow label="General rate limit" description="Default request pace.">
+                <NumberControl
+                  value={draft.rate_limit_per_second}
+                  min={options.rate_limit_per_second_min}
+                  max={options.rate_limit_per_second_max}
+                  step={0.1}
+                  unit="/ sec"
+                  onChange={(value) => setNumber('rate_limit_per_second', value)}
+                />
+              </SettingRow>
+
+              <SettingRow label="Meridian rate limit" description="Separate pacing for Meridian.">
+                <NumberControl
+                  value={draft.meridian_rate_limit_per_second}
+                  min={options.rate_limit_per_second_min}
+                  max={options.rate_limit_per_second_max}
+                  step={0.1}
+                  unit="/ sec"
+                  onChange={(value) => setNumber('meridian_rate_limit_per_second', value)}
+                />
+              </SettingRow>
+
+              <SettingRow label="Detail mode · SoccerBet" description="Full mode fetches more detail.">
+                <SelectControl
+                  value={draft.soccerbet_detail_mode}
+                  options={options.detail_modes}
+                  getLabel={(mode) => detailModeLabels[mode]}
+                  onChange={(mode) =>
                     setDraft((current) => ({
                       ...current,
-                      scrape_market_scope: event.target.value as ScrapeMarketScope,
+                      soccerbet_detail_mode: mode,
                     }))
                   }
-                  className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-text"
-                >
-                  {options.market_scopes.map((scope) => (
-                    <option key={scope} value={scope}>
-                      {scope === 'all' ? 'All supported markets' : 'Player props only'}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="space-y-2">
-                <FieldLabel>Refresh interval</FieldLabel>
-                <input
-                  type="number"
-                  min={options.scrape_interval_minutes_min}
-                  max={options.scrape_interval_minutes_max}
-                  value={draft.scrape_interval_minutes}
-                  onChange={(event) => setNumber('scrape_interval_minutes', event.target.value)}
-                  className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-text"
                 />
-              </label>
+              </SettingRow>
 
-              <label className="space-y-2">
-                <FieldLabel>Lookahead hours</FieldLabel>
-                <input
-                  type="number"
-                  min={options.scrape_lookahead_hours_min}
-                  max={options.scrape_lookahead_hours_max}
-                  value={draft.scrape_lookahead_hours}
-                  onChange={(event) => setNumber('scrape_lookahead_hours', event.target.value)}
-                  className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-text"
-                />
-              </label>
-
-              <label className="space-y-2">
-                <FieldLabel>Max middle rows</FieldLabel>
-                <input
-                  type="number"
-                  min={options.max_middle_opportunities_per_market_min}
-                  max={options.max_middle_opportunities_per_market_max}
-                  value={draft.max_middle_opportunities_per_market}
-                  onChange={(event) =>
-                    setNumber('max_middle_opportunities_per_market', event.target.value)
+              <SettingRow label="Detail mode · MerkurXTip" description="Full mode fetches more detail.">
+                <SelectControl
+                  value={draft.merkurxtip_detail_mode}
+                  options={options.detail_modes}
+                  getLabel={(mode) => detailModeLabels[mode]}
+                  onChange={(mode) =>
+                    setDraft((current) => ({
+                      ...current,
+                      merkurxtip_detail_mode: mode,
+                    }))
                   }
-                  className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-text"
                 />
-              </label>
+              </SettingRow>
+
+              <SettingRow label="Min gap to notify" description="Smaller values can create more pings.">
+                <NumberControl
+                  value={draft.notification_gap_threshold}
+                  min={0}
+                  step={0.1}
+                  unit="pts"
+                  onChange={(value) => setNumber('notification_gap_threshold', value)}
+                />
+              </SettingRow>
+
+              <SettingRow
+                label="Keep notifications across reloads"
+                description="Persist in-app notification history."
+                as="div"
+                onClick={() =>
+                  setDraft((current) => ({
+                    ...current,
+                    persist_inapp_notifications: !current.persist_inapp_notifications,
+                  }))
+                }
+              >
+                <SwitchControl
+                  checked={draft.persist_inapp_notifications}
+                  ariaLabel="Keep notifications across reloads"
+                  onChange={(checked) =>
+                    setDraft((current) => ({
+                      ...current,
+                      persist_inapp_notifications: checked,
+                    }))
+                  }
+                />
+              </SettingRow>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      {(hasLocalChanges || message || !draftMatchesDefaults) && (
+        <div className="sticky bottom-4 z-20 rounded-3xl border border-border bg-bg/90 p-3 shadow-xl shadow-black/10 backdrop-blur">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm text-text-secondary" aria-live="polite">
+              {message ??
+                (hasLocalChanges
+                  ? 'You have unsaved settings changes.'
+                  : 'Current settings differ from backend defaults.')}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={resetToDefaults}
+                disabled={draftMatchesDefaults || updateSettings.isPending}
+                className="rounded-full border border-border px-4 py-2 text-sm font-semibold text-text transition hover:border-border-hover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Reset to defaults
+              </button>
+              <button
+                type="submit"
+                disabled={!hasLocalChanges || updateSettings.isPending}
+                className="rounded-full bg-accent px-5 py-2 text-sm font-semibold text-bg transition hover:bg-accent-dim disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {updateSettings.isPending
+                  ? 'Saving…'
+                  : scanInProgress
+                    ? 'Queue changes'
+                    : 'Save changes'}
+              </button>
             </div>
           </div>
         </div>
-      </section>
-
-      <section className="rounded-lg border border-border bg-surface p-5">
-        <h3 className="text-sm font-semibold text-text">Advanced</h3>
-        <p className="mt-1 text-sm text-text-secondary">
-          These apply at scrape-cycle boundaries. Secret-bearing settings stay out of the UI.
-        </p>
-
-        <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <label className="space-y-2">
-            <FieldLabel>General rate limit / sec</FieldLabel>
-            <input
-              type="number"
-              min={options.rate_limit_per_second_min}
-              max={options.rate_limit_per_second_max}
-              step="0.1"
-              value={draft.rate_limit_per_second}
-              onChange={(event) => setNumber('rate_limit_per_second', event.target.value)}
-              className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-text"
-            />
-          </label>
-
-          <label className="space-y-2">
-            <FieldLabel>Meridian rate limit / sec</FieldLabel>
-            <input
-              type="number"
-              min={options.rate_limit_per_second_min}
-              max={options.rate_limit_per_second_max}
-              step="0.1"
-              value={draft.meridian_rate_limit_per_second}
-              onChange={(event) => setNumber('meridian_rate_limit_per_second', event.target.value)}
-              className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-text"
-            />
-          </label>
-
-          <label className="space-y-2">
-            <FieldLabel>Notification gap</FieldLabel>
-            <input
-              type="number"
-              min="0"
-              step="0.1"
-              value={draft.notification_gap_threshold}
-              onChange={(event) => setNumber('notification_gap_threshold', event.target.value)}
-              className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-text"
-            />
-          </label>
-
-          <label className="space-y-2">
-            <FieldLabel>SoccerBet detail mode</FieldLabel>
-            <select
-              value={draft.soccerbet_detail_mode}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  soccerbet_detail_mode: event.target.value as ScraperDetailMode,
-                }))
-              }
-              className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-text"
-            >
-              {options.detail_modes.map((mode) => (
-                <option key={mode} value={mode}>
-                  {mode}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="space-y-2">
-            <FieldLabel>MerkurXTip detail mode</FieldLabel>
-            <select
-              value={draft.merkurxtip_detail_mode}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  merkurxtip_detail_mode: event.target.value as ScraperDetailMode,
-                }))
-              }
-              className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-text"
-            >
-              {options.detail_modes.map((mode) => (
-                <option key={mode} value={mode}>
-                  {mode}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="flex items-center gap-3 rounded-md bg-surface-raised px-3 py-2 text-sm text-text">
-            <input
-              type="checkbox"
-              checked={draft.persist_inapp_notifications}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  persist_inapp_notifications: event.target.checked,
-                }))
-              }
-              className="accent-accent"
-            />
-            Persist in-app notifications
-          </label>
-        </div>
-      </section>
-
-      <div className="flex flex-wrap items-center gap-3">
-        <button
-          type="submit"
-          disabled={updateSettings.isPending}
-          className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-bg transition hover:bg-accent-dim disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {updateSettings.isPending ? 'Saving…' : scanInProgress ? 'Save for next cycle' : 'Save settings'}
-        </button>
-        <button
-          type="button"
-          onClick={() => triggerScrape.mutate()}
-          disabled={triggerScrape.isPending || scanInProgress}
-          className="rounded-md border border-border px-4 py-2 text-sm font-semibold text-text transition hover:border-border-hover disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {triggerScrape.isPending ? 'Starting…' : 'Run scrape now'}
-        </button>
-        {message && <span className="text-sm text-text-secondary">{message}</span>}
-      </div>
+      )}
     </form>
   );
 }
@@ -334,12 +640,17 @@ export default function Settings() {
   return (
     <PageShell
       eyebrow="Settings"
-      title="Control what the next scrape cycle watches."
-      description="Tune bookmaker coverage, sports, market scope, refresh cadence, and safe advanced scrape knobs without editing backend environment files."
+      title="Settings"
+      description="Tune coverage, cadence, and advanced scrape knobs without editing backend environment files."
     >
       {isLoading && (
-        <div className="rounded-lg border border-border bg-surface p-5 text-sm text-text-secondary">
-          Loading settings…
+        <div className="mx-auto max-w-4xl space-y-3">
+          {[0, 1, 2].map((item) => (
+            <div
+              key={item}
+              className="h-16 animate-pulse rounded-2xl border border-border bg-surface"
+            />
+          ))}
         </div>
       )}
       {isError && (
@@ -351,6 +662,7 @@ export default function Settings() {
         <SettingsForm
           key={settingsKey(activeValues)}
           initialValues={activeValues}
+          defaultValues={data.defaults}
           options={data.options}
           hasPendingChanges={data.has_pending_changes}
           scanInProgress={scanInProgress}

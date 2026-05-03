@@ -151,6 +151,9 @@ async def test_get_scrape_settings_defaults(client: AsyncClient):
     data = resp.json()
     assert data["applied"]["scrape_market_scope"] == settings.scrape_market_scope
     assert data["applied"]["scrape_interval_minutes"] == settings.scrape_interval_minutes
+    assert data["defaults"]["scrape_market_scope"] == settings.scrape_market_scope
+    assert data["defaults"]["scrape_interval_minutes"] == settings.scrape_interval_minutes
+    assert set(data["defaults"]["enabled_bookmakers"]) == set(settings.bookmaker_list)
     assert data["pending"] is None
     assert data["has_pending_changes"] is False
     assert {item["id"] for item in data["options"]["bookmakers"]} >= {

@@ -492,6 +492,7 @@ class ScrapeSettingsOptions(BaseModel):
 class ScrapeSettingsResponse(BaseModel):
     applied: ScrapeRuntimeSettings
     pending: Optional[ScrapeRuntimeSettings] = None
+    defaults: ScrapeRuntimeSettings
     has_pending_changes: bool = False
     applied_at: Optional[str] = None
     pending_at: Optional[str] = None
