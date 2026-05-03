@@ -9,6 +9,7 @@ import pytest
 from app.config import settings
 from app.models.schemas import (
     NormalizedOdds,
+    NormalizedOutcomeOffer,
     OpportunityLeg,
     RawOddsData,
     RawOutcomeOffer,
@@ -735,10 +736,10 @@ async def test_scheduler_shadow_analysis_handles_tennis_outcome_offers(
 
 
 @pytest.mark.asyncio
-async def test_scheduler_canonical_analysis_failure_deactivates_stale_opportunities(
+async def test_scheduler_canonical_analysis_failure_preserves_stale_opportunities(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    async def fail_canonical_analysis(match_ids: set[str]):
+    async def fail_canonical_analysis(match_ids: set[str], **kwargs):
         raise RuntimeError("canonical boom")
 
     monkeypatch.setattr(
@@ -748,41 +749,59 @@ async def test_scheduler_canonical_analysis_failure_deactivates_stale_opportunit
     await odds_store.upsert_league("premier-league", "Premier League", "football")
     await odds_store.upsert_bookmaker("maxbet", "MaxBet")
     await odds_store.upsert_bookmaker("balkanbet", "BalkanBet")
-    await odds_store.upsert_match(
-        id="stale-football-match",
-        league_id="premier-league",
-        sport="football",
-        home_team="Arsenal",
-        away_team="Chelsea",
-        start_time="2030-01-01T20:00:00+00:00",
+    stale_snapshot_at = "2029-01-01T00:00:00"
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=stale_snapshot_at,
+        odds=[],
+        outcome_offers=[
+            NormalizedOutcomeOffer(
+                match_id="stale-football-match",
+                bookmaker_id="maxbet",
+                league_id="premier-league",
+                sport="football",
+                home_team="Arsenal",
+                away_team="Chelsea",
+                market_type="football_total_goals",
+                outcome_code="under",
+                odds=1.95,
+                line=2.5,
+                start_time="2030-01-01T20:00:00+00:00",
+            )
+        ],
+        unresolved_odds=[],
+        team_review_cases=[],
     )
-    await odds_store.insert_opportunity(
-        Opportunity(
-            sport="football",
-            match_id="stale-football-match",
-            opportunity_type="same_line_arbitrage",
-            market_type="football_total_goals",
-            line=2.5,
-            profit_margin=0.02,
-            middle_profit_margin=None,
-            legs=[
-                OpportunityLeg(
-                    bookmaker_id="maxbet",
-                    market_type="football_total_goals",
-                    outcome_code="under",
-                    line=2.5,
-                    odds=1.95,
-                ),
-                OpportunityLeg(
-                    bookmaker_id="balkanbet",
-                    market_type="football_total_goals",
-                    outcome_code="over",
-                    line=2.5,
-                    odds=2.10,
-                ),
-            ],
-        ),
-        detected_at="2029-01-01T00:00:00",
+    await odds_store.publish_opportunities(
+        snapshot_id=stale_snapshot_at,
+        snapshot_at=stale_snapshot_at,
+        opportunities=[
+            Opportunity(
+                sport="football",
+                match_id="stale-football-match",
+                opportunity_type="same_line_arbitrage",
+                market_type="football_total_goals",
+                line=2.5,
+                profit_margin=0.02,
+                middle_profit_margin=None,
+                legs=[
+                    OpportunityLeg(
+                        bookmaker_id="maxbet",
+                        market_type="football_total_goals",
+                        outcome_code="under",
+                        line=2.5,
+                        odds=1.95,
+                    ),
+                    OpportunityLeg(
+                        bookmaker_id="balkanbet",
+                        market_type="football_total_goals",
+                        outcome_code="over",
+                        line=2.5,
+                        odds=2.10,
+                    ),
+                ],
+            )
+        ],
+        detected_at=stale_snapshot_at,
     )
     _register_test_scrapers(
         StubScraper(
@@ -800,7 +819,13 @@ async def test_scheduler_canonical_analysis_failure_deactivates_stale_opportunit
     assert result["opportunities_found"] == 0
     assert result["canonical_shadow_warnings"] == ["canonical_analysis_failed"]
     assert await odds_store.get_opportunities(sport="basketball") == []
-    assert await odds_store.get_opportunities(sport="football") == []
+    assert await odds_store.get_opportunities(sport="football")
+    assert [match.id for match in await odds_store.get_matches(sport="football")] == [
+        "stale-football-match"
+    ]
+    assert [
+        offer.match_id for offer in await odds_store.get_outcome_offers(sport="football")
+    ] == ["stale-football-match"]
 
 
 @pytest.mark.asyncio
@@ -1305,17 +1330,14 @@ async def test_scheduler_run_cycle_keeps_previous_snapshot_if_store_fails_mid_ba
     )
     await odds_store.set_current_snapshot("2026-04-10T13:39:04.516801")
 
-    original_upsert_odds = odds_store.upsert_odds
-    call_count = 0
+    async def failing_persist_scrape_snapshot_batch(**kwargs):
+        raise RuntimeError("simulated store failure")
 
-    async def failing_upsert_odds(odds, *, scraped_at):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            raise RuntimeError("simulated store failure")
-        return await original_upsert_odds(odds, scraped_at=scraped_at)
-
-    monkeypatch.setattr(odds_store, "upsert_odds", failing_upsert_odds)
+    monkeypatch.setattr(
+        odds_store,
+        "persist_scrape_snapshot_batch",
+        failing_persist_scrape_snapshot_batch,
+    )
 
     _register_test_scrapers(
         StubScraper(
@@ -2114,17 +2136,14 @@ async def test_scheduler_run_cycle_rolls_back_auto_saved_alias_if_store_fails(
         ),
     )
 
-    original_upsert_odds = odds_store.upsert_odds
-    call_count = 0
+    async def failing_persist_scrape_snapshot_batch(**kwargs):
+        raise RuntimeError("simulated store failure")
 
-    async def failing_upsert_odds(odds, *, scraped_at):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            raise RuntimeError("simulated store failure")
-        return await original_upsert_odds(odds, scraped_at=scraped_at)
-
-    monkeypatch.setattr(odds_store, "upsert_odds", failing_upsert_odds)
+    monkeypatch.setattr(
+        odds_store,
+        "persist_scrape_snapshot_batch",
+        failing_persist_scrape_snapshot_batch,
+    )
 
     with pytest.raises(RuntimeError, match="simulated store failure"):
         await Scheduler(interval_minutes=1).run_cycle()
@@ -2206,10 +2225,10 @@ async def test_scheduler_run_cycle_rolls_back_auto_merge_if_store_fails(
         target_away=target_away,
     )
 
-    async def failing_set_current_snapshot(snapshot_at: str) -> None:
+    async def failing_publish_opportunities(**kwargs) -> str:
         raise RuntimeError("simulated snapshot failure")
 
-    monkeypatch.setattr(odds_store, "set_current_snapshot", failing_set_current_snapshot)
+    monkeypatch.setattr(odds_store, "publish_opportunities", failing_publish_opportunities)
 
     with pytest.raises(RuntimeError, match="simulated snapshot failure"):
         await Scheduler(interval_minutes=1).run_cycle()
@@ -2247,7 +2266,7 @@ async def test_auto_merge_audit_cleanup_failure_does_not_block_canonical_rollbac
         target_away=target_away,
     )
 
-    async def failing_set_current_snapshot(snapshot_at: str) -> None:
+    async def failing_publish_opportunities(**kwargs) -> str:
         raise RuntimeError("simulated snapshot failure")
 
     async def failing_delete_team_review_cases(
@@ -2258,7 +2277,7 @@ async def test_auto_merge_audit_cleanup_failure_does_not_block_canonical_rollbac
         delete_called = True
         raise RuntimeError("simulated audit cleanup failure")
 
-    monkeypatch.setattr(odds_store, "set_current_snapshot", failing_set_current_snapshot)
+    monkeypatch.setattr(odds_store, "publish_opportunities", failing_publish_opportunities)
     monkeypatch.setattr(
         odds_store,
         "delete_team_review_cases",
@@ -2302,7 +2321,7 @@ async def test_auto_merge_audit_rows_remain_when_canonical_rollback_fails(
         target_away=target_away,
     )
 
-    async def failing_set_current_snapshot(snapshot_at: str) -> None:
+    async def failing_publish_opportunities(**kwargs) -> str:
         raise RuntimeError("simulated snapshot failure")
 
     async def failed_auto_merge_rollback(self, applied_merges):
@@ -2316,7 +2335,7 @@ async def test_auto_merge_audit_rows_remain_when_canonical_rollback_fails(
         delete_called = True
         return len(case_ids)
 
-    monkeypatch.setattr(odds_store, "set_current_snapshot", failing_set_current_snapshot)
+    monkeypatch.setattr(odds_store, "publish_opportunities", failing_publish_opportunities)
     monkeypatch.setattr(
         Scheduler,
         "_rollback_auto_applied_merges",
@@ -2421,17 +2440,17 @@ async def test_scheduler_run_cycle_ignores_unsnapshotted_review_history_for_auto
     )
     await odds_store.set_current_snapshot("2020-01-01T00:00:00+00:00")
 
-    original_set_current_snapshot = odds_store.set_current_snapshot
+    original_publish_opportunities = odds_store.publish_opportunities
     call_count = 0
 
-    async def flaky_set_current_snapshot(snapshot_at: str) -> None:
+    async def flaky_publish_opportunities(**kwargs) -> str:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
             raise RuntimeError("simulated snapshot failure")
-        await original_set_current_snapshot(snapshot_at)
+        return await original_publish_opportunities(**kwargs)
 
-    monkeypatch.setattr(odds_store, "set_current_snapshot", flaky_set_current_snapshot)
+    monkeypatch.setattr(odds_store, "publish_opportunities", flaky_publish_opportunities)
 
     with pytest.raises(RuntimeError, match="simulated snapshot failure"):
         await Scheduler(interval_minutes=1).run_cycle()
