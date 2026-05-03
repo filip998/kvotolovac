@@ -278,6 +278,7 @@ async def _load_current_canonical_analysis(match_ids: set[str]) -> _CanonicalAna
     canonical_opportunities = analyze_canonical_offers(
         canonical_offers,
         event_primary_match_ids=event_primary_match_ids,
+        max_middle_opportunities_per_market=settings.max_middle_opportunities_per_market,
     )
     return _CanonicalAnalysisResult(
         offers=tuple(canonical_offers),

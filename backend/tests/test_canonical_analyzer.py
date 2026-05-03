@@ -165,6 +165,66 @@ def test_canonical_line_middle_honors_min_gap():
     assert len(analyze_canonical_offers(offers, min_gap=0.5)) == 1
 
 
+def test_canonical_line_middle_caps_candidates_per_event_player_market():
+    offers = [
+        *_odds("over-book", "Lundberg", 7.5, over=1.90, under=None),
+    ]
+    for index in range(12):
+        offers.extend(
+            _odds(
+                f"under-book-{index}",
+                "Lundberg",
+                8.5 + index,
+                over=None,
+                under=1.90,
+            )
+        )
+
+    opportunities = analyze_canonical_offers(
+        offers,
+        max_middle_opportunities_per_market=10,
+    )
+
+    assert len(opportunities) == 10
+    assert {opportunity.opportunity_type for opportunity in opportunities} == {"middle"}
+    assert all(opportunity.subject_name == "Lundberg" for opportunity in opportunities)
+
+
+def test_canonical_line_middle_ranks_relative_width_before_raw_odds():
+    opportunities = analyze_canonical_offers(
+        [
+            *_odds("over-book", "Lundberg", 7.5, over=1.90, under=None),
+            *_odds("narrow-under", "Lundberg", 8.5, over=None, under=5.00),
+            *_odds("wide-under", "Lundberg", 10.5, over=None, under=1.90),
+        ],
+        max_middle_opportunities_per_market=1,
+    )
+
+    assert len(opportunities) == 1
+    assert {(leg.bookmaker_id, leg.line) for leg in opportunities[0].legs} == {
+        ("over-book", 7.5),
+        ("wide-under", 10.5),
+    }
+
+
+def test_canonical_line_middle_uses_odds_when_relative_width_ties():
+    opportunities = analyze_canonical_offers(
+        [
+            *_odds("cheap-over", "Lundberg", 7.5, over=1.50, under=None),
+            *_odds("cheap-under", "Lundberg", 8.5, over=None, under=1.50),
+            *_odds("better-over", "Lundberg", 7.5, over=2.00, under=None),
+            *_odds("better-under", "Lundberg", 8.5, over=None, under=2.00),
+        ],
+        max_middle_opportunities_per_market=1,
+    )
+
+    assert len(opportunities) == 1
+    assert {(leg.bookmaker_id, leg.line) for leg in opportunities[0].legs} == {
+        ("better-over", 7.5),
+        ("better-under", 8.5),
+    }
+
+
 def test_canonical_line_middle_uses_subject_key_before_display_name():
     opportunities = analyze_canonical_offers(
         [
