@@ -34,12 +34,12 @@ CREATE TABLE IF NOT EXISTS matches (
 
 CREATE TABLE IF NOT EXISTS match_bookmaker_sources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id TEXT,
     match_id TEXT NOT NULL REFERENCES matches(id),
     bookmaker_id TEXT NOT NULL REFERENCES bookmakers(id),
     source_url TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(match_id, bookmaker_id)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS snapshot_matches (
@@ -516,6 +516,55 @@ async def _rebuild_resolved_event_members_for_snapshots(
     )
 
 
+async def _rebuild_match_bookmaker_sources_for_snapshots(
+    conn: aiosqlite.Connection,
+) -> None:
+    columns = await conn.execute_fetchall("PRAGMA table_info(match_bookmaker_sources)")
+    existing = {row[1] for row in columns}
+    snapshot_expr = "snapshot_id" if "snapshot_id" in existing else "NULL"
+    await conn.execute("DROP INDEX IF EXISTS idx_match_bookmaker_sources_unique_snapshot")
+    await conn.execute("DROP INDEX IF EXISTS idx_match_bookmaker_sources_lookup")
+    await conn.execute(
+        """
+        CREATE TABLE match_bookmaker_sources__new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id TEXT,
+            match_id TEXT NOT NULL REFERENCES matches(id),
+            bookmaker_id TEXT NOT NULL REFERENCES bookmakers(id),
+            source_url TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await conn.execute(
+        f"""
+        INSERT INTO match_bookmaker_sources__new (
+            id,
+            snapshot_id,
+            match_id,
+            bookmaker_id,
+            source_url,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            {snapshot_expr},
+            match_id,
+            bookmaker_id,
+            source_url,
+            created_at,
+            updated_at
+        FROM match_bookmaker_sources
+        """
+    )
+    await conn.execute("DROP TABLE match_bookmaker_sources")
+    await conn.execute(
+        "ALTER TABLE match_bookmaker_sources__new RENAME TO match_bookmaker_sources"
+    )
+
+
 async def _rebuild_odds_for_snapshots(conn: aiosqlite.Connection) -> None:
     await conn.execute("DROP INDEX IF EXISTS idx_odds_unique_snapshot_line")
     await conn.execute("DROP INDEX IF EXISTS idx_odds_snapshot")
@@ -751,6 +800,7 @@ async def _rebuild_team_review_cases(conn: aiosqlite.Connection) -> None:
 async def _backfill_snapshot_metadata(conn: aiosqlite.Connection) -> None:
     snapshot_sources = (
         ("odds", "scraped_at"),
+        ("odds_history", "scraped_at"),
         ("outcome_offers", "scraped_at"),
         ("unresolved_odds", "scraped_at"),
         ("team_review_cases", "scraped_at"),
@@ -935,6 +985,41 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
         )
     ):
         await _rebuild_matches(conn)
+
+    await conn.execute(
+        """CREATE TABLE IF NOT EXISTS match_bookmaker_sources (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               snapshot_id TEXT,
+               match_id TEXT NOT NULL REFERENCES matches(id),
+               bookmaker_id TEXT NOT NULL REFERENCES bookmakers(id),
+               source_url TEXT,
+               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+           )"""
+    )
+    source_columns = await conn.execute_fetchall("PRAGMA table_info(match_bookmaker_sources)")
+    existing_sources = {row[1] for row in source_columns}
+    source_indexes = await conn.execute_fetchall("PRAGMA index_list(match_bookmaker_sources)")
+    if source_columns and (
+        "snapshot_id" not in existing_sources
+        or any(
+            str(row[1]).startswith("sqlite_autoindex_match_bookmaker_sources")
+            for row in source_indexes
+        )
+    ):
+        await _rebuild_match_bookmaker_sources_for_snapshots(conn)
+    await conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_match_bookmaker_sources_unique_snapshot
+           ON match_bookmaker_sources (
+               COALESCE(snapshot_id, ''),
+               match_id,
+               bookmaker_id
+           )"""
+    )
+    await conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_match_bookmaker_sources_lookup
+           ON match_bookmaker_sources (match_id, bookmaker_id, snapshot_id)"""
+    )
 
     await conn.execute(
         """CREATE TABLE IF NOT EXISTS snapshot_matches (

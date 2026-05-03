@@ -338,20 +338,33 @@ async def _get_current_snapshot(
     row = await db.execute_fetchall(
         "SELECT current_snapshot_id, current_snapshot_at FROM scrape_state WHERE id = 1"
     )
-    if not row:
-        return None, None
-    snapshot_id = row[0]["current_snapshot_id"]
-    snapshot_at = row[0]["current_snapshot_at"]
-    if snapshot_id:
-        return snapshot_id, snapshot_at or snapshot_id
-    if snapshot_at:
-        return _snapshot_id_from_scraped_at(snapshot_at), snapshot_at
+    if row:
+        snapshot_id = row[0]["current_snapshot_id"]
+        snapshot_at = row[0]["current_snapshot_at"]
+        if snapshot_id:
+            return snapshot_id, snapshot_at or snapshot_id
+        if snapshot_at:
+            return _snapshot_id_from_scraped_at(snapshot_at), snapshot_at
+    published_row = await db.execute_fetchall(
+        """SELECT id, scraped_at
+           FROM scrape_snapshots
+           WHERE status = 'published'
+           ORDER BY datetime(scraped_at) DESC, scraped_at DESC
+           LIMIT 1"""
+    )
+    if published_row:
+        return published_row[0]["id"], published_row[0]["scraped_at"]
     return None, None
 
 
 async def _get_current_snapshot_id(db: aiosqlite.Connection) -> str | None:
     snapshot_id, _ = await _get_current_snapshot(db)
     return snapshot_id
+
+
+async def _has_scrape_snapshots(db: aiosqlite.Connection) -> bool:
+    row = await db.execute_fetchall("SELECT 1 FROM scrape_snapshots LIMIT 1")
+    return bool(row)
 
 
 async def _get_current_snapshot_at(db: aiosqlite.Connection) -> str | None:
@@ -427,6 +440,9 @@ async def _current_or_legacy_snapshot_filter(
     if current_snapshot_at is not None:
         return f"{alias}.scraped_at = ?", [current_snapshot_at]
 
+    if await _has_scrape_snapshots(db):
+        return None, []
+
     legacy_window = await _get_legacy_snapshot_cutoff(db)
     if legacy_window is None:
         return None, []
@@ -481,22 +497,24 @@ async def upsert_match(
 async def _upsert_match_bookmaker_source_tx(
     db: aiosqlite.Connection,
     *,
+    snapshot_id: str | None = None,
     match_id: str,
     bookmaker_id: str,
     source_url: str | None,
 ) -> None:
     await db.execute(
-        """INSERT INTO match_bookmaker_sources (match_id, bookmaker_id, source_url)
-           VALUES (?, ?, ?)
-           ON CONFLICT(match_id, bookmaker_id) DO UPDATE SET
+        """INSERT INTO match_bookmaker_sources (snapshot_id, match_id, bookmaker_id, source_url)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(COALESCE(snapshot_id, ''), match_id, bookmaker_id) DO UPDATE SET
                 source_url = COALESCE(excluded.source_url, match_bookmaker_sources.source_url),
                 updated_at = CURRENT_TIMESTAMP""",
-        (match_id, bookmaker_id, source_url),
+        (snapshot_id, match_id, bookmaker_id, source_url),
     )
 
 
 async def upsert_match_bookmaker_source(
     *,
+    snapshot_id: str | None = None,
     match_id: str,
     bookmaker_id: str,
     source_url: str | None,
@@ -504,6 +522,7 @@ async def upsert_match_bookmaker_source(
     db = await get_db()
     await _upsert_match_bookmaker_source_tx(
         db,
+        snapshot_id=snapshot_id,
         match_id=match_id,
         bookmaker_id=bookmaker_id,
         source_url=source_url,
@@ -640,14 +659,14 @@ async def persist_scrape_snapshot_batch(
             ],
         )
         source_rows = [
-            (row.match_id, row.bookmaker_id, row.source_url)
+            (snapshot_id, row.match_id, row.bookmaker_id, row.source_url)
             for row in rows
             if row.source_url is not None
         ]
         await db.executemany(
-            """INSERT INTO match_bookmaker_sources (match_id, bookmaker_id, source_url)
-               VALUES (?, ?, ?)
-               ON CONFLICT(match_id, bookmaker_id) DO UPDATE SET
+            """INSERT INTO match_bookmaker_sources (snapshot_id, match_id, bookmaker_id, source_url)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(COALESCE(snapshot_id, ''), match_id, bookmaker_id) DO UPDATE SET
                     source_url = COALESCE(excluded.source_url, match_bookmaker_sources.source_url),
                     updated_at = CURRENT_TIMESTAMP""",
             source_rows,
@@ -913,6 +932,8 @@ async def get_matches(
                    WHERE {offers_filter}
                )"""
     else:
+        if await _has_scrape_snapshots(db):
+            return []
         legacy_window = await _get_legacy_snapshot_cutoff(db)
         if legacy_window is None:
             return []
@@ -1059,6 +1080,8 @@ async def get_match(
             params,
         )
     else:
+        if require_current_snapshot and await _has_scrape_snapshots(db):
+            return None
         row = await db.execute_fetchall(
             """SELECT m.*, l.name as league_name,
                       (
@@ -1221,6 +1244,7 @@ async def link_resolved_event_member(member: ResolvedEventMemberIn) -> int:
         )
         await _upsert_match_bookmaker_source_tx(
             db,
+            snapshot_id=member.snapshot_id,
             match_id=member.match_id,
             bookmaker_id=member.bookmaker_id,
             source_url=member.source_url,
@@ -1730,13 +1754,18 @@ async def persist_event_resolution_batch(
             ],
         )
         await db.executemany(
-            """INSERT INTO match_bookmaker_sources (match_id, bookmaker_id, source_url)
-               VALUES (?, ?, ?)
-               ON CONFLICT(match_id, bookmaker_id) DO UPDATE SET
+            """INSERT INTO match_bookmaker_sources (snapshot_id, match_id, bookmaker_id, source_url)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(COALESCE(snapshot_id, ''), match_id, bookmaker_id) DO UPDATE SET
                     source_url = COALESCE(excluded.source_url, match_bookmaker_sources.source_url),
                     updated_at = CURRENT_TIMESTAMP""",
             [
-                (member.match_id, member.bookmaker_id, member.source_url)
+                (
+                    member.snapshot_id or snapshot_id,
+                    member.match_id,
+                    member.bookmaker_id,
+                    member.source_url,
+                )
                 for member in members
                 if member.source_url is not None
             ],
@@ -1891,12 +1920,22 @@ async def _get_event_review_case_variants_tx(
         )
     )
     if candidate_match_ids:
+        current_snapshot_id = await _get_current_snapshot_id(db)
         placeholders = _sql_placeholders(candidate_match_ids)
+        if current_snapshot_id is not None:
+            source_snapshot_clause = "AND s.snapshot_id = ?"
+            source_params: list[object] = [current_snapshot_id]
+        elif await _has_scrape_snapshots(db):
+            source_snapshot_clause = "AND 1 = 0"
+            source_params = []
+        else:
+            source_snapshot_clause = "AND s.snapshot_id IS NULL"
+            source_params = []
         rows = await db.execute_fetchall(
             f"""SELECT m.id AS match_id,
-                       s.bookmaker_id,
-                       b.name AS bookmaker_name,
-                       m.league_id,
+                        s.bookmaker_id,
+                        b.name AS bookmaker_name,
+                        m.league_id,
                        l.name AS league_name,
                        m.home_team,
                        m.away_team,
@@ -1912,11 +1951,14 @@ async def _get_event_review_case_variants_tx(
                        '[]' AS member_evidence
                 FROM matches m
                 LEFT JOIN leagues l ON l.id = m.league_id
-                LEFT JOIN match_bookmaker_sources s ON s.match_id = m.id
+                LEFT JOIN match_bookmaker_sources s
+                  ON s.match_id = m.id
+                 {source_snapshot_clause}
                 LEFT JOIN bookmakers b ON b.id = s.bookmaker_id
                 WHERE m.id IN ({placeholders})
-                ORDER BY m.start_time ASC, m.id ASC, s.bookmaker_id ASC""",
-            candidate_match_ids,
+                ORDER BY m.start_time ASC, m.id ASC, s.bookmaker_id ASC,
+                         s.id ASC""",
+            [*source_params, *candidate_match_ids],
         )
         for row in rows:
             key = (row["match_id"], row["bookmaker_id"])
@@ -2226,20 +2268,26 @@ async def merge_matches(
         )
         reassigned_outcome_offers = reassigned_outcome_cur.rowcount or 0
 
-        # 5. match_bookmaker_sources has UNIQUE(match_id, bookmaker_id), so it
-        #    needs the same dedupe-before-update treatment as odds.
+        # 5. match_bookmaker_sources is keyed by snapshot, match, and bookmaker,
+        #    so it needs the same dedupe-before-update treatment as odds.
         source_rows = await db.execute_fetchall(
             f"""
-            SELECT id, match_id, bookmaker_id, source_url
+            SELECT id, snapshot_id, match_id, bookmaker_id, source_url
             FROM match_bookmaker_sources
             WHERE match_id IN ({all_placeholders})
             """,
             all_match_ids,
         )
 
-        source_groups: dict[str, list[aiosqlite.Row]] = {}
+        source_groups: dict[tuple[str, str], list[aiosqlite.Row]] = {}
         for row in source_rows:
-            source_groups.setdefault(str(row["bookmaker_id"]), []).append(row)
+            source_groups.setdefault(
+                (
+                    str(row["snapshot_id"] or ""),
+                    str(row["bookmaker_id"]),
+                ),
+                [],
+            ).append(row)
 
         source_ids_to_delete: list[int] = []
         for grouped_rows in source_groups.values():
@@ -2463,7 +2511,7 @@ async def _get_normalized_odds_for_matches_snapshot(
                    COALESCE(sm.away_team_id, m.away_team_id, 0) AS away_team_id,
                    COALESCE(sm.home_team, m.home_team) AS home_team,
                    COALESCE(sm.away_team, m.away_team) AS away_team,
-                   s.source_url,
+                   s.source_url AS source_url,
                    o.market_type,
                    o.player_name,
                    o.threshold,
@@ -2475,7 +2523,9 @@ async def _get_normalized_odds_for_matches_snapshot(
             JOIN matches m ON m.id = o.match_id
             LEFT JOIN snapshot_matches sm ON sm.snapshot_id = ? AND sm.match_id = m.id
             LEFT JOIN match_bookmaker_sources s
-              ON s.match_id = o.match_id AND s.bookmaker_id = o.bookmaker_id
+              ON s.match_id = o.match_id
+             AND s.bookmaker_id = o.bookmaker_id
+             AND COALESCE(s.snapshot_id, '') = COALESCE(o.snapshot_id, '')
             WHERE o.match_id IN ({placeholders})
               AND {snapshot_filter}
             ORDER BY COALESCE(sm.start_time, m.start_time) ASC, o.match_id ASC, o.bookmaker_id ASC,
@@ -2533,7 +2583,7 @@ async def _get_normalized_outcome_offers_for_matches_snapshot(
                    COALESCE(sm.away_team_id, m.away_team_id, 0) AS away_team_id,
                    COALESCE(sm.home_team, m.home_team) AS home_team,
                    COALESCE(sm.away_team, m.away_team) AS away_team,
-                   s.source_url,
+                   s.source_url AS source_url,
                    o.market_type,
                    o.outcome_code,
                    o.odds,
@@ -2545,7 +2595,9 @@ async def _get_normalized_outcome_offers_for_matches_snapshot(
             JOIN matches m ON m.id = o.match_id
             LEFT JOIN snapshot_matches sm ON sm.snapshot_id = ? AND sm.match_id = m.id
             LEFT JOIN match_bookmaker_sources s
-              ON s.match_id = o.match_id AND s.bookmaker_id = o.bookmaker_id
+              ON s.match_id = o.match_id
+             AND s.bookmaker_id = o.bookmaker_id
+             AND COALESCE(s.snapshot_id, '') = COALESCE(o.snapshot_id, '')
             WHERE o.match_id IN ({placeholders})
               AND {snapshot_filter}
             ORDER BY COALESCE(sm.start_time, m.start_time) ASC, o.match_id ASC, o.bookmaker_id ASC,
@@ -2706,6 +2758,7 @@ async def upsert_odds(odds: NormalizedOdds, *, scraped_at: str) -> int:
     )
     await _upsert_match_bookmaker_source_tx(
         db,
+        snapshot_id=snapshot_id,
         match_id=odds.match_id,
         bookmaker_id=odds.bookmaker_id,
         source_url=odds.source_url,
@@ -2722,11 +2775,14 @@ async def get_odds_for_match(match_id: str) -> list[OddsOut]:
     if snapshot_filter is None:
         return []
     rows = await db.execute_fetchall(
-        f"""SELECT o.*, b.name as bookmaker_name, s.source_url as source_url
+        f"""SELECT o.*,
+                   b.name as bookmaker_name,
+                   s.source_url as source_url
             FROM odds o
             LEFT JOIN bookmakers b ON o.bookmaker_id = b.id
             LEFT JOIN match_bookmaker_sources s
-              ON s.match_id = o.match_id AND s.bookmaker_id = o.bookmaker_id
+               ON s.match_id = o.match_id AND s.bookmaker_id = o.bookmaker_id
+              AND COALESCE(s.snapshot_id, '') = COALESCE(o.snapshot_id, '')
             WHERE o.match_id = ? AND {snapshot_filter}
             ORDER BY o.market_type, o.player_name, o.threshold""",
         [match_id, *snapshot_params],
@@ -2736,10 +2792,22 @@ async def get_odds_for_match(match_id: str) -> list[OddsOut]:
 
 async def get_odds_history_for_match(match_id: str) -> list[OddsOut]:
     db = await get_db()
-    rows = await db.execute_fetchall(
-        "SELECT * FROM odds_history WHERE match_id = ? ORDER BY scraped_at DESC",
-        (match_id,),
-    )
+    if await _has_scrape_snapshots(db):
+        rows = await db.execute_fetchall(
+            """SELECT h.*
+               FROM odds_history h
+               JOIN scrape_snapshots ss
+                 ON ss.id = COALESCE(h.snapshot_id, h.scraped_at)
+                AND ss.status = 'published'
+               WHERE h.match_id = ?
+               ORDER BY h.scraped_at DESC""",
+            (match_id,),
+        )
+    else:
+        rows = await db.execute_fetchall(
+            "SELECT * FROM odds_history WHERE match_id = ? ORDER BY scraped_at DESC",
+            (match_id,),
+        )
     return [OddsOut(**_row_to_dict(r)) for r in rows]
 
 
@@ -2776,6 +2844,7 @@ async def upsert_outcome_offer(
     )
     await _upsert_match_bookmaker_source_tx(
         db,
+        snapshot_id=snapshot_id,
         match_id=offer.match_id,
         bookmaker_id=offer.bookmaker_id,
         source_url=offer.source_url,
@@ -2816,13 +2885,18 @@ async def get_outcome_offers(
     if snapshot_filter is None:
         return []
 
-    q = """SELECT o.*, b.name AS bookmaker_name, s.source_url AS source_url
+    q = """SELECT o.*,
+                  b.name AS bookmaker_name,
+                  s.source_url AS source_url
            FROM outcome_offers o
            JOIN matches m ON m.id = o.match_id
            LEFT JOIN snapshot_matches sm ON sm.snapshot_id = ? AND sm.match_id = m.id
            LEFT JOIN bookmakers b ON b.id = o.bookmaker_id
            LEFT JOIN match_bookmaker_sources s
-              ON s.match_id = o.match_id AND s.bookmaker_id = o.bookmaker_id"""
+              ON s.match_id = o.match_id
+             AND s.bookmaker_id = o.bookmaker_id
+             AND COALESCE(s.snapshot_id, '') = COALESCE(o.snapshot_id, '')
+           """
     conditions = [snapshot_filter]
     params: list[object] = [current_snapshot_id, *snapshot_params]
 
@@ -3089,13 +3163,19 @@ async def get_opportunities(
     params.extend([limit, offset])
     rows = await db.execute_fetchall(q, params)
     opportunities = [_row_to_opportunity(row) for row in rows]
-    await _enrich_opportunity_legs(db, opportunities)
+    await _enrich_opportunity_legs(
+        db,
+        opportunities,
+        snapshot_id=current_snapshot_id,
+    )
     return opportunities
 
 
 async def _enrich_opportunity_legs(
     db: aiosqlite.Connection,
     opportunities: list[OpportunityOut],
+    *,
+    snapshot_id: str | None = None,
 ) -> None:
     bookmaker_ids = sorted(
         {
@@ -3133,18 +3213,35 @@ async def _enrich_opportunity_legs(
     source_urls: dict[tuple[str, str], str] = {}
     if match_ids:
         match_placeholders = _sql_placeholders(match_ids)
-        source_rows = await db.execute_fetchall(
-            f"""SELECT match_id, bookmaker_id, source_url
-                FROM match_bookmaker_sources
-                WHERE match_id IN ({match_placeholders})
-                  AND bookmaker_id IN ({bookmaker_placeholders})""",
-            [*match_ids, *bookmaker_ids],
-        )
-        source_urls = {
-            (row["match_id"], row["bookmaker_id"]): row["source_url"]
-            for row in source_rows
-            if row["source_url"] is not None
-        }
+        if snapshot_id is not None:
+            source_rows = await db.execute_fetchall(
+                f"""SELECT match_id, bookmaker_id, source_url
+                    FROM match_bookmaker_sources
+                    WHERE match_id IN ({match_placeholders})
+                      AND bookmaker_id IN ({bookmaker_placeholders})
+                      AND snapshot_id = ?
+                    ORDER BY id ASC""",
+                [*match_ids, *bookmaker_ids, snapshot_id],
+            )
+        elif not await _has_scrape_snapshots(db):
+            source_rows = await db.execute_fetchall(
+                f"""SELECT match_id, bookmaker_id, source_url
+                    FROM match_bookmaker_sources
+                    WHERE match_id IN ({match_placeholders})
+                      AND bookmaker_id IN ({bookmaker_placeholders})
+                      AND snapshot_id IS NULL
+                    ORDER BY id ASC""",
+                [*match_ids, *bookmaker_ids],
+            )
+        else:
+            source_rows = []
+        for row in source_rows:
+            if row["source_url"] is None:
+                continue
+            source_urls.setdefault(
+                (row["match_id"], row["bookmaker_id"]),
+                row["source_url"],
+            )
 
     for opportunity in opportunities:
         for leg in opportunity.legs:
@@ -3540,6 +3637,12 @@ async def cleanup_retained_data(current_snapshot_at: str) -> dict[str, int]:
                   OR snapshot_id != ?""",
             (preserved_snapshot_id,),
         )
+        deleted_match_sources_cur = await db.execute(
+            """DELETE FROM match_bookmaker_sources
+               WHERE snapshot_id IS NOT NULL
+                 AND snapshot_id != ?""",
+            (preserved_snapshot_id,),
+        )
         deleted_resolved_event_members_cur = await db.execute(
             """DELETE FROM resolved_event_members
                WHERE snapshot_id IS NOT NULL
@@ -3564,10 +3667,6 @@ async def cleanup_retained_data(current_snapshot_at: str) -> dict[str, int]:
             deleted_opportunity_publishes_cur = await db.execute(
                 "DELETE FROM opportunity_publishes"
             )
-        deleted_scrape_snapshots_cur = await db.execute(
-            "DELETE FROM scrape_snapshots WHERE id != ?",
-            (preserved_snapshot_id,),
-        )
         if settings.odds_history_retention_days > 0:
             odds_history_cutoff = _retention_cutoff(
                 retention_anchor_at, settings.odds_history_retention_days
@@ -3591,6 +3690,16 @@ async def cleanup_retained_data(current_snapshot_at: str) -> dict[str, int]:
                       OR COALESCE(snapshot_id, scraped_at) != ?""",
                 (preserved_snapshot_id,),
             )
+        deleted_scrape_snapshots_cur = await db.execute(
+            """DELETE FROM scrape_snapshots
+               WHERE id != ?
+                 AND NOT EXISTS (
+                     SELECT 1
+                     FROM odds_history h
+                     WHERE COALESCE(h.snapshot_id, h.scraped_at) = scrape_snapshots.id
+                 )""",
+            (preserved_snapshot_id,),
+        )
 
         if settings.team_review_retention_days > 0:
             team_review_cutoff = _retention_cutoff(
@@ -3643,6 +3752,7 @@ async def cleanup_retained_data(current_snapshot_at: str) -> dict[str, int]:
         "deleted_stale_resolved_event_members": (
             deleted_resolved_event_members_cur.rowcount or 0
         ),
+        "deleted_stale_match_bookmaker_sources": deleted_match_sources_cur.rowcount or 0,
         "deleted_stale_opportunities": deleted_opportunities_cur.rowcount or 0,
         "deleted_stale_opportunity_publishes": (
             deleted_opportunity_publishes_cur.rowcount or 0
@@ -3683,31 +3793,36 @@ async def get_system_status(
         odds_count = odds_row[0][0]
         last_scrape_at = current_snapshot_at or current_snapshot_id
     else:
-        legacy_window = await _get_legacy_snapshot_cutoff(db)
-        if legacy_window is None:
+        if await _has_scrape_snapshots(db):
             matches_count = 0
             odds_count = 0
             last_scrape_at = None
         else:
-            last_scrape_at, cutoff_at = legacy_window
-            matches_row = await db.execute_fetchall(
-                """SELECT COUNT(DISTINCT match_id) as c
-                   FROM (
-                       SELECT match_id FROM odds WHERE scraped_at >= ?
-                       UNION
-                       SELECT match_id FROM outcome_offers WHERE scraped_at >= ?
-                   )""",
-                (cutoff_at, cutoff_at),
-            )
-            odds_row = await db.execute_fetchall(
-                """SELECT (
-                       (SELECT COUNT(*) FROM odds WHERE scraped_at >= ?)
-                       + (SELECT COUNT(*) FROM outcome_offers WHERE scraped_at >= ?)
-                   ) as c""",
-                (cutoff_at, cutoff_at),
-            )
-            matches_count = matches_row[0][0]
-            odds_count = odds_row[0][0]
+            legacy_window = await _get_legacy_snapshot_cutoff(db)
+            if legacy_window is None:
+                matches_count = 0
+                odds_count = 0
+                last_scrape_at = None
+            else:
+                last_scrape_at, cutoff_at = legacy_window
+                matches_row = await db.execute_fetchall(
+                    """SELECT COUNT(DISTINCT match_id) as c
+                       FROM (
+                           SELECT match_id FROM odds WHERE scraped_at >= ?
+                           UNION
+                           SELECT match_id FROM outcome_offers WHERE scraped_at >= ?
+                       )""",
+                    (cutoff_at, cutoff_at),
+                )
+                odds_row = await db.execute_fetchall(
+                    """SELECT (
+                           (SELECT COUNT(*) FROM odds WHERE scraped_at >= ?)
+                           + (SELECT COUNT(*) FROM outcome_offers WHERE scraped_at >= ?)
+                       ) as c""",
+                    (cutoff_at, cutoff_at),
+                )
+                matches_count = matches_row[0][0]
+                odds_count = odds_row[0][0]
     current_publish_id = await _get_current_opportunity_publish_id(db)
     if current_publish_id is not None:
         opportunity_row = await db.execute_fetchall(

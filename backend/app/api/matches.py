@@ -51,7 +51,7 @@ async def get_match_odds(match_id: str):
 
 @router.get("/{match_id}/history", response_model=list[OddsOut])
 async def get_match_history(match_id: str):
-    match = await odds_store.get_match(match_id)
+    match = await odds_store.get_match(match_id, require_current_snapshot=True)
     if not match:
         raise HTTPException(status_code=404, detail="Match not found")
     return await odds_store.get_odds_history_for_match(match_id)
