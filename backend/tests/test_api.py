@@ -648,6 +648,37 @@ async def test_match_history(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_match_history_hides_first_unpublished_snapshot(client: AsyncClient):
+    snapshot_at = "2026-04-11T20:06:00.735723"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="hidden-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Hidden Home",
+                away_team="Hidden Away",
+                market_type="player_points",
+                player_name="Hidden Player",
+                threshold=13.5,
+                over_odds=2.1,
+                under_odds=1.7,
+                start_time="2026-04-11T22:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+
+    resp = await client.get("/api/v1/matches/hidden-match/history")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_discrepancy_api_removed(client: AsyncClient):
     list_resp = await client.get("/api/v1/discrepancies")
     assert list_resp.status_code == 404

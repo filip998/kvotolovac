@@ -259,9 +259,14 @@ def _publish_benchmark_snapshot(
     )
 
 
-async def _load_current_canonical_analysis(match_ids: set[str]) -> _CanonicalAnalysisResult:
+async def _load_current_canonical_analysis(
+    match_ids: set[str],
+    *,
+    snapshot_id: str | None = None,
+) -> _CanonicalAnalysisResult:
     canonical_offers = await odds_store.get_current_canonical_offers_for_matches(
-        sorted(match_ids)
+        sorted(match_ids),
+        snapshot_id=snapshot_id,
     )
     event_ids = sorted(
         {
@@ -1144,52 +1149,58 @@ class Scheduler:
 
                 self._scan_phase = "storing"
                 cycle_scraped_at = datetime.utcnow().isoformat()
-                await _persist_normalized_pipeline_batch(
-                    normalized_batch,
-                    cycle_scraped_at=cycle_scraped_at,
-                    seen_matches=seen_matches,
+                persisted_snapshot = await odds_store.persist_scrape_snapshot_batch(
+                    snapshot_at=cycle_scraped_at,
+                    odds=normalized,
+                    outcome_offers=normalized_outcome_offers,
+                    unresolved_odds=unresolved_odds,
+                    team_review_cases=team_review_cases,
+                    auto_approved_team_reviews=auto_approved_team_reviews,
+                )
+                seen_matches = set(persisted_snapshot["seen_match_ids"])
+                snapshot_id = str(persisted_snapshot["snapshot_id"])
+                auto_approved_team_review_case_ids.extend(
+                    int(case_id)
+                    for case_id in persisted_snapshot[
+                        "auto_approved_team_review_case_ids"
+                    ]
                 )
                 await resolve_and_persist_events(
+                    snapshot_id=snapshot_id,
                     raw_odds=all_raw,
                     raw_outcome_offers=all_raw_outcome_offers,
                     normalized_odds=event_resolution_batch.odds,
                     normalized_outcome_offers=event_resolution_batch.outcome_offers,
                 )
-                for unresolved in unresolved_odds:
-                    await odds_store.insert_unresolved_odds(
-                        unresolved, scraped_at=cycle_scraped_at
-                    )
-                for team_review_case in team_review_cases:
-                    await odds_store.insert_team_review_case(
-                        team_review_case, scraped_at=cycle_scraped_at
-                    )
-                for team_review_case in auto_approved_team_reviews:
-                    case_id = await odds_store.insert_team_review_case(
-                        team_review_case, scraped_at=cycle_scraped_at
-                    )
-                    auto_approved_team_review_case_ids.append(case_id)
-                    await odds_store.mark_team_review_case_approved(case_id)
-                await odds_store.set_current_snapshot(cycle_scraped_at)
 
                 self._scan_phase = "analyzing"
                 canonical_analysis = _CanonicalAnalysisResult()
                 canonical_analysis_failed = False
+                canonical_analysis_error: str | None = None
                 try:
                     canonical_analysis = await _load_current_canonical_analysis(
                         match_ids=seen_matches,
+                        snapshot_id=snapshot_id,
                     )
-                except Exception:
+                except Exception as exc:
                     canonical_analysis_failed = True
+                    canonical_analysis_error = f"{type(exc).__name__}: {exc}"
                     logger.exception("Canonical opportunity analysis failed")
                 opportunities = list(canonical_analysis.opportunities)
 
-                await odds_store.deactivate_opportunities()
                 if not canonical_analysis_failed:
-                    for opportunity in opportunities:
-                        await odds_store.insert_opportunity(
-                            opportunity,
-                            detected_at=cycle_scraped_at,
-                        )
+                    await odds_store.publish_opportunities(
+                        snapshot_id=snapshot_id,
+                        snapshot_at=cycle_scraped_at,
+                        opportunities=opportunities,
+                        detected_at=cycle_scraped_at,
+                    )
+                else:
+                    await odds_store.mark_scrape_snapshot_analysis_failed(
+                        snapshot_id=snapshot_id,
+                        snapshot_at=cycle_scraped_at,
+                        error=canonical_analysis_error,
+                    )
 
                 if canonical_analysis_failed:
                     canonical_shadow = _CanonicalShadowResult(

@@ -12,11 +12,13 @@ from app.models.schemas import (
     EventReviewCaseIn,
     NormalizedOdds,
     NormalizedOutcomeOffer,
+    OpportunityLeg,
     ResolvedEventIn,
     ResolvedEventMemberIn,
     TeamReviewDiagnostic,
     UnresolvedOddsDiagnostic,
 )
+from app.services.opportunity_analyzer import Opportunity
 from app.store import odds_store
 
 
@@ -57,6 +59,7 @@ async def test_upsert_and_get_match():
         ),
         scraped_at="2026-04-11T20:06:00.735723",
     )
+    await odds_store.set_current_snapshot("2026-04-11T20:06:00.735723")
     matches = await odds_store.get_matches()
     assert len(matches) == 1
     assert matches[0].home_team == "Partizan"
@@ -98,6 +101,7 @@ async def test_upsert_odds_and_history():
         under_odds=1.95,
     )
     await odds_store.upsert_odds(odds, scraped_at="2026-04-11T20:06:00.735723")
+    await odds_store.set_current_snapshot("2026-04-11T20:06:00.735723")
 
     current = await odds_store.get_odds_for_match("m1")
     assert len(current) == 1
@@ -337,10 +341,11 @@ async def test_current_canonical_offers_capture_snapshot_once(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_upsert_odds_preserves_existing_source_url_when_new_snapshot_has_none():
+async def test_upsert_odds_preserves_existing_source_url_within_snapshot():
     await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
     await odds_store.upsert_match("m1", "euroleague", "Partizan", "Crvena Zvezda")
     await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    snapshot_at = "2026-04-11T20:06:00.735723"
 
     await odds_store.upsert_odds(
         NormalizedOdds(
@@ -356,7 +361,7 @@ async def test_upsert_odds_preserves_existing_source_url_when_new_snapshot_has_n
             over_odds=1.85,
             under_odds=1.95,
         ),
-        scraped_at="2026-04-11T20:06:00.735723",
+        scraped_at=snapshot_at,
     )
     await odds_store.upsert_odds(
         NormalizedOdds(
@@ -372,9 +377,9 @@ async def test_upsert_odds_preserves_existing_source_url_when_new_snapshot_has_n
             over_odds=1.9,
             under_odds=1.9,
         ),
-        scraped_at="2026-04-11T20:11:00.735723",
+        scraped_at=snapshot_at,
     )
-    await odds_store.set_current_snapshot("2026-04-11T20:11:00.735723")
+    await odds_store.set_current_snapshot(snapshot_at)
 
     current = await odds_store.get_odds_for_match("m1")
 
@@ -415,8 +420,12 @@ async def test_get_matches_returns_only_latest_scrape_batch():
         under_odds=1.66,
     )
 
-    await odds_store.upsert_odds(stale_odds, scraped_at="2026-04-10T13:39:04.516801")
-    await odds_store.upsert_odds(fresh_odds, scraped_at="2026-04-11T20:06:00.735723")
+    stale_snapshot_at = "2026-04-10T13:39:04.516801"
+    fresh_snapshot_at = "2026-04-11T20:06:00.735723"
+    await odds_store.upsert_odds(stale_odds, scraped_at=stale_snapshot_at)
+    await odds_store.set_current_snapshot(stale_snapshot_at)
+    await odds_store.upsert_odds(fresh_odds, scraped_at=fresh_snapshot_at)
+    await odds_store.set_current_snapshot(fresh_snapshot_at)
 
     matches = await odds_store.get_matches()
 
@@ -517,8 +526,12 @@ async def test_get_odds_for_match_returns_only_latest_scrape_batch():
         under_odds=1.66,
     )
 
-    await odds_store.upsert_odds(stale_odds, scraped_at="2026-04-10T13:39:04.516801")
-    await odds_store.upsert_odds(fresh_odds, scraped_at="2026-04-11T20:06:00.735723")
+    stale_snapshot_at = "2026-04-10T13:39:04.516801"
+    fresh_snapshot_at = "2026-04-11T20:06:00.735723"
+    await odds_store.upsert_odds(stale_odds, scraped_at=stale_snapshot_at)
+    await odds_store.set_current_snapshot(stale_snapshot_at)
+    await odds_store.upsert_odds(fresh_odds, scraped_at=fresh_snapshot_at)
+    await odds_store.set_current_snapshot(fresh_snapshot_at)
 
     current = await odds_store.get_odds_for_match("m1")
     history = await odds_store.get_odds_history_for_match("m1")
@@ -562,6 +575,7 @@ async def test_upsert_odds_keeps_line_and_milestone_rows_separate():
     batch_scraped_at = "2026-04-11T20:06:00.735723"
     await odds_store.upsert_odds(line, scraped_at=batch_scraped_at)
     await odds_store.upsert_odds(milestone, scraped_at=batch_scraped_at)
+    await odds_store.set_current_snapshot(batch_scraped_at)
 
     current = await odds_store.get_odds_for_match("m1")
     assert len(current) == 2
@@ -721,6 +735,146 @@ async def test_legacy_discrepancies_table_is_dropped(
     )
 
     assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_match_bookmaker_sources_migration_is_snapshot_scoped(
+    tmp_path,
+    monkeypatch,
+):
+    await close_db()
+    legacy_db_path = tmp_path / "legacy_sources.db"
+    with sqlite3.connect(legacy_db_path) as conn:
+        conn.execute(
+            """CREATE TABLE match_bookmaker_sources (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   match_id TEXT NOT NULL REFERENCES matches(id),
+                   bookmaker_id TEXT NOT NULL REFERENCES bookmakers(id),
+                   source_url TEXT,
+                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                   UNIQUE(match_id, bookmaker_id)
+               )"""
+        )
+        conn.execute(
+            """INSERT INTO match_bookmaker_sources (
+                   match_id,
+                   bookmaker_id,
+                   source_url
+               ) VALUES ('match-1', 'meridian', 'https://legacy.example')"""
+        )
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{legacy_db_path}")
+
+    await init_db(str(legacy_db_path))
+    db = await get_db()
+    columns = await db.execute_fetchall("PRAGMA table_info(match_bookmaker_sources)")
+    indexes = await db.execute_fetchall("PRAGMA index_list(match_bookmaker_sources)")
+    rows = await db.execute_fetchall(
+        """SELECT snapshot_id, match_id, bookmaker_id, source_url
+           FROM match_bookmaker_sources"""
+    )
+
+    assert "snapshot_id" in {row[1] for row in columns}
+    assert not any(
+        str(row[1]).startswith("sqlite_autoindex_match_bookmaker_sources")
+        for row in indexes
+    )
+    assert "idx_match_bookmaker_sources_unique_snapshot" in {row[1] for row in indexes}
+    assert [tuple(row) for row in rows] == [
+        (None, "match-1", "meridian", "https://legacy.example")
+    ]
+
+    await db.execute(
+        "INSERT INTO bookmakers (id, name) VALUES ('meridian', 'Meridian')"
+    )
+    await db.execute(
+        """INSERT INTO matches (id, home_team, away_team)
+           VALUES ('match-1', 'Home', 'Away')"""
+    )
+    await db.commit()
+    await db.execute(
+        """INSERT INTO match_bookmaker_sources (
+               snapshot_id,
+               match_id,
+               bookmaker_id,
+               source_url
+           ) VALUES ('snapshot-1', 'match-1', 'meridian', 'https://snapshot.example')"""
+    )
+    await db.commit()
+    with pytest.raises(aiosqlite.IntegrityError):
+        await db.execute(
+            """INSERT INTO match_bookmaker_sources (
+                   snapshot_id,
+                   match_id,
+                   bookmaker_id,
+                   source_url
+               ) VALUES ('snapshot-1', 'match-1', 'meridian', 'https://dupe.example')"""
+        )
+        await db.commit()
+    await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_odds_history_migration_backfills_snapshot_metadata(
+    tmp_path,
+    monkeypatch,
+):
+    await close_db()
+    legacy_db_path = tmp_path / "legacy_history.db"
+    history_at = "2026-04-11T20:06:00.735723"
+    with sqlite3.connect(legacy_db_path) as conn:
+        conn.execute(
+            """CREATE TABLE odds_history (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   match_id TEXT,
+                   bookmaker_id TEXT,
+                   market_type TEXT,
+                   player_name TEXT,
+                   threshold REAL,
+                   over_odds REAL,
+                   under_odds REAL,
+                   scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+               )"""
+        )
+        conn.execute(
+            """INSERT INTO odds_history (
+                   match_id,
+                   bookmaker_id,
+                   market_type,
+                   player_name,
+                   threshold,
+                   over_odds,
+                   under_odds,
+                   scraped_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "match-1",
+                "meridian",
+                "player_points",
+                "Saben Lee",
+                13.5,
+                1.8,
+                2.0,
+                history_at,
+            ),
+        )
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{legacy_db_path}")
+
+    await init_db(str(legacy_db_path))
+    db = await get_db()
+    history_rows = await db.execute_fetchall(
+        "SELECT snapshot_id, scraped_at FROM odds_history"
+    )
+    snapshot_rows = await db.execute_fetchall(
+        "SELECT id, scraped_at, status FROM scrape_snapshots"
+    )
+
+    assert [(row["snapshot_id"], row["scraped_at"]) for row in history_rows] == [
+        (history_at, history_at)
+    ]
+    assert [(row["id"], row["scraped_at"], row["status"]) for row in snapshot_rows] == [
+        (history_at, history_at, "published")
+    ]
 
 
 @pytest.mark.asyncio
@@ -991,6 +1145,90 @@ async def test_cleanup_retained_data_prunes_stale_snapshot_rows(monkeypatch: pyt
         ("2026-04-19 12:00:00", recent_notification_id),
     )
     await db.commit()
+    await odds_store.persist_event_resolution_batch(
+        snapshot_id=stale_snapshot_at,
+        events=[
+            ResolvedEventIn(
+                id="evt-stale",
+                sport="basketball",
+                start_time=stale_snapshot_at,
+                primary_match_id="stale",
+                method="exact",
+            )
+        ],
+        members=[
+            ResolvedEventMemberIn(
+                resolved_event_id="evt-stale",
+                match_id="stale",
+                bookmaker_id="meridian",
+            )
+        ],
+        review_cases=[],
+    )
+    await odds_store.persist_event_resolution_batch(
+        snapshot_id=current_snapshot_at,
+        events=[
+            ResolvedEventIn(
+                id="evt-current",
+                sport="basketball",
+                start_time=current_snapshot_at,
+                primary_match_id="fresh",
+                method="exact",
+            )
+        ],
+        members=[
+            ResolvedEventMemberIn(
+                resolved_event_id="evt-current",
+                match_id="fresh",
+                bookmaker_id="meridian",
+            )
+        ],
+        review_cases=[],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=current_snapshot_at,
+        snapshot_at=current_snapshot_at,
+        opportunities=[],
+        detected_at=current_snapshot_at,
+    )
+    await db.execute(
+        """INSERT INTO opportunity_publishes (
+               id,
+               snapshot_id,
+               detected_at,
+               status,
+               opportunity_count
+           )
+           VALUES (?, ?, ?, 'published', 1)""",
+        ("publish-stale", stale_snapshot_at, stale_snapshot_at),
+    )
+    await db.execute(
+        """INSERT INTO opportunities (
+               publish_id,
+               sport,
+               match_id,
+               opportunity_type,
+               market_type,
+               profit_margin,
+               market_keys,
+               legs,
+               detected_at,
+               is_active
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)""",
+        (
+            "publish-stale",
+            "basketball",
+            "stale",
+            "same_line_arbitrage",
+            "player_points",
+            0.01,
+            "[]",
+            "[]",
+            stale_snapshot_at,
+        ),
+    )
+    await db.commit()
 
     counts = await odds_store.cleanup_retained_data(current_snapshot_at)
 
@@ -1009,6 +1247,18 @@ async def test_cleanup_retained_data_prunes_stale_snapshot_rows(monkeypatch: pyt
     notification_rows = await db.execute_fetchall(
         "SELECT id FROM notifications ORDER BY id"
     )
+    member_rows = await db.execute_fetchall(
+        "SELECT snapshot_id, resolved_event_id FROM resolved_event_members ORDER BY id"
+    )
+    scrape_snapshot_rows = await db.execute_fetchall(
+        "SELECT id FROM scrape_snapshots ORDER BY id"
+    )
+    publish_rows = await db.execute_fetchall(
+        "SELECT id FROM opportunity_publishes ORDER BY id"
+    )
+    opportunity_rows = await db.execute_fetchall(
+        "SELECT publish_id FROM opportunities ORDER BY id"
+    )
 
     assert [(row["match_id"], row["scraped_at"]) for row in odds_rows] == [
         ("fresh", current_snapshot_at)
@@ -1023,9 +1273,21 @@ async def test_cleanup_retained_data_prunes_stale_snapshot_rows(monkeypatch: pyt
         (recent_case_id, "Recent Alias")
     ]
     assert notification_rows == []
+    assert [
+        (row["snapshot_id"], row["resolved_event_id"]) for row in member_rows
+    ] == [(current_snapshot_at, "evt-current")]
+    assert [row["id"] for row in scrape_snapshot_rows] == [current_snapshot_at]
+    assert len(publish_rows) == 1
+    assert publish_rows[0]["id"].startswith(f"{current_snapshot_at}:")
+    assert opportunity_rows == []
     assert counts == {
         "deleted_stale_odds": 1,
         "deleted_stale_unresolved_odds": 1,
+        "deleted_stale_resolved_event_members": 1,
+        "deleted_stale_match_bookmaker_sources": 1,
+        "deleted_stale_opportunities": 1,
+        "deleted_stale_opportunity_publishes": 1,
+        "deleted_stale_scrape_snapshots": 3,
         "deleted_odds_history": 1,
         "deleted_team_review_cases": 1,
         "deleted_notifications": 2,
@@ -1182,9 +1444,13 @@ async def test_system_status_counts_only_latest_scrape_batch():
         under_odds=1.73,
     )
 
-    await odds_store.upsert_odds(stale_odds, scraped_at="2026-04-10T13:39:04.516801")
-    await odds_store.upsert_odds(fresh_odds_a, scraped_at="2026-04-11T20:06:00.735723")
-    await odds_store.upsert_odds(fresh_odds_b, scraped_at="2026-04-11T20:06:00.735723")
+    stale_snapshot_at = "2026-04-10T13:39:04.516801"
+    fresh_snapshot_at = "2026-04-11T20:06:00.735723"
+    await odds_store.upsert_odds(stale_odds, scraped_at=stale_snapshot_at)
+    await odds_store.set_current_snapshot(stale_snapshot_at)
+    await odds_store.upsert_odds(fresh_odds_a, scraped_at=fresh_snapshot_at)
+    await odds_store.upsert_odds(fresh_odds_b, scraped_at=fresh_snapshot_at)
+    await odds_store.set_current_snapshot(fresh_snapshot_at)
 
     status = await odds_store.get_system_status()
 
@@ -1222,6 +1488,1117 @@ async def test_current_snapshot_can_hide_previous_rows_without_new_odds():
     assert status.total_matches == 0
     assert status.total_odds == 0
     assert status.last_scrape_at == "2026-04-11T20:06:00.735723"
+
+
+@pytest.mark.asyncio
+async def test_system_status_counts_outcome_offer_only_snapshot():
+    snapshot_at = "2026-04-11T20:06:00.735723"
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    persisted = await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=snapshot_at,
+        odds=[],
+        outcome_offers=[
+            NormalizedOutcomeOffer(
+                match_id="football-match",
+                bookmaker_id="maxbet",
+                league_id="premier-league",
+                sport="football",
+                home_team="Arsenal",
+                away_team="Chelsea",
+                market_type="football_total_goals",
+                outcome_code="over",
+                odds=1.85,
+                line=2.5,
+                start_time="2026-04-11T20:00:00+00:00",
+            )
+        ],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=str(persisted["snapshot_id"]),
+        snapshot_at=snapshot_at,
+        opportunities=[],
+        detected_at=snapshot_at,
+    )
+
+    status = await odds_store.get_system_status()
+
+    assert status.total_matches == 1
+    assert status.total_odds == 1
+    assert status.last_scrape_at == snapshot_at
+
+
+@pytest.mark.asyncio
+async def test_persisted_snapshot_is_hidden_until_opportunity_publish():
+    old_snapshot_at = "2026-04-11T20:06:00.735723"
+    new_snapshot_at = "2026-04-11T20:11:00.735723"
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_match("old", "euroleague", "Bayern Munich", "Maccabi Tel Aviv")
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="old",
+            bookmaker_id="meridian",
+            league_id="euroleague",
+            home_team="Bayern Munich",
+            away_team="Maccabi Tel Aviv",
+            market_type="player_points",
+            player_name="Saben Lee",
+            threshold=13.5,
+            over_odds=1.8,
+            under_odds=2.0,
+        ),
+        scraped_at=old_snapshot_at,
+    )
+    await odds_store.set_current_snapshot(old_snapshot_at)
+
+    persisted = await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=new_snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="new",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                home_team="Partizan",
+                away_team="Crvena Zvezda",
+                market_type="player_points",
+                player_name="Carlik Jones",
+                threshold=14.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2026-04-11T20:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+
+    status_before_publish = await odds_store.get_system_status()
+    matches_before_publish = await odds_store.get_matches()
+    assert status_before_publish.last_scrape_at == old_snapshot_at
+    assert status_before_publish.total_matches == 1
+    assert matches_before_publish[0].id == "old"
+
+    await odds_store.publish_opportunities(
+        snapshot_id=str(persisted["snapshot_id"]),
+        snapshot_at=new_snapshot_at,
+        opportunities=[],
+        detected_at=new_snapshot_at,
+    )
+
+    status_after_publish = await odds_store.get_system_status()
+    matches_after_publish = await odds_store.get_matches()
+    assert status_after_publish.last_scrape_at == new_snapshot_at
+    assert status_after_publish.total_matches == 1
+    assert status_after_publish.total_opportunities == 0
+    assert matches_after_publish[0].id == "new"
+
+
+@pytest.mark.asyncio
+async def test_unpublished_snapshot_match_metadata_does_not_leak_to_public_reads():
+    old_snapshot_at = "2026-04-11T20:06:00.735723"
+    new_snapshot_at = "2026-04-11T20:11:00.735723"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=old_snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Old Home",
+                away_team="Old Away",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-11T20:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=old_snapshot_at,
+        snapshot_at=old_snapshot_at,
+        opportunities=[
+            Opportunity(
+                sport="basketball",
+                match_id="shared-match",
+                opportunity_type="same_line_arbitrage",
+                market_type="player_points",
+                subject_type="player",
+                subject_key="saben lee",
+                subject_name="Saben Lee",
+                line=13.5,
+                profit_margin=0.02,
+                middle_profit_margin=None,
+                legs=[
+                    OpportunityLeg(
+                        bookmaker_id="meridian",
+                        market_type="player_points",
+                        outcome_code="over",
+                        odds=2.05,
+                        line=13.5,
+                    )
+                ],
+            )
+        ],
+        detected_at=old_snapshot_at,
+    )
+
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=new_snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="New Home",
+                away_team="New Away",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2026-04-11T21:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+
+    matches = await odds_store.get_matches()
+    odds = await odds_store.get_current_normalized_odds_for_matches(["shared-match"])
+    opportunities = await odds_store.get_opportunities()
+
+    assert [(match.home_team, match.away_team, match.start_time) for match in matches] == [
+        ("Old Home", "Old Away", "2026-04-11T20:00:00+00:00")
+    ]
+    assert [(item.home_team, item.away_team, item.start_time) for item in odds] == [
+        ("Old Home", "Old Away", "2026-04-11T20:00:00+00:00")
+    ]
+    assert [
+        (item.home_team, item.away_team, item.start_time) for item in opportunities
+    ] == [("Old Home", "Old Away", "2026-04-11T20:00:00+00:00")]
+
+
+@pytest.mark.asyncio
+async def test_unpublished_snapshot_source_urls_do_not_leak_to_public_reads():
+    old_snapshot_at = "2026-04-11T20:06:00.735723"
+    new_snapshot_at = "2026-04-11T20:11:00.735723"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=old_snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Old Home",
+                away_team="Old Away",
+                source_url="https://old.example/match",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-11T20:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=old_snapshot_at,
+        snapshot_at=old_snapshot_at,
+        opportunities=[
+            Opportunity(
+                sport="basketball",
+                match_id="shared-match",
+                opportunity_type="same_line_arbitrage",
+                market_type="player_points",
+                subject_type="player",
+                subject_key="saben lee",
+                subject_name="Saben Lee",
+                line=13.5,
+                profit_margin=0.02,
+                middle_profit_margin=None,
+                legs=[
+                    OpportunityLeg(
+                        bookmaker_id="meridian",
+                        market_type="player_points",
+                        outcome_code="over",
+                        odds=2.05,
+                        line=13.5,
+                    )
+                ],
+            )
+        ],
+        detected_at=old_snapshot_at,
+    )
+
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=new_snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="New Home",
+                away_team="New Away",
+                source_url="https://new-hidden.example/match",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2026-04-11T21:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+
+    current_odds = await odds_store.get_odds_for_match("shared-match")
+    current_canonical_rows = await odds_store.get_current_normalized_odds_for_matches(
+        ["shared-match"]
+    )
+    current_opportunities = await odds_store.get_opportunities()
+    hidden_snapshot_rows = await odds_store.get_current_normalized_odds_for_matches(
+        ["shared-match"],
+        snapshot_id=new_snapshot_at,
+    )
+
+    assert [row.source_url for row in current_odds] == ["https://old.example/match"]
+    assert [row.source_url for row in current_canonical_rows] == [
+        "https://old.example/match"
+    ]
+    assert current_opportunities[0].legs[0].source_url == "https://old.example/match"
+    assert [row.source_url for row in hidden_snapshot_rows] == [
+        "https://new-hidden.example/match"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_legacy_null_source_url_does_not_leak_to_snapshot_public_reads():
+    snapshot_at = "2026-04-11T20:06:00.735723"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Home",
+                away_team="Away",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-11T20:00:00+00:00",
+            )
+        ],
+        outcome_offers=[
+            NormalizedOutcomeOffer(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Home",
+                away_team="Away",
+                market_type="game_winner",
+                outcome_code="home",
+                odds=1.8,
+                start_time="2026-04-11T20:00:00+00:00",
+            )
+        ],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=snapshot_at,
+        snapshot_at=snapshot_at,
+        opportunities=[
+            Opportunity(
+                sport="basketball",
+                match_id="shared-match",
+                opportunity_type="same_line_arbitrage",
+                market_type="player_points",
+                subject_type="player",
+                subject_key="saben lee",
+                subject_name="Saben Lee",
+                line=13.5,
+                profit_margin=0.02,
+                middle_profit_margin=None,
+                legs=[
+                    OpportunityLeg(
+                        bookmaker_id="meridian",
+                        market_type="player_points",
+                        outcome_code="over",
+                        odds=2.05,
+                        line=13.5,
+                    )
+                ],
+            )
+        ],
+        detected_at=snapshot_at,
+    )
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO match_bookmaker_sources (
+               snapshot_id,
+               match_id,
+               bookmaker_id,
+               source_url
+           ) VALUES (NULL, ?, ?, ?)""",
+        ("shared-match", "meridian", "https://new-hidden.example/match"),
+    )
+    await db.commit()
+
+    current_odds = await odds_store.get_odds_for_match("shared-match")
+    current_canonical_rows = await odds_store.get_current_normalized_odds_for_matches(
+        ["shared-match"]
+    )
+    current_outcome_rows = (
+        await odds_store.get_current_normalized_outcome_offers_for_matches(
+            ["shared-match"]
+        )
+    )
+    outcome_offers = await odds_store.get_outcome_offers(match_id="shared-match")
+    current_opportunities = await odds_store.get_opportunities()
+
+    assert [row.source_url for row in current_odds] == [None]
+    assert [row.source_url for row in current_canonical_rows] == [None]
+    assert [row.source_url for row in current_outcome_rows] == [None]
+    assert [row.source_url for row in outcome_offers] == [None]
+    assert current_opportunities[0].legs[0].source_url is None
+
+
+@pytest.mark.asyncio
+async def test_unpublished_event_resolution_source_url_uses_batch_snapshot_scope():
+    old_snapshot_at = "2026-04-11T20:06:00.735723"
+    new_snapshot_at = "2026-04-11T20:11:00.735723"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=old_snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Old Home",
+                away_team="Old Away",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-11T20:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=old_snapshot_at,
+        snapshot_at=old_snapshot_at,
+        opportunities=[],
+        detected_at=old_snapshot_at,
+    )
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=new_snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="New Home",
+                away_team="New Away",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2026-04-11T21:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.persist_event_resolution_batch(
+        snapshot_id=new_snapshot_at,
+        events=[
+            ResolvedEventIn(
+                id="evt-new",
+                sport="basketball",
+                start_time="2026-04-11T21:00:00+00:00",
+                primary_match_id="shared-match",
+                method="exact",
+            )
+        ],
+        members=[
+            ResolvedEventMemberIn(
+                resolved_event_id="evt-new",
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                source_url="https://new-hidden.example/event",
+            )
+        ],
+        review_cases=[],
+    )
+
+    current_odds = await odds_store.get_odds_for_match("shared-match")
+    db = await get_db()
+    source_rows = await db.execute_fetchall(
+        """SELECT snapshot_id, source_url
+           FROM match_bookmaker_sources
+           ORDER BY snapshot_id"""
+    )
+
+    assert [row.source_url for row in current_odds] == [None]
+    assert [(row["snapshot_id"], row["source_url"]) for row in source_rows] == [
+        (new_snapshot_at, "https://new-hidden.example/event")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unpublished_snapshot_odds_history_does_not_leak_to_public_reads():
+    old_snapshot_at = "2026-04-11T20:06:00.735723"
+    new_snapshot_at = "2026-04-11T20:11:00.735723"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=old_snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Old Home",
+                away_team="Old Away",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-11T20:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=old_snapshot_at,
+        snapshot_at=old_snapshot_at,
+        opportunities=[],
+        detected_at=old_snapshot_at,
+    )
+
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=new_snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="New Home",
+                away_team="New Away",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2026-04-11T21:00:00+00:00",
+            ),
+            NormalizedOdds(
+                match_id="hidden-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Hidden Home",
+                away_team="Hidden Away",
+                source_url="https://hidden.example/odds",
+                market_type="player_points",
+                player_name="Hidden Player",
+                threshold=13.5,
+                over_odds=2.1,
+                under_odds=1.7,
+                start_time="2026-04-11T22:00:00+00:00",
+            ),
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+
+    shared_history = await odds_store.get_odds_history_for_match("shared-match")
+    hidden_history = await odds_store.get_odds_history_for_match("hidden-match")
+    hidden_public_match = await odds_store.get_match(
+        "hidden-match",
+        require_current_snapshot=True,
+    )
+
+    assert [(row.scraped_at, row.over_odds) for row in shared_history] == [
+        (old_snapshot_at, 1.8)
+    ]
+    assert hidden_history == []
+    assert hidden_public_match is None
+
+
+@pytest.mark.asyncio
+async def test_first_unpublished_snapshot_history_and_match_stay_hidden():
+    snapshot_at = "2026-04-11T20:06:00.735723"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="hidden-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Hidden Home",
+                away_team="Hidden Away",
+                market_type="player_points",
+                player_name="Hidden Player",
+                threshold=13.5,
+                over_odds=2.1,
+                under_odds=1.7,
+                start_time="2026-04-11T22:00:00+00:00",
+            )
+        ],
+        outcome_offers=[
+            NormalizedOutcomeOffer(
+                match_id="hidden-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Hidden Home",
+                away_team="Hidden Away",
+                source_url="https://hidden.example/offer",
+                market_type="game_winner",
+                outcome_code="home",
+                odds=2.1,
+                start_time="2026-04-11T22:00:00+00:00",
+            )
+        ],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+
+    hidden_history = await odds_store.get_odds_history_for_match("hidden-match")
+    hidden_public_match = await odds_store.get_match(
+        "hidden-match",
+        require_current_snapshot=True,
+    )
+    hidden_odds = await odds_store.get_odds_for_match("hidden-match")
+    hidden_normalized_odds = await odds_store.get_current_normalized_odds_for_matches(
+        ["hidden-match"]
+    )
+    hidden_normalized_offers = (
+        await odds_store.get_current_normalized_outcome_offers_for_matches(
+            ["hidden-match"]
+        )
+    )
+    hidden_outcome_offers = await odds_store.get_outcome_offers(match_id="hidden-match")
+    matches = await odds_store.get_matches()
+    status = await odds_store.get_system_status()
+
+    assert hidden_history == []
+    assert hidden_public_match is None
+    assert hidden_odds == []
+    assert hidden_normalized_odds == []
+    assert hidden_normalized_offers == []
+    assert hidden_outcome_offers == []
+    assert matches == []
+    assert status.total_matches == 0
+    assert status.total_odds == 0
+    assert status.last_scrape_at is None
+
+
+@pytest.mark.asyncio
+async def test_current_reads_use_latest_published_snapshot_when_state_row_is_missing():
+    old_snapshot_at = "2026-04-11T20:06:00.735723"
+    new_snapshot_at = "2026-04-11T20:11:00.735723"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=old_snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Old Home",
+                away_team="Old Away",
+                source_url="https://old.example/odds",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-11T20:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=old_snapshot_at,
+        snapshot_at=old_snapshot_at,
+        opportunities=[],
+        detected_at=old_snapshot_at,
+    )
+    db = await get_db()
+    await db.execute("DELETE FROM scrape_state")
+    await db.commit()
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=new_snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="New Home",
+                away_team="New Away",
+                source_url="https://hidden.example/odds",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2026-04-11T21:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+
+    matches = await odds_store.get_matches()
+    current_odds = await odds_store.get_odds_for_match("shared-match")
+    status = await odds_store.get_system_status()
+
+    assert [(match.home_team, match.start_time) for match in matches] == [
+        ("Old Home", "2026-04-11T20:00:00+00:00")
+    ]
+    assert [(row.source_url, row.over_odds) for row in current_odds] == [
+        ("https://old.example/odds", 1.8)
+    ]
+    assert status.total_matches == 1
+    assert status.total_odds == 1
+    assert status.last_scrape_at == old_snapshot_at
+
+
+@pytest.mark.asyncio
+async def test_cleanup_retained_data_keeps_snapshot_metadata_for_retained_history(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "persist_inapp_notifications", False)
+    monkeypatch.setattr(settings, "odds_history_retention_days", 7)
+    monkeypatch.setattr(settings, "team_review_retention_days", 0)
+
+    old_snapshot_at = "2026-04-18T12:00:00"
+    current_snapshot_at = "2026-04-20T12:00:00"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    for snapshot_at, over_odds in (
+        (old_snapshot_at, 1.8),
+        (current_snapshot_at, 1.9),
+    ):
+        await odds_store.persist_scrape_snapshot_batch(
+            snapshot_at=snapshot_at,
+            odds=[
+                NormalizedOdds(
+                    match_id="shared-match",
+                    bookmaker_id="meridian",
+                    league_id="euroleague",
+                    sport="basketball",
+                    home_team="Home",
+                    away_team="Away",
+                    market_type="player_points",
+                    player_name="Saben Lee",
+                    threshold=13.5,
+                    over_odds=over_odds,
+                    under_odds=2.0,
+                    start_time="2026-04-20T20:00:00+00:00",
+                )
+            ],
+            outcome_offers=[],
+            unresolved_odds=[],
+            team_review_cases=[],
+        )
+        await odds_store.publish_opportunities(
+            snapshot_id=snapshot_at,
+            snapshot_at=snapshot_at,
+            opportunities=[],
+            detected_at=snapshot_at,
+        )
+
+    counts = await odds_store.cleanup_retained_data(current_snapshot_at)
+    history = await odds_store.get_odds_history_for_match("shared-match")
+    db = await get_db()
+    snapshot_rows = await db.execute_fetchall(
+        "SELECT id, status FROM scrape_snapshots ORDER BY id"
+    )
+
+    assert [(row.scraped_at, row.over_odds) for row in history] == [
+        (current_snapshot_at, 1.9),
+        (old_snapshot_at, 1.8),
+    ]
+    assert [(row["id"], row["status"]) for row in snapshot_rows] == [
+        (old_snapshot_at, "published"),
+        (current_snapshot_at, "published"),
+    ]
+    assert counts["deleted_stale_scrape_snapshots"] == 0
+
+
+@pytest.mark.asyncio
+async def test_unpublished_event_resolution_does_not_leak_to_public_match_reads():
+    old_snapshot_at = "2026-04-11T20:06:00.735723"
+    new_snapshot_at = "2026-04-11T20:11:00.735723"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=old_snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Old Home",
+                away_team="Old Away",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-11T20:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.persist_event_resolution_batch(
+        snapshot_id=old_snapshot_at,
+        events=[
+            ResolvedEventIn(
+                id="evt-old",
+                sport="basketball",
+                start_time="2026-04-11T20:00:00+00:00",
+                primary_match_id="shared-match",
+                method="exact",
+            )
+        ],
+        members=[
+            ResolvedEventMemberIn(
+                resolved_event_id="evt-old",
+                match_id="shared-match",
+                bookmaker_id="meridian",
+            )
+        ],
+        review_cases=[],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=old_snapshot_at,
+        snapshot_at=old_snapshot_at,
+        opportunities=[],
+        detected_at=old_snapshot_at,
+    )
+
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=new_snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="New Home",
+                away_team="New Away",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2026-04-11T21:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.persist_event_resolution_batch(
+        snapshot_id=new_snapshot_at,
+        events=[
+            ResolvedEventIn(
+                id="evt-new",
+                sport="basketball",
+                start_time="2026-04-11T21:00:00+00:00",
+                primary_match_id="shared-match",
+                method="exact",
+            )
+        ],
+        members=[
+            ResolvedEventMemberIn(
+                resolved_event_id="evt-new",
+                match_id="shared-match",
+                bookmaker_id="meridian",
+            )
+        ],
+        review_cases=[],
+    )
+
+    matches = await odds_store.get_matches()
+    current_event_members = await odds_store.get_eligible_resolved_event_members_for_odds(
+        await odds_store.get_current_normalized_odds_for_matches(["shared-match"])
+    )
+    new_snapshot_event_members = (
+        await odds_store.get_eligible_resolved_event_members_for_odds(
+            await odds_store.get_current_normalized_odds_for_matches(
+                ["shared-match"],
+                snapshot_id=new_snapshot_at,
+            ),
+            snapshot_id=new_snapshot_at,
+        )
+    )
+
+    assert [(match.home_team, match.resolved_event_id) for match in matches] == [
+        ("Old Home", "evt-old")
+    ]
+    assert [member.resolved_event_id for member in current_event_members] == ["evt-old"]
+    assert [member.resolved_event_id for member in new_snapshot_event_members] == [
+        "evt-new"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_manual_event_resolution_overrides_snapshot_auto_member():
+    snapshot_at = "2026-04-11T20:06:00.735723"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="shared-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Home",
+                away_team="Away",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-11T20:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=snapshot_at,
+        snapshot_at=snapshot_at,
+        opportunities=[],
+        detected_at=snapshot_at,
+    )
+    await odds_store.upsert_resolved_event(
+        ResolvedEventIn(
+            id="evt-manual",
+            sport="basketball",
+            start_time="2026-04-11T20:00:00+00:00",
+            primary_match_id="shared-match",
+            method="manual",
+        )
+    )
+    await odds_store.link_resolved_event_member(
+        ResolvedEventMemberIn(
+            resolved_event_id="evt-manual",
+            match_id="shared-match",
+            bookmaker_id="meridian",
+        )
+    )
+    await odds_store.persist_event_resolution_batch(
+        snapshot_id=snapshot_at,
+        events=[
+            ResolvedEventIn(
+                id="evt-auto",
+                sport="basketball",
+                start_time="2026-04-11T20:00:00+00:00",
+                primary_match_id="shared-match",
+                method="exact",
+            )
+        ],
+        members=[
+            ResolvedEventMemberIn(
+                resolved_event_id="evt-auto",
+                match_id="shared-match",
+                bookmaker_id="meridian",
+            )
+        ],
+        review_cases=[],
+    )
+
+    odds = await odds_store.get_current_normalized_odds_for_matches(["shared-match"])
+    members = await odds_store.get_eligible_resolved_event_members_for_odds(odds)
+    match = (await odds_store.get_matches())[0]
+    member = await odds_store.get_resolved_event_member(
+        match_id="shared-match",
+        bookmaker_id="meridian",
+    )
+
+    assert match.resolved_event_id == "evt-manual"
+    assert [item.resolved_event_id for item in members] == ["evt-manual"]
+    assert member is not None
+    assert member.resolved_event_id == "evt-manual"
+
+
+@pytest.mark.asyncio
+async def test_merge_matches_preserves_same_offer_key_across_snapshots():
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_match("target-match", "euroleague", "Target Home", "Target Away")
+    await odds_store.upsert_match("source-match", "euroleague", "Source Home", "Source Away")
+
+    for snapshot_at in ("2026-04-11T20:06:00.735723", "2026-04-11T20:11:00.735723"):
+        await odds_store.upsert_odds(
+            NormalizedOdds(
+                match_id="source-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                home_team="Source Home",
+                away_team="Source Away",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.8,
+                under_odds=2.0,
+            ),
+            scraped_at=snapshot_at,
+        )
+        await odds_store.upsert_outcome_offer(
+            NormalizedOutcomeOffer(
+                match_id="source-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Source Home",
+                away_team="Source Away",
+                market_type="game_winner",
+                outcome_code="home",
+                odds=1.9,
+            ),
+            scraped_at=snapshot_at,
+        )
+
+    await odds_store.merge_matches(
+        target_match_id="target-match",
+        source_match_ids=["source-match"],
+    )
+
+    db = await get_db()
+    odds_rows = await db.execute_fetchall(
+        "SELECT snapshot_id, match_id FROM odds ORDER BY snapshot_id"
+    )
+    offer_rows = await db.execute_fetchall(
+        "SELECT snapshot_id, match_id FROM outcome_offers ORDER BY snapshot_id"
+    )
+
+    assert [(row["snapshot_id"], row["match_id"]) for row in odds_rows] == [
+        ("2026-04-11T20:06:00.735723", "target-match"),
+        ("2026-04-11T20:11:00.735723", "target-match"),
+    ]
+    assert [(row["snapshot_id"], row["match_id"]) for row in offer_rows] == [
+        ("2026-04-11T20:06:00.735723", "target-match"),
+        ("2026-04-11T20:11:00.735723", "target-match"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_opportunity_publish_preserves_previous_publish():
+    snapshot_at = "2026-04-11T20:06:00.735723"
+    next_snapshot_at = "2026-04-11T20:11:00.735723"
+    await odds_store.upsert_league("premier-league", "Premier League", "football")
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    await odds_store.upsert_bookmaker("balkanbet", "BalkanBet")
+    await odds_store.upsert_match(
+        "football-match",
+        "premier-league",
+        "Arsenal",
+        "Chelsea",
+        sport="football",
+        start_time="2026-04-11T20:00:00+00:00",
+    )
+    old_opportunity = Opportunity(
+        sport="football",
+        match_id="football-match",
+        opportunity_type="same_line_arbitrage",
+        market_type="football_total_goals",
+        line=2.5,
+        profit_margin=0.02,
+        middle_profit_margin=None,
+        legs=[
+            OpportunityLeg(
+                bookmaker_id="maxbet",
+                market_type="football_total_goals",
+                outcome_code="under",
+                line=2.5,
+                odds=1.95,
+            ),
+            OpportunityLeg(
+                bookmaker_id="balkanbet",
+                market_type="football_total_goals",
+                outcome_code="over",
+                line=2.5,
+                odds=2.10,
+            ),
+        ],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=snapshot_at,
+        snapshot_at=snapshot_at,
+        opportunities=[old_opportunity],
+        detected_at=snapshot_at,
+    )
+
+    with pytest.raises(AttributeError):
+        await odds_store.publish_opportunities(
+            snapshot_id=next_snapshot_at,
+            snapshot_at=next_snapshot_at,
+            opportunities=[object()],
+            detected_at=next_snapshot_at,
+        )
+
+    opportunities = await odds_store.get_opportunities(sport="football")
+    status = await odds_store.get_system_status()
+    assert len(opportunities) == 1
+    assert opportunities[0].match_id == "football-match"
+    assert status.total_opportunities == 1
 
 
 @pytest.mark.asyncio
@@ -1277,6 +2654,9 @@ async def test_legacy_fallback_groups_recent_rows_before_snapshot_exists():
         ),
         scraped_at="2026-04-11T20:05:00.000001",
     )
+    db = await get_db()
+    await db.execute("DELETE FROM scrape_snapshots")
+    await db.commit()
 
     matches = await odds_store.get_matches(limit=10)
     status = await odds_store.get_system_status()
@@ -1285,3 +2665,499 @@ async def test_legacy_fallback_groups_recent_rows_before_snapshot_exists():
     assert status.total_matches == 2
     assert status.total_odds == 2
     assert status.last_scrape_at == "2026-04-11T20:05:00.000001"
+
+
+@pytest.mark.asyncio
+async def test_current_snapshot_reads_do_not_fallback_to_hidden_match_metadata():
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    published_at = "2030-01-01T19:55:00+00:00"
+    hidden_at = "2030-01-01T20:05:00+00:00"
+
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=published_at,
+        odds=[
+            NormalizedOdds(
+                match_id="snapshot-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Partizan",
+                away_team="Crvena Zvezda",
+                market_type="player_points",
+                player_name="Player One",
+                threshold=16.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time=None,
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=published_at,
+        snapshot_at=published_at,
+        opportunities=[
+            Opportunity(
+                sport="basketball",
+                match_id="snapshot-match",
+                opportunity_type="same_line_arbitrage",
+                market_type="player_points",
+                line=None,
+                profit_margin=0.01,
+                middle_profit_margin=None,
+                legs=[
+                    OpportunityLeg(
+                        bookmaker_id="meridian",
+                        market_type="player_points",
+                        outcome_code="over",
+                        odds=1.9,
+                    )
+                ],
+            )
+        ],
+        detected_at=published_at,
+    )
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=hidden_at,
+        odds=[
+            NormalizedOdds(
+                match_id="snapshot-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Partizan",
+                away_team="Crvena Zvezda",
+                market_type="player_points",
+                player_name="Player One",
+                threshold=16.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2030-01-01T21:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+
+    listed_match = (await odds_store.get_matches())[0]
+    detailed_match = await odds_store.get_match(
+        "snapshot-match", require_current_snapshot=True
+    )
+    opportunity = (await odds_store.get_opportunities(sport="basketball"))[0]
+
+    assert listed_match.start_time is None
+    assert detailed_match is not None
+    assert detailed_match.start_time is None
+    assert opportunity.start_time is None
+
+
+@pytest.mark.asyncio
+async def test_uncommitted_publish_state_on_isolated_connection_is_not_public():
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    published_at = "2030-01-01T19:55:00+00:00"
+    hidden_at = "2030-01-01T20:05:00+00:00"
+
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=published_at,
+        odds=[
+            NormalizedOdds(
+                match_id="published-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Published Home",
+                away_team="Published Away",
+                market_type="player_points",
+                player_name="Player One",
+                threshold=10.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2030-01-01T20:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=published_at,
+        snapshot_at=published_at,
+        opportunities=[],
+        detected_at=published_at,
+    )
+
+    writer = await aiosqlite.connect(settings.db_path)
+    try:
+        await writer.execute("BEGIN IMMEDIATE")
+        await writer.execute(
+            """INSERT INTO scrape_snapshots (id, scraped_at, completed_at, status)
+               VALUES (?, ?, ?, 'published')""",
+            (hidden_at, hidden_at, hidden_at),
+        )
+        await writer.execute(
+            """INSERT INTO snapshot_matches (
+                   snapshot_id, match_id, league_id, sport, home_team, away_team,
+                   start_time, status
+               ) VALUES (?, 'hidden-match', 'euroleague', 'basketball',
+                         'Hidden Home', 'Hidden Away', ?, 'upcoming')""",
+            (hidden_at, "2030-01-01T21:00:00+00:00"),
+        )
+        await writer.execute(
+            """INSERT INTO odds (
+                   snapshot_id, match_id, bookmaker_id, market_type, player_name,
+                   threshold, over_odds, under_odds, scraped_at
+               ) VALUES (?, 'hidden-match', 'meridian', 'player_points',
+                         'Player Two', 11.5, 1.8, 2.0, ?)""",
+            (hidden_at, hidden_at),
+        )
+        await writer.execute(
+            """INSERT INTO scrape_state (
+                   id, current_snapshot_id, current_snapshot_at, updated_at
+               ) VALUES (1, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(id) DO UPDATE SET
+                   current_snapshot_id = excluded.current_snapshot_id,
+                   current_snapshot_at = excluded.current_snapshot_at,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (hidden_at, hidden_at),
+        )
+
+        visible_during_uncommitted_write = await odds_store.get_matches(limit=10)
+        await writer.rollback()
+    finally:
+        await writer.close()
+
+    visible_after_rollback = await odds_store.get_matches(limit=10)
+    assert [match.id for match in visible_during_uncommitted_write] == [
+        "published-match"
+    ]
+    assert [match.id for match in visible_after_rollback] == ["published-match"]
+
+
+@pytest.mark.asyncio
+async def test_event_review_variants_use_published_snapshot_metadata():
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    published_at = "2030-01-01T19:55:00+00:00"
+    hidden_at = "2030-01-01T20:05:00+00:00"
+
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=published_at,
+        odds=[
+            NormalizedOdds(
+                match_id="review-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Published Home",
+                away_team="Published Away",
+                source_url="https://published.example",
+                market_type="player_points",
+                player_name="Player One",
+                threshold=10.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2030-01-01T20:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=published_at,
+        snapshot_at=published_at,
+        opportunities=[],
+        detected_at=published_at,
+    )
+    await odds_store.upsert_resolved_event(
+        ResolvedEventIn(
+            id="resolved-review-event",
+            sport="basketball",
+            start_time="2030-01-01T20:00:00+00:00",
+            primary_match_id="review-match",
+            method="exact",
+        )
+    )
+    await odds_store.link_resolved_event_member(
+        ResolvedEventMemberIn(
+            snapshot_id=published_at,
+            resolved_event_id="resolved-review-event",
+            match_id="review-match",
+            bookmaker_id="meridian",
+            source_url="https://published-member.example",
+        )
+    )
+    case_id = await odds_store.upsert_event_review_case(
+        EventReviewCaseIn(
+            fingerprint="review-match-case",
+            sport="basketball",
+            start_time="2030-01-01T20:00:00+00:00",
+            primary_match_id="review-match",
+            candidate_resolved_event_id="resolved-review-event",
+            candidate_match_ids=["review-match"],
+            reason_code="manual_review",
+            source_bookmaker_ids=["meridian"],
+        )
+    )
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=hidden_at,
+        odds=[
+            NormalizedOdds(
+                match_id="review-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Hidden Home",
+                away_team="Hidden Away",
+                source_url="https://hidden.example",
+                market_type="player_points",
+                player_name="Player One",
+                threshold=10.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2030-01-01T21:00:00+00:00",
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.link_resolved_event_member(
+        ResolvedEventMemberIn(
+            snapshot_id=hidden_at,
+            resolved_event_id="resolved-review-event",
+            match_id="review-match",
+            bookmaker_id="meridian",
+            source_url="https://hidden-member.example",
+        )
+    )
+    await odds_store.link_resolved_event_member(
+        ResolvedEventMemberIn(
+            snapshot_id=None,
+            resolved_event_id="resolved-review-event",
+            match_id="review-match",
+            bookmaker_id="meridian",
+            source_url="https://unscoped-hidden-member.example",
+        )
+    )
+
+    case = await odds_store.get_event_review_case(case_id, include_variants=True)
+
+    assert case is not None
+    assert len(case.variants) == 1
+    assert case.variants[0].home_team == "Published Home"
+    assert case.variants[0].start_time == "2030-01-01T20:00:00+00:00"
+    assert case.variants[0].source_url == "https://published-member.example"
+
+
+@pytest.mark.asyncio
+async def test_legacy_source_urls_are_backfilled_to_snapshot_sources(
+    tmp_path,
+    monkeypatch,
+):
+    await close_db()
+    legacy_db_path = tmp_path / "legacy_source_backfill.db"
+    scraped_at = "2026-04-11T20:06:00.735723"
+    with sqlite3.connect(legacy_db_path) as conn:
+        conn.execute("CREATE TABLE bookmakers (id TEXT PRIMARY KEY, name TEXT NOT NULL)")
+        conn.execute(
+            """CREATE TABLE leagues (
+                   id TEXT PRIMARY KEY,
+                   name TEXT NOT NULL,
+                   sport TEXT NOT NULL DEFAULT 'basketball'
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE matches (
+                   id TEXT PRIMARY KEY,
+                   league_id TEXT,
+                   sport TEXT NOT NULL DEFAULT 'basketball',
+                   home_team TEXT NOT NULL,
+                   away_team TEXT NOT NULL,
+                   start_time TEXT,
+                   status TEXT NOT NULL DEFAULT 'upcoming',
+                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE odds (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   match_id TEXT,
+                   bookmaker_id TEXT,
+                   market_type TEXT NOT NULL,
+                   player_name TEXT,
+                   threshold REAL NOT NULL,
+                   over_odds REAL,
+                   under_odds REAL,
+                   scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                   UNIQUE(match_id, bookmaker_id, market_type, player_name, threshold)
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE match_bookmaker_sources (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   match_id TEXT NOT NULL,
+                   bookmaker_id TEXT NOT NULL,
+                   source_url TEXT,
+                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                   UNIQUE(match_id, bookmaker_id)
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE scrape_state (
+                   id INTEGER PRIMARY KEY CHECK (id = 1),
+                   current_snapshot_at TIMESTAMP,
+                   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+               )"""
+        )
+        conn.execute("INSERT INTO bookmakers (id, name) VALUES ('meridian', 'Meridian')")
+        conn.execute(
+            """INSERT INTO leagues (id, name, sport)
+               VALUES ('euroleague', 'Euroleague', 'basketball')"""
+        )
+        conn.execute(
+            """INSERT INTO matches (
+                   id, league_id, sport, home_team, away_team, start_time, status
+               ) VALUES (
+                   'legacy-match', 'euroleague', 'basketball', 'Partizan',
+                   'Crvena Zvezda', '2026-04-11T20:00:00+00:00', 'upcoming'
+               )"""
+        )
+        conn.execute(
+            """INSERT INTO odds (
+                   match_id, bookmaker_id, market_type, player_name, threshold,
+                   over_odds, under_odds, scraped_at
+               ) VALUES (
+                   'legacy-match', 'meridian', 'player_points', 'Player One',
+                   16.5, 1.9, 1.9, ?
+               )""",
+            (scraped_at,),
+        )
+        conn.execute(
+            """INSERT INTO match_bookmaker_sources (
+                   match_id, bookmaker_id, source_url
+               ) VALUES (
+                   'legacy-match', 'meridian', 'https://legacy-source.example'
+               )"""
+        )
+        conn.execute(
+            "INSERT INTO scrape_state (id, current_snapshot_at) VALUES (1, ?)",
+            (scraped_at,),
+        )
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{legacy_db_path}")
+
+    await init_db(str(legacy_db_path))
+
+    odds = await odds_store.get_odds_for_match("legacy-match")
+    db = await get_db()
+    source_rows = await db.execute_fetchall(
+        """SELECT snapshot_id, source_url
+           FROM match_bookmaker_sources
+           WHERE match_id = 'legacy-match'
+           ORDER BY snapshot_id IS NOT NULL, snapshot_id"""
+    )
+    assert [item.source_url for item in odds] == ["https://legacy-source.example"]
+    assert (scraped_at, "https://legacy-source.example") in [
+        tuple(row) for row in source_rows
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_preserves_latest_analysis_failed_diagnostics():
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    published_at = "2030-01-01T19:55:00+00:00"
+    failed_at = "2030-01-01T20:05:00+00:00"
+
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=published_at,
+        odds=[
+            NormalizedOdds(
+                match_id="published-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Published Home",
+                away_team="Published Away",
+                market_type="player_points",
+                player_name="Player One",
+                threshold=10.5,
+                over_odds=1.9,
+                under_odds=1.9,
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+    await odds_store.publish_opportunities(
+        snapshot_id=published_at,
+        snapshot_at=published_at,
+        opportunities=[],
+        detected_at=published_at,
+    )
+    await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=failed_at,
+        odds=[
+            NormalizedOdds(
+                match_id="failed-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Failed Home",
+                away_team="Failed Away",
+                market_type="player_points",
+                player_name="Player Two",
+                threshold=11.5,
+                over_odds=1.8,
+                under_odds=2.0,
+            )
+        ],
+        outcome_offers=[],
+        unresolved_odds=[
+            UnresolvedOddsDiagnostic(
+                bookmaker_id="meridian",
+                raw_league_id="euroleague",
+                league_id="euroleague",
+                sport="basketball",
+                market_type="player_points",
+                raw_team_name="Failed Home",
+                normalized_team_name="Failed Home",
+                threshold=11.5,
+                reason_code="ambiguous_multiple_matchups_for_team_at_slot",
+            )
+        ],
+        team_review_cases=[
+            TeamReviewDiagnostic(
+                bookmaker_id="meridian",
+                raw_league_id="euroleague",
+                normalized_raw_league_id="euroleague",
+                sport="basketball",
+                raw_team_name="Failed Home",
+                normalized_raw_team_name="failed home",
+                reason_code="alias_suggestion",
+            )
+        ],
+    )
+    await odds_store.mark_scrape_snapshot_analysis_failed(
+        snapshot_id=failed_at,
+        snapshot_at=failed_at,
+        error="canonical boom",
+    )
+
+    deleted = await odds_store.cleanup_retained_data(failed_at)
+    unresolved = await odds_store.get_unresolved_odds()
+    team_reviews = await odds_store.get_team_review_cases()
+    public_matches = await odds_store.get_matches(limit=10)
+
+    assert deleted["deleted_stale_unresolved_odds"] == 0
+    assert deleted["deleted_team_review_cases"] == 0
+    assert [item.raw_team_name for item in unresolved] == ["Failed Home"]
+    assert [item.raw_team_name for item in team_reviews] == ["Failed Home"]
+    assert [match.id for match in public_matches] == ["published-match"]

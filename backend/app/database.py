@@ -34,13 +34,30 @@ CREATE TABLE IF NOT EXISTS matches (
 
 CREATE TABLE IF NOT EXISTS match_bookmaker_sources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id TEXT,
     match_id TEXT NOT NULL REFERENCES matches(id),
     bookmaker_id TEXT NOT NULL REFERENCES bookmakers(id),
     source_url TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(match_id, bookmaker_id)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS snapshot_matches (
+    snapshot_id TEXT NOT NULL,
+    match_id TEXT NOT NULL REFERENCES matches(id),
+    league_id TEXT REFERENCES leagues(id),
+    sport TEXT NOT NULL DEFAULT 'basketball',
+    home_team_id INTEGER REFERENCES canonical_teams(id),
+    away_team_id INTEGER REFERENCES canonical_teams(id),
+    home_team TEXT NOT NULL,
+    away_team TEXT NOT NULL,
+    start_time TIMESTAMP,
+    status TEXT DEFAULT 'upcoming',
+    PRIMARY KEY (snapshot_id, match_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshot_matches_match
+ON snapshot_matches (match_id, snapshot_id);
 
 CREATE TABLE IF NOT EXISTS resolved_events (
     id TEXT PRIMARY KEY,
@@ -66,6 +83,7 @@ ON resolved_events (primary_match_id);
 
 CREATE TABLE IF NOT EXISTS resolved_event_members (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id TEXT,
     resolved_event_id TEXT NOT NULL REFERENCES resolved_events(id),
     match_id TEXT NOT NULL REFERENCES matches(id),
     bookmaker_id TEXT NOT NULL REFERENCES bookmakers(id),
@@ -81,8 +99,7 @@ CREATE TABLE IF NOT EXISTS resolved_event_members (
     evidence TEXT NOT NULL DEFAULT '[]',
     metadata TEXT NOT NULL DEFAULT '{}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(match_id, bookmaker_id)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_resolved_event_members_event
@@ -123,8 +140,25 @@ ON event_review_cases (candidate_resolved_event_id);
 CREATE INDEX IF NOT EXISTS idx_event_review_cases_resolved_event
 ON event_review_cases (resolved_event_id);
 
+CREATE TABLE IF NOT EXISTS scrape_snapshots (
+    id TEXT PRIMARY KEY,
+    scraped_at TIMESTAMP NOT NULL UNIQUE,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    status TEXT NOT NULL DEFAULT 'persisted',
+    matches_count INTEGER NOT NULL DEFAULT 0,
+    odds_count INTEGER NOT NULL DEFAULT 0,
+    outcome_offers_count INTEGER NOT NULL DEFAULT 0,
+    unresolved_odds_count INTEGER NOT NULL DEFAULT 0,
+    team_review_cases_count INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS odds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id TEXT,
     match_id TEXT REFERENCES matches(id),
     bookmaker_id TEXT REFERENCES bookmakers(id),
     market_type TEXT NOT NULL,
@@ -132,12 +166,12 @@ CREATE TABLE IF NOT EXISTS odds (
     threshold REAL NOT NULL,
     over_odds REAL,
     under_odds REAL,
-    scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(match_id, bookmaker_id, market_type, player_name, threshold)
+    scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS odds_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id TEXT,
     match_id TEXT,
     bookmaker_id TEXT,
     market_type TEXT,
@@ -150,6 +184,7 @@ CREATE TABLE IF NOT EXISTS odds_history (
 
 CREATE TABLE IF NOT EXISTS outcome_offers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id TEXT,
     match_id TEXT REFERENCES matches(id),
     bookmaker_id TEXT REFERENCES bookmakers(id),
     market_type TEXT NOT NULL,
@@ -160,20 +195,20 @@ CREATE TABLE IF NOT EXISTS outcome_offers (
     scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_outcome_offers_unique_line
-ON outcome_offers (
-    match_id,
-    bookmaker_id,
-    market_type,
-    outcome_code,
-    COALESCE(line, -999999.0)
+CREATE TABLE IF NOT EXISTS opportunity_publishes (
+    id TEXT PRIMARY KEY,
+    snapshot_id TEXT,
+    detected_at TIMESTAMP NOT NULL,
+    status TEXT NOT NULL DEFAULT 'published',
+    opportunity_count INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE INDEX IF NOT EXISTS idx_outcome_offers_snapshot
-ON outcome_offers (scraped_at, match_id, bookmaker_id);
 
 CREATE TABLE IF NOT EXISTS opportunities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    publish_id TEXT,
     sport TEXT NOT NULL,
     match_id TEXT REFERENCES matches(id),
     resolved_event_id TEXT REFERENCES resolved_events(id),
@@ -196,6 +231,7 @@ ON opportunities (is_active, sport, detected_at);
 
 CREATE TABLE IF NOT EXISTS unresolved_odds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id TEXT,
     bookmaker_id TEXT REFERENCES bookmakers(id),
     raw_league_id TEXT NOT NULL,
     league_id TEXT NOT NULL,
@@ -217,6 +253,7 @@ CREATE TABLE IF NOT EXISTS unresolved_odds (
 
 CREATE TABLE IF NOT EXISTS team_review_cases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id TEXT,
     bookmaker_id TEXT REFERENCES bookmakers(id),
     raw_league_id TEXT NOT NULL,
     normalized_raw_league_id TEXT NOT NULL,
@@ -296,7 +333,9 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE TABLE IF NOT EXISTS scrape_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
+    current_snapshot_id TEXT,
     current_snapshot_at TIMESTAMP,
+    current_opportunity_publish_id TEXT,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """
@@ -313,6 +352,22 @@ async def _table_has_foreign_key(
 ) -> bool:
     rows = await conn.execute_fetchall(f"PRAGMA foreign_key_list({table_name})")
     return any(row[2] == target_table and row[3] == from_column for row in rows)
+
+
+async def _index_sql_contains(
+    conn: aiosqlite.Connection,
+    *,
+    index_name: str,
+    expected: str,
+) -> bool | None:
+    rows = await conn.execute_fetchall(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+        (index_name,),
+    )
+    if not rows:
+        return None
+    sql = rows[0][0] or ""
+    return expected.lower() in str(sql).lower()
 
 
 async def _rebuild_matches(conn: aiosqlite.Connection) -> None:
@@ -380,11 +435,194 @@ async def _rebuild_matches(conn: aiosqlite.Connection) -> None:
     await conn.execute("ALTER TABLE matches__new RENAME TO matches")
 
 
+async def _rebuild_resolved_event_members_for_snapshots(
+    conn: aiosqlite.Connection,
+) -> None:
+    await conn.execute("DROP INDEX IF EXISTS idx_resolved_event_members_event")
+    await conn.execute("DROP INDEX IF EXISTS idx_resolved_event_members_match")
+    await conn.execute("DROP INDEX IF EXISTS idx_resolved_event_members_unique_snapshot")
+    await conn.execute(
+        """
+        CREATE TABLE resolved_event_members__new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id TEXT,
+            resolved_event_id TEXT NOT NULL REFERENCES resolved_events(id),
+            match_id TEXT NOT NULL REFERENCES matches(id),
+            bookmaker_id TEXT NOT NULL REFERENCES bookmakers(id),
+            orientation TEXT NOT NULL DEFAULT 'as_listed',
+            confidence REAL,
+            status TEXT NOT NULL DEFAULT 'active',
+            source_url TEXT,
+            source_league_id TEXT,
+            source_league_name TEXT,
+            source_home_team TEXT,
+            source_away_team TEXT,
+            source_start_time TIMESTAMP,
+            evidence TEXT NOT NULL DEFAULT '[]',
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO resolved_event_members__new (
+            id,
+            snapshot_id,
+            resolved_event_id,
+            match_id,
+            bookmaker_id,
+            orientation,
+            confidence,
+            status,
+            source_url,
+            source_league_id,
+            source_league_name,
+            source_home_team,
+            source_away_team,
+            source_start_time,
+            evidence,
+            metadata,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            snapshot_id,
+            resolved_event_id,
+            match_id,
+            bookmaker_id,
+            orientation,
+            confidence,
+            status,
+            source_url,
+            source_league_id,
+            source_league_name,
+            source_home_team,
+            source_away_team,
+            source_start_time,
+            evidence,
+            metadata,
+            created_at,
+            updated_at
+        FROM resolved_event_members
+        ORDER BY id ASC
+        """
+    )
+    await conn.execute("DROP TABLE resolved_event_members")
+    await conn.execute(
+        "ALTER TABLE resolved_event_members__new RENAME TO resolved_event_members"
+    )
+
+
+async def _rebuild_match_bookmaker_sources_for_snapshots(
+    conn: aiosqlite.Connection,
+) -> None:
+    columns = await conn.execute_fetchall("PRAGMA table_info(match_bookmaker_sources)")
+    existing = {row[1] for row in columns}
+    snapshot_expr = "snapshot_id" if "snapshot_id" in existing else "NULL"
+    await conn.execute("DROP INDEX IF EXISTS idx_match_bookmaker_sources_unique_snapshot")
+    await conn.execute("DROP INDEX IF EXISTS idx_match_bookmaker_sources_lookup")
+    await conn.execute(
+        """
+        CREATE TABLE match_bookmaker_sources__new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id TEXT,
+            match_id TEXT NOT NULL REFERENCES matches(id),
+            bookmaker_id TEXT NOT NULL REFERENCES bookmakers(id),
+            source_url TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await conn.execute(
+        f"""
+        INSERT INTO match_bookmaker_sources__new (
+            id,
+            snapshot_id,
+            match_id,
+            bookmaker_id,
+            source_url,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            {snapshot_expr},
+            match_id,
+            bookmaker_id,
+            source_url,
+            created_at,
+            updated_at
+        FROM match_bookmaker_sources
+        """
+    )
+    await conn.execute("DROP TABLE match_bookmaker_sources")
+    await conn.execute(
+        "ALTER TABLE match_bookmaker_sources__new RENAME TO match_bookmaker_sources"
+    )
+
+
+async def _rebuild_odds_for_snapshots(conn: aiosqlite.Connection) -> None:
+    await conn.execute("DROP INDEX IF EXISTS idx_odds_unique_snapshot_line")
+    await conn.execute("DROP INDEX IF EXISTS idx_odds_snapshot")
+    await conn.execute(
+        """
+        CREATE TABLE odds__new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id TEXT,
+            match_id TEXT REFERENCES matches(id),
+            bookmaker_id TEXT REFERENCES bookmakers(id),
+            market_type TEXT NOT NULL,
+            player_name TEXT,
+            threshold REAL NOT NULL,
+            over_odds REAL,
+            under_odds REAL,
+            scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await conn.execute(
+        """
+        INSERT OR REPLACE INTO odds__new (
+            id,
+            snapshot_id,
+            match_id,
+            bookmaker_id,
+            market_type,
+            player_name,
+            threshold,
+            over_odds,
+            under_odds,
+            scraped_at
+        )
+        SELECT
+            id,
+            COALESCE(snapshot_id, scraped_at),
+            match_id,
+            bookmaker_id,
+            market_type,
+            player_name,
+            threshold,
+            over_odds,
+            under_odds,
+            scraped_at
+        FROM odds
+        ORDER BY id ASC
+        """
+    )
+    await conn.execute("DROP TABLE odds")
+    await conn.execute("ALTER TABLE odds__new RENAME TO odds")
+
+
 async def _rebuild_opportunities(conn: aiosqlite.Connection) -> None:
     await conn.execute(
         """
         CREATE TABLE opportunities__new (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            publish_id TEXT,
             sport TEXT NOT NULL,
             match_id TEXT REFERENCES matches(id),
             resolved_event_id TEXT REFERENCES resolved_events(id),
@@ -407,6 +645,7 @@ async def _rebuild_opportunities(conn: aiosqlite.Connection) -> None:
         """
         INSERT INTO opportunities__new (
             id,
+            publish_id,
             sport,
             match_id,
             resolved_event_id,
@@ -425,6 +664,7 @@ async def _rebuild_opportunities(conn: aiosqlite.Connection) -> None:
         )
         SELECT
             id,
+            publish_id,
             sport,
             match_id,
             CASE
@@ -460,6 +700,7 @@ async def _rebuild_team_review_cases(conn: aiosqlite.Connection) -> None:
         """
         CREATE TABLE team_review_cases__new (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id TEXT,
             bookmaker_id TEXT REFERENCES bookmakers(id),
             raw_league_id TEXT NOT NULL,
             normalized_raw_league_id TEXT NOT NULL,
@@ -490,6 +731,7 @@ async def _rebuild_team_review_cases(conn: aiosqlite.Connection) -> None:
         """
         INSERT INTO team_review_cases__new (
             id,
+            snapshot_id,
             bookmaker_id,
             raw_league_id,
             normalized_raw_league_id,
@@ -516,6 +758,7 @@ async def _rebuild_team_review_cases(conn: aiosqlite.Connection) -> None:
         )
         SELECT
             id,
+            COALESCE(snapshot_id, scraped_at),
             bookmaker_id,
             raw_league_id,
             normalized_raw_league_id,
@@ -554,7 +797,206 @@ async def _rebuild_team_review_cases(conn: aiosqlite.Connection) -> None:
     await conn.execute("ALTER TABLE team_review_cases__new RENAME TO team_review_cases")
 
 
+async def _backfill_snapshot_metadata(conn: aiosqlite.Connection) -> None:
+    snapshot_sources = (
+        ("odds", "scraped_at"),
+        ("odds_history", "scraped_at"),
+        ("outcome_offers", "scraped_at"),
+        ("unresolved_odds", "scraped_at"),
+        ("team_review_cases", "scraped_at"),
+    )
+    for table_name, column_name in snapshot_sources:
+        await conn.execute(
+            f"""INSERT OR IGNORE INTO scrape_snapshots (
+                    id,
+                    scraped_at,
+                    completed_at,
+                    status
+                )
+                SELECT DISTINCT {column_name}, {column_name}, {column_name}, 'published'
+                FROM {table_name}
+                WHERE {column_name} IS NOT NULL"""
+        )
+        await conn.execute(
+            f"""UPDATE {table_name}
+                SET snapshot_id = {column_name}
+                WHERE snapshot_id IS NULL
+                  AND {column_name} IS NOT NULL"""
+        )
+
+    await conn.execute(
+        """INSERT OR IGNORE INTO opportunity_publishes (
+               id,
+               snapshot_id,
+               detected_at,
+               status,
+               opportunity_count
+           )
+           SELECT
+               detected_at,
+               detected_at,
+               detected_at,
+               'published',
+               COUNT(*)
+           FROM opportunities
+           WHERE detected_at IS NOT NULL
+           GROUP BY detected_at"""
+    )
+    await conn.execute(
+        """UPDATE opportunities
+           SET publish_id = detected_at
+           WHERE publish_id IS NULL
+             AND detected_at IS NOT NULL
+             AND is_active = TRUE"""
+    )
+    await conn.execute(
+        """UPDATE scrape_state
+           SET current_snapshot_id = COALESCE(current_snapshot_id, current_snapshot_at)
+           WHERE id = 1
+             AND current_snapshot_at IS NOT NULL"""
+    )
+    await conn.execute(
+        """UPDATE scrape_state
+           SET current_opportunity_publish_id = COALESCE(
+                   current_opportunity_publish_id,
+                   (
+                       SELECT publish_id
+                       FROM opportunities
+                       WHERE is_active = TRUE
+                         AND publish_id IS NOT NULL
+                       GROUP BY publish_id
+                       ORDER BY MAX(detected_at) DESC
+                       LIMIT 1
+                   )
+               )
+           WHERE id = 1"""
+    )
+    await conn.execute(
+        """INSERT OR IGNORE INTO snapshot_matches (
+               snapshot_id,
+               match_id,
+               league_id,
+               sport,
+               home_team_id,
+               away_team_id,
+               home_team,
+               away_team,
+               start_time,
+               status
+           )
+           SELECT DISTINCT
+               COALESCE(o.snapshot_id, o.scraped_at),
+               m.id,
+               m.league_id,
+               m.sport,
+               m.home_team_id,
+               m.away_team_id,
+               m.home_team,
+               m.away_team,
+               m.start_time,
+               m.status
+           FROM odds o
+           JOIN matches m ON m.id = o.match_id
+           WHERE COALESCE(o.snapshot_id, o.scraped_at) IS NOT NULL"""
+    )
+    await conn.execute(
+        """INSERT OR IGNORE INTO snapshot_matches (
+               snapshot_id,
+               match_id,
+               league_id,
+               sport,
+               home_team_id,
+               away_team_id,
+               home_team,
+               away_team,
+               start_time,
+               status
+           )
+           SELECT DISTINCT
+               COALESCE(oo.snapshot_id, oo.scraped_at),
+               m.id,
+               m.league_id,
+               m.sport,
+               m.home_team_id,
+               m.away_team_id,
+               m.home_team,
+               m.away_team,
+               m.start_time,
+               m.status
+           FROM outcome_offers oo
+            JOIN matches m ON m.id = oo.match_id
+            WHERE COALESCE(oo.snapshot_id, oo.scraped_at) IS NOT NULL"""
+    )
+    await conn.execute(
+        """INSERT OR IGNORE INTO match_bookmaker_sources (
+               snapshot_id,
+               match_id,
+               bookmaker_id,
+               source_url,
+               created_at,
+               updated_at
+           )
+           SELECT DISTINCT
+               scoped_sources.snapshot_id,
+               legacy_sources.match_id,
+               legacy_sources.bookmaker_id,
+               legacy_sources.source_url,
+               legacy_sources.created_at,
+               legacy_sources.updated_at
+           FROM match_bookmaker_sources legacy_sources
+           JOIN (
+               SELECT DISTINCT
+                   COALESCE(snapshot_id, scraped_at) AS snapshot_id,
+                   match_id,
+                   bookmaker_id
+               FROM odds
+               WHERE COALESCE(snapshot_id, scraped_at) IS NOT NULL
+               UNION
+               SELECT DISTINCT
+                   COALESCE(snapshot_id, scraped_at) AS snapshot_id,
+                   match_id,
+                   bookmaker_id
+               FROM outcome_offers
+               WHERE COALESCE(snapshot_id, scraped_at) IS NOT NULL
+           ) scoped_sources
+             ON scoped_sources.match_id = legacy_sources.match_id
+            AND scoped_sources.bookmaker_id = legacy_sources.bookmaker_id
+           WHERE legacy_sources.snapshot_id IS NULL
+             AND legacy_sources.source_url IS NOT NULL"""
+    )
+
+
 async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
+    await conn.execute(
+        """CREATE TABLE IF NOT EXISTS scrape_snapshots (
+               id TEXT PRIMARY KEY,
+               scraped_at TIMESTAMP NOT NULL UNIQUE,
+               started_at TIMESTAMP,
+               completed_at TIMESTAMP,
+               status TEXT NOT NULL DEFAULT 'persisted',
+               matches_count INTEGER NOT NULL DEFAULT 0,
+               odds_count INTEGER NOT NULL DEFAULT 0,
+               outcome_offers_count INTEGER NOT NULL DEFAULT 0,
+               unresolved_odds_count INTEGER NOT NULL DEFAULT 0,
+               team_review_cases_count INTEGER NOT NULL DEFAULT 0,
+               error TEXT,
+               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+           )"""
+    )
+    await conn.execute(
+        """CREATE TABLE IF NOT EXISTS opportunity_publishes (
+               id TEXT PRIMARY KEY,
+               snapshot_id TEXT,
+               detected_at TIMESTAMP NOT NULL,
+               status TEXT NOT NULL DEFAULT 'published',
+               opportunity_count INTEGER NOT NULL DEFAULT 0,
+               error TEXT,
+               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+           )"""
+    )
+
     match_columns = await conn.execute_fetchall("PRAGMA table_info(matches)")
     existing_matches = {row[1] for row in match_columns}
     if match_columns and "sport" not in existing_matches:
@@ -581,8 +1023,97 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
     ):
         await _rebuild_matches(conn)
 
+    await conn.execute(
+        """CREATE TABLE IF NOT EXISTS match_bookmaker_sources (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               snapshot_id TEXT,
+               match_id TEXT NOT NULL REFERENCES matches(id),
+               bookmaker_id TEXT NOT NULL REFERENCES bookmakers(id),
+               source_url TEXT,
+               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+           )"""
+    )
+    source_columns = await conn.execute_fetchall("PRAGMA table_info(match_bookmaker_sources)")
+    existing_sources = {row[1] for row in source_columns}
+    source_indexes = await conn.execute_fetchall("PRAGMA index_list(match_bookmaker_sources)")
+    if source_columns and (
+        "snapshot_id" not in existing_sources
+        or any(
+            str(row[1]).startswith("sqlite_autoindex_match_bookmaker_sources")
+            for row in source_indexes
+        )
+    ):
+        await _rebuild_match_bookmaker_sources_for_snapshots(conn)
+    await conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_match_bookmaker_sources_unique_snapshot
+           ON match_bookmaker_sources (
+               COALESCE(snapshot_id, ''),
+               match_id,
+               bookmaker_id
+           )"""
+    )
+    await conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_match_bookmaker_sources_lookup
+           ON match_bookmaker_sources (match_id, bookmaker_id, snapshot_id)"""
+    )
+
+    await conn.execute(
+        """CREATE TABLE IF NOT EXISTS snapshot_matches (
+               snapshot_id TEXT NOT NULL,
+               match_id TEXT NOT NULL REFERENCES matches(id),
+               league_id TEXT REFERENCES leagues(id),
+               sport TEXT NOT NULL DEFAULT 'basketball',
+               home_team_id INTEGER REFERENCES canonical_teams(id),
+               away_team_id INTEGER REFERENCES canonical_teams(id),
+               home_team TEXT NOT NULL,
+               away_team TEXT NOT NULL,
+               start_time TIMESTAMP,
+               status TEXT DEFAULT 'upcoming',
+               PRIMARY KEY (snapshot_id, match_id)
+           )"""
+    )
+    await conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_snapshot_matches_match
+           ON snapshot_matches (match_id, snapshot_id)"""
+    )
+
+    resolved_member_columns = await conn.execute_fetchall(
+        "PRAGMA table_info(resolved_event_members)"
+    )
+    existing_resolved_members = {row[1] for row in resolved_member_columns}
+    if resolved_member_columns and "snapshot_id" not in existing_resolved_members:
+        await conn.execute("ALTER TABLE resolved_event_members ADD COLUMN snapshot_id TEXT")
+        existing_resolved_members.add("snapshot_id")
+    resolved_member_indexes = await conn.execute_fetchall(
+        "PRAGMA index_list(resolved_event_members)"
+    )
+    if resolved_member_columns and any(
+        str(row[1]).startswith("sqlite_autoindex_resolved_event_members")
+        for row in resolved_member_indexes
+    ):
+        await _rebuild_resolved_event_members_for_snapshots(conn)
+    await conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_resolved_event_members_unique_snapshot
+           ON resolved_event_members (
+               COALESCE(snapshot_id, ''),
+               match_id,
+               bookmaker_id
+           )"""
+    )
+    await conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_resolved_event_members_event
+           ON resolved_event_members (resolved_event_id, status)"""
+    )
+    await conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_resolved_event_members_match
+           ON resolved_event_members (match_id, bookmaker_id, snapshot_id)"""
+    )
+
     unresolved_columns = await conn.execute_fetchall("PRAGMA table_info(unresolved_odds)")
     existing_unresolved = {row[1] for row in unresolved_columns}
+    if unresolved_columns and "snapshot_id" not in existing_unresolved:
+        await conn.execute("ALTER TABLE unresolved_odds ADD COLUMN snapshot_id TEXT")
     if unresolved_columns and "sport" not in existing_unresolved:
         await conn.execute(
             "ALTER TABLE unresolved_odds ADD COLUMN sport TEXT NOT NULL DEFAULT 'basketball'"
@@ -590,9 +1121,39 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
 
     await conn.execute("DROP TABLE IF EXISTS discrepancies")
 
+    odds_columns = await conn.execute_fetchall("PRAGMA table_info(odds)")
+    existing_odds = {row[1] for row in odds_columns}
+    if odds_columns and "snapshot_id" not in existing_odds:
+        await conn.execute("ALTER TABLE odds ADD COLUMN snapshot_id TEXT")
+        existing_odds.add("snapshot_id")
+    odds_indexes = await conn.execute_fetchall("PRAGMA index_list(odds)")
+    if odds_columns and any(str(row[1]).startswith("sqlite_autoindex_odds") for row in odds_indexes):
+        await _rebuild_odds_for_snapshots(conn)
+    await conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_odds_unique_snapshot_line
+           ON odds (
+               COALESCE(snapshot_id, ''),
+               match_id,
+               bookmaker_id,
+               market_type,
+               COALESCE(player_name, ''),
+               threshold
+           )"""
+    )
+    await conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_odds_snapshot
+           ON odds (snapshot_id, scraped_at, match_id, bookmaker_id)"""
+    )
+
+    odds_history_columns = await conn.execute_fetchall("PRAGMA table_info(odds_history)")
+    existing_odds_history = {row[1] for row in odds_history_columns}
+    if odds_history_columns and "snapshot_id" not in existing_odds_history:
+        await conn.execute("ALTER TABLE odds_history ADD COLUMN snapshot_id TEXT")
+
     await conn.execute(
         """CREATE TABLE IF NOT EXISTS outcome_offers (
                id INTEGER PRIMARY KEY AUTOINCREMENT,
+               snapshot_id TEXT,
                match_id TEXT REFERENCES matches(id),
                bookmaker_id TEXT REFERENCES bookmakers(id),
                market_type TEXT NOT NULL,
@@ -603,9 +1164,21 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
                scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
            )"""
     )
+    outcome_offer_columns = await conn.execute_fetchall("PRAGMA table_info(outcome_offers)")
+    existing_outcome_offers = {row[1] for row in outcome_offer_columns}
+    if outcome_offer_columns and "snapshot_id" not in existing_outcome_offers:
+        await conn.execute("ALTER TABLE outcome_offers ADD COLUMN snapshot_id TEXT")
+    outcome_offer_unique_index_has_snapshot = await _index_sql_contains(
+        conn,
+        index_name="idx_outcome_offers_unique_line",
+        expected="snapshot_id",
+    )
+    if outcome_offer_unique_index_has_snapshot is False:
+        await conn.execute("DROP INDEX IF EXISTS idx_outcome_offers_unique_line")
     await conn.execute(
         """CREATE UNIQUE INDEX IF NOT EXISTS idx_outcome_offers_unique_line
            ON outcome_offers (
+               COALESCE(snapshot_id, ''),
                match_id,
                bookmaker_id,
                market_type,
@@ -615,11 +1188,12 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
     )
     await conn.execute(
         """CREATE INDEX IF NOT EXISTS idx_outcome_offers_snapshot
-           ON outcome_offers (scraped_at, match_id, bookmaker_id)"""
+           ON outcome_offers (snapshot_id, scraped_at, match_id, bookmaker_id)"""
     )
     await conn.execute(
         """CREATE TABLE IF NOT EXISTS opportunities (
                id INTEGER PRIMARY KEY AUTOINCREMENT,
+               publish_id TEXT,
                sport TEXT NOT NULL,
                match_id TEXT REFERENCES matches(id),
                resolved_event_id TEXT REFERENCES resolved_events(id),
@@ -643,6 +1217,9 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
     )
     opportunity_columns = await conn.execute_fetchall("PRAGMA table_info(opportunities)")
     existing_opportunities = {row[1] for row in opportunity_columns}
+    if opportunity_columns and "publish_id" not in existing_opportunities:
+        await conn.execute("ALTER TABLE opportunities ADD COLUMN publish_id TEXT")
+        existing_opportunities.add("publish_id")
     if opportunity_columns and "middle_profit_margin" not in existing_opportunities:
         await conn.execute("ALTER TABLE opportunities ADD COLUMN middle_profit_margin REAL")
     if opportunity_columns and "resolved_event_id" not in existing_opportunities:
@@ -674,9 +1251,16 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
         """CREATE INDEX IF NOT EXISTS idx_opportunities_resolved_event_active
            ON opportunities (resolved_event_id, is_active)"""
     )
+    await conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_opportunities_publish
+           ON opportunities (publish_id, sport, detected_at)"""
+    )
 
     team_review_columns = await conn.execute_fetchall("PRAGMA table_info(team_review_cases)")
     existing_team_review = {row[1] for row in team_review_columns}
+    if team_review_columns and "snapshot_id" not in existing_team_review:
+        await conn.execute("ALTER TABLE team_review_cases ADD COLUMN snapshot_id TEXT")
+        existing_team_review.add("snapshot_id")
     if team_review_columns and "sport" not in existing_team_review:
         await conn.execute(
             "ALTER TABLE team_review_cases ADD COLUMN sport TEXT NOT NULL DEFAULT 'basketball'"
@@ -722,6 +1306,17 @@ async def _ensure_schema_compatibility(conn: aiosqlite.Connection) -> None:
             target_table="canonical_teams",
         ):
             await _rebuild_team_review_cases(conn)
+
+    scrape_state_columns = await conn.execute_fetchall("PRAGMA table_info(scrape_state)")
+    existing_scrape_state = {row[1] for row in scrape_state_columns}
+    if scrape_state_columns and "current_snapshot_id" not in existing_scrape_state:
+        await conn.execute("ALTER TABLE scrape_state ADD COLUMN current_snapshot_id TEXT")
+    if scrape_state_columns and "current_opportunity_publish_id" not in existing_scrape_state:
+        await conn.execute(
+            "ALTER TABLE scrape_state ADD COLUMN current_opportunity_publish_id TEXT"
+        )
+
+    await _backfill_snapshot_metadata(conn)
 
     team_merge_history_columns = await conn.execute_fetchall(
         "PRAGMA table_info(team_merge_history)"

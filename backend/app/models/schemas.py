@@ -60,6 +60,7 @@ class ResolvedEventIn(BaseModel):
 
 
 class ResolvedEventMemberIn(BaseModel):
+    snapshot_id: Optional[str] = None
     resolved_event_id: str
     match_id: str
     bookmaker_id: str
