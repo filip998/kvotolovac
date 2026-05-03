@@ -199,6 +199,24 @@ def test_canonical_line_middle_uses_subject_key_before_display_name():
     }
 
 
+def test_canonical_line_middle_does_not_cross_resolved_events_for_same_player():
+    same_event = analyze_canonical_offers(
+        [
+            *_odds("mozzart", "Lundberg", 16.5, over=1.85, under=None, event_id="event-a"),
+            *_odds("meridian", "Lundberg", 18.5, over=None, under=2.00, event_id="event-a"),
+        ]
+    )
+    split_events = analyze_canonical_offers(
+        [
+            *_odds("mozzart", "Lundberg", 16.5, over=1.85, under=None, event_id="event-a"),
+            *_odds("meridian", "Lundberg", 18.5, over=None, under=2.00, event_id="event-b"),
+        ]
+    )
+
+    assert len(same_event) == 1
+    assert split_events == []
+
+
 def test_canonical_line_middle_rejects_invalid_odds():
     opportunities = analyze_canonical_offers(
         [

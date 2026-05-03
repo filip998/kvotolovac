@@ -2327,6 +2327,31 @@ async def mark_team_review_case_declined(case_id: int) -> None:
     await db.commit()
 
 
+async def delete_team_review_cases(
+    case_ids: list[int],
+    *,
+    statuses: list[str] | None = None,
+    review_kinds: list[str] | None = None,
+) -> int:
+    if not case_ids:
+        return 0
+    db = await get_db()
+    conditions = [f"id IN ({_sql_placeholders(case_ids)})"]
+    params: list[object] = list(case_ids)
+    if statuses:
+        conditions.append(f"status IN ({_sql_placeholders(statuses)})")
+        params.extend(statuses)
+    if review_kinds:
+        conditions.append(f"review_kind IN ({_sql_placeholders(review_kinds)})")
+        params.extend(review_kinds)
+    cursor = await db.execute(
+        "DELETE FROM team_review_cases WHERE " + " AND ".join(conditions),
+        tuple(params),
+    )
+    await db.commit()
+    return cursor.rowcount or 0
+
+
 # ── Notifications ──────────────────────────────────────────
 
 async def insert_notification(

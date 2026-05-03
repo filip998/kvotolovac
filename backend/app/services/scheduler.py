@@ -715,7 +715,8 @@ class Scheduler:
     async def _rollback_auto_applied_aliases(
         self,
         applied_aliases: list[tuple[str, str, str]],
-    ) -> None:
+    ) -> list[tuple[str, str, str]]:
+        failed_aliases: list[tuple[str, str, str]] = []
         for bookmaker_id, raw_team_name, sport in reversed(applied_aliases):
             try:
                 await asyncio.to_thread(
@@ -731,11 +732,14 @@ class Scheduler:
                     raw_team_name,
                     bookmaker_id,
                 )
+                failed_aliases.append((bookmaker_id, raw_team_name, sport))
+        return failed_aliases
 
     async def _rollback_auto_applied_merges(
         self,
         applied_merges: list[tuple[int, int]],
-    ) -> None:
+    ) -> list[tuple[int, int]]:
+        failed_merges: list[tuple[int, int]] = []
         for source_team_id, target_team_id in reversed(applied_merges):
             try:
                 await asyncio.to_thread(
@@ -748,6 +752,8 @@ class Scheduler:
                     source_team_id,
                     target_team_id,
                 )
+                failed_merges.append((source_team_id, target_team_id))
+        return failed_merges
 
     async def _apply_canonical_merges(
         self,
@@ -1033,6 +1039,7 @@ class Scheduler:
             team_review_cases = normalized_batch.team_review_cases
             applied_auto_aliases: list[tuple[str, str, str]] = []
             applied_auto_merges: list[tuple[int, int]] = []
+            auto_approved_team_review_case_ids: list[int] = []
             try:
                 (
                     same_time_auto_reviews,
@@ -1095,6 +1102,7 @@ class Scheduler:
                     case_id = await odds_store.insert_team_review_case(
                         team_review_case, scraped_at=cycle_scraped_at
                     )
+                    auto_approved_team_review_case_ids.append(case_id)
                     await odds_store.mark_team_review_case_approved(case_id)
                 await odds_store.set_current_snapshot(cycle_scraped_at)
 
@@ -1137,10 +1145,41 @@ class Scheduler:
                 notified = await self._notification_service.notify_opportunities(opportunities)
             except Exception:
                 await odds_store.rollback_pending_transaction()
+                rollback_failed = False
                 if applied_auto_merges:
-                    await self._rollback_auto_applied_merges(applied_auto_merges)
+                    rollback_failed = bool(
+                        await self._rollback_auto_applied_merges(applied_auto_merges)
+                    )
                 if applied_auto_aliases:
-                    await self._rollback_auto_applied_aliases(applied_auto_aliases)
+                    rollback_failed = (
+                        bool(
+                            await self._rollback_auto_applied_aliases(
+                                applied_auto_aliases
+                            )
+                        )
+                        or rollback_failed
+                    )
+                if auto_approved_team_review_case_ids:
+                    if rollback_failed:
+                        logger.warning(
+                            "Keeping auto-approved team review audit rows because "
+                            "auto-action rollback did not fully succeed"
+                        )
+                    else:
+                        try:
+                            await odds_store.delete_team_review_cases(
+                                auto_approved_team_review_case_ids,
+                                statuses=["approved"],
+                                review_kinds=[
+                                    AUTO_ALIAS_REVIEW_KIND,
+                                    AUTO_CANONICAL_MERGE_REVIEW_KIND,
+                                ],
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed deleting auto-approved team review audit rows "
+                                "after failed scrape cycle"
+                            )
                 raise
             finally:
                 # Publish per-bookmaker benchmark snapshot regardless of whether

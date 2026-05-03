@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -202,6 +203,27 @@ def test_normalize_merge_pairings_rejects_reciprocal_cycles_regardless_of_order(
     assert normalized_reverse == {}
     assert conflicts_forward == {1, 2}
     assert conflicts_reverse == {1, 2}
+
+
+def test_normalize_merge_pairings_rejects_self_merge_and_conflicting_targets():
+    normalized, conflicts = _normalize_merge_pairings(
+        [
+            (1, 1),
+            (2, 3),
+            (2, 4),
+            (3, 5),
+        ]
+    )
+
+    assert normalized == {3: 5}
+    assert conflicts == {2}
+
+
+def test_normalize_merge_pairings_rejects_longer_cycles():
+    normalized, conflicts = _normalize_merge_pairings([(1, 2), (2, 3), (3, 1)])
+
+    assert normalized == {}
+    assert conflicts == {1, 2, 3}
 
 
 def test_scraper_capabilities_unify_threshold_and_outcome_lanes():
@@ -2115,15 +2137,13 @@ async def test_scheduler_run_cycle_rolls_back_auto_saved_alias_if_store_fails(
     assert normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian") == "Rilski Sport."
 
 
-@pytest.mark.asyncio
-async def test_scheduler_run_cycle_rolls_back_auto_merge_if_store_fails(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    source_home = create_canonical_team(display_name="QA Rollback City")
-    source_away = create_canonical_team(display_name="QA Rollback United")
-    target_home = create_canonical_team(display_name="BC QA Rollback City")
-    target_away = create_canonical_team(display_name="BC QA Rollback United")
-
+def _register_auto_merge_rollback_scrapers(
+    *,
+    source_home,
+    source_away,
+    target_home,
+    target_away,
+) -> None:
     _register_test_scrapers(
         StubScraper(
             "book-a",
@@ -2169,21 +2189,216 @@ async def test_scheduler_run_cycle_rolls_back_auto_merge_if_store_fails(
         ),
     )
 
-    original_upsert_odds = odds_store.upsert_odds
-    call_count = 0
 
-    async def failing_upsert_odds(odds, *, scraped_at):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            raise RuntimeError("simulated store failure")
-        return await original_upsert_odds(odds, scraped_at=scraped_at)
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_rolls_back_auto_merge_if_store_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source_home = create_canonical_team(display_name="QA Rollback City")
+    source_away = create_canonical_team(display_name="QA Rollback United")
+    target_home = create_canonical_team(display_name="BC QA Rollback City")
+    target_away = create_canonical_team(display_name="BC QA Rollback United")
 
-    monkeypatch.setattr(odds_store, "upsert_odds", failing_upsert_odds)
+    _register_auto_merge_rollback_scrapers(
+        source_home=source_home,
+        source_away=source_away,
+        target_home=target_home,
+        target_away=target_away,
+    )
 
-    with pytest.raises(RuntimeError, match="simulated store failure"):
+    async def failing_set_current_snapshot(snapshot_at: str) -> None:
+        raise RuntimeError("simulated snapshot failure")
+
+    monkeypatch.setattr(odds_store, "set_current_snapshot", failing_set_current_snapshot)
+
+    with pytest.raises(RuntimeError, match="simulated snapshot failure"):
         await Scheduler(interval_minutes=1).run_cycle()
 
+    with sqlite3.connect(settings.db_path) as conn:
+        auto_merge_audit_rows = conn.execute(
+            """
+            SELECT status
+            FROM team_review_cases
+            WHERE review_kind = 'auto_canonical_merge_suggestion'
+            """
+        ).fetchall()
+
+    assert auto_merge_audit_rows == []
+    assert get_canonical_team(source_home.team_id) is not None
+    assert get_canonical_team(source_away.team_id) is not None
+    assert get_canonical_team(target_home.team_id) is not None
+    assert get_canonical_team(target_away.team_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_auto_merge_audit_cleanup_failure_does_not_block_canonical_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source_home = create_canonical_team(display_name="QA Cleanup City")
+    source_away = create_canonical_team(display_name="QA Cleanup United")
+    target_home = create_canonical_team(display_name="BC QA Cleanup City")
+    target_away = create_canonical_team(display_name="BC QA Cleanup United")
+    delete_called = False
+
+    _register_auto_merge_rollback_scrapers(
+        source_home=source_home,
+        source_away=source_away,
+        target_home=target_home,
+        target_away=target_away,
+    )
+
+    async def failing_set_current_snapshot(snapshot_at: str) -> None:
+        raise RuntimeError("simulated snapshot failure")
+
+    async def failing_delete_team_review_cases(
+        case_ids: list[int],
+        **kwargs,
+    ) -> int:
+        nonlocal delete_called
+        delete_called = True
+        raise RuntimeError("simulated audit cleanup failure")
+
+    monkeypatch.setattr(odds_store, "set_current_snapshot", failing_set_current_snapshot)
+    monkeypatch.setattr(
+        odds_store,
+        "delete_team_review_cases",
+        failing_delete_team_review_cases,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated snapshot failure"):
+        await Scheduler(interval_minutes=1).run_cycle()
+
+    with sqlite3.connect(settings.db_path) as conn:
+        auto_merge_audit_rows = conn.execute(
+            """
+            SELECT status
+            FROM team_review_cases
+            WHERE review_kind = 'auto_canonical_merge_suggestion'
+            """
+        ).fetchall()
+
+    assert delete_called
+    assert auto_merge_audit_rows == [("approved",), ("approved",)]
+    assert get_canonical_team(source_home.team_id) is not None
+    assert get_canonical_team(source_away.team_id) is not None
+    assert get_canonical_team(target_home.team_id) is not None
+    assert get_canonical_team(target_away.team_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_auto_merge_audit_rows_remain_when_canonical_rollback_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source_home = create_canonical_team(display_name="QA Failed Rollback City")
+    source_away = create_canonical_team(display_name="QA Failed Rollback United")
+    target_home = create_canonical_team(display_name="BC QA Failed Rollback City")
+    target_away = create_canonical_team(display_name="BC QA Failed Rollback United")
+    delete_called = False
+
+    _register_auto_merge_rollback_scrapers(
+        source_home=source_home,
+        source_away=source_away,
+        target_home=target_home,
+        target_away=target_away,
+    )
+
+    async def failing_set_current_snapshot(snapshot_at: str) -> None:
+        raise RuntimeError("simulated snapshot failure")
+
+    async def failed_auto_merge_rollback(self, applied_merges):
+        return list(applied_merges)
+
+    async def tracking_delete_team_review_cases(
+        case_ids: list[int],
+        **kwargs,
+    ) -> int:
+        nonlocal delete_called
+        delete_called = True
+        return len(case_ids)
+
+    monkeypatch.setattr(odds_store, "set_current_snapshot", failing_set_current_snapshot)
+    monkeypatch.setattr(
+        Scheduler,
+        "_rollback_auto_applied_merges",
+        failed_auto_merge_rollback,
+    )
+    monkeypatch.setattr(
+        odds_store,
+        "delete_team_review_cases",
+        tracking_delete_team_review_cases,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated snapshot failure"):
+        await Scheduler(interval_minutes=1).run_cycle()
+
+    with sqlite3.connect(settings.db_path) as conn:
+        auto_merge_audit_rows = conn.execute(
+            """
+            SELECT status
+            FROM team_review_cases
+            WHERE review_kind = 'auto_canonical_merge_suggestion'
+            """
+        ).fetchall()
+
+    assert not delete_called
+    assert auto_merge_audit_rows == [("approved",), ("approved",)]
+    assert get_canonical_team(source_home.team_id) is None
+    assert get_canonical_team(source_away.team_id) is None
+    assert get_canonical_team(target_home.team_id) is not None
+    assert get_canonical_team(target_away.team_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_failed_cycle_cleanup_keeps_human_declined_auto_merge_audit_row(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source_home = create_canonical_team(display_name="QA Human Veto City")
+    source_away = create_canonical_team(display_name="QA Human Veto United")
+    target_home = create_canonical_team(display_name="BC QA Human Veto City")
+    target_away = create_canonical_team(display_name="BC QA Human Veto United")
+
+    _register_auto_merge_rollback_scrapers(
+        source_home=source_home,
+        source_away=source_away,
+        target_home=target_home,
+        target_away=target_away,
+    )
+
+    async def declining_notification_failure(opportunities):
+        with sqlite3.connect(settings.db_path) as conn:
+            case_id = conn.execute(
+                """
+                SELECT id
+                FROM team_review_cases
+                WHERE review_kind = 'auto_canonical_merge_suggestion'
+                ORDER BY id
+                LIMIT 1
+                """
+            ).fetchone()[0]
+        await odds_store.mark_team_review_case_declined(case_id)
+        raise RuntimeError("simulated notification failure")
+
+    scheduler = Scheduler(interval_minutes=1)
+    monkeypatch.setattr(
+        scheduler._notification_service,
+        "notify_opportunities",
+        declining_notification_failure,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated notification failure"):
+        await scheduler.run_cycle()
+
+    with sqlite3.connect(settings.db_path) as conn:
+        auto_merge_audit_rows = conn.execute(
+            """
+            SELECT status
+            FROM team_review_cases
+            WHERE review_kind = 'auto_canonical_merge_suggestion'
+            ORDER BY id
+            """
+        ).fetchall()
+
+    assert auto_merge_audit_rows == [("declined",)]
     assert get_canonical_team(source_home.team_id) is not None
     assert get_canonical_team(source_away.team_id) is not None
     assert get_canonical_team(target_home.team_id) is not None
