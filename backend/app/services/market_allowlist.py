@@ -11,6 +11,10 @@ from ..models.schemas import ScrapeMarketScope
 ALL_MARKETS = "all"
 DEFAULT_ANALYSIS_MARKETS = (ALL_MARKETS,)
 LEGACY_PLAYER_PROPS_ANALYSIS_MARKETS = ("*:player_*",)
+MARKET_TYPE_ALIASES: dict[str, tuple[str, ...]] = {
+    "match_winner": ("tennis_match_winner",),
+    "tennis_match_winner": ("match_winner",),
+}
 
 _TOKEN_RE = re.compile(r"^[a-z0-9_*.-]+:[a-z0-9_*.-]+$")
 
@@ -26,6 +30,8 @@ _OUTCOME_OFFER_MARKETS_BY_SPORT: dict[str, set[str]] = {
         "tennis_match_winner",
     },
 }
+# Keep this list in sync with outcome-offer market options so lane gating does
+# not skip newly allowlisted markets before normalization can see them.
 
 
 @dataclass(frozen=True)
@@ -75,6 +81,16 @@ ANALYSIS_MARKET_OPTIONS: tuple[AnalysisMarketOption, ...] = (
         token="football:football_result_double_chance",
         label="Football result + double chance",
         sport="football",
+    ),
+    AnalysisMarketOption(
+        token="tennis:tennis_match_winner",
+        label="Tennis match winner",
+        sport="tennis",
+    ),
+    AnalysisMarketOption(
+        token="tennis:match_winner",
+        label="Tennis match winner (generic)",
+        sport="tennis",
     ),
 )
 

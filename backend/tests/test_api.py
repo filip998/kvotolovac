@@ -163,10 +163,12 @@ async def test_get_scrape_settings_defaults(client: AsyncClient):
         "meridian",
         "maxbet",
     }
+    assert "tennis" in data["options"]["sports"]
     assert {item["token"] for item in data["options"]["analysis_market_options"]} >= {
         "basketball:player_*",
         "basketball:home_handicap_ot",
         "football:football_total_goals",
+        "tennis:tennis_match_winner",
     }
 
 
@@ -226,6 +228,25 @@ async def test_patch_scrape_settings_accepts_analysis_markets(client: AsyncClien
         "basketball:home_handicap_ot",
     ]
     assert data["applied"]["scrape_market_scope"] == "all"
+
+
+@pytest.mark.asyncio
+async def test_patch_scrape_settings_accepts_advertised_tennis_analysis_market(
+    client: AsyncClient,
+):
+    resp = await client.patch(
+        "/api/v1/settings/scrape",
+        json={
+            "enabled_bookmakers": ["mozzart"],
+            "enabled_sports": ["tennis"],
+            "analysis_markets": ["tennis:tennis_match_winner"],
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["applied"]["enabled_sports"] == ["tennis"]
+    assert data["applied"]["analysis_markets"] == ["tennis:tennis_match_winner"]
 
 
 @pytest.mark.asyncio

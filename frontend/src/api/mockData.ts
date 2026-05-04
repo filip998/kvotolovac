@@ -1203,7 +1203,7 @@ export const mockSystemStatus: SystemStatus = {
 export const mockScrapeSettings: ScrapeSettingsResponse = {
   applied: {
     enabled_bookmakers: mockSystemStatus.bookmaker_status?.map((item) => item.id) ?? [],
-    enabled_sports: ['basketball', 'football'],
+    enabled_sports: ['basketball', 'football', 'tennis'],
     scrape_market_scope: 'all',
     analysis_markets: ['all'],
     scrape_lookahead_hours: 24,
@@ -1218,7 +1218,7 @@ export const mockScrapeSettings: ScrapeSettingsResponse = {
   },
   defaults: {
     enabled_bookmakers: mockSystemStatus.bookmaker_status?.map((item) => item.id) ?? [],
-    enabled_sports: ['basketball', 'football'],
+    enabled_sports: ['basketball', 'football', 'tennis'],
     scrape_market_scope: 'all',
     analysis_markets: ['all'],
     scrape_lookahead_hours: 24,
@@ -1242,7 +1242,7 @@ export const mockScrapeSettings: ScrapeSettingsResponse = {
       name: item.name,
       enabled: true,
     })),
-    sports: ['basketball', 'football'],
+    sports: ['basketball', 'football', 'tennis'],
     market_scopes: ['all', 'player_props'],
     analysis_market_options: [
       { token: 'basketball:player_*', label: 'Basketball player props', sport: 'basketball' },
@@ -1257,6 +1257,8 @@ export const mockScrapeSettings: ScrapeSettingsResponse = {
         label: 'Football result + double chance',
         sport: 'football',
       },
+      { token: 'tennis:tennis_match_winner', label: 'Tennis match winner', sport: 'tennis' },
+      { token: 'tennis:match_winner', label: 'Tennis match winner (generic)', sport: 'tennis' },
     ],
     detail_modes: ['partial', 'full'],
     scrape_interval_minutes_min: 1,

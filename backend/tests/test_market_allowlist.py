@@ -61,5 +61,8 @@ def test_market_allowlist_outcome_lane_gating_is_conservative_for_unknown_sports
         ["football:football_total_goals"]
     ).may_include_outcome_offer_markets("football")
     assert analysis_market_allowlist(
-        ["tennis:*"]
+        ["tennis:tennis_match_winner"]
+    ).may_include_outcome_offer_markets("tennis")
+    assert analysis_market_allowlist(
+        ["tennis:match_winner"]
     ).may_include_outcome_offer_markets("tennis")

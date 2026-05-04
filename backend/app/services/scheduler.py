@@ -24,6 +24,7 @@ from ..scrapers.registry import registry
 from ..models.schemas import ScanProgressOut
 from ..services.league_registry import league_country, league_display_name
 from ..services.market_allowlist import (
+    MARKET_TYPE_ALIASES,
     MarketAllowlist,
     analysis_market_allowlist,
 )
@@ -34,6 +35,7 @@ from ..services.normalizer import (
     resolve_team_name,
 )
 from ..services.canonical_analyzer import analyze_canonical_offers
+from ..services.canonical_offers import canonical_market_type
 from ..services.event_resolver import (
     CANONICAL_TEAM_AUTO_MERGE_THRESHOLD,
     SameTimeCanonicalMergeProposal as _SameTimeMergeProposal,
@@ -157,19 +159,42 @@ def _filter_normalized_pipeline_batch_by_market_allowlist(
         odds=[
             row
             for row in batch.odds
-            if market_allowlist.allows(sport=row.sport, market_type=row.market_type)
+            if _allowlist_allows_market(
+                market_allowlist, sport=row.sport, market_type=row.market_type
+            )
         ],
         outcome_offers=[
             row
             for row in batch.outcome_offers
-            if market_allowlist.allows(sport=row.sport, market_type=row.market_type)
+            if _allowlist_allows_market(
+                market_allowlist, sport=row.sport, market_type=row.market_type
+            )
         ],
         unresolved_odds=[
             row
             for row in batch.unresolved_odds
-            if market_allowlist.allows(sport=row.sport, market_type=row.market_type)
+            if _allowlist_allows_market(
+                market_allowlist, sport=row.sport, market_type=row.market_type
+            )
         ],
         team_review_cases=batch.team_review_cases,
+    )
+
+
+def _allowlist_allows_market(
+    market_allowlist: MarketAllowlist,
+    *,
+    sport: str,
+    market_type: str,
+) -> bool:
+    candidate_market_types = {
+        market_type,
+        canonical_market_type(market_type),
+        *MARKET_TYPE_ALIASES.get(market_type, ()),
+    }
+    return any(
+        market_allowlist.allows(sport=sport, market_type=candidate)
+        for candidate in candidate_market_types
     )
 
 
@@ -337,7 +362,8 @@ class Scheduler:
         self._running = False
         self._cycle_lock: asyncio.Lock | None = None
         self._cycle_lock_loop: asyncio.AbstractEventLoop | None = None
-        self._wake_event = asyncio.Event()
+        self._wake_event: asyncio.Event | None = None
+        self._wake_event_loop: asyncio.AbstractEventLoop | None = None
         self._scan_phase = "idle"
         self._scan_started_at: str | None = None
         self._scan_total_tasks = 0
@@ -362,14 +388,17 @@ class Scheduler:
 
     def _get_cycle_lock(self) -> asyncio.Lock:
         loop = asyncio.get_running_loop()
-        if (
-            self._cycle_lock is None
-            or self._cycle_lock_loop is not loop
-            and not self._cycle_lock.locked()
-        ):
+        if self._cycle_lock is None or self._cycle_lock_loop is not loop:
             self._cycle_lock = asyncio.Lock()
             self._cycle_lock_loop = loop
         return self._cycle_lock
+
+    def _get_wake_event(self) -> asyncio.Event:
+        loop = asyncio.get_running_loop()
+        if self._wake_event is None or self._wake_event_loop is not loop:
+            self._wake_event = asyncio.Event()
+            self._wake_event_loop = loop
+        return self._wake_event
 
     def progress_snapshot(self) -> ScanProgressOut:
         return ScanProgressOut(
@@ -900,13 +929,13 @@ class Scheduler:
             logger.warning("Scheduler already running")
             return
         self._running = True
-        self._wake_event.clear()
+        self._get_wake_event().clear()
         self._task = asyncio.create_task(self._loop())
         logger.info("Scheduler started (interval=%d min)", self.interval_minutes)
 
     async def stop(self) -> None:
         self._running = False
-        self._wake_event.set()
+        self._get_wake_event().set()
         if self._task and not self._task.done():
             await self._task
         self._task = None
@@ -918,20 +947,29 @@ class Scheduler:
                 await self.run_cycle()
             except Exception:
                 logger.exception("Scheduler cycle failed")
-            if not self._running:
-                break
-            self._wake_event.clear()
-            timeout_seconds = self.interval_minutes * 60
-            try:
-                applied_settings = await get_applied_scrape_settings()
-                self.interval_minutes = applied_settings.scrape_interval_minutes
-                timeout_seconds = self.interval_minutes * 60
-            except Exception:
-                logger.exception("Failed to load scheduler interval settings")
-            try:
-                await asyncio.wait_for(self._wake_event.wait(), timeout=timeout_seconds)
-            except asyncio.TimeoutError:
-                pass
+            last_cycle_finished_at = time.perf_counter()
+            while self._running:
+                wake_event = self._get_wake_event()
+                wake_event.clear()
+                interval_seconds = self.interval_minutes * 60
+                try:
+                    applied_settings = await get_applied_scrape_settings()
+                    self.interval_minutes = applied_settings.scrape_interval_minutes
+                    interval_seconds = self.interval_minutes * 60
+                except Exception:
+                    logger.exception("Failed to load scheduler interval settings")
+                remaining_seconds = max(
+                    0.0,
+                    last_cycle_finished_at + interval_seconds - time.perf_counter(),
+                )
+                if remaining_seconds <= 0:
+                    break
+                try:
+                    await asyncio.wait_for(
+                        wake_event.wait(), timeout=remaining_seconds
+                    )
+                except asyncio.TimeoutError:
+                    break
 
     async def _scrape_one(
         self,
@@ -1132,10 +1170,15 @@ class Scheduler:
         patch: ScrapeRuntimeSettingsUpdate,
     ) -> ScrapeSettingsResponse:
         async with self._get_cycle_lock():
-            return await update_scrape_settings(
+            response = await update_scrape_settings(
                 patch,
                 apply_immediately=not self.is_cycle_in_progress,
             )
+            if response.applied_immediately:
+                self.interval_minutes = response.applied.scrape_interval_minutes
+                if self._running:
+                    self._get_wake_event().set()
+            return response
 
     async def _run_cycle_once(self, runtime_settings: ScrapeRuntimeSettings) -> dict:
         """Execute one full scrape → normalize → analyze → store → notify cycle."""

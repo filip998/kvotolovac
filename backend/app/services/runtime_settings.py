@@ -31,7 +31,7 @@ from .market_allowlist import (
 logger = logging.getLogger(__name__)
 
 _SETTINGS_ROW_ID = 1
-_SUPPORTED_SPORTS = ("basketball", "football")
+_SUPPORTED_SPORTS = ("basketball", "football", "tennis")
 _SCRAPE_INTERVAL_MINUTES_MAX = 24 * 60
 _SCRAPE_LOOKAHEAD_HOURS_MAX = 24 * 365 * 10
 _MAX_MIDDLE_OPPORTUNITIES_PER_MARKET_MAX = 1000
@@ -44,11 +44,7 @@ def _get_settings_lock() -> asyncio.Lock:
     global _SETTINGS_LOCK, _SETTINGS_LOCK_LOOP
 
     loop = asyncio.get_running_loop()
-    if (
-        _SETTINGS_LOCK is None
-        or _SETTINGS_LOCK_LOOP is not loop
-        and not _SETTINGS_LOCK.locked()
-    ):
+    if _SETTINGS_LOCK is None or _SETTINGS_LOCK_LOOP is not loop:
         _SETTINGS_LOCK = asyncio.Lock()
         _SETTINGS_LOCK_LOOP = loop
     return _SETTINGS_LOCK

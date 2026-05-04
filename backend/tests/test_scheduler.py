@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import app.services.runtime_settings as runtime_settings_service
+import app.services.scheduler as scheduler_service
 from app.config import settings
 from app.models.schemas import (
     NormalizedOdds,
@@ -1111,6 +1113,86 @@ async def test_scheduler_shadow_analysis_handles_tennis_outcome_offers(
 
 
 @pytest.mark.asyncio
+async def test_scheduler_analysis_markets_match_canonical_tennis_market_alias(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "enabled_sports", "tennis")
+    monkeypatch.setattr(settings, "analysis_markets", "tennis:match_winner")
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            leagues=(),
+            outcome_sports=("tennis",),
+            outcome_payload_by_sport={
+                "tennis": [_raw_outcome_offer("alpha", "home")],
+            },
+        ),
+        StubScraper(
+            "beta",
+            leagues=(),
+            outcome_sports=("tennis",),
+            outcome_payload_by_sport={
+                "tennis": [_raw_outcome_offer("beta", "away")],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["outcome_offers_scraped"] == 2
+    assert {
+        offer.market_type
+        for offer in await odds_store.get_outcome_offers(sport="tennis")
+    } == {"tennis_match_winner"}
+    opportunities = await odds_store.get_opportunities(sport="tennis")
+    assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
+        ("same_line_arbitrage", "match_winner")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_analysis_markets_match_source_tennis_market_alias(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "enabled_sports", "tennis")
+    monkeypatch.setattr(settings, "analysis_markets", "tennis:tennis_match_winner")
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            leagues=(),
+            outcome_sports=("tennis",),
+            outcome_payload_by_sport={
+                "tennis": [
+                    _raw_outcome_offer("alpha", "home", market_type="match_winner")
+                ],
+            },
+        ),
+        StubScraper(
+            "beta",
+            leagues=(),
+            outcome_sports=("tennis",),
+            outcome_payload_by_sport={
+                "tennis": [
+                    _raw_outcome_offer("beta", "away", market_type="match_winner")
+                ],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["outcome_offers_scraped"] == 2
+    assert {
+        offer.market_type
+        for offer in await odds_store.get_outcome_offers(sport="tennis")
+    } == {"match_winner"}
+    opportunities = await odds_store.get_opportunities(sport="tennis")
+    assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
+        ("same_line_arbitrage", "match_winner")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_scheduler_canonical_analysis_failure_preserves_stale_opportunities(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1304,6 +1386,146 @@ async def test_scheduler_run_cycle_joins_inflight_cycle():
     assert first_result == second_result
     assert len(recorder["starts"]) == 2
     assert len(recorder["finishes"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_scheduler_update_settings_wakes_sleep_without_immediate_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    run_count = 0
+    settings_read_count = 0
+    first_cycle_done = asyncio.Event()
+    first_sleep_armed = asyncio.Event()
+    rescheduled_sleep_armed = asyncio.Event()
+    second_cycle_started = asyncio.Event()
+
+    async def applied_settings():
+        nonlocal settings_read_count
+        settings_read_count += 1
+        if settings_read_count == 1:
+            first_sleep_armed.set()
+        else:
+            rescheduled_sleep_armed.set()
+        return runtime_settings_service.default_scrape_runtime_settings().model_copy(
+            update={"scrape_interval_minutes": scheduler_under_test.interval_minutes}
+        )
+
+    monkeypatch.setattr(
+        scheduler_service,
+        "get_applied_scrape_settings",
+        applied_settings,
+    )
+
+    class RecordingScheduler(Scheduler):
+        async def run_cycle(self) -> dict:
+            nonlocal run_count
+            run_count += 1
+            if run_count == 1:
+                first_cycle_done.set()
+            else:
+                second_cycle_started.set()
+            return {
+                "matches_scraped": 0,
+                "odds_scraped": 0,
+                "outcome_offers_scraped": 0,
+                "opportunities_found": 0,
+            }
+
+    scheduler_under_test = RecordingScheduler(interval_minutes=60)
+    await scheduler_under_test.start()
+    await asyncio.wait_for(first_cycle_done.wait(), timeout=1)
+    await asyncio.wait_for(first_sleep_armed.wait(), timeout=1)
+
+    response = await scheduler_under_test.update_scrape_settings(
+        ScrapeRuntimeSettingsUpdate(scrape_interval_minutes=1)
+    )
+    await asyncio.wait_for(rescheduled_sleep_armed.wait(), timeout=1)
+
+    assert response.applied_immediately is True
+    assert scheduler_under_test.interval_minutes == 1
+    assert second_cycle_started.is_set() is False
+
+    await scheduler_under_test.stop()
+
+
+def test_scheduler_cycle_lock_is_recreated_for_new_event_loop_when_locked():
+    async def acquire_lock() -> asyncio.Lock:
+        lock = scheduler_under_test._get_cycle_lock()
+        await lock.acquire()
+        return lock
+
+    first_loop = asyncio.new_event_loop()
+    second_loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(first_loop)
+        scheduler_under_test = Scheduler(interval_minutes=1)
+        first_lock = first_loop.run_until_complete(acquire_lock())
+
+        async def get_lock() -> asyncio.Lock:
+            return scheduler_under_test._get_cycle_lock()
+
+        asyncio.set_event_loop(second_loop)
+        second_lock = second_loop.run_until_complete(get_lock())
+    finally:
+        if "first_lock" in locals():
+            first_lock.release()
+        first_loop.close()
+        second_loop.close()
+        asyncio.set_event_loop(None)
+
+    assert second_lock is not first_lock
+
+
+def test_scheduler_wake_event_is_recreated_between_event_loops():
+    class RecordingScheduler(Scheduler):
+        async def run_cycle(self) -> dict:
+            return {
+                "matches_scraped": 0,
+                "odds_scraped": 0,
+                "outcome_offers_scraped": 0,
+                "opportunities_found": 0,
+            }
+
+    scheduler_under_test = RecordingScheduler(interval_minutes=60)
+
+    async def start_and_stop() -> asyncio.Event:
+        await scheduler_under_test.start()
+        await asyncio.sleep(0.01)
+        await scheduler_under_test.stop()
+        assert scheduler_under_test._wake_event is not None
+        return scheduler_under_test._wake_event
+
+    first_event = asyncio.run(start_and_stop())
+    second_event = asyncio.run(start_and_stop())
+
+    assert second_event is not first_event
+
+
+def test_runtime_settings_lock_is_recreated_for_new_event_loop_when_locked():
+    async def acquire_lock() -> asyncio.Lock:
+        lock = runtime_settings_service._get_settings_lock()
+        await lock.acquire()
+        return lock
+
+    first_loop = asyncio.new_event_loop()
+    second_loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(first_loop)
+        first_lock = first_loop.run_until_complete(acquire_lock())
+
+        async def get_lock() -> asyncio.Lock:
+            return runtime_settings_service._get_settings_lock()
+
+        asyncio.set_event_loop(second_loop)
+        second_lock = second_loop.run_until_complete(get_lock())
+    finally:
+        if "first_lock" in locals():
+            first_lock.release()
+        first_loop.close()
+        second_loop.close()
+        asyncio.set_event_loop(None)
+
+    assert second_lock is not first_lock
 
 
 @pytest.mark.asyncio
