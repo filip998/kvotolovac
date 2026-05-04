@@ -6,7 +6,9 @@ from app.config import settings
 from app.models.schemas import RawOutcomeOffer
 from app.services.normalizer import generate_match_id
 from app.services.outcome_normalizer import (
+    _same_team_context,
     _team_similarity,
+    _team_qualifiers,
     normalize_outcome_offers_with_diagnostics,
 )
 from app.services.team_registry import create_canonical_team
@@ -58,6 +60,11 @@ def test_team_similarity_does_not_force_strict_subset_to_exact_match():
 
 def test_team_similarity_allows_low_signal_prefix_difference():
     assert _team_similarity("Llosetense", "CD Llosetense") == 100.0
+
+
+def test_team_qualifiers_treat_prefix_women_as_explicit_marker():
+    assert _team_qualifiers("Women Sao Jose", sport="football") == {"women"}
+    assert _same_team_context("Women Sao Jose", "Sao Jose Women", sport="football")
 
 
 def test_exact_cross_book_football_event_normalizes_without_auto_aliases(team_registry_file):
@@ -185,6 +192,31 @@ def test_fuzzy_football_event_match_does_not_create_aliases(team_registry_file):
     assert unresolved == []
     assert "CD Llosetense" in _canonical_team_names()
     assert "CSKA Moskva" in _canonical_team_names()
+    assert _auto_review_alias_count() == 0
+
+
+def test_football_event_match_ignores_equivalent_women_marker_text(team_registry_file):
+    raw = [
+        _offer(
+            "superbet",
+            "Sao Jose Campos (Ž)",
+            "Santo Andre (Ž)",
+            outcome_code="over",
+        ),
+        _offer(
+            "pinnbet",
+            "Sao Jose Wom.",
+            "Santo Andre Wom.",
+            outcome_code="under",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 2
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert unresolved == []
+    assert review_cases == []
     assert _auto_review_alias_count() == 0
 
 

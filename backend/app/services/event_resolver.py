@@ -23,9 +23,9 @@ from .normalizer import generate_match_id
 from .outcome_normalizer import (
     _AGGRESSIVE_MERGE_SPORTS,
     _build_football_event_resolutions,
+    _comparison_team_text,
     _event_key_from_raw,
     _same_team_context,
-    _strip_explicit_z_women_markers,
     _team_similarity,
     _team_qualifiers,
 )
@@ -97,22 +97,6 @@ class SameTimeCanonicalMergeProposal:
     canonical_home_team: str
     canonical_away_team: str
     score: float
-
-
-_WOMEN_MARKER_TOKENS = frozenset({"w", "wom", "women"})
-
-
-def _comparison_team_text(team_name: str, *, sport: str | None = None) -> str:
-    qualifiers = _team_qualifiers(team_name, sport=sport)
-    comparison_name = (
-        _strip_explicit_z_women_markers(team_name)
-        if "women" in qualifiers
-        else team_name
-    )
-    tokens = normalize_identity_text(comparison_name).split()
-    if "women" in qualifiers:
-        tokens = [token for token in tokens if token not in _WOMEN_MARKER_TOKENS]
-    return " ".join(tokens)
 
 
 def _significant_team_tokens(team_name: str, *, sport: str | None = None) -> set[str]:
@@ -676,8 +660,8 @@ def _resolver_team_similarity(
 ) -> float:
     """Event-resolver-local team similarity that pre-expands dot-truncations.
 
-    Equivalent to :func:`_team_similarity` (kept untouched on purpose so
-    football paths see no regression) for cases without dotted abbreviations.
+    Equivalent to :func:`_team_similarity` for cases without dotted
+    abbreviations.
 
     Sport-gated: dot expansion only fires for sports in
     ``_TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE``. Football has its own
@@ -692,10 +676,7 @@ def _resolver_team_similarity(
     if sport in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
         expanded_left = _expand_dotted_token(left, right)
         expanded_right = _expand_dotted_token(right, left)
-    return _team_similarity(
-        _comparison_team_text(expanded_left, sport=sport),
-        _comparison_team_text(expanded_right, sport=sport),
-    )
+    return _team_similarity(expanded_left, expanded_right, sport=sport)
 
 
 def _orientation_scores(

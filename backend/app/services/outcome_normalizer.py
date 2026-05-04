@@ -48,6 +48,7 @@ _TEAM_QUALIFIER_TOKENS = {
 # this set because it is a common location abbreviation in football; only
 # explicit marker syntax such as "(Ž)" or "Ž/" is treated as women.
 _WOMEN_QUALIFIER_ALIASES = frozenset({"w", "wom", "women"})
+_WOMEN_MARKER_TOKENS = frozenset({"w", "wom", "women"})
 _AGGRESSIVE_MERGE_SPORTS = frozenset({"basketball"})
 _EXPLICIT_Z_WOMEN_MARKER_RE = re.compile(
     r"(^|\s)ž(?=$|\s)|\(\s*[žz]\s*\)|^\s*[žz]\s*/",
@@ -111,23 +112,23 @@ class _OutcomeEventPair:
         return min(self.home_score, self.away_score)
 
 
-def _significant_tokens(name: str) -> set[str]:
+def _significant_tokens(name: str, *, sport: str | None = None) -> set[str]:
     return {
         token
-        for token in normalize_identity_text(name).split()
+        for token in _comparison_team_text(name, sport=sport).split()
         if token not in _LOW_SIGNAL_TEAM_TOKENS
     }
 
 
-def _team_similarity(left: str, right: str) -> float:
-    left_key = normalize_identity_text(left)
-    right_key = normalize_identity_text(right)
+def _team_similarity(left: str, right: str, *, sport: str | None = None) -> float:
+    left_key = _comparison_team_text(left, sport=sport)
+    right_key = _comparison_team_text(right, sport=sport)
     if not left_key or not right_key:
         return 0.0
     if left_key == right_key:
         return 100.0
-    left_tokens = _significant_tokens(left)
-    right_tokens = _significant_tokens(right)
+    left_tokens = _significant_tokens(left, sport=sport)
+    right_tokens = _significant_tokens(right, sport=sport)
     if left_tokens and left_tokens == right_tokens:
         return 100.0
     return float(fuzz.token_sort_ratio(left_key, right_key))
@@ -167,12 +168,17 @@ def _team_qualifiers(name: str, *, sport: str | None = None) -> set[str]:
                 qualifiers.add(token)
             continue
         if token in _WOMEN_QUALIFIER_ALIASES:
+            is_explicit_prefix = (
+                token in {"women", "wom"}
+                and index == 0
+                and len(tokens) > 1
+            )
             is_suffix = index > 0 and (
                 index == len(tokens) - 1
                 or next_token in {"team", "women"}
                 or suffix_has_qualifier(index + 1)
             )
-            if is_suffix:
+            if is_explicit_prefix or is_suffix:
                 qualifiers.add("women")
             continue
         if token == "z":
@@ -206,6 +212,19 @@ def _strip_explicit_z_women_markers(name: str) -> str:
         without_leading_slash,
         flags=re.IGNORECASE,
     )
+
+
+def _comparison_team_text(team_name: str, *, sport: str | None = None) -> str:
+    qualifiers = _team_qualifiers(team_name, sport=sport)
+    comparison_name = (
+        _strip_explicit_z_women_markers(team_name)
+        if "women" in qualifiers
+        else team_name
+    )
+    tokens = normalize_identity_text(comparison_name).split()
+    if "women" in qualifiers:
+        tokens = [token for token in tokens if token not in _WOMEN_MARKER_TOKENS]
+    return " ".join(tokens)
 
 
 def _same_team_context(left: str, right: str, *, sport: str | None = None) -> bool:
@@ -284,8 +303,12 @@ def _pair_candidates(left: _OutcomeEvent, right: _OutcomeEvent) -> _OutcomeEvent
             _OutcomeEventPair(
                 left=left,
                 right=right,
-                home_score=_team_similarity(left.home_team, right.home_team),
-                away_score=_team_similarity(left.away_team, right.away_team),
+                home_score=_team_similarity(
+                    left.home_team, right.home_team, sport=left.sport
+                ),
+                away_score=_team_similarity(
+                    left.away_team, right.away_team, sport=left.sport
+                ),
                 orientation=_SAME_ORIENTATION,
             )
         )
@@ -294,8 +317,12 @@ def _pair_candidates(left: _OutcomeEvent, right: _OutcomeEvent) -> _OutcomeEvent
             _OutcomeEventPair(
                 left=left,
                 right=right,
-                home_score=_team_similarity(left.home_team, right.away_team),
-                away_score=_team_similarity(left.away_team, right.home_team),
+                home_score=_team_similarity(
+                    left.home_team, right.away_team, sport=left.sport
+                ),
+                away_score=_team_similarity(
+                    left.away_team, right.home_team, sport=left.sport
+                ),
                 orientation=_REVERSED_ORIENTATION,
             )
         )
