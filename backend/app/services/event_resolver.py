@@ -21,6 +21,7 @@ from ..store import odds_store
 from .league_registry import resolve_league
 from .normalizer import generate_match_id
 from .outcome_normalizer import (
+    _AGGRESSIVE_MERGE_SPORTS,
     _build_football_event_resolutions,
     _event_key_from_raw,
     _same_team_context,
@@ -554,7 +555,11 @@ def _raw_outcome_sources(raw_offers: list[RawOutcomeOffer]) -> list[_RawEventSou
     return list(sources.values())
 
 
-_TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE: frozenset[str] = frozenset({"basketball"})
+# Sports for which the resolver activates aggressive aliasing & dot-expansion
+# heuristics. Re-exported alias of ``outcome_normalizer._AGGRESSIVE_MERGE_SPORTS``
+# so the two modules cannot drift; new sports must be enabled in exactly one
+# place.
+_TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE: frozenset[str] = _AGGRESSIVE_MERGE_SPORTS
 
 # 2-letter dot-prefixes that overlap heavily with non-team words (street,
 # fort, mount, port, point, doctor, mister, avenue, saint) and would

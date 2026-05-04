@@ -5,11 +5,19 @@ import sqlite3
 import pytest
 
 from app.config import settings
-from app.models.schemas import NormalizedOdds, NormalizedOutcomeOffer, RawOddsData, RawOutcomeOffer
+from app.models.schemas import (
+    NormalizedOdds,
+    NormalizedOutcomeOffer,
+    RawOddsData,
+    RawOutcomeOffer,
+    TeamReviewCandidate,
+    TeamReviewDiagnostic,
+)
 from app.services.event_resolver import (
     EventCandidate,
     _CandidateGroup,
     _PairResolution,
+    _contextual_merge_source_ids,
     _event_review_case,
     SameTimeCanonicalSlot,
     _same_time_slot_orientation,
@@ -2067,4 +2075,93 @@ def test_team_qualifiers_wom_alias_does_not_apply_to_football():
     assert _team_qualifiers("Sao Jose Wom", sport="basketball") == {"women"}
     assert _same_team_context(
         "Sao Jose Wom", "Sao Jose Women", sport="basketball"
+    )
+
+
+def test_contextual_merge_source_ids_threads_sport_to_helpers():
+    """Round-2 review (Opus 1M) integration regression for the scheduler-driven
+    canonical-team auto-merge path.
+
+    The Round 1 bug was that ``_team_qualifiers`` returned ``{women}`` for
+    any 3+ token name ending in literal ``z`` for *every* sport, so
+    ``scheduler._candidate_merge_source_ids`` →
+    ``_contextual_merge_source_ids`` →
+    ``_canonical_team_auto_merge_score`` silently rejected legitimate
+    Slavic-football canonical merges. The Round 2 fix sport-gates the
+    qualifier aliases by threading ``sport=case.sport`` through the call
+    chain.
+
+    A realistic football pair like ``FK Crvena Zvezda Z`` ↔
+    ``FK Crvena Zvezda Belgrade`` cannot be reproduced at this layer
+    because the unsafe-subset gate or the fuzzy threshold (88.0) blocks
+    the score regardless of qualifier alignment. So this test uses a
+    deliberately-symmetric pair (``Aalesund Wom`` ↔ ``Aalesund Women``)
+    where the *only* thing that flips the merge decision between
+    basketball and football is whether the ``wom`` → ``women`` alias is
+    active. That makes the test sensitive to a future refactor that drops
+    ``sport=case.sport`` from the
+    ``_canonical_team_auto_merge_score`` call site at
+    ``event_resolver.py`` (currently line ~291): both invocations would
+    silently fall back to the conservative path and the basketball
+    assertion would fail loudly.
+    """
+
+    basketball_case = TeamReviewDiagnostic(
+        bookmaker_id="meridian",
+        raw_league_id="norway_basket",
+        normalized_raw_league_id="norway_basket",
+        sport="basketball",
+        scope_league_id="norway_basket",
+        raw_team_name="Aalesund Wom",
+        normalized_raw_team_name="aalesund wom",
+        suggested_team_id=101,
+        suggested_team_name="Aalesund Women",
+        start_time=START_TIME,
+        reason_code="candidate_team_match_same_start_time",
+        confidence="very_high",
+        similarity_score=92.0,
+        matched_counterpart_team="Bergen Women",
+        canonical_home_team="Aalesund Women",
+        canonical_away_team="Bergen Women",
+        candidate_teams=[
+            TeamReviewCandidate(
+                team_id=101,
+                team_name="Aalesund Women",
+                score=92.0,
+                slot_support=3,
+                canonical_home_team="Aalesund Women",
+                canonical_away_team="Bergen Women",
+            ),
+            TeamReviewCandidate(
+                team_id=202,
+                team_name="Aalesund Wom",
+                score=92.0,
+                slot_support=2,
+                canonical_home_team="Aalesund Wom",
+                canonical_away_team="Bergen Women",
+            ),
+        ],
+    )
+
+    assert _contextual_merge_source_ids(basketball_case) == {202}, (
+        "Basketball case: ``Aalesund Wom`` (lower slot_support) must merge "
+        "into ``Aalesund Women``. Both names alias to the ``women`` "
+        "qualifier in basketball, the symmetric score is 92.3 (>=88), "
+        "neither name is a strict subset of the other, and the canonical "
+        "event teams overlap on ``Bergen Women``."
+    )
+
+    # Football: identical case structure, only the sport flips. Without the
+    # sport gate, the football path would call ``_team_qualifiers`` and find
+    # ``Aalesund Wom`` → set() while ``Aalesund Women`` → {women}, the sets
+    # diverge and ``_same_team_context`` rejects the pair. So the merge is
+    # blocked. If a future refactor removes the ``sport=case.sport`` kwarg,
+    # both basketball and football cases would silently use the conservative
+    # path and this assertion would still hold — but the basketball
+    # assertion above would flip from {202} to set(), catching the
+    # regression loudly.
+    football_case = basketball_case.model_copy(update={"sport": "football"})
+    assert _contextual_merge_source_ids(football_case) == set(), (
+        "Football case: divergent qualifier sets (``Wom`` is a no-op alias "
+        "in football) must continue to block the canonical-team auto-merge."
     )

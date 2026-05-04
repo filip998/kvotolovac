@@ -209,7 +209,7 @@ class TeamReviewDiagnostic(BaseModel):
     bookmaker_id: str
     raw_league_id: str
     normalized_raw_league_id: str
-    sport: str = "basketball"
+    sport: str
     scope_league_id: Optional[str] = None
     raw_team_name: str
     normalized_raw_team_name: str
