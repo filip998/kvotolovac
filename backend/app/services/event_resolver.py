@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 import hashlib
 import logging
+import re
 
 from rapidfuzz import fuzz
 
@@ -38,6 +39,23 @@ _REVIEW_FUZZY_AVG_SCORE = 65.0
 _FUZZY_ORIENTATION_MARGIN = 8.0
 _SOURCE_MATCH_MIN_SCORE = 60.0
 CANONICAL_TEAM_AUTO_MERGE_THRESHOLD = 88.0
+# Anchored low-confidence merge: applies only when the two groups are at the
+# exact same (sport, start_time) slot AND a non-fuzzy corroborator is present
+# (token subset on the weak side, or shared significant token + same league).
+# Combined bookmaker count >= _ANCHORED_MIN_BOOKMAKERS guards against the
+# 2-bookmaker false-positive cases preserved by the South/North Korea and
+# Austria/Australia regression tests.
+_ANCHORED_FUZZY_AVG_SCORE = 70.0
+_ANCHORED_FUZZY_SIDE_SCORE = 50.0
+_ANCHORED_MIN_BOOKMAKERS = 3
+# Same-bookmaker conflict resolution by quorum: if one exact group dwarfs the
+# other in distinct bookmaker count, fold the smaller group into the larger
+# despite a same-bookmaker overlap. Uses the immutable per-group bookmaker
+# sets, never the (mutable) DSU root sizes, so the decision is order-independent.
+_QUORUM_FUZZY_AVG_SCORE = 80.0
+_QUORUM_FUZZY_SIDE_SCORE = 60.0
+_QUORUM_MIN_LARGER_BOOKMAKERS = 5
+_QUORUM_MIN_BOOKMAKER_DIFFERENCE = 3
 _LOW_SIGNAL_TEAM_TOKENS = {
     "bc",
     "bk",
@@ -411,6 +429,7 @@ class _OrientationScore:
 class _PairResolution:
     confidence: float
     score: float
+    weak_side_score: float
     orientation: str
     reason_code: str
     evidence: tuple[str, ...]
@@ -527,6 +546,77 @@ def _raw_outcome_sources(raw_offers: list[RawOutcomeOffer]) -> list[_RawEventSou
     return list(sources.values())
 
 
+_TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE: frozenset[str] = frozenset({"basketball"})
+
+
+def _expand_dotted_token(name: str, counterpart: str) -> str:
+    """Substitute dot-truncated tokens (``Ch.``, ``Pl.``, ``Ch.More``) by an
+    unambiguous expansion drawn from ``counterpart``.
+
+    Only used inside the event resolver — keeps shared :func:`_team_similarity`
+    untouched so football pairing is unaffected. Restrictions:
+
+    * Token must end with ``.`` and have at least 2 characters of prefix
+      (1-letter prefixes are too ambiguous, e.g. ``B.`` could be Bayern,
+      Brest, Belgrade, …).
+    * The counterpart must contain exactly one token starting with that
+      prefix; ambiguous expansions are dropped.
+    * The source name must contain at least one OTHER non-dotted token that
+      already appears in the counterpart — this anchors the expansion in
+      genuine name overlap and blocks coincidences like
+      ``St. Petersburg`` ↔ ``Stockholm Giants`` where ``St`` would
+      otherwise expand to ``Stockholm`` purely on prefix uniqueness.
+
+    Compound tokens with internal dots (``Ch.More`` → ``Ch. More``) are
+    pre-split before expansion so a missing space after the period does not
+    mask the abbreviation.
+    """
+
+    spaced = re.sub(r"\.(?=\S)", ". ", name)
+    counterpart_spaced = re.sub(r"\.(?=\S)", ". ", counterpart)
+    counterpart_tokens = counterpart_spaced.split()
+    counterpart_token_set = {token.lower().rstrip(".") for token in counterpart_tokens}
+    source_tokens = spaced.split()
+    has_anchor = any(
+        not token.endswith(".") and token.lower() in counterpart_token_set
+        for token in source_tokens
+    )
+    if not has_anchor:
+        return name
+    output: list[str] = []
+    for token in source_tokens:
+        if not token.endswith(".") or len(token) < 3:
+            output.append(token)
+            continue
+        prefix = token[:-1].lower()
+        if len(prefix) < 2:
+            output.append(token)
+            continue
+        candidates = [
+            candidate
+            for candidate in counterpart_tokens
+            if len(candidate) > len(prefix)
+            and candidate.lower().startswith(prefix)
+        ]
+        if len(candidates) == 1:
+            output.append(candidates[0])
+        else:
+            output.append(token)
+    return " ".join(output)
+
+
+def _resolver_team_similarity(left: str, right: str) -> float:
+    """Event-resolver-local team similarity that pre-expands dot-truncations.
+
+    Equivalent to :func:`_team_similarity` (kept untouched on purpose so
+    football paths see no regression) for cases without dotted abbreviations.
+    """
+
+    expanded_left = _expand_dotted_token(left, right)
+    expanded_right = _expand_dotted_token(right, left)
+    return _team_similarity(expanded_left, expanded_right)
+
+
 def _orientation_scores(
     left_home: str,
     left_away: str,
@@ -538,20 +628,19 @@ def _orientation_scores(
         scores.append(
             _OrientationScore(
                 orientation="as_listed",
-                home_score=_team_similarity(left_home, right_home),
-                away_score=_team_similarity(left_away, right_away),
+                home_score=_resolver_team_similarity(left_home, right_home),
+                away_score=_resolver_team_similarity(left_away, right_away),
             )
         )
     if _same_team_context(left_home, right_away) and _same_team_context(left_away, right_home):
         scores.append(
             _OrientationScore(
                 orientation="reversed",
-                home_score=_team_similarity(left_home, right_away),
-                away_score=_team_similarity(left_away, right_home),
+                home_score=_resolver_team_similarity(left_home, right_away),
+                away_score=_resolver_team_similarity(left_away, right_home),
             )
         )
     return sorted(scores, key=lambda score: score.avg_score, reverse=True)
-
 
 def _is_subset_or_equal_token_pair(left_name: str, right_name: str) -> bool:
     """True iff one team's significant tokens are a subset/equal of the other's.
@@ -819,11 +908,126 @@ def extract_event_candidates(
     )
 
 
+def _shared_significant_tokens(left_name: str, right_name: str) -> set[str]:
+    return _significant_team_tokens(left_name) & _significant_team_tokens(right_name)
+
+
+def _passes_anchored_low_conf(
+    *,
+    left_candidate: EventCandidate,
+    right_candidate: EventCandidate,
+    top: _OrientationScore,
+    combined_bookmaker_count: int,
+) -> bool:
+    """Lower-threshold corroborated merge for same-slot pairs.
+
+    Restricted to basketball (``_TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE``):
+    football has its own outcome_normalizer pairing flow and the basketball-
+    tuned thresholds (avg ≥ 70 / weak ≥ 50) would generate false positives
+    on common patterns such as ``Manchester United`` ↔ ``Manchester City``
+    (same league, shared significant token, weak side ≈ 62).
+
+    Requires:
+
+    * Average score :math:`\\geq` :data:`_ANCHORED_FUZZY_AVG_SCORE` and weak side
+      :math:`\\geq` :data:`_ANCHORED_FUZZY_SIDE_SCORE`.
+    * One non-fuzzy corroborator:
+
+      - Weak side is a token subset / equal of the strong side, **or**
+      - Weak side shares at least one significant token **and** both
+        candidates resolve to the same source league.
+
+    * Combined unique bookmakers across the two exact groups
+      :math:`\\geq` :data:`_ANCHORED_MIN_BOOKMAKERS`. This guards against the
+      2-bookmaker false-positive cases preserved by the South/North Korea
+      and Austria/Australia regression tests.
+    """
+
+    if left_candidate.sport not in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
+        return False
+    if right_candidate.sport not in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
+        return False
+
+    if top.avg_score < _ANCHORED_FUZZY_AVG_SCORE:
+        return False
+    if top.weak_side_score < _ANCHORED_FUZZY_SIDE_SCORE:
+        return False
+    if combined_bookmaker_count < _ANCHORED_MIN_BOOKMAKERS:
+        return False
+
+    if top.orientation == "as_listed":
+        home_pair = (left_candidate.home_team, right_candidate.home_team)
+        away_pair = (left_candidate.away_team, right_candidate.away_team)
+    else:
+        home_pair = (left_candidate.home_team, right_candidate.away_team)
+        away_pair = (left_candidate.away_team, right_candidate.home_team)
+    weak_pair = home_pair if top.home_score <= top.away_score else away_pair
+
+    if _is_subset_or_equal_token_pair(*weak_pair):
+        return True
+
+    if not _shared_significant_tokens(*weak_pair):
+        return False
+
+    left_league = left_candidate.source_league_id
+    right_league = right_candidate.source_league_id
+    return bool(left_league and right_league and left_league == right_league)
+
+
+def _quorum_resolution_passes(
+    left: _CandidateGroup,
+    right: _CandidateGroup,
+    pair: _PairResolution,
+) -> bool:
+    """Same-bookmaker conflict override using only the immutable per-group
+    bookmaker sets.
+
+    Restricted to basketball (``_TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE``):
+    football has its own outcome_normalizer pairing flow with stricter
+    handling, and the quorum thresholds were tuned for the basketball
+    Heidelberg-style fragmentations the user reported.
+
+    The DSU root sizes mutate during the pair loop, so basing this decision on
+    them would make the outcome order-dependent. Reading ``left.bookmakers``
+    and ``right.bookmakers`` (the original exact-group sets) keeps the override
+    deterministic.
+
+    Required:
+
+    * ``pair.score >= _QUORUM_FUZZY_AVG_SCORE`` and
+      ``pair.weak_side_score >= _QUORUM_FUZZY_SIDE_SCORE`` (high-confidence
+      fuzzy match already established).
+    * Larger group has ``>= _QUORUM_MIN_LARGER_BOOKMAKERS`` bookmakers.
+    * Larger group exceeds the smaller by ``>= _QUORUM_MIN_BOOKMAKER_DIFFERENCE``
+      bookmakers (4 vs 4 would not qualify; 9 vs 2 does).
+    """
+
+    representative = next(iter(left.candidates), None)
+    if representative is None:
+        return False
+    if representative.sport not in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
+        return False
+
+    if pair.score < _QUORUM_FUZZY_AVG_SCORE:
+        return False
+    if pair.weak_side_score < _QUORUM_FUZZY_SIDE_SCORE:
+        return False
+
+    larger_count = max(len(left.bookmakers), len(right.bookmakers))
+    smaller_count = min(len(left.bookmakers), len(right.bookmakers))
+    if larger_count < _QUORUM_MIN_LARGER_BOOKMAKERS:
+        return False
+    if larger_count - smaller_count < _QUORUM_MIN_BOOKMAKER_DIFFERENCE:
+        return False
+    return True
+
+
 def _group_pair_resolution(
     left: _CandidateGroup,
     right: _CandidateGroup,
 ) -> _PairResolution | None:
     best: _PairResolution | None = None
+    combined_bookmaker_count = len(left.bookmakers | right.bookmakers)
     for left_candidate in left.candidates:
         for right_candidate in right.candidates:
             scores = _orientation_scores(
@@ -842,6 +1046,7 @@ def _group_pair_resolution(
                 resolution = _PairResolution(
                     confidence=top.avg_score / 100,
                     score=top.avg_score,
+                    weak_side_score=top.weak_side_score,
                     orientation=top.orientation,
                     reason_code="ambiguous_event_orientation",
                     evidence=(
@@ -866,6 +1071,7 @@ def _group_pair_resolution(
                 resolution = _PairResolution(
                     confidence=top.avg_score / 100,
                     score=top.avg_score,
+                    weak_side_score=top.weak_side_score,
                     orientation=top.orientation,
                     reason_code="high_confidence_fuzzy_event_match",
                     evidence=(
@@ -878,10 +1084,35 @@ def _group_pair_resolution(
                         ),
                     ),
                 )
+            elif _passes_anchored_low_conf(
+                left_candidate=left_candidate,
+                right_candidate=right_candidate,
+                top=top,
+                combined_bookmaker_count=combined_bookmaker_count,
+            ):
+                resolution = _PairResolution(
+                    confidence=top.avg_score / 100,
+                    score=top.avg_score,
+                    weak_side_score=top.weak_side_score,
+                    orientation=top.orientation,
+                    reason_code="high_confidence_fuzzy_event_match",
+                    evidence=(
+                        f"Exact start time: {left_candidate.start_time}",
+                        (
+                            "Anchored low-confidence cross-bookmaker fuzzy teams: "
+                            f"{left_candidate.home_team} vs {left_candidate.away_team} ↔ "
+                            f"{right_candidate.home_team} vs {right_candidate.away_team} "
+                            f"({top.orientation}, score {top.avg_score:.1f}, "
+                            f"weak {top.weak_side_score:.1f}, "
+                            f"{combined_bookmaker_count} bookmakers, league anchored)"
+                        ),
+                    ),
+                )
             elif top.avg_score >= _REVIEW_FUZZY_AVG_SCORE:
                 resolution = _PairResolution(
                     confidence=top.avg_score / 100,
                     score=top.avg_score,
+                    weak_side_score=top.weak_side_score,
                     orientation=top.orientation,
                     reason_code="possible_event_equivalence_low_confidence",
                     evidence=(
@@ -1056,6 +1287,14 @@ def build_event_resolution_groups(
             for right in sorted_groups[left_index + 1 :]:
                 if left.representative.exact_event_key == right.representative.exact_event_key:
                     continue
+                # Skip pairs whose groups are already in the same DSU component
+                # because of an earlier accepted merge. Without this guard,
+                # `dsu.can_union` returning False on already-merged pairs would
+                # be misinterpreted as a same-bookmaker conflict and emit a
+                # spurious review case (or, worse, a spurious quorum audit on
+                # an already-merged component).
+                if dsu.find(left.index) == dsu.find(right.index):
+                    continue
                 pair = _group_pair_resolution(left, right)
                 if pair is None:
                     continue
@@ -1063,10 +1302,45 @@ def build_event_resolution_groups(
                     if dsu.can_union(left.index, right.index):
                         dsu.union(left.index, right.index)
                         accepted_pairs.append((left.index, right.index, pair))
+                    elif _quorum_resolution_passes(left, right, pair):
+                        dsu.union(left.index, right.index)
+                        quorum_pair = _PairResolution(
+                            confidence=pair.confidence,
+                            score=pair.score,
+                            weak_side_score=pair.weak_side_score,
+                            orientation=pair.orientation,
+                            reason_code="high_confidence_fuzzy_event_match",
+                            evidence=(
+                                *pair.evidence,
+                                (
+                                    "Quorum-resolved same-bookmaker conflict: "
+                                    f"larger group has {len(left.bookmakers | right.bookmakers)} "
+                                    "combined bookmakers and dominant size advantage"
+                                ),
+                            ),
+                        )
+                        accepted_pairs.append((left.index, right.index, quorum_pair))
+                        # Log the override for operator visibility instead of
+                        # emitting an audit review case. The override is
+                        # explicitly intended to clear pairs from the manual
+                        # queue per the user's "few wrong is OK" preference,
+                        # so adding a parallel audit row would defeat that
+                        # goal and accumulate stale entries every cycle.
+                        logger.info(
+                            "event_resolver.quorum_override match_ids=%s vs %s "
+                            "score=%.1f weak=%.1f bookmakers=%s vs %s",
+                            sorted(left.match_ids),
+                            sorted(right.match_ids),
+                            pair.score,
+                            pair.weak_side_score,
+                            sorted(left.bookmakers),
+                            sorted(right.bookmakers),
+                        )
                     else:
                         conflict_pair = _PairResolution(
                             confidence=pair.confidence,
                             score=pair.score,
+                            weak_side_score=pair.weak_side_score,
                             orientation=pair.orientation,
                             reason_code="conflicting_same_bookmaker_event_candidate",
                             evidence=(

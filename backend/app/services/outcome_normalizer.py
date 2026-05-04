@@ -40,8 +40,10 @@ _TEAM_QUALIFIER_TOKENS = {
     "u21",
     "u23",
     "w",
+    "wom",
     "women",
     "youth",
+    "z",
 }
 _SAME_ORIENTATION = "same"
 _REVERSED_ORIENTATION = "reversed"
@@ -152,8 +154,23 @@ def _team_qualifiers(name: str) -> set[str]:
             if index > 0 and (index == len(tokens) - 1 or next_token == "team" or suffix_has_qualifier(index + 1)):
                 qualifiers.add(token)
             continue
-        if token == "w":
-            if index > 0 and (index == len(tokens) - 1 or next_token in {"team", "women"} or suffix_has_qualifier(index + 1)):
+        if token in {"w", "wom", "z"}:
+            # Aliases for the "women" qualifier when they appear as a trailing
+            # suffix marker (e.g. "Sao Jose W", "Sao Jose Wom.", "Sao Jose (Ž)"
+            # whose normalised form is "sao jose z" after diacritic stripping).
+            # Restrict to suffix position so legitimate name initials such as
+            # "Z. Velickovic" do not flip a team's gender. The single-letter
+            # "z" alias additionally requires at least three tokens — this
+            # rules out 2-token names like "Real Z" / "Bayern Z" that would
+            # otherwise be tagged as women's teams purely on the trailing
+            # letter while keeping the user-reported "Sao Jose Z" pattern
+            # (3 tokens) covered.
+            is_suffix = index > 0 and (
+                index == len(tokens) - 1
+                or next_token in {"team", "women"}
+                or suffix_has_qualifier(index + 1)
+            )
+            if is_suffix and (token != "z" or len(tokens) >= 3):
                 qualifiers.add("women")
             continue
         if token not in _TEAM_QUALIFIER_TOKENS:

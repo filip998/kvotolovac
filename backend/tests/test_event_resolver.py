@@ -91,6 +91,7 @@ def test_event_review_case_metadata_records_exact_source_variant_pairs():
         _PairResolution(
             confidence=0.8,
             score=80.0,
+            weak_side_score=70.0,
             orientation="as_listed",
             reason_code="possible_event_equivalence_low_confidence",
             evidence=("fuzzy team label match",),
@@ -782,4 +783,1077 @@ async def test_event_resolver_does_not_auto_merge_distinct_non_subset_teams(
     # non-subset path retains the strict avg >= 90 / weak >= 82 floor.
     assert result.resolved_events == 2
     events = await odds_store.list_resolved_events(sport="basketball")
+    assert {event.method for event in events} == {"exact"}
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_anchored_low_conf_merges_with_three_bookmakers_and_league_anchor(
+    team_registry_file,
+):
+    """Heuristic 1: anchored low-confidence merge.
+
+    Pisek-style fragmentation. The weak side score (~64) sits below the
+    standard auto-merge floor (75) but the pair has:
+
+    * avg score 81.8 >= ``_ANCHORED_FUZZY_AVG_SCORE`` (70)
+    * weak side 63.6 >= ``_ANCHORED_FUZZY_SIDE_SCORE`` (50)
+    * shared significant token ("Pisek") + same source league
+    * 3 unique bookmakers across both groups
+
+    so the anchored corroborated branch fires and the events merge.
+    """
+
+    srsni = create_canonical_team(display_name="Srsni Pisek", sport="basketball")
+    sokol = create_canonical_team(display_name="Sokol Pisek", sport="basketball")
+    pardubice = create_canonical_team(display_name="Pardubice", sport="basketball")
+    league_id = "ceska_liga"
+    await _seed_bookmakers("mozzart", "meridian", "superbet")
+    await _seed_league(league_id, "basketball")
+    mozzart_match_id = generate_match_id(
+        srsni.team_id, pardubice.team_id, START_TIME, "basketball"
+    )
+    other_match_id = generate_match_id(
+        sokol.team_id, pardubice.team_id, START_TIME, "basketball"
+    )
+    normalized = [
+        _basketball_odds(
+            "mozzart",
+            match_id=mozzart_match_id,
+            league_id=league_id,
+            home_team_id=srsni.team_id,
+            away_team_id=pardubice.team_id,
+            home_team=srsni.team_name,
+            away_team=pardubice.team_name,
+            threshold=12.5,
+        ),
+        _basketball_odds(
+            "meridian",
+            match_id=other_match_id,
+            league_id=league_id,
+            home_team_id=sokol.team_id,
+            away_team_id=pardubice.team_id,
+            home_team=sokol.team_name,
+            away_team=pardubice.team_name,
+            threshold=13.5,
+        ),
+        _basketball_odds(
+            "superbet",
+            match_id=other_match_id,
+            league_id=league_id,
+            home_team_id=sokol.team_id,
+            away_team_id=pardubice.team_id,
+            home_team=sokol.team_name,
+            away_team=pardubice.team_name,
+            threshold=14.5,
+        ),
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOddsData(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="basketball",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            market_type=row.market_type,
+            player_name=row.player_name,
+            threshold=row.threshold,
+            over_odds=row.over_odds,
+            under_odds=row.under_odds,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=raw,
+        raw_outcome_offers=[],
+        normalized_odds=normalized,
+        normalized_outcome_offers=[],
+    )
+
+    assert result.resolved_events == 1
+    events = await odds_store.list_resolved_events(sport="basketball")
+    assert len(events) == 1
+    event = await odds_store.get_resolved_event(events[0].id)
+    assert event is not None
+    assert event.method == "auto_fuzzy_high"
+    assert {member.bookmaker_id for member in event.members} == {
+        "mozzart",
+        "meridian",
+        "superbet",
+    }
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_anchored_low_conf_does_not_merge_with_two_bookmakers(
+    team_registry_file,
+):
+    """Negative regression: same Pisek-style pair with only 2 bookmakers
+    must NOT fire the anchored branch.
+
+    This is the exact corroborator that distinguishes real fragmentations
+    from the South/North Korea regression case (2 bookmakers, weak side
+    81.8). Without the bookmaker-count gate the anchored branch would also
+    fire on the Korea case, regressing
+    :func:`test_event_resolver_does_not_auto_merge_distinct_same_token_teams`.
+    """
+
+    srsni = create_canonical_team(display_name="Srsni Pisek", sport="basketball")
+    sokol = create_canonical_team(display_name="Sokol Pisek", sport="basketball")
+    pardubice = create_canonical_team(display_name="Pardubice", sport="basketball")
+    league_id = "ceska_liga"
+    await _seed_bookmakers("mozzart", "meridian")
+    await _seed_league(league_id, "basketball")
+    mozzart_match_id = generate_match_id(
+        srsni.team_id, pardubice.team_id, START_TIME, "basketball"
+    )
+    meridian_match_id = generate_match_id(
+        sokol.team_id, pardubice.team_id, START_TIME, "basketball"
+    )
+    normalized = [
+        _basketball_odds(
+            "mozzart",
+            match_id=mozzart_match_id,
+            league_id=league_id,
+            home_team_id=srsni.team_id,
+            away_team_id=pardubice.team_id,
+            home_team=srsni.team_name,
+            away_team=pardubice.team_name,
+            threshold=12.5,
+        ),
+        _basketball_odds(
+            "meridian",
+            match_id=meridian_match_id,
+            league_id=league_id,
+            home_team_id=sokol.team_id,
+            away_team_id=pardubice.team_id,
+            home_team=sokol.team_name,
+            away_team=pardubice.team_name,
+            threshold=13.5,
+        ),
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOddsData(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="basketball",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            market_type=row.market_type,
+            player_name=row.player_name,
+            threshold=row.threshold,
+            over_odds=row.over_odds,
+            under_odds=row.under_odds,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=raw,
+        raw_outcome_offers=[],
+        normalized_odds=normalized,
+        normalized_outcome_offers=[],
+    )
+
+    assert result.resolved_events == 2
+    events = await odds_store.list_resolved_events(sport="basketball")
+    assert {event.method for event in events} == {"exact"}
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_quorum_resolves_same_bookmaker_conflict(
+    team_registry_file,
+):
+    """Heuristic 2: quorum override for same-bookmaker conflicts.
+
+    Heidelberg-style fragmentation: 9 bookmakers report the canonical
+    "Heidelberg" / "Mitteldeutscher" pair, while two outliers (one of which
+    is also in the larger group) carry the longer "Heidelberg Academics" /
+    "Mitteldeutscher BC" labels. Standard auto-merge bails because the
+    same-bookmaker overlap (`pinnbet`) blocks `dsu.can_union`. The quorum
+    override forces the merge because the larger group has 9 bookmakers and
+    exceeds the smaller (2) by 7 — well past
+    ``_QUORUM_MIN_LARGER_BOOKMAKERS`` and ``_QUORUM_MIN_BOOKMAKER_DIFFERENCE``.
+
+    An audit review case with reason
+    ``auto_quorum_resolved_with_audit`` is also persisted so operators can
+    spot the override.
+    """
+
+    heidelberg = create_canonical_team(
+        display_name="Heidelberg", sport="basketball"
+    )
+    mitteldeutscher = create_canonical_team(
+        display_name="Mitteldeutscher", sport="basketball"
+    )
+    academics = create_canonical_team(
+        display_name="Heidelberg Academics", sport="basketball"
+    )
+    mbc = create_canonical_team(
+        display_name="Mitteldeutscher BC", sport="basketball"
+    )
+    league_id = "bbl"
+    larger_books = [
+        "mozzart",
+        "meridian",
+        "superbet",
+        "maxbet",
+        "soccerbet",
+        "pinnbet",
+        "balkanbet",
+        "betole",
+        "oktagonbet",
+    ]
+    smaller_books = ["bookmaker365", "pinnbet"]  # pinnbet overlaps both groups
+    await _seed_bookmakers(*set(larger_books) | set(smaller_books))
+    await _seed_league(league_id, "basketball")
+    larger_match_id = generate_match_id(
+        heidelberg.team_id,
+        mitteldeutscher.team_id,
+        START_TIME,
+        "basketball",
+    )
+    smaller_match_id = generate_match_id(
+        academics.team_id, mbc.team_id, START_TIME, "basketball"
+    )
+    normalized = [
+        _basketball_odds(
+            book,
+            match_id=larger_match_id,
+            league_id=league_id,
+            home_team_id=heidelberg.team_id,
+            away_team_id=mitteldeutscher.team_id,
+            home_team=heidelberg.team_name,
+            away_team=mitteldeutscher.team_name,
+            threshold=12.5 + idx * 0.1,
+        )
+        for idx, book in enumerate(larger_books)
+    ] + [
+        _basketball_odds(
+            book,
+            match_id=smaller_match_id,
+            league_id=league_id,
+            home_team_id=academics.team_id,
+            away_team_id=mbc.team_id,
+            home_team=academics.team_name,
+            away_team=mbc.team_name,
+            threshold=13.5 + idx * 0.1,
+        )
+        for idx, book in enumerate(smaller_books)
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOddsData(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="basketball",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            market_type=row.market_type,
+            player_name=row.player_name,
+            threshold=row.threshold,
+            over_odds=row.over_odds,
+            under_odds=row.under_odds,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=raw,
+        raw_outcome_offers=[],
+        normalized_odds=normalized,
+        normalized_outcome_offers=[],
+    )
+
+    assert result.resolved_events == 1
+    events = await odds_store.list_resolved_events(sport="basketball")
+    assert len(events) == 1
+    event = await odds_store.get_resolved_event(events[0].id)
+    assert event is not None
+    assert event.method == "auto_fuzzy_high"
+    assert {member.match_id for member in event.members} == {
+        larger_match_id,
+        smaller_match_id,
+    }
+    # Quorum overrides are logged for operator visibility but DO NOT add an
+    # audit row to the operator review queue — the user's "few wrong is OK"
+    # preference explicitly favours emptying the queue rather than parking
+    # auto-resolved pairs there.
+    review_cases = await odds_store.list_event_review_cases(status="pending")
+    assert all(
+        case.reason_code != "auto_quorum_resolved_with_audit"
+        for case in review_cases
+    ), f"unexpected audit case persisted; got {[c.reason_code for c in review_cases]}"
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_quorum_does_not_fire_on_symmetric_same_bookmaker_conflict(
+    team_registry_file,
+):
+    """Negative: quorum override needs a clear size advantage.
+
+    Two groups of equal bookmaker size with same-bookmaker overlap stay as
+    a conflict review case — the override would be making an arbitrary
+    choice between two equally well-supported groupings.
+    """
+
+    heidelberg = create_canonical_team(
+        display_name="Heidelberg", sport="basketball"
+    )
+    mitteldeutscher = create_canonical_team(
+        display_name="Mitteldeutscher", sport="basketball"
+    )
+    academics = create_canonical_team(
+        display_name="Heidelberg Academics", sport="basketball"
+    )
+    mbc = create_canonical_team(
+        display_name="Mitteldeutscher BC", sport="basketball"
+    )
+    league_id = "bbl"
+    group_a_books = ["mozzart", "meridian", "superbet", "pinnbet"]
+    group_b_books = ["maxbet", "soccerbet", "balkanbet", "pinnbet"]
+    await _seed_bookmakers(*set(group_a_books) | set(group_b_books))
+    await _seed_league(league_id, "basketball")
+    larger_match_id = generate_match_id(
+        heidelberg.team_id,
+        mitteldeutscher.team_id,
+        START_TIME,
+        "basketball",
+    )
+    smaller_match_id = generate_match_id(
+        academics.team_id, mbc.team_id, START_TIME, "basketball"
+    )
+    normalized = [
+        _basketball_odds(
+            book,
+            match_id=larger_match_id,
+            league_id=league_id,
+            home_team_id=heidelberg.team_id,
+            away_team_id=mitteldeutscher.team_id,
+            home_team=heidelberg.team_name,
+            away_team=mitteldeutscher.team_name,
+            threshold=12.5 + idx * 0.1,
+        )
+        for idx, book in enumerate(group_a_books)
+    ] + [
+        _basketball_odds(
+            book,
+            match_id=smaller_match_id,
+            league_id=league_id,
+            home_team_id=academics.team_id,
+            away_team_id=mbc.team_id,
+            home_team=academics.team_name,
+            away_team=mbc.team_name,
+            threshold=13.5 + idx * 0.1,
+        )
+        for idx, book in enumerate(group_b_books)
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOddsData(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="basketball",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            market_type=row.market_type,
+            player_name=row.player_name,
+            threshold=row.threshold,
+            over_odds=row.over_odds,
+            under_odds=row.under_odds,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=raw,
+        raw_outcome_offers=[],
+        normalized_odds=normalized,
+        normalized_outcome_offers=[],
+    )
+
+    assert result.resolved_events == 2
+    events = await odds_store.list_resolved_events(sport="basketball")
+    assert {event.method for event in events} == {"exact"}
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_dot_expansion_merges_compound_abbreviation(
+    team_registry_file,
+):
+    """Heuristic 3: dotted-token expansion (``Ch.More`` → ``Cherno More``).
+
+    Without expansion the weak-side fuzzy score stays around 78 — below the
+    standard subset threshold (75) but enough that compound dots like
+    ``Ch.More`` (no space after the dot) used to never expand at all.
+    After the substitution the pair scores 100/100 and merges via the
+    standard high-confidence path.
+    """
+
+    cherno_full = create_canonical_team(display_name="Cherno More", sport="basketball")
+    spartak_full = create_canonical_team(
+        display_name="Spartak Pleven", sport="basketball"
+    )
+    cherno_short = create_canonical_team(display_name="Ch.More", sport="basketball")
+    spartak_short = create_canonical_team(
+        display_name="Spartak Pl.", sport="basketball"
+    )
+    league_id = "nbl_bg"
+    await _seed_bookmakers("mozzart", "maxbet", "meridian")
+    await _seed_league(league_id, "basketball")
+    full_match_id = generate_match_id(
+        cherno_full.team_id, spartak_full.team_id, START_TIME, "basketball"
+    )
+    short_match_id = generate_match_id(
+        cherno_short.team_id, spartak_short.team_id, START_TIME, "basketball"
+    )
+    normalized = [
+        _basketball_odds(
+            "mozzart",
+            match_id=full_match_id,
+            league_id=league_id,
+            home_team_id=cherno_full.team_id,
+            away_team_id=spartak_full.team_id,
+            home_team=cherno_full.team_name,
+            away_team=spartak_full.team_name,
+            threshold=12.5,
+        ),
+        _basketball_odds(
+            "meridian",
+            match_id=full_match_id,
+            league_id=league_id,
+            home_team_id=cherno_full.team_id,
+            away_team_id=spartak_full.team_id,
+            home_team=cherno_full.team_name,
+            away_team=spartak_full.team_name,
+            threshold=13.0,
+        ),
+        _basketball_odds(
+            "maxbet",
+            match_id=short_match_id,
+            league_id=league_id,
+            home_team_id=cherno_short.team_id,
+            away_team_id=spartak_short.team_id,
+            home_team=cherno_short.team_name,
+            away_team=spartak_short.team_name,
+            threshold=13.5,
+        ),
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOddsData(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="basketball",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            market_type=row.market_type,
+            player_name=row.player_name,
+            threshold=row.threshold,
+            over_odds=row.over_odds,
+            under_odds=row.under_odds,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=raw,
+        raw_outcome_offers=[],
+        normalized_odds=normalized,
+        normalized_outcome_offers=[],
+    )
+
+    assert result.resolved_events == 1
+    events = await odds_store.list_resolved_events(sport="basketball")
+    assert len(events) == 1
+    event = await odds_store.get_resolved_event(events[0].id)
+    assert event is not None
+    assert event.method == "auto_fuzzy_high"
+    assert {member.bookmaker_id for member in event.members} == {
+        "mozzart",
+        "meridian",
+        "maxbet",
+    }
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_women_marker_merges_w_and_wom_variants(
+    team_registry_file,
+):
+    """Heuristic 3: the ``wom`` qualifier alias ensures ``Sao Jose W`` and
+    ``Sao Jose Wom.`` strip to the same canonical women-suffixed name in
+    ``_team_qualifiers``, so :func:`_same_team_context` matches them and
+    the fuzzy match (score 95.5 / weak 90.9) merges them via the standard
+    high-confidence path.
+    """
+
+    sao_jose_w = create_canonical_team(display_name="Sao Jose W", sport="basketball")
+    sao_jose_wom = create_canonical_team(
+        display_name="Sao Jose Wom.", sport="basketball"
+    )
+    santo_andre = create_canonical_team(
+        display_name="Santo Andre", sport="basketball"
+    )
+    league_id = "lbf"
+    await _seed_bookmakers("mozzart", "meridian")
+    await _seed_league(league_id, "basketball")
+    w_match_id = generate_match_id(
+        sao_jose_w.team_id, santo_andre.team_id, START_TIME, "basketball"
+    )
+    wom_match_id = generate_match_id(
+        sao_jose_wom.team_id, santo_andre.team_id, START_TIME, "basketball"
+    )
+    normalized = [
+        _basketball_odds(
+            "mozzart",
+            match_id=w_match_id,
+            league_id=league_id,
+            home_team_id=sao_jose_w.team_id,
+            away_team_id=santo_andre.team_id,
+            home_team=sao_jose_w.team_name,
+            away_team=santo_andre.team_name,
+            threshold=12.5,
+        ),
+        _basketball_odds(
+            "meridian",
+            match_id=wom_match_id,
+            league_id=league_id,
+            home_team_id=sao_jose_wom.team_id,
+            away_team_id=santo_andre.team_id,
+            home_team=sao_jose_wom.team_name,
+            away_team=santo_andre.team_name,
+            threshold=13.5,
+        ),
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOddsData(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="basketball",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            market_type=row.market_type,
+            player_name=row.player_name,
+            threshold=row.threshold,
+            over_odds=row.over_odds,
+            under_odds=row.under_odds,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=raw,
+        raw_outcome_offers=[],
+        normalized_odds=normalized,
+        normalized_outcome_offers=[],
+    )
+
+    assert result.resolved_events == 1
+    events = await odds_store.list_resolved_events(sport="basketball")
+    assert len(events) == 1
+    event = await odds_store.get_resolved_event(events[0].id)
+    assert event is not None
+    assert event.method == "auto_fuzzy_high"
+    assert {member.bookmaker_id for member in event.members} == {
+        "mozzart",
+        "meridian",
+    }
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_women_marker_recognises_terminal_z(
+    team_registry_file,
+):
+    """A terminal standalone ``Z`` token (``Sao Jose (Ž)`` after diacritic
+    strip) is treated as a women qualifier and pairs with ``Sao Jose Wom.``.
+    """
+
+    sao_jose_z = create_canonical_team(display_name="Sao Jose Z", sport="basketball")
+    sao_jose_wom = create_canonical_team(
+        display_name="Sao Jose Wom.", sport="basketball"
+    )
+    santo_andre = create_canonical_team(
+        display_name="Santo Andre", sport="basketball"
+    )
+    league_id = "lbf"
+    await _seed_bookmakers("mozzart", "meridian", "superbet")
+    await _seed_league(league_id, "basketball")
+    z_match_id = generate_match_id(
+        sao_jose_z.team_id, santo_andre.team_id, START_TIME, "basketball"
+    )
+    wom_match_id = generate_match_id(
+        sao_jose_wom.team_id, santo_andre.team_id, START_TIME, "basketball"
+    )
+    normalized = [
+        _basketball_odds(
+            "mozzart",
+            match_id=z_match_id,
+            league_id=league_id,
+            home_team_id=sao_jose_z.team_id,
+            away_team_id=santo_andre.team_id,
+            home_team=sao_jose_z.team_name,
+            away_team=santo_andre.team_name,
+            threshold=12.5,
+        ),
+        _basketball_odds(
+            "meridian",
+            match_id=wom_match_id,
+            league_id=league_id,
+            home_team_id=sao_jose_wom.team_id,
+            away_team_id=santo_andre.team_id,
+            home_team=sao_jose_wom.team_name,
+            away_team=santo_andre.team_name,
+            threshold=13.5,
+        ),
+        _basketball_odds(
+            "superbet",
+            match_id=wom_match_id,
+            league_id=league_id,
+            home_team_id=sao_jose_wom.team_id,
+            away_team_id=santo_andre.team_id,
+            home_team=sao_jose_wom.team_name,
+            away_team=santo_andre.team_name,
+            threshold=14.5,
+        ),
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOddsData(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="basketball",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            market_type=row.market_type,
+            player_name=row.player_name,
+            threshold=row.threshold,
+            over_odds=row.over_odds,
+            under_odds=row.under_odds,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=raw,
+        raw_outcome_offers=[],
+        normalized_odds=normalized,
+        normalized_outcome_offers=[],
+    )
+
+    assert result.resolved_events == 1
+    events = await odds_store.list_resolved_events(sport="basketball")
+    assert len(events) == 1
+    event = await odds_store.get_resolved_event(events[0].id)
+    assert event is not None
+    assert event.method == "auto_fuzzy_high"
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_women_marker_does_not_merge_women_into_men(
+    team_registry_file,
+):
+    """Negative: a women-tagged team must not merge with the same-stem men's
+    team. ``Sao Jose W`` carries the women qualifier; bare ``Sao Jose``
+    does not. :func:`_same_team_context` rejects the pair so the resolver
+    never reaches the fuzzy stage.
+    """
+
+    sao_jose_w = create_canonical_team(display_name="Sao Jose W", sport="basketball")
+    sao_jose_men = create_canonical_team(display_name="Sao Jose", sport="basketball")
+    santo_andre = create_canonical_team(
+        display_name="Santo Andre", sport="basketball"
+    )
+    league_id = "lbf"
+    await _seed_bookmakers("mozzart", "meridian")
+    await _seed_league(league_id, "basketball")
+    w_match_id = generate_match_id(
+        sao_jose_w.team_id, santo_andre.team_id, START_TIME, "basketball"
+    )
+    men_match_id = generate_match_id(
+        sao_jose_men.team_id, santo_andre.team_id, START_TIME, "basketball"
+    )
+    normalized = [
+        _basketball_odds(
+            "mozzart",
+            match_id=w_match_id,
+            league_id=league_id,
+            home_team_id=sao_jose_w.team_id,
+            away_team_id=santo_andre.team_id,
+            home_team=sao_jose_w.team_name,
+            away_team=santo_andre.team_name,
+            threshold=12.5,
+        ),
+        _basketball_odds(
+            "meridian",
+            match_id=men_match_id,
+            league_id=league_id,
+            home_team_id=sao_jose_men.team_id,
+            away_team_id=santo_andre.team_id,
+            home_team=sao_jose_men.team_name,
+            away_team=santo_andre.team_name,
+            threshold=13.5,
+        ),
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOddsData(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="basketball",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            market_type=row.market_type,
+            player_name=row.player_name,
+            threshold=row.threshold,
+            over_odds=row.over_odds,
+            under_odds=row.under_odds,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=raw,
+        raw_outcome_offers=[],
+        normalized_odds=normalized,
+        normalized_outcome_offers=[],
+    )
+
+    assert result.resolved_events == 2
+    events = await odds_store.list_resolved_events(sport="basketball")
+    assert {event.method for event in events} == {"exact"}
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_anchored_low_conf_respects_weak_side_floor(
+    team_registry_file,
+):
+    """Negative: the anchored branch refuses to merge when the weak side
+    fuzzy score is below ``_ANCHORED_FUZZY_SIDE_SCORE`` (50).
+
+    Tartu-style fragmentations (``Tartu Ulikool`` ↔ ``Maks-and-Moorits``,
+    weak ~32) sit below that floor on purpose — fuzzy alone cannot
+    distinguish them from genuine false-positive cases. They remain in the
+    manual review queue.
+    """
+
+    tartu = create_canonical_team(display_name="Tartu Ulikool", sport="basketball")
+    maks = create_canonical_team(display_name="Maks-and-Moorits", sport="basketball")
+    parnu = create_canonical_team(display_name="Parnu", sport="basketball")
+    league_id = "estonia"
+    await _seed_bookmakers("mozzart", "meridian", "superbet")
+    await _seed_league(league_id, "basketball")
+    tartu_match_id = generate_match_id(
+        tartu.team_id, parnu.team_id, START_TIME, "basketball"
+    )
+    maks_match_id = generate_match_id(
+        maks.team_id, parnu.team_id, START_TIME, "basketball"
+    )
+    normalized = [
+        _basketball_odds(
+            "mozzart",
+            match_id=tartu_match_id,
+            league_id=league_id,
+            home_team_id=tartu.team_id,
+            away_team_id=parnu.team_id,
+            home_team=tartu.team_name,
+            away_team=parnu.team_name,
+            threshold=12.5,
+        ),
+        _basketball_odds(
+            "meridian",
+            match_id=maks_match_id,
+            league_id=league_id,
+            home_team_id=maks.team_id,
+            away_team_id=parnu.team_id,
+            home_team=maks.team_name,
+            away_team=parnu.team_name,
+            threshold=13.5,
+        ),
+        _basketball_odds(
+            "superbet",
+            match_id=maks_match_id,
+            league_id=league_id,
+            home_team_id=maks.team_id,
+            away_team_id=parnu.team_id,
+            home_team=maks.team_name,
+            away_team=parnu.team_name,
+            threshold=14.5,
+        ),
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOddsData(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="basketball",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            market_type=row.market_type,
+            player_name=row.player_name,
+            threshold=row.threshold,
+            over_odds=row.over_odds,
+            under_odds=row.under_odds,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=raw,
+        raw_outcome_offers=[],
+        normalized_odds=normalized,
+        normalized_outcome_offers=[],
+    )
+
+    # Tartu Ulikool vs Maks-and-Moorits weak side ~32 — never auto-merges.
+    assert result.resolved_events == 2
+    events = await odds_store.list_resolved_events(sport="basketball")
+    assert {event.method for event in events} == {"exact"}
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_transitive_anchored_merges_no_spurious_review_case(
+    team_registry_file,
+):
+    """Regression: when three groups merge transitively (A↔B and A↔C both
+    fire anchored), the B↔C pair must be skipped because the groups already
+    share a DSU root. Without the same-root guard, ``dsu.can_union`` would
+    return False on the redundant pair and emit a spurious
+    ``conflicting_same_bookmaker_event_candidate`` review case (or, worse,
+    re-evaluate the quorum override on an already-merged component).
+    """
+
+    srsni = create_canonical_team(display_name="Srsni Pisek", sport="basketball")
+    sokol = create_canonical_team(display_name="Sokol Pisek", sport="basketball")
+    bk = create_canonical_team(display_name="BK Pisek", sport="basketball")
+    pardubice = create_canonical_team(display_name="Pardubice", sport="basketball")
+    league_id = "ceska_liga"
+    await _seed_bookmakers("mozzart", "meridian", "superbet", "maxbet")
+    await _seed_league(league_id, "basketball")
+    a_match_id = generate_match_id(
+        srsni.team_id, pardubice.team_id, START_TIME, "basketball"
+    )
+    b_match_id = generate_match_id(
+        sokol.team_id, pardubice.team_id, START_TIME, "basketball"
+    )
+    c_match_id = generate_match_id(
+        bk.team_id, pardubice.team_id, START_TIME, "basketball"
+    )
+    normalized = [
+        # Group A: 2 bookmakers (mozzart, meridian) — Srsni Pisek
+        _basketball_odds(
+            "mozzart",
+            match_id=a_match_id,
+            league_id=league_id,
+            home_team_id=srsni.team_id,
+            away_team_id=pardubice.team_id,
+            home_team=srsni.team_name,
+            away_team=pardubice.team_name,
+            threshold=12.5,
+        ),
+        _basketball_odds(
+            "meridian",
+            match_id=a_match_id,
+            league_id=league_id,
+            home_team_id=srsni.team_id,
+            away_team_id=pardubice.team_id,
+            home_team=srsni.team_name,
+            away_team=pardubice.team_name,
+            threshold=13.0,
+        ),
+        # Group B: 1 bookmaker (superbet) — Sokol Pisek
+        _basketball_odds(
+            "superbet",
+            match_id=b_match_id,
+            league_id=league_id,
+            home_team_id=sokol.team_id,
+            away_team_id=pardubice.team_id,
+            home_team=sokol.team_name,
+            away_team=pardubice.team_name,
+            threshold=13.5,
+        ),
+        # Group C: 1 bookmaker (maxbet) — BK Pisek
+        _basketball_odds(
+            "maxbet",
+            match_id=c_match_id,
+            league_id=league_id,
+            home_team_id=bk.team_id,
+            away_team_id=pardubice.team_id,
+            home_team=bk.team_name,
+            away_team=pardubice.team_name,
+            threshold=14.0,
+        ),
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOddsData(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="basketball",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            market_type=row.market_type,
+            player_name=row.player_name,
+            threshold=row.threshold,
+            over_odds=row.over_odds,
+            under_odds=row.under_odds,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=raw,
+        raw_outcome_offers=[],
+        normalized_odds=normalized,
+        normalized_outcome_offers=[],
+    )
+
+    assert result.resolved_events == 1
+    events = await odds_store.list_resolved_events(sport="basketball")
+    assert len(events) == 1
+    event = await odds_store.get_resolved_event(events[0].id)
+    assert event is not None
+    assert event.method == "auto_fuzzy_high"
+    assert {member.bookmaker_id for member in event.members} == {
+        "mozzart",
+        "meridian",
+        "superbet",
+        "maxbet",
+    }
+    review_cases = await odds_store.list_event_review_cases(status="pending")
+    assert all(
+        case.reason_code != "conflicting_same_bookmaker_event_candidate"
+        for case in review_cases
+    ), (
+        "transitive merges should not surface a same-bookmaker conflict; "
+        f"got {[c.reason_code for c in review_cases]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_anchored_low_conf_does_not_apply_to_football(
+    team_registry_file,
+):
+    """Negative regression: anchored low-confidence merging is restricted to
+    basketball. Football fixtures with shared city tokens — e.g.
+    ``Manchester United vs Liverpool`` ↔ ``Manchester City vs Liverpool``
+    (weak side ~62) — must not auto-merge despite passing every other
+    anchored predicate (3 bookmakers, same league, shared significant
+    token "Manchester").
+    """
+
+    united = create_canonical_team(
+        display_name="Manchester United", sport="football"
+    )
+    city = create_canonical_team(display_name="Manchester City", sport="football")
+    liverpool = create_canonical_team(display_name="Liverpool", sport="football")
+    league_id = "premier_league"
+    await _seed_bookmakers("maxbet", "balkanbet", "superbet")
+    await _seed_league(league_id, "football")
+    united_match_id = generate_match_id(
+        united.team_id, liverpool.team_id, START_TIME, "football"
+    )
+    city_match_id = generate_match_id(
+        city.team_id, liverpool.team_id, START_TIME, "football"
+    )
+    normalized: list[NormalizedOutcomeOffer] = [
+        NormalizedOutcomeOffer(
+            match_id=united_match_id,
+            bookmaker_id="maxbet",
+            league_id=league_id,
+            sport="football",
+            home_team_id=united.team_id,
+            away_team_id=liverpool.team_id,
+            home_team=united.team_name,
+            away_team=liverpool.team_name,
+            market_type="football_total_goals",
+            outcome_code="over",
+            odds=1.9,
+            line=2.5,
+            raw_label="Over 2.5",
+            start_time=START_TIME,
+        ),
+        NormalizedOutcomeOffer(
+            match_id=city_match_id,
+            bookmaker_id="balkanbet",
+            league_id=league_id,
+            sport="football",
+            home_team_id=city.team_id,
+            away_team_id=liverpool.team_id,
+            home_team=city.team_name,
+            away_team=liverpool.team_name,
+            market_type="football_total_goals",
+            outcome_code="over",
+            odds=1.85,
+            line=2.5,
+            raw_label="Over 2.5",
+            start_time=START_TIME,
+        ),
+        NormalizedOutcomeOffer(
+            match_id=city_match_id,
+            bookmaker_id="superbet",
+            league_id=league_id,
+            sport="football",
+            home_team_id=city.team_id,
+            away_team_id=liverpool.team_id,
+            home_team=city.team_name,
+            away_team=liverpool.team_name,
+            market_type="football_total_goals",
+            outcome_code="under",
+            odds=1.95,
+            line=2.5,
+            raw_label="Under 2.5",
+            start_time=START_TIME,
+        ),
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOutcomeOffer(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="football",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            source_url=f"https://{row.bookmaker_id}.example/football-event",
+            market_type=row.market_type,
+            outcome_code=row.outcome_code,
+            odds=row.odds,
+            line=row.line,
+            raw_label=row.raw_label,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=[],
+        raw_outcome_offers=raw,
+        normalized_odds=[],
+        normalized_outcome_offers=normalized,
+    )
+
+    assert result.resolved_events == 2
+    events = await odds_store.list_resolved_events(sport="football")
     assert {event.method for event in events} == {"exact"}
