@@ -231,6 +231,117 @@ def _player_name_parts(name: str) -> tuple[list[str], str] | None:
     return tokens[:-1], tokens[-1]
 
 
+_SURNAME_HYPHEN_SPACE_RE = re.compile(r"[\s\-]+")
+
+
+def _fold_surname(surname: str) -> str:
+    return _SURNAME_HYPHEN_SPACE_RE.sub(" ", surname).strip()
+
+
+def _build_compound_surname_hints(names: list[str]) -> frozenset[str]:
+    """Collect bucket-wide multi-word surname hints for `_resolver_player_parts`.
+
+    A surname is a "compound hint" when its hyphen/space-folded form contains
+    a space — e.g., ``gilgeous-alexander`` folds to ``gilgeous alexander``,
+    a two-word hint that lets a sibling surface like ``S. Gilgeous Alexander``
+    re-parse its trailing tokens as a single surname.
+    """
+
+    hints: set[str] = set()
+    for name in names:
+        parts = _player_name_parts(name)
+        if not parts:
+            continue
+        folded = _fold_surname(parts[1])
+        if " " in folded:
+            hints.add(folded)
+    return frozenset(hints)
+
+
+def _resolver_player_parts(
+    name: str,
+    *,
+    compound_surname_hints: frozenset[str] | None = None,
+) -> tuple[list[str], str] | None:
+    """Resolver-layer variant of `_player_name_parts` with compound-surname
+    awareness.
+
+    `_player_name_parts` is the simple parser: it tokenises by whitespace
+    and treats the LAST token as the surname. That misses two production-
+    relevant compound-surname shapes:
+
+    * ``A.St.Brown`` and ``Amon-Ra St. Brown`` parse as
+      ``first=['a','st'], last='brown'`` and
+      ``first=['amon-ra','st'], last='brown'`` — ``St`` stays in the
+      first-name list because it sits before the final whitespace-separated
+      token, so the resolver tries to align ``('a','st')`` with
+      ``('amon','ra','st')`` and fails.
+    * ``S. Gilgeous Alexander`` and ``Shai Gilgeous-Alexander`` parse as
+      ``first=['s','gilgeous'], last='alexander'`` and
+      ``first=['shai'], last='gilgeous-alexander'`` — different surname
+      tokens, so the surname compatibility check rejects the pair before
+      any first-name comparison runs.
+
+    The wrapper post-processes `_player_name_parts`'s output:
+
+    1. Particle pull. If the LAST token in the first-name list is in
+       `_SURNAME_PARTICLES` (``st``, ``van``, ``de``, ``la``, ``le``,
+       ``mc``, ...), peel it off the first-name list and prepend it to
+       the surname.
+    2. Multi-token surname expansion (only when ``compound_surname_hints``
+       is supplied). For every plausible tail-length ``n`` (2..len), the
+       wrapper checks whether the last ``n`` tokens of
+       ``first_tokens + [last_name]`` fold to a hint surname; if so, the
+       split is shifted so those ``n`` tokens become the surname. This
+       handles ``S. Gilgeous Alexander`` re-parsing as
+       ``first=['s'], last='gilgeous alexander'`` when another bucket
+       member's parsed surname is the hyphenated ``gilgeous-alexander``
+       (which folds to the same hint string).
+    3. Hyphen ↔ space fold. Replace any run of whitespace or hyphens in
+       the surname with a single space so ``Gilgeous-Alexander`` and
+       ``Gilgeous Alexander`` compare equal.
+
+    `_player_name_parts` itself is left untouched, so all other callers
+    (event_player_resolver, outcome_normalizer, anything outside the
+    contextual resolver) keep their existing behaviour. The original
+    surface forms are still used for storage and display.
+    """
+
+    parts = _player_name_parts(name)
+    if parts is None:
+        return None
+    first_tokens, last_name = parts
+    # Particle pull. Only fires when at least one given-name token would
+    # remain — `Van Jefferson` (where `Van` IS the actual first name) must
+    # NOT be mis-parsed as `last='van jefferson'` with empty first_tokens.
+    # We also iterate while a particle stays at the trailing position so
+    # chains like `A. de la Cruz` (parts: `(['a','de','la'], 'cruz')`) get
+    # both `la` and `de` pulled, producing `(['a'], 'de la cruz')`.
+    while len(first_tokens) > 1 and first_tokens[-1] in _SURNAME_PARTICLES:
+        particle = first_tokens[-1]
+        first_tokens = first_tokens[:-1]
+        last_name = f"{particle} {last_name}".strip()
+    # Multi-token surname expansion. Bucket-context hints let `S. Gilgeous
+    # Alexander` re-parse as `first=['s'], last='gilgeous alexander'` when
+    # another bucket member's hyphenated `gilgeous-alexander` folds to the
+    # matching hint string. Only consider tail lengths that leave at least
+    # one given-name token — otherwise an unrelated bucket member's hint
+    # could consume a normal full name like `John Paul` entirely (when the
+    # bucket also contains `Alice John-Paul`), breaking legitimate
+    # abbreviation merges from `J. Paul`.
+    if compound_surname_hints and len(first_tokens) >= 2:
+        full_tokens = first_tokens + [last_name]
+        for n in range(len(full_tokens) - 1, 1, -1):
+            candidate_surname = " ".join(full_tokens[-n:])
+            folded = _fold_surname(candidate_surname)
+            if folded in compound_surname_hints:
+                first_tokens = full_tokens[:-n]
+                last_name = candidate_surname
+                break
+    last_name = _fold_surname(last_name)
+    return first_tokens, last_name
+
+
 def _player_name_completeness(first_tokens: list[str]) -> int:
     return sum(len(token) for token in first_tokens if len(token) > 1)
 
@@ -536,11 +647,40 @@ class _ContextualMatch:
     candidate_effective_first_seq: tuple[str, ...]
 
 
-def _try_contextual_player_match(raw_name: str, candidate_name: str) -> _ContextualMatch | None:
-    raw_parts = _player_name_parts(raw_name)
-    candidate_parts = _player_name_parts(candidate_name)
+def _try_contextual_player_match(
+    raw_name: str,
+    candidate_name: str,
+    *,
+    compound_surname_hints: frozenset[str] | None = None,
+) -> _ContextualMatch | None:
+    # Conservative-then-hint resolution. The simple particle-pull / hyphen-
+    # fold parse handles every case where both surfaces already agree on a
+    # single-token surname (e.g., ``Mary John Paul`` and ``M.J. Paul`` both
+    # parse to ``last='paul'`` with no hint expansion needed). We only fall
+    # back to hint-expanded parses when the simple parses leave the surnames
+    # mismatched — that's where SGA-class compound surnames live. Without
+    # this gating, an unrelated bucket member's hint (e.g., ``Alice John-
+    # Paul`` contributing ``'john paul'``) could destructively reparse a
+    # bystander's middle-name token (``Mary John Paul`` → ``first=['mary'],
+    # last='john paul'``) and break a legitimate abbreviation merge that
+    # the simple parse would have caught.
+    raw_parts = _resolver_player_parts(raw_name)
+    candidate_parts = _resolver_player_parts(candidate_name)
     if not raw_parts or not candidate_parts:
         return None
+    if (
+        compound_surname_hints
+        and raw_parts[1] != candidate_parts[1]
+    ):
+        raw_parts_with_hints = _resolver_player_parts(
+            raw_name, compound_surname_hints=compound_surname_hints
+        )
+        candidate_parts_with_hints = _resolver_player_parts(
+            candidate_name, compound_surname_hints=compound_surname_hints
+        )
+        if raw_parts_with_hints and candidate_parts_with_hints:
+            raw_parts = raw_parts_with_hints
+            candidate_parts = candidate_parts_with_hints
 
     raw_first_tokens, raw_last_name = raw_parts
     candidate_first_tokens, candidate_last_name = candidate_parts
@@ -560,35 +700,63 @@ def _try_contextual_player_match(raw_name: str, candidate_name: str) -> _Context
 
     # Reversed raw is only safe when the swapped token looks like an abbreviated first
     # name (e.g. "VJ", "J", "AJ"), not a full given name.
-    if (
-        len(raw_first_tokens) == 1
-        and raw_surface_tokens
-        and _is_abbreviated_surface_token(raw_surface_tokens[-1])
-    ):
-        reversed_first = [raw_last_name]
-        reversed_last = raw_first_tokens[0]
-        if _check_first_name_match(reversed_first, candidate_first_tokens, reversed_last, candidate_last_name):
-            return _ContextualMatch(
-                raw_swapped=True,
-                candidate_swapped=False,
-                candidate_effective_first=candidate_first_tokens[0],
-                candidate_effective_first_seq=candidate_normal_seq,
-            )
+    if raw_surface_tokens and _is_abbreviated_surface_token(raw_surface_tokens[-1]):
+        # Two reversed-name shapes are accepted:
+        # 1. Single pre-abbreviation token (the existing path):
+        #    ``Edgecombe VJ``, ``Towns K.A.``, hyphenated compounds like
+        #    ``Gilgeous-Alexander S.``. The single token IS the surname (after
+        #    fold to collapse hyphens to spaces).
+        # 2. Multi-token pre-abbreviation surname matching a bucket hint:
+        #    ``Gilgeous Alexander S.`` / ``Van Jefferson J.`` /
+        #    ``Van Der Berg J.``. When another bucket member's parsed surname
+        #    folds to the same multi-word string (e.g. ``Shai Gilgeous-
+        #    Alexander`` → hint ``gilgeous alexander``), the ``raw_first_tokens``
+        #    are the reversed surname.
+        reversed_last_options: list[str] = []
+        if len(raw_first_tokens) == 1:
+            reversed_last_options.append(_fold_surname(raw_first_tokens[0]))
+        if compound_surname_hints and len(raw_first_tokens) >= 2:
+            joined = _fold_surname(" ".join(raw_first_tokens))
+            if joined in compound_surname_hints:
+                reversed_last_options.append(joined)
+        for reversed_last in reversed_last_options:
+            reversed_first = [raw_last_name]
+            if _check_first_name_match(
+                reversed_first,
+                candidate_first_tokens,
+                reversed_last,
+                candidate_last_name,
+            ):
+                return _ContextualMatch(
+                    raw_swapped=True,
+                    candidate_swapped=False,
+                    candidate_effective_first=candidate_first_tokens[0],
+                    candidate_effective_first_seq=candidate_normal_seq,
+                )
 
-    if (
-        len(candidate_first_tokens) == 1
-        and candidate_surface_tokens
-        and _is_abbreviated_surface_token(candidate_surface_tokens[-1])
-    ):
-        reversed_first = [candidate_last_name]
-        reversed_last = candidate_first_tokens[0]
-        if _check_first_name_match(raw_first_tokens, reversed_first, raw_last_name, reversed_last):
-            return _ContextualMatch(
-                raw_swapped=False,
-                candidate_swapped=True,
-                candidate_effective_first=candidate_last_name,
-                candidate_effective_first_seq=candidate_swapped_seq,
-            )
+    if candidate_surface_tokens and _is_abbreviated_surface_token(candidate_surface_tokens[-1]):
+        # Mirror of the raw-swap branch above for the candidate-swap path.
+        reversed_last_options = []
+        if len(candidate_first_tokens) == 1:
+            reversed_last_options.append(_fold_surname(candidate_first_tokens[0]))
+        if compound_surname_hints and len(candidate_first_tokens) >= 2:
+            joined = _fold_surname(" ".join(candidate_first_tokens))
+            if joined in compound_surname_hints:
+                reversed_last_options.append(joined)
+        for reversed_last in reversed_last_options:
+            reversed_first = [candidate_last_name]
+            if _check_first_name_match(
+                raw_first_tokens,
+                reversed_first,
+                raw_last_name,
+                reversed_last,
+            ):
+                return _ContextualMatch(
+                    raw_swapped=False,
+                    candidate_swapped=True,
+                    candidate_effective_first=candidate_last_name,
+                    candidate_effective_first_seq=candidate_swapped_seq,
+                )
 
     return None
 
@@ -632,8 +800,11 @@ def _resolve_contextual_player_name_replacements(
     replacements: dict[str, str] = dict(case_replacements)
 
     observed_names = list(name_counts)
+    compound_surname_hints = _build_compound_surname_hints(observed_names)
     for raw_name in observed_names:
-        raw_parts = _player_name_parts(raw_name)
+        raw_parts = _resolver_player_parts(
+            raw_name, compound_surname_hints=compound_surname_hints
+        )
         if not raw_parts:
             continue
 
@@ -642,7 +813,11 @@ def _resolve_contextual_player_name_replacements(
         for candidate in observed_names:
             if candidate == raw_name:
                 continue
-            match = _try_contextual_player_match(raw_name, candidate)
+            match = _try_contextual_player_match(
+                raw_name,
+                candidate,
+                compound_surname_hints=compound_surname_hints,
+            )
             if match is not None:
                 candidate_matches.append((candidate, match))
         if not candidate_matches:
@@ -683,7 +858,9 @@ def _resolve_contextual_player_name_replacements(
         def _candidate_first_for_completeness(candidate: str, match: _ContextualMatch) -> list[str]:
             if match.candidate_swapped:
                 return [match.candidate_effective_first]
-            cand_parts = _player_name_parts(candidate)
+            cand_parts = _resolver_player_parts(
+                candidate, compound_surname_hints=compound_surname_hints
+            )
             return cand_parts[0] if cand_parts else []
 
         def _rank_key(item: tuple[str, _ContextualMatch]) -> tuple[int, int, int, str]:
@@ -698,7 +875,9 @@ def _resolve_contextual_player_name_replacements(
         ranked = sorted(candidate_matches, key=_rank_key, reverse=True)
         chosen_replacement: str | None = None
         for best_candidate, best_match in ranked:
-            best_parts = _player_name_parts(best_candidate)
+            best_parts = _resolver_player_parts(
+                best_candidate, compound_surname_hints=compound_surname_hints
+            )
             if not best_parts:
                 continue
 
@@ -804,7 +983,9 @@ def _resolve_contextual_player_name_replacements(
                 and len(best_seq) < len(raw_seq)
                 and all(len(part) == 1 for part in best_seq)
             ):
-                best_parts_for_rival = _player_name_parts(best_candidate)
+                best_parts_for_rival = _resolver_player_parts(
+                    best_candidate, compound_surname_hints=compound_surname_hints
+                )
                 best_last_for_rival = (
                     best_parts_for_rival[1] if best_parts_for_rival else ""
                 )
@@ -816,7 +997,9 @@ def _resolve_contextual_player_name_replacements(
                 for other_name in observed_names:
                     if other_name == raw_name or other_name == best_candidate:
                         continue
-                    other_parts = _player_name_parts(other_name)
+                    other_parts = _resolver_player_parts(
+                        other_name, compound_surname_hints=compound_surname_hints
+                    )
                     if not other_parts:
                         continue
                     other_first_tokens, other_last = other_parts
