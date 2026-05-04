@@ -17,6 +17,7 @@ from app.services.event_resolver import (
     EventCandidate,
     _CandidateGroup,
     _PairResolution,
+    _comparison_team_text,
     _contextual_merge_source_ids,
     _event_review_case,
     SameTimeCanonicalSlot,
@@ -25,6 +26,7 @@ from app.services.event_resolver import (
     resolve_and_persist_events,
 )
 from app.services.normalizer import generate_match_id
+from app.services.outcome_normalizer import _same_team_context, _team_qualifiers
 from app.services.team_registry import create_canonical_team
 from app.store import odds_store
 
@@ -1386,25 +1388,28 @@ async def test_event_resolver_women_marker_merges_w_and_wom_variants(
 async def test_event_resolver_women_marker_recognises_terminal_z(
     team_registry_file,
 ):
-    """A terminal standalone ``Z`` token (``Sao Jose (Ž)`` after diacritic
+    """An explicit standalone ``Ž`` marker (``Sao Jose (Ž)`` after diacritic
     strip) is treated as a women qualifier and pairs with ``Sao Jose Wom.``.
     """
 
-    sao_jose_z = create_canonical_team(display_name="Sao Jose Z", sport="basketball")
+    sao_jose_z = create_canonical_team(display_name="Sao Jose (Ž)", sport="basketball")
     sao_jose_wom = create_canonical_team(
         display_name="Sao Jose Wom.", sport="basketball"
     )
-    santo_andre = create_canonical_team(
-        display_name="Santo Andre", sport="basketball"
+    santo_andre_z = create_canonical_team(
+        display_name="Santo Andre (Ž)", sport="basketball"
+    )
+    santo_andre_wom = create_canonical_team(
+        display_name="Santo Andre Wom.", sport="basketball"
     )
     league_id = "lbf"
     await _seed_bookmakers("mozzart", "meridian", "superbet")
     await _seed_league(league_id, "basketball")
     z_match_id = generate_match_id(
-        sao_jose_z.team_id, santo_andre.team_id, START_TIME, "basketball"
+        sao_jose_z.team_id, santo_andre_z.team_id, START_TIME, "basketball"
     )
     wom_match_id = generate_match_id(
-        sao_jose_wom.team_id, santo_andre.team_id, START_TIME, "basketball"
+        sao_jose_wom.team_id, santo_andre_wom.team_id, START_TIME, "basketball"
     )
     normalized = [
         _basketball_odds(
@@ -1412,9 +1417,9 @@ async def test_event_resolver_women_marker_recognises_terminal_z(
             match_id=z_match_id,
             league_id=league_id,
             home_team_id=sao_jose_z.team_id,
-            away_team_id=santo_andre.team_id,
+            away_team_id=santo_andre_z.team_id,
             home_team=sao_jose_z.team_name,
-            away_team=santo_andre.team_name,
+            away_team=santo_andre_z.team_name,
             threshold=12.5,
         ),
         _basketball_odds(
@@ -1422,9 +1427,9 @@ async def test_event_resolver_women_marker_recognises_terminal_z(
             match_id=wom_match_id,
             league_id=league_id,
             home_team_id=sao_jose_wom.team_id,
-            away_team_id=santo_andre.team_id,
+            away_team_id=santo_andre_wom.team_id,
             home_team=sao_jose_wom.team_name,
-            away_team=santo_andre.team_name,
+            away_team=santo_andre_wom.team_name,
             threshold=13.5,
         ),
         _basketball_odds(
@@ -1432,9 +1437,9 @@ async def test_event_resolver_women_marker_recognises_terminal_z(
             match_id=wom_match_id,
             league_id=league_id,
             home_team_id=sao_jose_wom.team_id,
-            away_team_id=santo_andre.team_id,
+            away_team_id=santo_andre_wom.team_id,
             home_team=sao_jose_wom.team_name,
-            away_team=santo_andre.team_name,
+            away_team=santo_andre_wom.team_name,
             threshold=14.5,
         ),
     ]
@@ -1470,6 +1475,96 @@ async def test_event_resolver_women_marker_recognises_terminal_z(
     event = await odds_store.get_resolved_event(events[0].id)
     assert event is not None
     assert event.method == "auto_fuzzy_high"
+
+
+def test_event_resolver_merges_reported_sao_jose_women_fragments():
+    candidates = [
+        EventCandidate(
+            match_id="sao-jose-wom",
+            bookmaker_id=bookmaker_id,
+            sport="football",
+            start_time=START_TIME,
+            home_team_id=1,
+            away_team_id=2,
+            home_team="Sao Jose Wom.",
+            away_team="Santo Andre Wom.",
+            source_league_id="brazil_1_z",
+            source_league_name="Brazil 1 Z",
+        )
+        for bookmaker_id in ("admiralbet", "betole", "oktagonbet", "pinnbet")
+    ] + [
+        EventCandidate(
+            match_id="sao-jose-dos-campos-w",
+            bookmaker_id="merkurxtip",
+            sport="football",
+            start_time=START_TIME,
+            home_team_id=3,
+            away_team_id=4,
+            home_team="Sao Jose Dos Campos W",
+            away_team="Santo Andre Wom.",
+            source_league_id="lbf_women",
+            source_league_name="LBF Women",
+        ),
+        EventCandidate(
+            match_id="sao-jose-z",
+            bookmaker_id="superbet",
+            sport="football",
+            start_time=START_TIME,
+            home_team_id=5,
+            away_team_id=6,
+            home_team="Sao Jose Campos (Ž)",
+            away_team="Santo Andre (Ž)",
+            source_league_id="brazil_lbf_z",
+            source_league_name="Brazil LBF Z",
+        ),
+        EventCandidate(
+            match_id="sao-jose-z-slash",
+            bookmaker_id="volcanobet",
+            sport="football",
+            start_time=START_TIME,
+            home_team_id=7,
+            away_team_id=8,
+            home_team="Ž/Sao Jose Dos Campos",
+            away_team="Ž/Santo Andre Apaba",
+            source_league_id="brazil_1_z",
+            source_league_name="Brazil 1 Z",
+        ),
+        EventCandidate(
+            match_id="sao-jose-z-slash",
+            bookmaker_id="balkanbet",
+            sport="football",
+            start_time=START_TIME,
+            home_team_id=7,
+            away_team_id=8,
+            home_team="Sao Jose Dos Campos SP",
+            away_team="Santo Andre/Apaba",
+            source_league_id="balkanbet_tournament_44979",
+            source_league_name="Balkanbet Tournament 44979",
+        ),
+    ]
+
+    resolutions, review_cases = build_event_resolution_groups(candidates)
+
+    assert review_cases == []
+    assert len(resolutions) == 1
+    event = resolutions[0]
+    assert event.method == "auto_fuzzy_high"
+    assert {member.bookmaker_id for member in event.members} == {
+        "admiralbet",
+        "betole",
+        "oktagonbet",
+        "pinnbet",
+        "merkurxtip",
+        "superbet",
+        "volcanobet",
+        "balkanbet",
+    }
+    assert {member.match_id for member in event.members} == {
+        "sao-jose-wom",
+        "sao-jose-dos-campos-w",
+        "sao-jose-z",
+        "sao-jose-z-slash",
+    }
 
 
 @pytest.mark.asyncio
@@ -2009,101 +2104,50 @@ def test_expand_dotted_token_ambiguous_geographic_prefix_blocked():
     ), "Non-ambiguous trailing-dot tokens still resolve."
 
 
-def test_team_qualifiers_z_alias_does_not_apply_to_football():
-    """Round-2 regression: the ``z``-suffix → ``women`` alias is sport-gated
-    to ``_AGGRESSIVE_MERGE_SPORTS``. In football, ``z`` is a common Slavic
-    city abbreviation (Zvornik, Zenica, Zemun, Zrenjanin) and aliasing it
-    to ``women`` would silently block legitimate same-team pairings.
-    Pre-fix, ``_team_qualifiers`` returned ``{women}`` for any 3+ token
-    name ending in literal ``z``, so ``FK Borac Z`` (an abbreviation for
-    ``FK Borac Zvornik``) and bare ``FK Borac Zvornik`` had divergent
-    qualifier sets and ``_same_team_context`` rejected them.
+def test_team_qualifiers_explicit_z_marker_is_cross_sport_but_plain_z_is_not():
+    """Explicit ``Ž`` marker syntax is cross-sport, but plain ASCII ``Z`` is
+    still too ambiguous to mean women by itself.
     """
 
-    from app.services.outcome_normalizer import (  # noqa: PLC0415
-        _same_team_context,
-        _team_qualifiers,
-    )
-
-    # The core regression: in football the trailing ``z`` token must NOT
-    # be aliased to women, so qualifier sets stay equal across the
-    # abbreviated and full forms (both empty).
     assert _team_qualifiers("FK Borac Z", sport="football") == set()
     assert _team_qualifiers("FK Borac Zvornik", sport="football") == set()
     assert _team_qualifiers("FK Crvena Zvezda Z", sport="football") == set()
     assert _team_qualifiers("FK Crvena Zvezda", sport="football") == set()
-
-    # Therefore ``_same_team_context`` accepts these pairs in football, so
-    # they remain eligible for cross-bookmaker pairing and canonical-team
-    # merging — restoring pre-PR behavior.
     assert _same_team_context("FK Borac Z", "FK Borac Zvornik", sport="football")
     assert _same_team_context(
         "FK Crvena Zvezda Z", "FK Crvena Zvezda", sport="football"
     )
-
-    # Basketball retains the aggressive women-alias semantics that this PR
-    # added (3+ token guard still applies to avoid ``Real Z``-style
-    # collisions).
-    assert _team_qualifiers("Sao Jose Z", sport="basketball") == {"women"}
-    assert _team_qualifiers("Real Z", sport="basketball") == set(), (
-        "Two-token names must not flip to women on a trailing Z."
-    )
-
-    # Sports outside ``_AGGRESSIVE_MERGE_SPORTS`` (and ``sport=None``)
-    # also stay on the conservative path so any future call site that
-    # forgets to pass sport falls back to safe behavior.
-    assert _team_qualifiers("Sao Jose Z") == set()
+    assert _team_qualifiers("Sao Jose Z", sport="basketball") == set()
     assert _team_qualifiers("Sao Jose Z", sport="tennis") == set()
+    assert _team_qualifiers("Sao Jose (Ž)", sport="basketball") == {"women"}
+    assert _team_qualifiers("Sao Jose (Ž)", sport="football") == {"women"}
+    assert _team_qualifiers("Ž/Sao Jose Dos Campos", sport="football") == {"women"}
+    assert _team_qualifiers("Z/Sao Jose Dos Campos", sport="volleyball") == {"women"}
 
 
-def test_team_qualifiers_wom_alias_does_not_apply_to_football():
-    """Round-2 regression: ``wom`` is also basketball-only. In football the
-    alias is a no-op so legacy pairing behavior is preserved.
-    """
+def test_comparison_text_preserves_plain_z_when_explicit_marker_is_present():
+    assert _comparison_team_text("FK Borac Z (Ž)", sport="football") == "fk borac z"
+    assert _comparison_team_text("FK Borac (Ž)", sport="football") == "fk borac"
 
-    from app.services.outcome_normalizer import (  # noqa: PLC0415
-        _same_team_context,
-        _team_qualifiers,
-    )
 
-    assert _team_qualifiers("Sao Jose Wom", sport="football") == set()
+def test_team_qualifiers_wom_alias_applies_cross_sport():
+    assert _team_qualifiers("Sao Jose Wom", sport="football") == {"women"}
+    assert _team_qualifiers("Sao Jose Wom", sport="tennis") == {"women"}
     assert _team_qualifiers("Sao Jose Women", sport="football") == {"women"}
-    # Cross-context with sport=None mirrors football (no aggressive aliases
-    # active) so unspecified-sport callers stay on the conservative path.
-    assert _team_qualifiers("Sao Jose Wom") == set()
-    # Basketball still aliases as expected.
+    assert _team_qualifiers("Sao Jose Wom") == {"women"}
     assert _team_qualifiers("Sao Jose Wom", sport="basketball") == {"women"}
     assert _same_team_context(
-        "Sao Jose Wom", "Sao Jose Women", sport="basketball"
+        "Sao Jose Wom", "Sao Jose Women", sport="football"
     )
 
 
 def test_contextual_merge_source_ids_threads_sport_to_helpers():
-    """Round-2 review (Opus 1M) integration regression for the scheduler-driven
-    canonical-team auto-merge path.
+    """Integration regression for scheduler-driven canonical-team auto-merge.
 
-    The Round 1 bug was that ``_team_qualifiers`` returned ``{women}`` for
-    any 3+ token name ending in literal ``z`` for *every* sport, so
-    ``scheduler._candidate_merge_source_ids`` →
-    ``_contextual_merge_source_ids`` →
-    ``_canonical_team_auto_merge_score`` silently rejected legitimate
-    Slavic-football canonical merges. The Round 2 fix sport-gates the
-    qualifier aliases by threading ``sport=case.sport`` through the call
-    chain.
-
-    A realistic football pair like ``FK Crvena Zvezda Z`` ↔
-    ``FK Crvena Zvezda Belgrade`` cannot be reproduced at this layer
-    because the unsafe-subset gate or the fuzzy threshold (88.0) blocks
-    the score regardless of qualifier alignment. So this test uses a
-    deliberately-symmetric pair (``Aalesund Wom`` ↔ ``Aalesund Women``)
-    where the *only* thing that flips the merge decision between
-    basketball and football is whether the ``wom`` → ``women`` alias is
-    active. That makes the test sensitive to a future refactor that drops
-    ``sport=case.sport`` from the
-    ``_canonical_team_auto_merge_score`` call site at
-    ``event_resolver.py`` (currently line ~291): both invocations would
-    silently fall back to the conservative path and the basketball
-    assertion would fail loudly.
+    ``Wom`` and ``Women`` are intentionally cross-sport women markers now, so
+    the same contextual merge should be eligible in basketball and football.
+    The separate plain-``Z`` tests cover the Slavic-football abbreviation case
+    that originally motivated the old basketball-only gate.
     """
 
     basketball_case = TeamReviewDiagnostic(
@@ -2151,17 +2195,8 @@ def test_contextual_merge_source_ids_threads_sport_to_helpers():
         "event teams overlap on ``Bergen Women``."
     )
 
-    # Football: identical case structure, only the sport flips. Without the
-    # sport gate, the football path would call ``_team_qualifiers`` and find
-    # ``Aalesund Wom`` → set() while ``Aalesund Women`` → {women}, the sets
-    # diverge and ``_same_team_context`` rejects the pair. So the merge is
-    # blocked. If a future refactor removes the ``sport=case.sport`` kwarg,
-    # both basketball and football cases would silently use the conservative
-    # path and this assertion would still hold — but the basketball
-    # assertion above would flip from {202} to set(), catching the
-    # regression loudly.
     football_case = basketball_case.model_copy(update={"sport": "football"})
-    assert _contextual_merge_source_ids(football_case) == set(), (
-        "Football case: divergent qualifier sets (``Wom`` is a no-op alias "
-        "in football) must continue to block the canonical-team auto-merge."
+    assert _contextual_merge_source_ids(football_case) == {202}, (
+        "Football women-marker cases should follow the same contextual "
+        "canonical merge path as basketball."
     )

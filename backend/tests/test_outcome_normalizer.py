@@ -6,10 +6,12 @@ from app.config import settings
 from app.models.schemas import RawOutcomeOffer
 from app.services.normalizer import generate_match_id
 from app.services.outcome_normalizer import (
+    _same_team_context,
     _team_similarity,
+    _team_qualifiers,
     normalize_outcome_offers_with_diagnostics,
 )
-from app.services.team_registry import create_canonical_team
+from app.services.team_registry import create_canonical_team, remember_team_alias
 
 
 START_TIME = "2030-01-01T20:00:00+00:00"
@@ -58,6 +60,11 @@ def test_team_similarity_does_not_force_strict_subset_to_exact_match():
 
 def test_team_similarity_allows_low_signal_prefix_difference():
     assert _team_similarity("Llosetense", "CD Llosetense") == 100.0
+
+
+def test_team_qualifiers_treat_prefix_women_as_explicit_marker():
+    assert _team_qualifiers("Women Sao Jose", sport="football") == {"women"}
+    assert _same_team_context("Women Sao Jose", "Sao Jose Women", sport="football")
 
 
 def test_exact_cross_book_football_event_normalizes_without_auto_aliases(team_registry_file):
@@ -185,6 +192,284 @@ def test_fuzzy_football_event_match_does_not_create_aliases(team_registry_file):
     assert unresolved == []
     assert "CD Llosetense" in _canonical_team_names()
     assert "CSKA Moskva" in _canonical_team_names()
+    assert _auto_review_alias_count() == 0
+
+
+def test_football_event_match_ignores_equivalent_women_marker_text(team_registry_file):
+    raw = [
+        _offer(
+            "superbet",
+            "Sao Jose Campos (Ž)",
+            "Santo Andre (Ž)",
+            outcome_code="over",
+        ),
+        _offer(
+            "pinnbet",
+            "Sao Jose Wom.",
+            "Santo Andre Wom.",
+            outcome_code="under",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 2
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert unresolved == []
+    assert review_cases == []
+    assert _auto_review_alias_count() == 0
+
+
+def test_football_event_match_collapses_existing_women_marker_variant_canonicals(team_registry_file):
+    create_canonical_team(display_name="Sao Jose Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Santo Andre (Ž)", sport="football")
+    create_canonical_team(display_name="Sao Jose Wom.", sport="football")
+    create_canonical_team(display_name="Santo Andre Wom.", sport="football")
+    raw = [
+        _offer(
+            "superbet",
+            "Sao Jose Campos (Ž)",
+            "Santo Andre (Ž)",
+            outcome_code="over",
+        ),
+        _offer(
+            "pinnbet",
+            "Sao Jose Wom.",
+            "Santo Andre Wom.",
+            outcome_code="under",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 2
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert {
+        (offer.home_team_id, offer.away_team_id) for offer in normalized
+    } == {(normalized[0].home_team_id, normalized[0].away_team_id)}
+    assert unresolved == []
+    assert review_cases == []
+    assert _auto_review_alias_count() == 0
+
+
+def test_football_event_match_collapses_one_sided_existing_women_marker_variant(team_registry_file):
+    create_canonical_team(display_name="Sao Jose Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Sao Jose Wom.", sport="football")
+    create_canonical_team(display_name="Santo Andre", sport="football")
+    raw = [
+        _offer(
+            "superbet",
+            "Sao Jose Campos (Ž)",
+            "Santo Andre",
+            outcome_code="over",
+        ),
+        _offer(
+            "pinnbet",
+            "Sao Jose Wom.",
+            "Santo Andre",
+            outcome_code="under",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 2
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert {
+        (offer.home_team_id, offer.away_team_id) for offer in normalized
+    } == {(normalized[0].home_team_id, normalized[0].away_team_id)}
+    assert unresolved == []
+    assert review_cases == []
+    assert _auto_review_alias_count() == 0
+
+
+def test_football_event_match_collapses_marker_variant_with_multiple_same_style_counterparts(team_registry_file):
+    create_canonical_team(display_name="Sao Jose Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Santo Andre (Ž)", sport="football")
+    create_canonical_team(display_name="Sao Jose Wom.", sport="football")
+    create_canonical_team(display_name="Santo Andre Wom.", sport="football")
+    raw = [
+        _offer(
+            "superbet",
+            "Sao Jose Campos (Ž)",
+            "Santo Andre (Ž)",
+            outcome_code="over",
+        ),
+        _offer(
+            "pinnbet",
+            "Sao Jose Wom.",
+            "Santo Andre Wom.",
+            outcome_code="under",
+        ),
+        _offer(
+            "maxbet",
+            "Sao Jose Wom.",
+            "Santo Andre Wom.",
+            outcome_code="under",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 3
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert {
+        (offer.home_team_id, offer.away_team_id) for offer in normalized
+    } == {(normalized[0].home_team_id, normalized[0].away_team_id)}
+    assert unresolved == []
+    assert review_cases == []
+    assert _auto_review_alias_count() == 0
+
+
+def test_football_event_match_collapses_prefix_suffix_women_marker_variants(team_registry_file):
+    create_canonical_team(display_name="Women Sao Jose Campos", sport="football")
+    create_canonical_team(display_name="Sao Jose Women", sport="football")
+    create_canonical_team(display_name="Santo Andre", sport="football")
+    raw = [
+        _offer("superbet", "Women Sao Jose Campos", "Santo Andre", outcome_code="over"),
+        _offer("pinnbet", "Sao Jose Women", "Santo Andre", outcome_code="under"),
+        _offer("maxbet", "Sao Jose Women", "Santo Andre", outcome_code="under"),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 3
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert unresolved == []
+    assert review_cases == []
+    assert _auto_review_alias_count() == 0
+
+
+def test_football_event_match_does_not_bypass_ranking_for_same_women_marker_style(team_registry_file):
+    create_canonical_team(display_name="Sao Jose (Ž)", sport="football")
+    create_canonical_team(display_name="Sao Jose Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Sao Jose Dos Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Santo Andre", sport="football")
+    raw = [
+        _offer("superbet", "Sao Jose (Ž)", "Santo Andre", outcome_code="over"),
+        _offer("pinnbet", "Sao Jose Campos (Ž)", "Santo Andre", outcome_code="under"),
+        _offer(
+            "maxbet",
+            "Sao Jose Dos Campos (Ž)",
+            "Santo Andre",
+            outcome_code="under",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+    match_ids = {offer.bookmaker_id: offer.match_id for offer in normalized}
+
+    assert len(normalized) == 3
+    assert match_ids["pinnbet"] == match_ids["maxbet"]
+    assert match_ids["superbet"] != match_ids["pinnbet"]
+    assert unresolved == []
+    assert review_cases == []
+    assert _auto_review_alias_count() == 0
+
+
+def test_football_event_match_moves_whole_component_for_later_marker_pair(team_registry_file):
+    create_canonical_team(display_name="Sao Jose Wom.", sport="football")
+    create_canonical_team(display_name="Sao Jose Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Sao Jose Dos Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Santo Andre", sport="football")
+    raw = [
+        _offer("superbet", "Sao Jose Wom.", "Santo Andre", outcome_code="over"),
+        _offer("pinnbet", "Sao Jose Campos (Ž)", "Santo Andre", outcome_code="under"),
+        _offer(
+            "maxbet",
+            "Sao Jose Dos Campos (Ž)",
+            "Santo Andre",
+            outcome_code="under",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 3
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert unresolved == []
+    assert review_cases == []
+    assert _auto_review_alias_count() == 0
+
+
+def test_football_event_match_does_not_bypass_ranking_for_different_women_stems(team_registry_file):
+    create_canonical_team(display_name="Manchester United Women", sport="football")
+    create_canonical_team(display_name="Manchester City Wom.", sport="football")
+    create_canonical_team(display_name="Liverpool Women", sport="football")
+    raw = [
+        _offer("superbet", "Manchester United Women", "Liverpool Women", outcome_code="over"),
+        _offer("pinnbet", "Manchester United Women", "Liverpool Women", outcome_code="under"),
+        _offer("maxbet", "Manchester City Wom.", "Liverpool Women", outcome_code="under"),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+    match_ids = {offer.bookmaker_id: offer.match_id for offer in normalized}
+
+    assert len(normalized) == 3
+    assert match_ids["superbet"] == match_ids["pinnbet"]
+    assert match_ids["maxbet"] != match_ids["superbet"]
+    assert unresolved == []
+    assert review_cases == []
+    assert _auto_review_alias_count() == 0
+
+
+def test_football_event_match_uses_canonical_ids_for_unmarked_alias_side_in_marker_bypass(team_registry_file):
+    create_canonical_team(display_name="Sao Jose Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Sao Jose Dos Campos Wom.", sport="football")
+    create_canonical_team(display_name="Santo Andre", sport="football")
+    remember_team_alias(
+        bookmaker_id="superbet",
+        raw_team_name="St Andre",
+        team_name="Santo Andre",
+        sport="football",
+    )
+    raw = [
+        _offer("superbet", "Sao Jose Campos (Ž)", "St Andre", outcome_code="over"),
+        _offer("pinnbet", "Sao Jose Dos Campos Wom.", "Santo Andre", outcome_code="under"),
+        _offer("maxbet", "Sao Jose Dos Campos Wom.", "Santo Andre", outcome_code="under"),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 3
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert unresolved == []
+    assert review_cases == []
+    assert _auto_review_alias_count() == 0
+
+
+def test_reversed_football_event_collapses_existing_women_marker_variant_canonicals(team_registry_file):
+    create_canonical_team(display_name="Sao Jose Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Santo Andre (Ž)", sport="football")
+    create_canonical_team(display_name="Sao Jose Wom.", sport="football")
+    create_canonical_team(display_name="Santo Andre Wom.", sport="football")
+    raw = [
+        _offer(
+            "superbet",
+            "Sao Jose Campos (Ž)",
+            "Santo Andre (Ž)",
+            market_type="football_result",
+            outcome_code="home",
+        ),
+        _offer(
+            "pinnbet",
+            "Santo Andre Wom.",
+            "Sao Jose Wom.",
+            market_type="football_result",
+            outcome_code="home",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 2
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert {
+        (offer.bookmaker_id, offer.outcome_code)
+        for offer in normalized
+    } == {("superbet", "home"), ("pinnbet", "away")}
+    assert unresolved == []
+    assert review_cases == []
     assert _auto_review_alias_count() == 0
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 import logging
+import re
 
 from rapidfuzz import fuzz
 
@@ -43,15 +44,16 @@ _TEAM_QUALIFIER_TOKENS = {
     "women",
     "youth",
 }
-# Extra qualifier tokens / aliases that are only honored for sports in the
-# aggressive-merge allowlist. Keeping them out of the base set avoids
-# regressing pairing for other sports (notably football) where ``z`` is a
-# common Slavic city abbreviation (Zvornik, Zenica, Zemun, Zrenjanin) and
-# ``wom`` is a non-standard form that does not appear in the canonical
-# football registries — collapsing them onto ``women`` there would silently
-# block legitimate same-team pairings.
-_AGGRESSIVE_QUALIFIER_ALIASES = frozenset({"wom", "z"})
+# Cross-sport aliases for explicit women markers. Plain ASCII "z" is not in
+# this set because it is a common location abbreviation in football; only
+# explicit marker syntax such as "(Ž)" or "Ž/" is treated as women.
+_WOMEN_QUALIFIER_ALIASES = frozenset({"w", "wom", "women"})
+_WOMEN_MARKER_TOKENS = frozenset({"w", "wom", "women"})
 _AGGRESSIVE_MERGE_SPORTS = frozenset({"basketball"})
+_EXPLICIT_Z_WOMEN_MARKER_RE = re.compile(
+    r"(^|\s)ž(?=$|\s)|\(\s*[žz]\s*\)|^\s*[žz]\s*/",
+    re.IGNORECASE,
+)
 _SAME_ORIENTATION = "same"
 _REVERSED_ORIENTATION = "reversed"
 
@@ -110,23 +112,23 @@ class _OutcomeEventPair:
         return min(self.home_score, self.away_score)
 
 
-def _significant_tokens(name: str) -> set[str]:
+def _significant_tokens(name: str, *, sport: str | None = None) -> set[str]:
     return {
         token
-        for token in normalize_identity_text(name).split()
+        for token in _comparison_team_text(name, sport=sport).split()
         if token not in _LOW_SIGNAL_TEAM_TOKENS
     }
 
 
-def _team_similarity(left: str, right: str) -> float:
-    left_key = normalize_identity_text(left)
-    right_key = normalize_identity_text(right)
+def _team_similarity(left: str, right: str, *, sport: str | None = None) -> float:
+    left_key = _comparison_team_text(left, sport=sport)
+    right_key = _comparison_team_text(right, sport=sport)
     if not left_key or not right_key:
         return 0.0
     if left_key == right_key:
         return 100.0
-    left_tokens = _significant_tokens(left)
-    right_tokens = _significant_tokens(right)
+    left_tokens = _significant_tokens(left, sport=sport)
+    right_tokens = _significant_tokens(right, sport=sport)
     if left_tokens and left_tokens == right_tokens:
         return 100.0
     return float(fuzz.token_sort_ratio(left_key, right_key))
@@ -136,12 +138,10 @@ def _team_qualifiers(name: str, *, sport: str | None = None) -> set[str]:
     tokens = normalize_identity_text(name).split()
     qualifiers: set[str] = set()
     youth_ages = {"17", "18", "19", "20", "21", "23"}
-    aggressive = sport in _AGGRESSIVE_MERGE_SPORTS
-    active_qualifier_tokens = (
-        _TEAM_QUALIFIER_TOKENS | _AGGRESSIVE_QUALIFIER_ALIASES
-        if aggressive
-        else _TEAM_QUALIFIER_TOKENS
-    )
+    active_qualifier_tokens = _TEAM_QUALIFIER_TOKENS | {"wom"}
+
+    if _EXPLICIT_Z_WOMEN_MARKER_RE.search(name):
+        qualifiers.add("women")
 
     def suffix_has_qualifier(start_index: int) -> bool:
         index = start_index
@@ -167,35 +167,64 @@ def _team_qualifiers(name: str, *, sport: str | None = None) -> set[str]:
             if index > 0 and (index == len(tokens) - 1 or next_token == "team" or suffix_has_qualifier(index + 1)):
                 qualifiers.add(token)
             continue
-        if aggressive and token in {"w", "wom", "z"}:
-            # Aliases for the "women" qualifier when they appear as a trailing
-            # suffix marker (e.g. "Sao Jose W", "Sao Jose Wom.", "Sao Jose (Ž)"
-            # whose normalised form is "sao jose z" after diacritic stripping).
-            # Restrict to suffix position so legitimate name initials such as
-            # "Z. Velickovic" do not flip a team's gender. The single-letter
-            # "z" alias additionally requires at least three tokens — this
-            # rules out 2-token names like "Real Z" / "Bayern Z" that would
-            # otherwise be tagged as women's teams purely on the trailing
-            # letter while keeping the user-reported "Sao Jose Z" pattern
-            # (3 tokens) covered.
-            #
-            # Sport-gated to ``_AGGRESSIVE_MERGE_SPORTS``: the same patterns
-            # collide with city abbreviations in non-target sports (e.g.
-            # football "FK Borac Z" = Zvornik), so for those sports the legacy
-            # behavior is preserved (``w`` → qualifier ``w``; ``wom``/``z``
-            # ignored).
+        if token in _WOMEN_QUALIFIER_ALIASES:
+            is_explicit_prefix = (
+                token in {"women", "wom"}
+                and index == 0
+                and len(tokens) > 1
+            )
             is_suffix = index > 0 and (
                 index == len(tokens) - 1
                 or next_token in {"team", "women"}
                 or suffix_has_qualifier(index + 1)
             )
-            if is_suffix and (token != "z" or len(tokens) >= 3):
+            if is_explicit_prefix or is_suffix:
                 qualifiers.add("women")
+            continue
+        if token == "z":
+            # Plain ASCII Z is intentionally not a universal women alias.
+            # The explicit-marker regex above handles "(Ž)", "(Z)", "Ž/",
+            # and "Z/" without breaking football abbreviations such as
+            # "FK Borac Z" for Zvornik.
             continue
         if token not in active_qualifier_tokens:
             continue
         qualifiers.add(token)
     return qualifiers
+
+
+def _strip_explicit_z_women_markers(name: str) -> str:
+    without_parenthesized = re.sub(
+        r"\(\s*[žz]\s*\)",
+        " ",
+        name,
+        flags=re.IGNORECASE,
+    )
+    without_leading_slash = re.sub(
+        r"^\s*[žz]\s*/",
+        "",
+        without_parenthesized,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r"(^|\s)ž(?=$|\s)",
+        r"\1",
+        without_leading_slash,
+        flags=re.IGNORECASE,
+    )
+
+
+def _comparison_team_text(team_name: str, *, sport: str | None = None) -> str:
+    qualifiers = _team_qualifiers(team_name, sport=sport)
+    comparison_name = (
+        _strip_explicit_z_women_markers(team_name)
+        if "women" in qualifiers
+        else team_name
+    )
+    tokens = normalize_identity_text(comparison_name).split()
+    if "women" in qualifiers:
+        tokens = [token for token in tokens if token not in _WOMEN_MARKER_TOKENS]
+    return " ".join(tokens)
 
 
 def _same_team_context(left: str, right: str, *, sport: str | None = None) -> bool:
@@ -274,8 +303,12 @@ def _pair_candidates(left: _OutcomeEvent, right: _OutcomeEvent) -> _OutcomeEvent
             _OutcomeEventPair(
                 left=left,
                 right=right,
-                home_score=_team_similarity(left.home_team, right.home_team),
-                away_score=_team_similarity(left.away_team, right.away_team),
+                home_score=_team_similarity(
+                    left.home_team, right.home_team, sport=left.sport
+                ),
+                away_score=_team_similarity(
+                    left.away_team, right.away_team, sport=left.sport
+                ),
                 orientation=_SAME_ORIENTATION,
             )
         )
@@ -284,8 +317,12 @@ def _pair_candidates(left: _OutcomeEvent, right: _OutcomeEvent) -> _OutcomeEvent
             _OutcomeEventPair(
                 left=left,
                 right=right,
-                home_score=_team_similarity(left.home_team, right.away_team),
-                away_score=_team_similarity(left.away_team, right.home_team),
+                home_score=_team_similarity(
+                    left.home_team, right.away_team, sport=left.sport
+                ),
+                away_score=_team_similarity(
+                    left.away_team, right.home_team, sport=left.sport
+                ),
                 orientation=_REVERSED_ORIENTATION,
             )
         )
@@ -397,19 +434,192 @@ def _reversed_slots(left: _OutcomeEventResolution, right: _OutcomeEventResolutio
     return left.slot.key == right.slot.reversed_key
 
 
-def _rank_event_pairs(events: list[_OutcomeEvent]) -> list[_OutcomeEventPair]:
+def _move_resolution_component(
+    resolutions: dict[tuple[str, str, str, str, str], _OutcomeEventResolution],
+    *,
+    source_resolution: _OutcomeEventResolution,
+    target_slot: _OutcomeEventSlot,
+    source_target_orientation: str,
+) -> None:
+    for event_key, resolution in list(resolutions.items()):
+        if resolution.slot.key != source_resolution.slot.key:
+            continue
+        relative_orientation = (
+            _SAME_ORIENTATION
+            if resolution.orientation == source_resolution.orientation
+            else _REVERSED_ORIENTATION
+        )
+        resolutions[event_key] = _OutcomeEventResolution(
+            slot=target_slot,
+            orientation=_orientation_from_pair(
+                source_target_orientation,
+                relative_orientation,
+            ),
+        )
+
+
+def _oriented_pair_team_names(
+    pair: _OutcomeEventPair,
+) -> tuple[tuple[str, str], tuple[str, str]]:
+    if pair.orientation == _SAME_ORIENTATION:
+        return (
+            (pair.left.home_team, pair.right.home_team),
+            (pair.left.away_team, pair.right.away_team),
+        )
+    return (
+        (pair.left.home_team, pair.right.away_team),
+        (pair.left.away_team, pair.right.home_team),
+    )
+
+
+def _oriented_pair_team_ids(
+    pair: _OutcomeEventPair,
+    left_resolution: _OutcomeEventResolution,
+    right_resolution: _OutcomeEventResolution,
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    if pair.orientation == _SAME_ORIENTATION:
+        return (
+            (left_resolution.slot.home_team_id, right_resolution.slot.home_team_id),
+            (left_resolution.slot.away_team_id, right_resolution.slot.away_team_id),
+        )
+    return (
+        (left_resolution.slot.home_team_id, right_resolution.slot.away_team_id),
+        (left_resolution.slot.away_team_id, right_resolution.slot.home_team_id),
+    )
+
+
+def _oriented_pair_team_ids_from_resolutions(
+    pair: _OutcomeEventPair,
+    resolutions: dict[tuple[str, str, str, str, str], _OutcomeEventResolution],
+) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    left_resolution = resolutions.get(_event_key(pair.left))
+    right_resolution = resolutions.get(_event_key(pair.right))
+    if left_resolution is None or right_resolution is None:
+        return None
+    return _oriented_pair_team_ids(pair, left_resolution, right_resolution)
+
+
+def _comparison_team_texts_are_compatible(
+    left_name: str,
+    right_name: str,
+    *,
+    sport: str | None = None,
+    team_ids: tuple[int, int] | None = None,
+) -> bool:
+    if team_ids is not None and team_ids[0] == team_ids[1]:
+        return True
+    left_text = _comparison_team_text(left_name, sport=sport)
+    right_text = _comparison_team_text(right_name, sport=sport)
+    if left_text == right_text:
+        return True
+    left_tokens = _significant_tokens(left_name, sport=sport)
+    right_tokens = _significant_tokens(right_name, sport=sport)
+    if not left_tokens or not right_tokens:
+        return False
+    return left_tokens <= right_tokens or right_tokens <= left_tokens
+
+
+def _pair_has_compatible_women_context(
+    pair: _OutcomeEventPair,
+    *,
+    oriented_team_ids: tuple[tuple[int, int], tuple[int, int]] | None = None,
+) -> bool:
+    has_women_pair = False
+    for index, (left_name, right_name) in enumerate(_oriented_pair_team_names(pair)):
+        left_qualifiers = _team_qualifiers(left_name, sport=pair.left.sport)
+        right_qualifiers = _team_qualifiers(right_name, sport=pair.left.sport)
+        if left_qualifiers != right_qualifiers:
+            return False
+        if "women" in left_qualifiers:
+            has_women_pair = True
+        if not _comparison_team_texts_are_compatible(
+            left_name,
+            right_name,
+            sport=pair.left.sport,
+            team_ids=oriented_team_ids[index] if oriented_team_ids is not None else None,
+        ):
+            return False
+    return has_women_pair
+
+
+def _women_marker_forms(name: str) -> frozenset[str]:
+    forms: set[str] = set()
+    if re.search(r"\(\s*[žz]\s*\)", name, flags=re.IGNORECASE):
+        forms.add("z:parenthesized")
+    if re.search(r"^\s*[žz]\s*/", name, flags=re.IGNORECASE):
+        forms.add("z:slash-prefix")
+    if re.search(r"(^|\s)ž(?=$|\s)", name, flags=re.IGNORECASE):
+        forms.add("z:standalone")
+
+    tokens = normalize_identity_text(name).split()
+    youth_ages = {"17", "18", "19", "20", "21", "23"}
+    active_qualifier_tokens = _TEAM_QUALIFIER_TOKENS | {"wom"}
+
+    def suffix_has_qualifier(start_index: int) -> bool:
+        index = start_index
+        while index < len(tokens):
+            token = tokens[index]
+            next_token = tokens[index + 1] if index + 1 < len(tokens) else None
+            if token == "team":
+                index += 1
+                continue
+            if token == "u" and next_token in youth_ages:
+                return True
+            if token in active_qualifier_tokens:
+                return True
+            index += 1
+        return False
+
+    for index, token in enumerate(tokens):
+        if token not in _WOMEN_QUALIFIER_ALIASES:
+            continue
+        next_token = tokens[index + 1] if index + 1 < len(tokens) else None
+        is_explicit_prefix = token in {"women", "wom"} and index == 0 and len(tokens) > 1
+        is_suffix = index > 0 and (
+            index == len(tokens) - 1
+            or next_token in {"team", "women"}
+            or suffix_has_qualifier(index + 1)
+        )
+        if is_explicit_prefix:
+            forms.add(f"{token}:prefix")
+        if is_suffix:
+            forms.add(f"{token}:suffix")
+
+    return frozenset(forms)
+
+
+def _pair_has_women_marker_variation(pair: _OutcomeEventPair) -> bool:
+    for left_name, right_name in _oriented_pair_team_names(pair):
+        left_qualifiers = _team_qualifiers(left_name, sport=pair.left.sport)
+        right_qualifiers = _team_qualifiers(right_name, sport=pair.left.sport)
+        if (
+            left_qualifiers == right_qualifiers
+            and "women" in left_qualifiers
+            and _women_marker_forms(left_name) != _women_marker_forms(right_name)
+        ):
+            return True
+    return False
+
+
+def _rank_event_pairs(
+    events: list[_OutcomeEvent],
+    *,
+    resolutions: dict[tuple[str, str, str, str, str], _OutcomeEventResolution] | None = None,
+) -> list[_OutcomeEventPair]:
     events_by_slot: dict[tuple[str, str], list[_OutcomeEvent]] = defaultdict(list)
     for event in events:
         events_by_slot[(event.sport, event.start_time)].append(event)
 
     accepted: list[_OutcomeEventPair] = []
     for events in events_by_slot.values():
+        all_pairs: list[_OutcomeEventPair] = []
         candidates_by_event: dict[_OutcomeEvent, list[_OutcomeEventPair]] = defaultdict(list)
         for idx, left in enumerate(events):
             for right in events[idx + 1 :]:
                 pair = _pair_candidates(left, right)
                 if pair is None:
                     continue
+                all_pairs.append(pair)
                 candidates_by_event[left].append(pair)
                 candidates_by_event[right].append(pair)
 
@@ -431,6 +641,22 @@ def _rank_event_pairs(events: list[_OutcomeEvent]) -> list[_OutcomeEventPair]:
             if best not in accepted:
                 accepted.append(best)
 
+        for pair in all_pairs:
+            oriented_team_ids = (
+                _oriented_pair_team_ids_from_resolutions(pair, resolutions)
+                if resolutions is not None
+                else None
+            )
+            if (
+                _pair_has_compatible_women_context(
+                    pair,
+                    oriented_team_ids=oriented_team_ids,
+                )
+                and _pair_has_women_marker_variation(pair)
+                and pair not in accepted
+            ):
+                accepted.append(pair)
+
     return sorted(accepted, key=lambda item: item.score, reverse=True)
 
 
@@ -445,7 +671,7 @@ def _build_football_event_resolutions(
             continue
         resolutions[_event_key(event)] = _OutcomeEventResolution(slot=slot)
 
-    for pair in _rank_event_pairs(events):
+    for pair in _rank_event_pairs(events, resolutions=resolutions):
         left_key = _event_key(pair.left)
         right_key = _event_key(pair.right)
         left_resolution = resolutions.get(left_key)
@@ -454,10 +680,35 @@ def _build_football_event_resolutions(
         if left_resolution is not None and right_resolution is not None:
             if _same_slot(left_resolution, right_resolution):
                 continue
-            if pair.orientation == _REVERSED_ORIENTATION and _reversed_slots(left_resolution, right_resolution):
-                resolutions[right_key] = _OutcomeEventResolution(
-                    slot=left_resolution.slot,
-                    orientation=_orientation_from_pair(left_resolution.orientation, pair.orientation),
+            if pair.orientation == _REVERSED_ORIENTATION and _reversed_slots(
+                left_resolution, right_resolution
+            ):
+                _move_resolution_component(
+                    resolutions,
+                    source_resolution=right_resolution,
+                    target_slot=left_resolution.slot,
+                    source_target_orientation=_orientation_from_pair(
+                        left_resolution.orientation,
+                        pair.orientation,
+                    ),
+                )
+                continue
+            if _pair_has_compatible_women_context(
+                pair,
+                oriented_team_ids=_oriented_pair_team_ids(
+                    pair,
+                    left_resolution,
+                    right_resolution,
+                ),
+            ):
+                _move_resolution_component(
+                    resolutions,
+                    source_resolution=right_resolution,
+                    target_slot=left_resolution.slot,
+                    source_target_orientation=_orientation_from_pair(
+                        left_resolution.orientation,
+                        pair.orientation,
+                    ),
                 )
             continue
 
