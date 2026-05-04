@@ -39,6 +39,9 @@ class NotificationService:
     def register_provider(self, provider: NotificationProvider) -> None:
         self._providers.append(provider)
 
+    def clear_providers(self) -> None:
+        self._providers.clear()
+
     async def notify_opportunities(self, opportunities: list[Opportunity]) -> int:
         """Send notifications for generic opportunities above threshold. Returns count sent."""
         count = 0

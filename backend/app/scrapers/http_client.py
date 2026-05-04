@@ -46,6 +46,10 @@ class HttpClient:
             return 0.0
         return 1.0 / self._min_interval
 
+    @rate_limit_per_second.setter
+    def rate_limit_per_second(self, value: float) -> None:
+        self._min_interval = 1.0 / value if value > 0 else 0
+
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             proxy = self._proxies[self._proxy_index] if self._proxies else None

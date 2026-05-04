@@ -13,13 +13,21 @@ def current_utc_time() -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
-def configured_lookahead_hours() -> int:
-    return max(0, settings.scrape_lookahead_hours)
+def configured_lookahead_hours(lookahead_hours: int | None = None) -> int:
+    if lookahead_hours is None:
+        lookahead_hours = settings.scrape_lookahead_hours
+    return max(0, lookahead_hours)
 
 
-def lookahead_cutoff(now: datetime | None = None) -> datetime:
+def lookahead_cutoff(
+    now: datetime | None = None,
+    *,
+    lookahead_hours: int | None = None,
+) -> datetime:
     base = now or current_utc_time()
-    return base.astimezone(timezone.utc) + timedelta(hours=configured_lookahead_hours())
+    return base.astimezone(timezone.utc) + timedelta(
+        hours=configured_lookahead_hours(lookahead_hours)
+    )
 
 
 def format_utc_naive_seconds(dt: datetime) -> str:
@@ -42,8 +50,9 @@ def filter_raw_odds_by_lookahead(
     rows: list[_RawScrapeRow],
     *,
     now: datetime | None = None,
+    lookahead_hours: int | None = None,
 ) -> list[_RawScrapeRow]:
-    cutoff = lookahead_cutoff(now)
+    cutoff = lookahead_cutoff(now, lookahead_hours=lookahead_hours)
     filtered: list[_RawScrapeRow] = []
     for row in rows:
         start_dt = parse_raw_start_time(row.start_time)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -431,6 +431,84 @@ class SystemStatus(BaseModel):
     active_bookmakers: int = 0
     scheduler_running: bool = False
     scan: ScanProgressOut = Field(default_factory=ScanProgressOut)
+
+
+# ── Runtime scrape settings ────────────────────────────────
+ScrapeMarketScope = Literal["all", "player_props"]
+ScraperDetailMode = Literal["partial", "full"]
+
+
+class ScrapeRuntimeSettings(BaseModel):
+    enabled_bookmakers: list[str] = Field(default_factory=list)
+    enabled_sports: list[str] = Field(default_factory=list)
+    scrape_market_scope: ScrapeMarketScope = "all"
+    analysis_markets: list[str] = Field(default_factory=lambda: ["all"])
+    scrape_lookahead_hours: int = Field(default=24, ge=0)
+    scrape_interval_minutes: int = Field(default=10, ge=1)
+    max_middle_opportunities_per_market: int = Field(default=10, ge=1)
+    rate_limit_per_second: float = Field(default=1.0, ge=0)
+    meridian_rate_limit_per_second: float = Field(default=2.0, ge=0)
+    soccerbet_detail_mode: ScraperDetailMode = "partial"
+    merkurxtip_detail_mode: ScraperDetailMode = "partial"
+    notification_gap_threshold: float = Field(default=1.5, ge=0)
+    persist_inapp_notifications: bool = False
+
+
+class ScrapeRuntimeSettingsUpdate(BaseModel):
+    enabled_bookmakers: Optional[list[str]] = None
+    enabled_sports: Optional[list[str]] = None
+    scrape_market_scope: Optional[ScrapeMarketScope] = None
+    analysis_markets: Optional[list[str]] = None
+    scrape_lookahead_hours: Optional[int] = Field(default=None, ge=0)
+    scrape_interval_minutes: Optional[int] = Field(default=None, ge=1)
+    max_middle_opportunities_per_market: Optional[int] = Field(default=None, ge=1)
+    rate_limit_per_second: Optional[float] = Field(default=None, ge=0)
+    meridian_rate_limit_per_second: Optional[float] = Field(default=None, ge=0)
+    soccerbet_detail_mode: Optional[ScraperDetailMode] = None
+    merkurxtip_detail_mode: Optional[ScraperDetailMode] = None
+    notification_gap_threshold: Optional[float] = Field(default=None, ge=0)
+    persist_inapp_notifications: Optional[bool] = None
+
+
+class ScrapeSettingsBookmakerOption(BaseModel):
+    id: str
+    name: str
+    enabled: bool = False
+
+
+class ScrapeSettingsMarketOption(BaseModel):
+    token: str
+    label: str
+    sport: Optional[str] = None
+
+
+class ScrapeSettingsOptions(BaseModel):
+    bookmakers: list[ScrapeSettingsBookmakerOption] = Field(default_factory=list)
+    sports: list[str] = Field(default_factory=list)
+    market_scopes: list[ScrapeMarketScope] = Field(default_factory=lambda: ["all", "player_props"])
+    analysis_market_options: list[ScrapeSettingsMarketOption] = Field(
+        default_factory=list
+    )
+    detail_modes: list[ScraperDetailMode] = Field(default_factory=lambda: ["partial", "full"])
+    scrape_interval_minutes_min: int = 1
+    scrape_interval_minutes_max: int = 24 * 60
+    scrape_lookahead_hours_min: int = 0
+    scrape_lookahead_hours_max: int = 24 * 14
+    max_middle_opportunities_per_market_min: int = 1
+    max_middle_opportunities_per_market_max: int = 1000
+    rate_limit_per_second_min: float = 0
+    rate_limit_per_second_max: float = 20
+
+
+class ScrapeSettingsResponse(BaseModel):
+    applied: ScrapeRuntimeSettings
+    pending: Optional[ScrapeRuntimeSettings] = None
+    defaults: ScrapeRuntimeSettings
+    has_pending_changes: bool = False
+    applied_at: Optional[str] = None
+    pending_at: Optional[str] = None
+    applied_immediately: bool = False
+    options: ScrapeSettingsOptions = Field(default_factory=ScrapeSettingsOptions)
 
 
 # ── Scrape trigger response ────────────────────────────────

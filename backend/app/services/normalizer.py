@@ -1190,6 +1190,61 @@ def normalize_market_type(raw_type: str) -> str:
     return _MARKET_TYPE_MAPPING.get(key, key)
 
 
+def _reoriented_market_values(
+    raw: RawOddsData,
+    *,
+    raw_home_team_id: int,
+    raw_away_team_id: int,
+    target_home_team_id: int,
+    target_away_team_id: int,
+) -> tuple[float, float | None, float | None]:
+    threshold = raw.threshold
+    over_odds = raw.over_odds
+    under_odds = raw.under_odds
+
+    if (
+        raw_home_team_id == target_away_team_id
+        and raw_away_team_id == target_home_team_id
+        and normalize_market_type(raw.market_type) == "home_handicap_ot"
+    ):
+        return -threshold, under_odds, over_odds
+
+    return threshold, over_odds, under_odds
+
+
+def _raw_with_target_matchup(
+    raw: RawOddsData,
+    *,
+    raw_home_team_id: int,
+    raw_away_team_id: int,
+    target_home_team_id: int,
+    target_away_team_id: int,
+    target_home_team: str,
+    target_away_team: str,
+) -> RawOddsData:
+    threshold, over_odds, under_odds = _reoriented_market_values(
+        raw,
+        raw_home_team_id=raw_home_team_id,
+        raw_away_team_id=raw_away_team_id,
+        target_home_team_id=target_home_team_id,
+        target_away_team_id=target_away_team_id,
+    )
+    return RawOddsData(
+        bookmaker_id=raw.bookmaker_id,
+        league_id=raw.league_id,
+        sport=raw.sport,
+        home_team=target_home_team,
+        away_team=target_away_team,
+        source_url=raw.source_url,
+        market_type=raw.market_type,
+        player_name=raw.player_name,
+        threshold=threshold,
+        over_odds=over_odds,
+        under_odds=under_odds,
+        start_time=raw.start_time,
+    )
+
+
 def _is_unresolved_shared_platform_prop(raw: RawOddsData) -> bool:
     return bool(raw.player_name and raw.away_team.strip() == raw.player_name.strip())
 
@@ -1449,19 +1504,14 @@ def _resolve_shared_platform_matchups(
                     )
                 )
             if canonical:
-                resolved[-1] = RawOddsData(
-                    bookmaker_id=raw.bookmaker_id,
-                    league_id=raw.league_id,
-                    sport=raw.sport,
-                    home_team=canonical.home_team,
-                    away_team=canonical.away_team,
-                    source_url=raw.source_url,
-                    market_type=raw.market_type,
-                    player_name=raw.player_name,
-                    threshold=raw.threshold,
-                    over_odds=raw.over_odds,
-                    under_odds=raw.under_odds,
-                    start_time=raw.start_time,
+                resolved[-1] = _raw_with_target_matchup(
+                    raw,
+                    raw_home_team_id=home_resolution.team_id,
+                    raw_away_team_id=away_resolution.team_id,
+                    target_home_team_id=canonical.home_team_id,
+                    target_away_team_id=canonical.away_team_id,
+                    target_home_team=canonical.home_team,
+                    target_away_team=canonical.away_team,
                 )
             continue
 
@@ -1628,6 +1678,13 @@ def normalize_odds_with_diagnostics(
         )
         player = normalize_player_name(raw.player_name)
         market = normalize_market_type(raw.market_type)
+        threshold, over_odds, under_odds = _reoriented_market_values(
+            raw,
+            raw_home_team_id=slot_home.team_id,
+            raw_away_team_id=slot_away.team_id,
+            target_home_team_id=slot_resolution.home_team_id,
+            target_away_team_id=slot_resolution.away_team_id,
+        )
 
         results.append(
             NormalizedOdds(
@@ -1642,9 +1699,9 @@ def normalize_odds_with_diagnostics(
                 source_url=raw.source_url,
                 market_type=market,
                 player_name=player,
-                threshold=raw.threshold,
-                over_odds=raw.over_odds,
-                under_odds=raw.under_odds,
+                threshold=threshold,
+                over_odds=over_odds,
+                under_odds=under_odds,
                 start_time=raw.start_time,
             )
         )

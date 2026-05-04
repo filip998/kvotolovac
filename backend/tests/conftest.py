@@ -49,6 +49,7 @@ def wide_scrape_lookahead(monkeypatch):
 def all_market_scrape_scope(monkeypatch):
     """Preserve full-market coverage in tests unless a test opts into player-only mode."""
     monkeypatch.setattr(settings, "scrape_market_scope", "all")
+    monkeypatch.setattr(settings, "analysis_markets", "")
     yield
 
 

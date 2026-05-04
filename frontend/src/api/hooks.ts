@@ -1,4 +1,4 @@
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import client from './client';
 import type {
   Bookmaker,
@@ -20,6 +20,8 @@ import type {
   OpportunityFilters,
   OutcomeOffer,
   OutcomeOfferFilters,
+  ScrapeRuntimeSettingsUpdate,
+  ScrapeSettingsResponse,
   SystemStatus,
   TeamReviewAction,
   TeamReviewApproval,
@@ -40,6 +42,7 @@ import {
   mockSystemStatus,
   mockCanonicalTeams,
   mockEventReviewCases,
+  mockScrapeSettings,
   mockTeamReviewCases,
 } from './mockData';
 
@@ -47,6 +50,39 @@ const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false';
 
 function delay(ms = 300): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function cloneMockScrapeSettings(): ScrapeSettingsResponse {
+  return JSON.parse(JSON.stringify(mockScrapeSettings)) as ScrapeSettingsResponse;
+}
+
+function updateMockScrapeSettings(payload: ScrapeRuntimeSettingsUpdate): ScrapeSettingsResponse {
+  const base = mockScrapeSettings.pending ?? mockScrapeSettings.applied;
+  const next = {
+    ...base,
+    ...payload,
+  };
+  const now = new Date().toISOString();
+  if (mockSystemStatus.scan.in_progress) {
+    mockScrapeSettings.pending = next;
+    mockScrapeSettings.pending_at = now;
+    mockScrapeSettings.has_pending_changes = true;
+    mockScrapeSettings.applied_immediately = false;
+  } else {
+    mockScrapeSettings.applied = next;
+    mockScrapeSettings.pending = null;
+    mockScrapeSettings.pending_at = null;
+    mockScrapeSettings.applied_at = now;
+    mockScrapeSettings.has_pending_changes = false;
+    mockScrapeSettings.applied_immediately = true;
+  }
+
+  const selected = new Set((mockScrapeSettings.pending ?? mockScrapeSettings.applied).enabled_bookmakers);
+  mockScrapeSettings.options.bookmakers = mockScrapeSettings.options.bookmakers.map((bookmaker) => ({
+    ...bookmaker,
+    enabled: selected.has(bookmaker.id),
+  }));
+  return cloneMockScrapeSettings();
 }
 
 function serializeArrayParam(values?: string[]): string | undefined {
@@ -1014,6 +1050,41 @@ export function useSystemStatus() {
       return data;
     },
     refetchInterval: (query) => (query.state.data?.scan?.in_progress ? 2000 : 15000),
+  });
+}
+
+// --- Runtime Scrape Settings ---
+
+export function useScrapeSettings() {
+  return useQuery<ScrapeSettingsResponse>({
+    queryKey: ['settings', 'scrape'],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        return cloneMockScrapeSettings();
+      }
+      const { data } = await client.get<ScrapeSettingsResponse>('/settings/scrape');
+      return data;
+    },
+    staleTime: 30 * 1000,
+  });
+}
+
+export function useUpdateScrapeSettings() {
+  const queryClient = useQueryClient();
+  return useMutation<ScrapeSettingsResponse, Error, ScrapeRuntimeSettingsUpdate>({
+    mutationFn: async (payload) => {
+      if (USE_MOCK) {
+        await delay();
+        return updateMockScrapeSettings(payload);
+      }
+      const { data } = await client.patch<ScrapeSettingsResponse>('/settings/scrape', payload);
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'scrape'] });
+      void queryClient.invalidateQueries({ queryKey: ['status'] });
+    },
   });
 }
 

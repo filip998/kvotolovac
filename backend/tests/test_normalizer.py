@@ -1183,6 +1183,54 @@ def test_normalize_preserves_thresholds():
     assert normalized[0].over_odds == 1.85
 
 
+def test_normalize_reorients_home_handicap_when_source_home_is_canonical_away(team_registry_file):
+    raw = [
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="paraguay",
+            home_team="CA Ciudad Nueva",
+            away_team="Felix Perez Cardozo",
+            market_type="home_handicap_ot",
+            threshold=-16.5,
+            over_odds=1.87,
+            under_odds=1.90,
+            start_time="2026-05-04T23:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="volcanobet",
+            league_id="paragvaj_1",
+            home_team="CA Ciudad Nueva",
+            away_team="Felix Perez Cardozo",
+            market_type="home_handicap_ot",
+            threshold=-15.5,
+            over_odds=1.97,
+            under_odds=1.75,
+            start_time="2026-05-04T23:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="admiralbet",
+            league_id="lnb",
+            home_team="Felix Perez Cardozo",
+            away_team="CA Ciudad Nueva",
+            market_type="home_handicap_ot",
+            threshold=16.5,
+            over_odds=1.72,
+            under_odds=2.05,
+            start_time="2026-05-04T23:30:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    by_bookmaker = {row.bookmaker_id: row for row in normalized}
+    assert len({row.match_id for row in normalized}) == 1
+    assert all(row.home_team == "CA Ciudad Nueva" for row in normalized)
+    assert all(row.away_team == "Felix Perez Cardozo" for row in normalized)
+    assert by_bookmaker["admiralbet"].threshold == -16.5
+    assert by_bookmaker["admiralbet"].over_odds == 2.05
+    assert by_bookmaker["admiralbet"].under_odds == 1.72
+
+
 def test_normalize_odds_resolves_suffix_jr():
     """W.Carter and Wendell Carter Jr should match."""
     raw = [

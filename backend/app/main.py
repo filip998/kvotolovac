@@ -28,6 +28,7 @@ from .scrapers.base import BaseScraper
 from .scrapers.http_client import HttpClient
 from .scrapers.registry import registry
 from .services.scheduler import scheduler
+from .services.runtime_settings import ensure_scrape_settings_seeded
 from .store import odds_store
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
@@ -88,6 +89,10 @@ def _create_real_scrapers(
     return scrapers, managed_clients
 
 
+def _real_scraper_ids_to_register() -> list[str]:
+    return sorted(set(_REAL_SCRAPER_FACTORIES) | set(settings.bookmaker_list))
+
+
 async def _close_http_clients(http_clients: list[HttpClient]) -> None:
     close_errors: list[Exception] = []
     for http_client in http_clients:
@@ -137,13 +142,14 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Initialising database: %s", settings.db_path)
     await init_db(settings.db_path)
+    await ensure_scrape_settings_seeded()
 
     # Register scrapers based on configured mode
     managed_clients: list[HttpClient] = []
     registered_scrapers: list[BaseScraper] = []
     if settings.scraper_mode == "real":
         scrapers, managed_clients = _create_real_scrapers(
-            settings.bookmaker_list,
+            _real_scraper_ids_to_register(),
             rate_limit_per_second=settings.rate_limit_per_second,
             meridian_rate_limit_per_second=settings.meridian_rate_limit_per_second,
             proxies=settings.proxy_url_list or None,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import aiosqlite
 import pytest
@@ -20,6 +21,7 @@ from app.models.schemas import (
 from app.scrapers.base import BaseScraper
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
+import app.services.scheduler as scheduler_service
 from app.services.scheduler import scheduler
 from app.services.normalizer import normalize_team_name
 from app.services.opportunity_analyzer import Opportunity, analyze_outcome_offers
@@ -139,6 +141,307 @@ async def test_trigger_scrape_rejects_when_cycle_is_already_running(client: Asyn
     assert resp.json()["detail"] == "Scrape already in progress"
 
     await cycle_task
+
+
+@pytest.mark.asyncio
+async def test_get_scrape_settings_defaults(client: AsyncClient):
+    resp = await client.get("/api/v1/settings/scrape")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["applied"]["scrape_market_scope"] == settings.scrape_market_scope
+    assert data["applied"]["analysis_markets"] == ["all"]
+    assert data["applied"]["scrape_interval_minutes"] == settings.scrape_interval_minutes
+    assert data["defaults"]["scrape_market_scope"] == settings.scrape_market_scope
+    assert data["defaults"]["analysis_markets"] == ["all"]
+    assert data["defaults"]["scrape_interval_minutes"] == settings.scrape_interval_minutes
+    assert set(data["defaults"]["enabled_bookmakers"]) == set(settings.bookmaker_list)
+    assert data["pending"] is None
+    assert data["has_pending_changes"] is False
+    assert {item["id"] for item in data["options"]["bookmakers"]} >= {
+        "mozzart",
+        "meridian",
+        "maxbet",
+    }
+    assert "tennis" in data["options"]["sports"]
+    assert {item["token"] for item in data["options"]["analysis_market_options"]} >= {
+        "basketball:player_*",
+        "basketball:home_handicap_ot",
+        "football:football_total_goals",
+        "tennis:tennis_match_winner",
+    }
+
+
+@pytest.mark.asyncio
+async def test_patch_scrape_settings_applies_immediately_when_idle(client: AsyncClient):
+    resp = await client.patch(
+        "/api/v1/settings/scrape",
+        json={
+            "enabled_bookmakers": ["mozzart"],
+            "enabled_sports": ["basketball"],
+            "scrape_market_scope": "player_props",
+            "scrape_lookahead_hours": 12,
+            "scrape_interval_minutes": 7,
+            "max_middle_opportunities_per_market": 5,
+            "rate_limit_per_second": 3.0,
+            "meridian_rate_limit_per_second": 4.0,
+            "soccerbet_detail_mode": "full",
+            "merkurxtip_detail_mode": "full",
+            "notification_gap_threshold": 2.5,
+            "persist_inapp_notifications": True,
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["applied_immediately"] is True
+    assert data["pending"] is None
+    assert data["has_pending_changes"] is False
+    assert data["applied"]["enabled_bookmakers"] == ["mozzart"]
+    assert data["applied"]["scrape_market_scope"] == "player_props"
+    assert data["applied"]["analysis_markets"] == ["*:player_*"]
+    assert data["applied"]["scrape_interval_minutes"] == 7
+    assert data["applied"]["soccerbet_detail_mode"] == "full"
+
+    get_resp = await client.get("/api/v1/settings/scrape")
+    assert get_resp.json()["applied"]["enabled_bookmakers"] == ["mozzart"]
+
+
+@pytest.mark.asyncio
+async def test_patch_scrape_settings_accepts_analysis_markets(client: AsyncClient):
+    resp = await client.patch(
+        "/api/v1/settings/scrape",
+        json={
+            "enabled_bookmakers": ["mozzart"],
+            "enabled_sports": ["basketball"],
+            "analysis_markets": [
+                "basketball:player_*",
+                "basketball:home_handicap_ot",
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["applied"]["analysis_markets"] == [
+        "basketball:player_*",
+        "basketball:home_handicap_ot",
+    ]
+    assert data["applied"]["scrape_market_scope"] == "all"
+
+
+@pytest.mark.asyncio
+async def test_patch_scrape_settings_accepts_advertised_tennis_analysis_market(
+    client: AsyncClient,
+):
+    resp = await client.patch(
+        "/api/v1/settings/scrape",
+        json={
+            "enabled_bookmakers": ["mozzart"],
+            "enabled_sports": ["tennis"],
+            "analysis_markets": ["tennis:tennis_match_winner"],
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["applied"]["enabled_sports"] == ["tennis"]
+    assert data["applied"]["analysis_markets"] == ["tennis:tennis_match_winner"]
+
+
+@pytest.mark.asyncio
+async def test_patch_scrape_settings_saves_pending_while_cycle_runs(client: AsyncClient):
+    class SlowScraper(BaseScraper):
+        def get_bookmaker_id(self) -> str:
+            return "slow"
+
+        def get_bookmaker_name(self) -> str:
+            return "Slow"
+
+        def get_supported_leagues(self) -> list[str]:
+            return ["euroleague"]
+
+        async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
+            await asyncio.sleep(0.05)
+            return [
+                RawOddsData(
+                    bookmaker_id="slow",
+                    league_id=league_id,
+                    home_team="Olympiacos",
+                    away_team="Real Madrid",
+                    market_type="player_points",
+                    player_name="Sasha Vezenkov",
+                    threshold=18.5,
+                    over_odds=1.9,
+                    under_odds=1.9,
+                    start_time="2030-01-01T20:00:00+00:00",
+                )
+            ]
+
+    registry._scrapers.clear()
+    registry.register(SlowScraper())
+
+    cycle_task = asyncio.create_task(scheduler.run_cycle())
+    for _ in range(10):
+        if scheduler.is_cycle_in_progress:
+            break
+        await asyncio.sleep(0.01)
+
+    assert scheduler.is_cycle_in_progress is True
+
+    resp = await client.patch(
+        "/api/v1/settings/scrape",
+        json={
+            "enabled_bookmakers": ["slow"],
+            "scrape_interval_minutes": 3,
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["applied_immediately"] is False
+    assert data["has_pending_changes"] is True
+    assert data["pending"]["scrape_interval_minutes"] == 3
+    assert data["applied"]["scrape_interval_minutes"] == settings.scrape_interval_minutes
+
+    await cycle_task
+
+
+@pytest.mark.asyncio
+async def test_patch_scrape_settings_waits_for_cycle_snapshot_before_pending_decision(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class SlowScraper(BaseScraper):
+        def get_bookmaker_id(self) -> str:
+            return "slow"
+
+        def get_bookmaker_name(self) -> str:
+            return "Slow"
+
+        def get_supported_leagues(self) -> list[str]:
+            return ["euroleague"]
+
+        async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
+            await asyncio.sleep(0.1)
+            return [
+                RawOddsData(
+                    bookmaker_id="slow",
+                    league_id=league_id,
+                    home_team="Olympiacos",
+                    away_team="Real Madrid",
+                    market_type="player_points",
+                    player_name="Sasha Vezenkov",
+                    threshold=18.5,
+                    over_odds=1.9,
+                    under_odds=1.9,
+                    start_time="2030-01-01T20:00:00+00:00",
+                )
+            ]
+
+    registry._scrapers.clear()
+    registry.register(SlowScraper())
+
+    original_promote = scheduler_service.promote_pending_scrape_settings
+    promote_started = asyncio.Event()
+    release_promote = asyncio.Event()
+
+    async def slow_promote_pending_scrape_settings():
+        promote_started.set()
+        await release_promote.wait()
+        return await original_promote()
+
+    monkeypatch.setattr(
+        scheduler_service,
+        "promote_pending_scrape_settings",
+        slow_promote_pending_scrape_settings,
+    )
+
+    cycle_task = asyncio.create_task(scheduler.run_cycle())
+    await asyncio.wait_for(promote_started.wait(), timeout=1)
+    assert scheduler.is_cycle_in_progress is True
+
+    patch_task = asyncio.create_task(
+        client.patch(
+            "/api/v1/settings/scrape",
+            json={
+                "enabled_bookmakers": ["slow"],
+                "scrape_interval_minutes": 3,
+            },
+        )
+    )
+    await asyncio.sleep(0.01)
+    assert patch_task.done() is False
+
+    release_promote.set()
+    resp = await patch_task
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["applied_immediately"] is False
+    assert data["has_pending_changes"] is True
+    assert data["pending"]["scrape_interval_minutes"] == 3
+
+    await cycle_task
+
+
+@pytest.mark.asyncio
+async def test_patch_scrape_settings_rejects_unknown_bookmaker(client: AsyncClient):
+    resp = await client.patch(
+        "/api/v1/settings/scrape",
+        json={"enabled_bookmakers": ["not-a-bookmaker"]},
+    )
+
+    assert resp.status_code == 422
+    assert "Unknown bookmaker ids" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_patch_scrape_settings_rejects_invalid_analysis_markets(client: AsyncClient):
+    resp = await client.patch(
+        "/api/v1/settings/scrape",
+        json={"analysis_markets": ["all", "basketball:player_*"]},
+    )
+
+    assert resp.status_code == 422
+    assert "'all' cannot be combined" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_get_scrape_settings_sanitizes_stale_persisted_values(
+    client: AsyncClient,
+):
+    settings_resp = await client.get("/api/v1/settings/scrape")
+    stale_config = settings_resp.json()["applied"]
+    stale_config.update(
+        {
+            "enabled_bookmakers": ["retired-bookmaker", "mozzart"],
+            "enabled_sports": ["retired-sport", "basketball"],
+            "analysis_markets": ["basketball:player_*", "bad-token"],
+            "rate_limit_per_second": 999.0,
+        }
+    )
+    db = await get_db()
+    await db.execute(
+        "UPDATE runtime_scrape_settings SET applied_config = ? WHERE id = 1",
+        (json.dumps(stale_config),),
+    )
+    await db.commit()
+
+    resp = await client.get("/api/v1/settings/scrape")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["applied"]["enabled_bookmakers"] == ["mozzart"]
+    assert data["applied"]["enabled_sports"] == ["basketball"]
+    assert data["applied"]["analysis_markets"] == ["all"]
+    assert data["applied"]["rate_limit_per_second"] == 20.0
+
+    patch_resp = await client.patch(
+        "/api/v1/settings/scrape",
+        json={"scrape_interval_minutes": 4},
+    )
+    assert patch_resp.status_code == 200
 
 
 @pytest.mark.asyncio

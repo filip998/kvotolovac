@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 
-from app.main import _close_http_clients, _create_real_scrapers, _shutdown_resources, lifespan
+from app.main import (
+    _close_http_clients,
+    _create_real_scrapers,
+    _real_scraper_ids_to_register,
+    _shutdown_resources,
+    lifespan,
+)
 from app.scrapers.http_client import HttpClient
 from app.scrapers.registry import registry
 
@@ -88,6 +94,16 @@ async def test_create_real_scrapers_supports_365():
         await _close_http_clients(clients)
 
 
+def test_real_scraper_ids_to_register_includes_known_and_configured(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr("app.main.settings.bookmakers", "alpha,beta", raising=False)
+
+    scraper_ids = _real_scraper_ids_to_register()
+
+    assert {"alpha", "beta", "mozzart", "meridian", "superbet"} <= set(scraper_ids)
+
+
 @pytest.mark.asyncio
 async def test_close_http_clients_attempts_all_and_reraises_failure():
     close_order: list[str] = []
@@ -142,6 +158,9 @@ async def test_lifespan_starts_scheduler_without_blocking_on_run_cycle(monkeypat
     async def fake_init_db(_: str) -> None:
         calls.append("init_db")
 
+    async def fake_ensure_scrape_settings_seeded() -> None:
+        calls.append("settings.seed")
+
     async def fake_scheduler_start() -> None:
         calls.append("scheduler.start")
 
@@ -155,6 +174,10 @@ async def test_lifespan_starts_scheduler_without_blocking_on_run_cycle(monkeypat
         raise AssertionError("run_cycle should not be awaited during startup")
 
     monkeypatch.setattr("app.main.init_db", fake_init_db)
+    monkeypatch.setattr(
+        "app.main.ensure_scrape_settings_seeded",
+        fake_ensure_scrape_settings_seeded,
+    )
     monkeypatch.setattr("app.main._shutdown_resources", fake_shutdown_resources)
     monkeypatch.setattr("app.main.scheduler.start", fake_scheduler_start)
     monkeypatch.setattr("app.main.scheduler.stop", fake_scheduler_stop)
@@ -176,6 +199,9 @@ async def test_lifespan_upserts_configured_bookmakers_before_starting_scheduler(
 
     async def fake_init_db(_: str) -> None:
         calls.append("init_db")
+
+    async def fake_ensure_scrape_settings_seeded() -> None:
+        calls.append("settings.seed")
 
     def fake_create_real_scrapers(
         bookmaker_ids: list[str],
@@ -205,7 +231,12 @@ async def test_lifespan_upserts_configured_bookmakers_before_starting_scheduler(
         calls.append("shutdown")
 
     monkeypatch.setattr("app.main.init_db", fake_init_db)
+    monkeypatch.setattr(
+        "app.main.ensure_scrape_settings_seeded",
+        fake_ensure_scrape_settings_seeded,
+    )
     monkeypatch.setattr("app.main._create_real_scrapers", fake_create_real_scrapers)
+    monkeypatch.setattr("app.main._real_scraper_ids_to_register", lambda: ["alpha", "beta"])
     monkeypatch.setattr("app.main.odds_store.upsert_bookmaker", fake_upsert_bookmaker)
     monkeypatch.setattr("app.main._shutdown_resources", fake_shutdown_resources)
     monkeypatch.setattr("app.main.scheduler.start", fake_scheduler_start)
@@ -219,6 +250,7 @@ async def test_lifespan_upserts_configured_bookmakers_before_starting_scheduler(
 
     assert calls == [
         "init_db",
+        "settings.seed",
         "create:alpha,beta",
         "upsert:alpha:Alpha",
         "upsert:beta:Beta",

@@ -13,6 +13,9 @@ from ..models.schemas import (
     NormalizedOutcomeOffer,
     RawOddsData,
     RawOutcomeOffer,
+    ScrapeRuntimeSettings,
+    ScrapeRuntimeSettingsUpdate,
+    ScrapeSettingsResponse,
     TeamReviewDiagnostic,
     UnresolvedOddsDiagnostic,
 )
@@ -20,14 +23,19 @@ from ..scrapers.base import BaseScraper, ScraperCapability
 from ..scrapers.registry import registry
 from ..models.schemas import ScanProgressOut
 from ..services.league_registry import league_country, league_display_name
+from ..services.market_allowlist import (
+    MARKET_TYPE_ALIASES,
+    MarketAllowlist,
+    analysis_market_allowlist,
+)
 from ..services.normalizer import (
     ANCHORED_AUTO_APPLY_THRESHOLD,
     log_unresolved_shared_platform_diagnostics,
-    normalize_market_type,
     normalize_odds_with_diagnostics,
     resolve_team_name,
 )
 from ..services.canonical_analyzer import analyze_canonical_offers
+from ..services.canonical_offers import canonical_market_type
 from ..services.event_resolver import (
     CANONICAL_TEAM_AUTO_MERGE_THRESHOLD,
     SameTimeCanonicalMergeProposal as _SameTimeMergeProposal,
@@ -45,6 +53,11 @@ from ..services.scrape_window import (
     filter_raw_odds_by_lookahead,
 )
 from ..services.scraper_benchmarks import recorder as benchmark_recorder
+from ..services.runtime_settings import (
+    get_applied_scrape_settings,
+    promote_pending_scrape_settings,
+    update_scrape_settings,
+)
 from ..services.team_registry import (
     CircularAliasError,
     forget_team_alias,
@@ -110,58 +123,100 @@ def _is_auto_alias_candidate(case) -> bool:
 def _enabled_scraper_capabilities(
     scraper: BaseScraper,
     enabled_sports: set[str],
+    market_allowlist: MarketAllowlist,
 ) -> list[ScraperCapability]:
     return [
         capability
         for capability in scraper.get_scraper_capabilities()
-        if _is_enabled_scraper_capability(capability, enabled_sports)
+        if _is_enabled_scraper_capability(capability, enabled_sports, market_allowlist)
     ]
 
 
 def _is_enabled_scraper_capability(
     capability: ScraperCapability,
     enabled_sports: set[str],
+    market_allowlist: MarketAllowlist,
 ) -> bool:
     if capability.sport not in enabled_sports:
         return False
+    if not market_allowlist.has_filter_for_sport(capability.sport):
+        return False
     if (
-        settings.scrape_market_scope == "player_props"
-        and capability.lane == "outcome_offer"
+        capability.lane == "outcome_offer"
+        and not market_allowlist.may_include_outcome_offer_markets(capability.sport)
     ):
         return False
     return True
 
 
-def _is_player_market_type(market_type: str) -> bool:
-    return normalize_market_type(market_type).startswith("player_")
-
-
-def _filter_normalized_pipeline_batch_by_market_scope(
+def _filter_normalized_pipeline_batch_by_market_allowlist(
     batch: _NormalizedPipelineBatch,
+    market_allowlist: MarketAllowlist,
 ) -> _NormalizedPipelineBatch:
-    if settings.scrape_market_scope != "player_props":
+    if market_allowlist.allows_all:
         return batch
     return _NormalizedPipelineBatch(
-        odds=[row for row in batch.odds if _is_player_market_type(row.market_type)],
-        outcome_offers=[],
+        odds=[
+            row
+            for row in batch.odds
+            if _allowlist_allows_market(
+                market_allowlist, sport=row.sport, market_type=row.market_type
+            )
+        ],
+        outcome_offers=[
+            row
+            for row in batch.outcome_offers
+            if _allowlist_allows_market(
+                market_allowlist, sport=row.sport, market_type=row.market_type
+            )
+        ],
         unresolved_odds=[
-            row for row in batch.unresolved_odds if _is_player_market_type(row.market_type)
+            row
+            for row in batch.unresolved_odds
+            if _allowlist_allows_market(
+                market_allowlist, sport=row.sport, market_type=row.market_type
+            )
         ],
         team_review_cases=batch.team_review_cases,
     )
 
 
-def _event_resolution_batch_for_market_scope(
+def _allowlist_allows_market(
+    market_allowlist: MarketAllowlist,
+    *,
+    sport: str,
+    market_type: str,
+) -> bool:
+    candidate_market_types = {
+        market_type,
+        canonical_market_type(market_type),
+        *MARKET_TYPE_ALIASES.get(market_type, ()),
+    }
+    return any(
+        market_allowlist.allows(sport=sport, market_type=candidate)
+        for candidate in candidate_market_types
+    )
+
+
+def _event_resolution_batch_for_market_allowlist(
     full_batch: _NormalizedPipelineBatch,
     persisted_batch: _NormalizedPipelineBatch,
+    market_allowlist: MarketAllowlist,
 ) -> _NormalizedPipelineBatch:
-    if settings.scrape_market_scope != "player_props":
+    if market_allowlist.allows_all:
         return full_batch
 
-    persisted_match_ids = {row.match_id for row in persisted_batch.odds}
+    persisted_match_ids = {
+        row.match_id
+        for row in [*persisted_batch.odds, *persisted_batch.outcome_offers]
+    }
     return _NormalizedPipelineBatch(
         odds=[row for row in full_batch.odds if row.match_id in persisted_match_ids],
-        outcome_offers=[],
+        outcome_offers=[
+            row
+            for row in full_batch.outcome_offers
+            if row.match_id in persisted_match_ids
+        ],
         unresolved_odds=full_batch.unresolved_odds,
         team_review_cases=full_batch.team_review_cases,
     )
@@ -263,6 +318,7 @@ async def _load_current_canonical_analysis(
     match_ids: set[str],
     *,
     snapshot_id: str | None = None,
+    max_middle_opportunities_per_market: int | None = 10,
 ) -> _CanonicalAnalysisResult:
     canonical_offers = await odds_store.get_current_canonical_offers_for_matches(
         sorted(match_ids),
@@ -283,7 +339,7 @@ async def _load_current_canonical_analysis(
     canonical_opportunities = analyze_canonical_offers(
         canonical_offers,
         event_primary_match_ids=event_primary_match_ids,
-        max_middle_opportunities_per_market=settings.max_middle_opportunities_per_market,
+        max_middle_opportunities_per_market=max_middle_opportunities_per_market,
     )
     return _CanonicalAnalysisResult(
         offers=tuple(canonical_offers),
@@ -302,9 +358,12 @@ class Scheduler:
         self.interval_minutes = interval_minutes or settings.scrape_interval_minutes
         self._task: asyncio.Task | None = None
         self._cycle_task: asyncio.Task | None = None
+        self._cycle_starting = False
         self._running = False
-        self._cycle_lock = asyncio.Lock()
-        self._wake_event = asyncio.Event()
+        self._cycle_lock: asyncio.Lock | None = None
+        self._cycle_lock_loop: asyncio.AbstractEventLoop | None = None
+        self._wake_event: asyncio.Event | None = None
+        self._wake_event_loop: asyncio.AbstractEventLoop | None = None
         self._scan_phase = "idle"
         self._scan_started_at: str | None = None
         self._scan_total_tasks = 0
@@ -323,7 +382,23 @@ class Scheduler:
 
     @property
     def is_cycle_in_progress(self) -> bool:
-        return self._cycle_task is not None and not self._cycle_task.done()
+        return self._cycle_starting or (
+            self._cycle_task is not None and not self._cycle_task.done()
+        )
+
+    def _get_cycle_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._cycle_lock is None or self._cycle_lock_loop is not loop:
+            self._cycle_lock = asyncio.Lock()
+            self._cycle_lock_loop = loop
+        return self._cycle_lock
+
+    def _get_wake_event(self) -> asyncio.Event:
+        loop = asyncio.get_running_loop()
+        if self._wake_event is None or self._wake_event_loop is not loop:
+            self._wake_event = asyncio.Event()
+            self._wake_event_loop = loop
+        return self._wake_event
 
     def progress_snapshot(self) -> ScanProgressOut:
         return ScanProgressOut(
@@ -854,13 +929,13 @@ class Scheduler:
             logger.warning("Scheduler already running")
             return
         self._running = True
-        self._wake_event.clear()
+        self._get_wake_event().clear()
         self._task = asyncio.create_task(self._loop())
         logger.info("Scheduler started (interval=%d min)", self.interval_minutes)
 
     async def stop(self) -> None:
         self._running = False
-        self._wake_event.set()
+        self._get_wake_event().set()
         if self._task and not self._task.done():
             await self._task
         self._task = None
@@ -872,18 +947,36 @@ class Scheduler:
                 await self.run_cycle()
             except Exception:
                 logger.exception("Scheduler cycle failed")
-            if not self._running:
-                break
-            self._wake_event.clear()
-            try:
-                await asyncio.wait_for(
-                    self._wake_event.wait(), timeout=self.interval_minutes * 60
+            last_cycle_finished_at = time.perf_counter()
+            while self._running:
+                wake_event = self._get_wake_event()
+                wake_event.clear()
+                interval_seconds = self.interval_minutes * 60
+                try:
+                    applied_settings = await get_applied_scrape_settings()
+                    self.interval_minutes = applied_settings.scrape_interval_minutes
+                    interval_seconds = self.interval_minutes * 60
+                except Exception:
+                    logger.exception("Failed to load scheduler interval settings")
+                remaining_seconds = max(
+                    0.0,
+                    last_cycle_finished_at + interval_seconds - time.perf_counter(),
                 )
-            except asyncio.TimeoutError:
-                pass
+                if remaining_seconds <= 0:
+                    break
+                try:
+                    await asyncio.wait_for(
+                        wake_event.wait(), timeout=remaining_seconds
+                    )
+                except asyncio.TimeoutError:
+                    break
 
     async def _scrape_one(
-        self, scraper: BaseScraper, league_id: str
+        self,
+        scraper: BaseScraper,
+        league_id: str,
+        *,
+        lookahead_hours: int,
     ) -> list[RawOddsData]:
         bookmaker_id = scraper.get_bookmaker_id()
         started_at = time.perf_counter()
@@ -915,7 +1008,10 @@ class Scheduler:
             )
             return []
 
-        filtered_raw = filter_raw_odds_by_lookahead(raw)
+        filtered_raw = filter_raw_odds_by_lookahead(
+            raw,
+            lookahead_hours=lookahead_hours,
+        )
         dropped_count = len(raw) - len(filtered_raw)
         raw = filtered_raw
         duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -939,12 +1035,16 @@ class Scheduler:
                 "Scraper %s dropped %d items outside %dh lookahead",
                 bookmaker_id,
                 dropped_count,
-                configured_lookahead_hours(),
+                configured_lookahead_hours(lookahead_hours),
             )
         return raw
 
     async def _scrape_outcome_one(
-        self, scraper: BaseScraper, sport: str
+        self,
+        scraper: BaseScraper,
+        sport: str,
+        *,
+        lookahead_hours: int,
     ) -> list[RawOutcomeOffer]:
         bookmaker_id = scraper.get_bookmaker_id()
         started_at = time.perf_counter()
@@ -976,7 +1076,10 @@ class Scheduler:
             )
             return []
 
-        filtered_raw = filter_raw_odds_by_lookahead(raw)
+        filtered_raw = filter_raw_odds_by_lookahead(
+            raw,
+            lookahead_hours=lookahead_hours,
+        )
         dropped_count = len(raw) - len(filtered_raw)
         raw = filtered_raw
         duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1000,7 +1103,7 @@ class Scheduler:
                 "Outcome scraper %s dropped %d items outside %dh lookahead",
                 bookmaker_id,
                 dropped_count,
-                configured_lookahead_hours(),
+                configured_lookahead_hours(lookahead_hours),
             )
         return raw
 
@@ -1008,26 +1111,79 @@ class Scheduler:
         self,
         scraper: BaseScraper,
         capability: ScraperCapability,
+        runtime_settings: ScrapeRuntimeSettings,
     ) -> _ScrapeBatch:
         if capability.lane == "threshold_odds":
             if capability.league_id is None:
                 raise ValueError("threshold_odds capability is missing league_id")
             return _ScrapeBatch(
                 capability=capability,
-                raw_odds=tuple(await self._scrape_one(scraper, capability.league_id)),
+                raw_odds=tuple(
+                    await self._scrape_one(
+                        scraper,
+                        capability.league_id,
+                        lookahead_hours=runtime_settings.scrape_lookahead_hours,
+                    )
+                ),
             )
         if capability.lane == "outcome_offer":
             return _ScrapeBatch(
                 capability=capability,
                 raw_outcome_offers=tuple(
-                    await self._scrape_outcome_one(scraper, capability.sport)
+                    await self._scrape_outcome_one(
+                        scraper,
+                        capability.sport,
+                        lookahead_hours=runtime_settings.scrape_lookahead_hours,
+                    )
                 ),
             )
         raise ValueError(f"Unsupported scraper capability lane: {capability.lane}")
 
-    async def _run_cycle_once(self) -> dict:
+    def _apply_runtime_scraper_settings(
+        self,
+        scraper: BaseScraper,
+        runtime_settings: ScrapeRuntimeSettings,
+    ) -> None:
+        bookmaker_id = scraper.get_bookmaker_id()
+        rate_limit = (
+            runtime_settings.meridian_rate_limit_per_second
+            if bookmaker_id == "meridian"
+            else runtime_settings.rate_limit_per_second
+        )
+        scraper.set_runtime_rate_limit(rate_limit)
+        if bookmaker_id == "soccerbet":
+            scraper.set_runtime_detail_mode(runtime_settings.soccerbet_detail_mode)
+        if bookmaker_id == "merkurxtip":
+            scraper.set_runtime_detail_mode(runtime_settings.merkurxtip_detail_mode)
+
+    def _configure_notification_service_for_runtime_settings(
+        self,
+        runtime_settings: ScrapeRuntimeSettings,
+    ) -> None:
+        self._notification_service.gap_threshold = runtime_settings.notification_gap_threshold
+        self._notification_service.clear_providers()
+        if runtime_settings.persist_inapp_notifications:
+            self._notification_service.register_provider(InAppNotificationProvider())
+
+    async def update_scrape_settings(
+        self,
+        patch: ScrapeRuntimeSettingsUpdate,
+    ) -> ScrapeSettingsResponse:
+        async with self._get_cycle_lock():
+            response = await update_scrape_settings(
+                patch,
+                apply_immediately=not self.is_cycle_in_progress,
+            )
+            if response.applied_immediately:
+                self.interval_minutes = response.applied.scrape_interval_minutes
+                if self._running:
+                    self._get_wake_event().set()
+            return response
+
+    async def _run_cycle_once(self, runtime_settings: ScrapeRuntimeSettings) -> dict:
         """Execute one full scrape → normalize → analyze → store → notify cycle."""
         try:
+            self.interval_minutes = runtime_settings.scrape_interval_minutes
             cycle_started_at = time.perf_counter()
             cycle_started_at_iso = datetime.utcnow().isoformat()
             self._scan_phase = "starting"
@@ -1039,16 +1195,31 @@ class Scheduler:
             benchmark_recorder.begin_cycle(cycle_started_at_iso)
             logger.info("Starting scrape cycle at %s", cycle_started_at_iso)
 
-            scrapers = registry.get_all()
-            enabled_sports = set(settings.enabled_sport_list)
+            enabled_bookmakers = set(runtime_settings.enabled_bookmakers)
+            market_allowlist = analysis_market_allowlist(
+                runtime_settings.analysis_markets,
+                legacy_scrape_market_scope=runtime_settings.scrape_market_scope,
+            )
+            scrapers = [
+                scraper
+                for scraper in registry.get_all()
+                if scraper.get_bookmaker_id() in enabled_bookmakers
+            ]
+            for scraper in scrapers:
+                self._apply_runtime_scraper_settings(scraper, runtime_settings)
+            enabled_sports = set(runtime_settings.enabled_sports)
             scrape_started_at = time.perf_counter()
             scrape_capabilities = [
                 (scraper, capability)
                 for scraper in scrapers
-                for capability in _enabled_scraper_capabilities(scraper, enabled_sports)
+                for capability in _enabled_scraper_capabilities(
+                    scraper,
+                    enabled_sports,
+                    market_allowlist,
+                )
             ]
             scrape_tasks = [
-                self._scrape_capability(scraper, capability)
+                self._scrape_capability(scraper, capability, runtime_settings)
                 for scraper, capability in scrape_capabilities
             ]
             self._scan_phase = "scraping"
@@ -1089,12 +1260,14 @@ class Scheduler:
                 all_raw_outcome_offers,
                 log_unresolved_shared_platform=False,
             )
-            normalized_batch = _filter_normalized_pipeline_batch_by_market_scope(
-                full_normalized_batch
+            normalized_batch = _filter_normalized_pipeline_batch_by_market_allowlist(
+                full_normalized_batch,
+                market_allowlist,
             )
-            event_resolution_batch = _event_resolution_batch_for_market_scope(
+            event_resolution_batch = _event_resolution_batch_for_market_allowlist(
                 full_normalized_batch,
                 normalized_batch,
+                market_allowlist,
             )
             normalized = normalized_batch.odds
             normalized_outcome_offers = normalized_batch.outcome_offers
@@ -1133,12 +1306,14 @@ class Scheduler:
                         all_raw,
                         all_raw_outcome_offers,
                     )
-                    normalized_batch = _filter_normalized_pipeline_batch_by_market_scope(
-                        full_normalized_batch
+                    normalized_batch = _filter_normalized_pipeline_batch_by_market_allowlist(
+                        full_normalized_batch,
+                        market_allowlist,
                     )
-                    event_resolution_batch = _event_resolution_batch_for_market_scope(
+                    event_resolution_batch = _event_resolution_batch_for_market_allowlist(
                         full_normalized_batch,
                         normalized_batch,
+                        market_allowlist,
                     )
                     normalized = normalized_batch.odds
                     normalized_outcome_offers = normalized_batch.outcome_offers
@@ -1181,6 +1356,9 @@ class Scheduler:
                     canonical_analysis = await _load_current_canonical_analysis(
                         match_ids=seen_matches,
                         snapshot_id=snapshot_id,
+                        max_middle_opportunities_per_market=(
+                            runtime_settings.max_middle_opportunities_per_market
+                        ),
                     )
                 except Exception as exc:
                     canonical_analysis_failed = True
@@ -1218,6 +1396,9 @@ class Scheduler:
                     )
 
                 self._scan_phase = "notifying"
+                self._configure_notification_service_for_runtime_settings(
+                    runtime_settings
+                )
                 notified = await self._notification_service.notify_opportunities(opportunities)
             except Exception:
                 await odds_store.rollback_pending_transaction()
@@ -1301,17 +1482,25 @@ class Scheduler:
         if existing_cycle is not None and not existing_cycle.done():
             return await asyncio.shield(existing_cycle)
 
-        async with self._cycle_lock:
+        async with self._get_cycle_lock():
             existing_cycle = self._cycle_task
             if existing_cycle is not None and not existing_cycle.done():
                 return await asyncio.shield(existing_cycle)
-            self._cycle_task = asyncio.create_task(self._run_cycle_once())
-            cycle_task = self._cycle_task
+            self._cycle_starting = True
+            try:
+                runtime_settings = await promote_pending_scrape_settings()
+                self.interval_minutes = runtime_settings.scrape_interval_minutes
+                self._cycle_task = asyncio.create_task(
+                    self._run_cycle_once(runtime_settings)
+                )
+                cycle_task = self._cycle_task
+            finally:
+                self._cycle_starting = False
 
         try:
             return await asyncio.shield(cycle_task)
         finally:
-            async with self._cycle_lock:
+            async with self._get_cycle_lock():
                 if self._cycle_task is cycle_task and cycle_task.done():
                     self._cycle_task = None
 

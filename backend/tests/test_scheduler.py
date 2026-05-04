@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import app.services.runtime_settings as runtime_settings_service
+import app.services.scheduler as scheduler_service
 from app.config import settings
 from app.models.schemas import (
     NormalizedOdds,
@@ -13,6 +15,7 @@ from app.models.schemas import (
     OpportunityLeg,
     RawOddsData,
     RawOutcomeOffer,
+    ScrapeRuntimeSettingsUpdate,
     TeamReviewDiagnostic,
 )
 from app.scrapers.base import BaseScraper, ScraperCapability
@@ -20,6 +23,7 @@ from app.services.opportunity_analyzer import Opportunity
 from app.services.scheduler import Scheduler, _normalize_merge_pairings
 from app.services.normalizer import normalize_team_name
 from app.services.notifications import InAppNotificationProvider
+from app.services.runtime_settings import update_scrape_settings
 from app.services.team_registry import (
     create_canonical_team,
     get_canonical_team,
@@ -517,6 +521,237 @@ async def test_scheduler_player_props_scope_skips_outcome_offer_capabilities(
 
 
 @pytest.mark.asyncio
+async def test_scheduler_analysis_markets_filter_basketball_player_props_after_context_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "analysis_markets", "basketball:player_*")
+    _register_test_scrapers(
+        StubScraper(
+            "meridian",
+            payload_by_league={
+                "euroleague": [
+                    RawOddsData(
+                        bookmaker_id="meridian",
+                        league_id="nba",
+                        home_team="Minnesota",
+                        away_team="Houston",
+                        market_type="game_total",
+                        player_name=None,
+                        threshold=219.5,
+                        over_odds=1.9,
+                        under_odds=1.9,
+                        start_time="2030-01-01T20:00:00+00:00",
+                    )
+                ],
+            },
+        ),
+        StubScraper(
+            "maxbet",
+            payload_by_league={
+                "euroleague": [
+                    RawOddsData(
+                        bookmaker_id="maxbet",
+                        league_id="nba",
+                        home_team="Houston",
+                        away_team="Kevin Durant",
+                        market_type="player_points",
+                        player_name="Kevin Durant",
+                        threshold=23.5,
+                        over_odds=1.85,
+                        under_odds=1.95,
+                        start_time="2030-01-01T20:00:00+00:00",
+                    )
+                ],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["matches_scraped"] == 1
+    assert result["odds_scraped"] == 1
+    matches = await odds_store.get_matches(sport="basketball")
+    assert len(matches) == 1
+    assert matches[0].home_team == "Minnesota Timberwolves"
+    assert matches[0].away_team == "Houston Rockets"
+    stored_odds = await odds_store.get_odds_for_match(matches[0].id)
+    assert [(row.market_type, row.player_name) for row in stored_odds] == [
+        ("player_points", "Kevin Durant")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_analysis_markets_filter_basketball_handicap(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "analysis_markets", "basketball:home_handicap_ot")
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds("alpha", 18.5, market_type="player_points"),
+                    _raw_odds(
+                        "alpha",
+                        5.5,
+                        market_type="home_handicap_ot",
+                        player_name=None,
+                    ),
+                ],
+            },
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds("beta", 20.5, market_type="player_points"),
+                    _raw_odds(
+                        "beta",
+                        7.5,
+                        market_type="home_handicap_ot",
+                        player_name=None,
+                    ),
+                ],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["odds_scraped"] == 2
+    matches = await odds_store.get_matches(sport="basketball")
+    stored_odds = []
+    for match in matches:
+        stored_odds.extend(await odds_store.get_odds_for_match(match.id))
+    assert {row.market_type for row in stored_odds} == {"home_handicap_ot"}
+
+
+@pytest.mark.asyncio
+async def test_scheduler_analysis_markets_filter_football_totals(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "enabled_sports", "football")
+    monkeypatch.setattr(settings, "analysis_markets", "football:football_total_goals")
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            leagues=(),
+            outcome_sports=("football",),
+            outcome_payload_by_sport={
+                "football": [
+                    _raw_outcome_offer(
+                        "alpha",
+                        "over",
+                        sport="football",
+                        market_type="football_total_goals",
+                        odds=1.90,
+                        line=2.5,
+                    ),
+                    _raw_outcome_offer(
+                        "alpha",
+                        "home",
+                        sport="football",
+                        market_type="football_result",
+                        odds=2.10,
+                    ),
+                ],
+            },
+        ),
+        StubScraper(
+            "beta",
+            leagues=(),
+            outcome_sports=("football",),
+            outcome_payload_by_sport={
+                "football": [
+                    _raw_outcome_offer(
+                        "beta",
+                        "under",
+                        sport="football",
+                        market_type="football_total_goals",
+                        odds=2.10,
+                        line=3.5,
+                    ),
+                    _raw_outcome_offer(
+                        "beta",
+                        "draw_or_away",
+                        sport="football",
+                        market_type="football_double_chance",
+                        odds=2.10,
+                    ),
+                ],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["outcome_offers_scraped"] == 2
+    outcome_offers = await odds_store.get_outcome_offers(sport="football")
+    assert {offer.market_type for offer in outcome_offers} == {
+        "football_total_goals"
+    }
+    assert result["opportunities_found"] == 1
+    opportunities = await odds_store.get_opportunities(sport="football")
+    assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
+        ("middle", "football_total_goals")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_uses_runtime_enabled_bookmakers():
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={"euroleague": [_raw_odds("alpha", 18.5)]},
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={"euroleague": [_raw_odds("beta", 20.5)]},
+        ),
+    )
+    await update_scrape_settings(
+        ScrapeRuntimeSettingsUpdate(enabled_bookmakers=["alpha"]),
+        apply_immediately=True,
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["odds_scraped"] == 1
+    opportunities = await odds_store.get_opportunities(sport="basketball")
+    assert opportunities == []
+    matches = await odds_store.get_matches(sport="basketball")
+    assert len(matches) == 1
+    stored_odds = await odds_store.get_odds_for_match(matches[0].id)
+    assert {row.bookmaker_id for row in stored_odds} == {"alpha"}
+
+
+@pytest.mark.asyncio
+async def test_scheduler_promotes_pending_settings_on_next_cycle():
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={"euroleague": [_raw_odds("alpha", 18.5)]},
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={"euroleague": [_raw_odds("beta", 20.5)]},
+        ),
+    )
+    await update_scrape_settings(
+        ScrapeRuntimeSettingsUpdate(enabled_bookmakers=["alpha"]),
+        apply_immediately=False,
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["odds_scraped"] == 1
+    matches = await odds_store.get_matches(sport="basketball")
+    assert len(matches) == 1
+    stored_odds = await odds_store.get_odds_for_match(matches[0].id)
+    assert {row.bookmaker_id for row in stored_odds} == {"alpha"}
+
+
+@pytest.mark.asyncio
 async def test_scheduler_persists_canonical_basketball_total_opportunity():
     _register_test_scrapers(
         StubScraper(
@@ -878,6 +1113,86 @@ async def test_scheduler_shadow_analysis_handles_tennis_outcome_offers(
 
 
 @pytest.mark.asyncio
+async def test_scheduler_analysis_markets_match_canonical_tennis_market_alias(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "enabled_sports", "tennis")
+    monkeypatch.setattr(settings, "analysis_markets", "tennis:match_winner")
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            leagues=(),
+            outcome_sports=("tennis",),
+            outcome_payload_by_sport={
+                "tennis": [_raw_outcome_offer("alpha", "home")],
+            },
+        ),
+        StubScraper(
+            "beta",
+            leagues=(),
+            outcome_sports=("tennis",),
+            outcome_payload_by_sport={
+                "tennis": [_raw_outcome_offer("beta", "away")],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["outcome_offers_scraped"] == 2
+    assert {
+        offer.market_type
+        for offer in await odds_store.get_outcome_offers(sport="tennis")
+    } == {"tennis_match_winner"}
+    opportunities = await odds_store.get_opportunities(sport="tennis")
+    assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
+        ("same_line_arbitrage", "match_winner")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_analysis_markets_match_source_tennis_market_alias(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "enabled_sports", "tennis")
+    monkeypatch.setattr(settings, "analysis_markets", "tennis:tennis_match_winner")
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            leagues=(),
+            outcome_sports=("tennis",),
+            outcome_payload_by_sport={
+                "tennis": [
+                    _raw_outcome_offer("alpha", "home", market_type="match_winner")
+                ],
+            },
+        ),
+        StubScraper(
+            "beta",
+            leagues=(),
+            outcome_sports=("tennis",),
+            outcome_payload_by_sport={
+                "tennis": [
+                    _raw_outcome_offer("beta", "away", market_type="match_winner")
+                ],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["outcome_offers_scraped"] == 2
+    assert {
+        offer.market_type
+        for offer in await odds_store.get_outcome_offers(sport="tennis")
+    } == {"match_winner"}
+    opportunities = await odds_store.get_opportunities(sport="tennis")
+    assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
+        ("same_line_arbitrage", "match_winner")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_scheduler_canonical_analysis_failure_preserves_stale_opportunities(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1071,6 +1386,146 @@ async def test_scheduler_run_cycle_joins_inflight_cycle():
     assert first_result == second_result
     assert len(recorder["starts"]) == 2
     assert len(recorder["finishes"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_scheduler_update_settings_wakes_sleep_without_immediate_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    run_count = 0
+    settings_read_count = 0
+    first_cycle_done = asyncio.Event()
+    first_sleep_armed = asyncio.Event()
+    rescheduled_sleep_armed = asyncio.Event()
+    second_cycle_started = asyncio.Event()
+
+    async def applied_settings():
+        nonlocal settings_read_count
+        settings_read_count += 1
+        if settings_read_count == 1:
+            first_sleep_armed.set()
+        else:
+            rescheduled_sleep_armed.set()
+        return runtime_settings_service.default_scrape_runtime_settings().model_copy(
+            update={"scrape_interval_minutes": scheduler_under_test.interval_minutes}
+        )
+
+    monkeypatch.setattr(
+        scheduler_service,
+        "get_applied_scrape_settings",
+        applied_settings,
+    )
+
+    class RecordingScheduler(Scheduler):
+        async def run_cycle(self) -> dict:
+            nonlocal run_count
+            run_count += 1
+            if run_count == 1:
+                first_cycle_done.set()
+            else:
+                second_cycle_started.set()
+            return {
+                "matches_scraped": 0,
+                "odds_scraped": 0,
+                "outcome_offers_scraped": 0,
+                "opportunities_found": 0,
+            }
+
+    scheduler_under_test = RecordingScheduler(interval_minutes=60)
+    await scheduler_under_test.start()
+    await asyncio.wait_for(first_cycle_done.wait(), timeout=1)
+    await asyncio.wait_for(first_sleep_armed.wait(), timeout=1)
+
+    response = await scheduler_under_test.update_scrape_settings(
+        ScrapeRuntimeSettingsUpdate(scrape_interval_minutes=1)
+    )
+    await asyncio.wait_for(rescheduled_sleep_armed.wait(), timeout=1)
+
+    assert response.applied_immediately is True
+    assert scheduler_under_test.interval_minutes == 1
+    assert second_cycle_started.is_set() is False
+
+    await scheduler_under_test.stop()
+
+
+def test_scheduler_cycle_lock_is_recreated_for_new_event_loop_when_locked():
+    async def acquire_lock() -> asyncio.Lock:
+        lock = scheduler_under_test._get_cycle_lock()
+        await lock.acquire()
+        return lock
+
+    first_loop = asyncio.new_event_loop()
+    second_loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(first_loop)
+        scheduler_under_test = Scheduler(interval_minutes=1)
+        first_lock = first_loop.run_until_complete(acquire_lock())
+
+        async def get_lock() -> asyncio.Lock:
+            return scheduler_under_test._get_cycle_lock()
+
+        asyncio.set_event_loop(second_loop)
+        second_lock = second_loop.run_until_complete(get_lock())
+    finally:
+        if "first_lock" in locals():
+            first_lock.release()
+        first_loop.close()
+        second_loop.close()
+        asyncio.set_event_loop(None)
+
+    assert second_lock is not first_lock
+
+
+def test_scheduler_wake_event_is_recreated_between_event_loops():
+    class RecordingScheduler(Scheduler):
+        async def run_cycle(self) -> dict:
+            return {
+                "matches_scraped": 0,
+                "odds_scraped": 0,
+                "outcome_offers_scraped": 0,
+                "opportunities_found": 0,
+            }
+
+    scheduler_under_test = RecordingScheduler(interval_minutes=60)
+
+    async def start_and_stop() -> asyncio.Event:
+        await scheduler_under_test.start()
+        await asyncio.sleep(0.01)
+        await scheduler_under_test.stop()
+        assert scheduler_under_test._wake_event is not None
+        return scheduler_under_test._wake_event
+
+    first_event = asyncio.run(start_and_stop())
+    second_event = asyncio.run(start_and_stop())
+
+    assert second_event is not first_event
+
+
+def test_runtime_settings_lock_is_recreated_for_new_event_loop_when_locked():
+    async def acquire_lock() -> asyncio.Lock:
+        lock = runtime_settings_service._get_settings_lock()
+        await lock.acquire()
+        return lock
+
+    first_loop = asyncio.new_event_loop()
+    second_loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(first_loop)
+        first_lock = first_loop.run_until_complete(acquire_lock())
+
+        async def get_lock() -> asyncio.Lock:
+            return runtime_settings_service._get_settings_lock()
+
+        asyncio.set_event_loop(second_loop)
+        second_lock = second_loop.run_until_complete(get_lock())
+    finally:
+        if "first_lock" in locals():
+            first_lock.release()
+        first_loop.close()
+        second_loop.close()
+        asyncio.set_event_loop(None)
+
+    assert second_lock is not first_lock
 
 
 @pytest.mark.asyncio

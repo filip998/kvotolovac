@@ -324,6 +324,66 @@ export interface SystemStatus {
   bookmaker_status?: BookmakerStatus[];
 }
 
+export type ScrapeMarketScope = 'all' | 'player_props';
+export type ScraperDetailMode = 'partial' | 'full';
+
+export interface ScrapeRuntimeSettings {
+  enabled_bookmakers: string[];
+  enabled_sports: string[];
+  scrape_market_scope: ScrapeMarketScope;
+  analysis_markets: string[];
+  scrape_lookahead_hours: number;
+  scrape_interval_minutes: number;
+  max_middle_opportunities_per_market: number;
+  rate_limit_per_second: number;
+  meridian_rate_limit_per_second: number;
+  soccerbet_detail_mode: ScraperDetailMode;
+  merkurxtip_detail_mode: ScraperDetailMode;
+  notification_gap_threshold: number;
+  persist_inapp_notifications: boolean;
+}
+
+export type ScrapeRuntimeSettingsUpdate = Partial<ScrapeRuntimeSettings>;
+
+export interface ScrapeSettingsBookmakerOption {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
+export interface ScrapeSettingsMarketOption {
+  token: string;
+  label: string;
+  sport: string | null;
+}
+
+export interface ScrapeSettingsOptions {
+  bookmakers: ScrapeSettingsBookmakerOption[];
+  sports: string[];
+  market_scopes: ScrapeMarketScope[];
+  analysis_market_options: ScrapeSettingsMarketOption[];
+  detail_modes: ScraperDetailMode[];
+  scrape_interval_minutes_min: number;
+  scrape_interval_minutes_max: number;
+  scrape_lookahead_hours_min: number;
+  scrape_lookahead_hours_max: number;
+  max_middle_opportunities_per_market_min: number;
+  max_middle_opportunities_per_market_max: number;
+  rate_limit_per_second_min: number;
+  rate_limit_per_second_max: number;
+}
+
+export interface ScrapeSettingsResponse {
+  applied: ScrapeRuntimeSettings;
+  pending: ScrapeRuntimeSettings | null;
+  defaults: ScrapeRuntimeSettings;
+  has_pending_changes: boolean;
+  applied_at: string | null;
+  pending_at: string | null;
+  applied_immediately: boolean;
+  options: ScrapeSettingsOptions;
+}
+
 export interface OpportunityBoardFilters {
   sport?: string;
   league?: string;
