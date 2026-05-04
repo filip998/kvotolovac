@@ -187,6 +187,27 @@ def _team_qualifiers(name: str, *, sport: str | None = None) -> set[str]:
     return qualifiers
 
 
+def _strip_explicit_z_women_markers(name: str) -> str:
+    without_parenthesized = re.sub(
+        r"\(\s*[žz]\s*\)",
+        " ",
+        name,
+        flags=re.IGNORECASE,
+    )
+    without_leading_slash = re.sub(
+        r"^\s*[žz]\s*/",
+        "",
+        without_parenthesized,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r"(^|\s)ž(?=$|\s)",
+        r"\1",
+        without_leading_slash,
+        flags=re.IGNORECASE,
+    )
+
+
 def _same_team_context(left: str, right: str, *, sport: str | None = None) -> bool:
     return _team_qualifiers(left, sport=sport) == _team_qualifiers(right, sport=sport)
 

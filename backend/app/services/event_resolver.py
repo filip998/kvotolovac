@@ -25,6 +25,7 @@ from .outcome_normalizer import (
     _build_football_event_resolutions,
     _event_key_from_raw,
     _same_team_context,
+    _strip_explicit_z_women_markers,
     _team_similarity,
     _team_qualifiers,
 )
@@ -98,12 +99,17 @@ class SameTimeCanonicalMergeProposal:
     score: float
 
 
-_WOMEN_MARKER_TOKENS = frozenset({"w", "wom", "women", "z"})
+_WOMEN_MARKER_TOKENS = frozenset({"w", "wom", "women"})
 
 
 def _comparison_team_text(team_name: str, *, sport: str | None = None) -> str:
-    tokens = normalize_identity_text(team_name).split()
     qualifiers = _team_qualifiers(team_name, sport=sport)
+    comparison_name = (
+        _strip_explicit_z_women_markers(team_name)
+        if "women" in qualifiers
+        else team_name
+    )
+    tokens = normalize_identity_text(comparison_name).split()
     if "women" in qualifiers:
         tokens = [token for token in tokens if token not in _WOMEN_MARKER_TOKENS]
     return " ".join(tokens)

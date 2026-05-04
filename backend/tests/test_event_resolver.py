@@ -17,6 +17,7 @@ from app.services.event_resolver import (
     EventCandidate,
     _CandidateGroup,
     _PairResolution,
+    _comparison_team_text,
     _contextual_merge_source_ids,
     _event_review_case,
     SameTimeCanonicalSlot,
@@ -2122,6 +2123,11 @@ def test_team_qualifiers_explicit_z_marker_is_cross_sport_but_plain_z_is_not():
     assert _team_qualifiers("Sao Jose (Ž)", sport="football") == {"women"}
     assert _team_qualifiers("Ž/Sao Jose Dos Campos", sport="football") == {"women"}
     assert _team_qualifiers("Z/Sao Jose Dos Campos", sport="volleyball") == {"women"}
+
+
+def test_comparison_text_preserves_plain_z_when_explicit_marker_is_present():
+    assert _comparison_team_text("FK Borac Z (Ž)", sport="football") == "fk borac z"
+    assert _comparison_team_text("FK Borac (Ž)", sport="football") == "fk borac"
 
 
 def test_team_qualifiers_wom_alias_applies_cross_sport():
