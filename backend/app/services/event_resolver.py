@@ -26,6 +26,7 @@ from .outcome_normalizer import (
     _event_key_from_raw,
     _same_team_context,
     _team_similarity,
+    _team_qualifiers,
 )
 from .text_normalizer import normalize_identity_text
 
@@ -97,24 +98,40 @@ class SameTimeCanonicalMergeProposal:
     score: float
 
 
-def _significant_team_tokens(team_name: str) -> set[str]:
+_WOMEN_MARKER_TOKENS = frozenset({"w", "wom", "women", "z"})
+
+
+def _comparison_team_text(team_name: str, *, sport: str | None = None) -> str:
+    tokens = normalize_identity_text(team_name).split()
+    qualifiers = _team_qualifiers(team_name, sport=sport)
+    if "women" in qualifiers:
+        tokens = [token for token in tokens if token not in _WOMEN_MARKER_TOKENS]
+    return " ".join(tokens)
+
+
+def _significant_team_tokens(team_name: str, *, sport: str | None = None) -> set[str]:
     return {
         token
-        for token in normalize_identity_text(team_name).split()
+        for token in _comparison_team_text(team_name, sport=sport).split()
         if token not in _LOW_SIGNAL_TEAM_TOKENS
     }
 
 
-def _symmetric_canonical_team_score(left_name: str, right_name: str) -> float:
-    left_key = normalize_identity_text(left_name)
-    right_key = normalize_identity_text(right_name)
+def _symmetric_canonical_team_score(
+    left_name: str,
+    right_name: str,
+    *,
+    sport: str | None = None,
+) -> float:
+    left_key = _comparison_team_text(left_name, sport=sport)
+    right_key = _comparison_team_text(right_name, sport=sport)
     if not left_key or not right_key:
         return 0.0
     if left_key == right_key:
         return 100.0
 
-    left_tokens = _significant_team_tokens(left_name)
-    right_tokens = _significant_team_tokens(right_name)
+    left_tokens = _significant_team_tokens(left_name, sport=sport)
+    right_tokens = _significant_team_tokens(right_name, sport=sport)
     if not left_tokens or not right_tokens:
         return 0.0
     if left_tokens == right_tokens:
@@ -135,9 +152,14 @@ def _symmetric_canonical_team_score(left_name: str, right_name: str) -> float:
     )
 
 
-def _is_unsafe_compound_subset_match(left_name: str, right_name: str) -> bool:
-    left_tokens = _significant_team_tokens(left_name)
-    right_tokens = _significant_team_tokens(right_name)
+def _is_unsafe_compound_subset_match(
+    left_name: str,
+    right_name: str,
+    *,
+    sport: str | None = None,
+) -> bool:
+    left_tokens = _significant_team_tokens(left_name, sport=sport)
+    right_tokens = _significant_team_tokens(right_name, sport=sport)
     return bool(
         left_tokens
         and right_tokens
@@ -153,9 +175,17 @@ def _canonical_team_auto_merge_score(
 ) -> float | None:
     if not _same_team_context(source_team_name, target_team_name, sport=sport):
         return None
-    if _is_unsafe_compound_subset_match(source_team_name, target_team_name):
+    if _is_unsafe_compound_subset_match(
+        source_team_name,
+        target_team_name,
+        sport=sport,
+    ):
         return None
-    score = _symmetric_canonical_team_score(source_team_name, target_team_name)
+    score = _symmetric_canonical_team_score(
+        source_team_name,
+        target_team_name,
+        sport=sport,
+    )
     if score < CANONICAL_TEAM_AUTO_MERGE_THRESHOLD:
         return None
     return score
@@ -651,11 +681,15 @@ def _resolver_team_similarity(
     incorrectly merge two distinct cities).
     """
 
-    if sport not in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
-        return _team_similarity(left, right)
-    expanded_left = _expand_dotted_token(left, right)
-    expanded_right = _expand_dotted_token(right, left)
-    return _team_similarity(expanded_left, expanded_right)
+    expanded_left = left
+    expanded_right = right
+    if sport in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
+        expanded_left = _expand_dotted_token(left, right)
+        expanded_right = _expand_dotted_token(right, left)
+    return _team_similarity(
+        _comparison_team_text(expanded_left, sport=sport),
+        _comparison_team_text(expanded_right, sport=sport),
+    )
 
 
 def _orientation_scores(
@@ -685,7 +719,12 @@ def _orientation_scores(
         )
     return sorted(scores, key=lambda score: score.avg_score, reverse=True)
 
-def _is_subset_or_equal_token_pair(left_name: str, right_name: str) -> bool:
+def _is_subset_or_equal_token_pair(
+    left_name: str,
+    right_name: str,
+    *,
+    sport: str | None = None,
+) -> bool:
     """True iff one team's significant tokens are a subset/equal of the other's.
 
     Used to guard fuzzy event auto-merge against false positives where two
@@ -694,8 +733,8 @@ def _is_subset_or_equal_token_pair(left_name: str, right_name: str) -> bool:
     ``Hermine Nantes Basket``) are typically the same team with an extra
     qualifier and are safe to auto-merge at lowered score thresholds.
     """
-    left_tokens = _significant_team_tokens(left_name)
-    right_tokens = _significant_team_tokens(right_name)
+    left_tokens = _significant_team_tokens(left_name, sport=sport)
+    right_tokens = _significant_team_tokens(right_name, sport=sport)
     if not left_tokens or not right_tokens:
         return False
     return left_tokens <= right_tokens or right_tokens <= left_tokens
@@ -707,6 +746,8 @@ def _weak_side_pair_is_subset_or_equal(
     right_home: str,
     right_away: str,
     score: _OrientationScore,
+    *,
+    sport: str | None = None,
 ) -> bool:
     if score.orientation == "as_listed":
         home_pair = (left_home, right_home)
@@ -715,7 +756,7 @@ def _weak_side_pair_is_subset_or_equal(
         home_pair = (left_home, right_away)
         away_pair = (left_away, right_home)
     weak_pair = home_pair if score.home_score <= score.away_score else away_pair
-    return _is_subset_or_equal_token_pair(*weak_pair)
+    return _is_subset_or_equal_token_pair(*weak_pair, sport=sport)
 
 
 def _source_match_score(source: _RawEventSource, candidate: EventCandidate) -> float:
@@ -952,8 +993,16 @@ def extract_event_candidates(
     )
 
 
-def _shared_significant_tokens(left_name: str, right_name: str) -> set[str]:
-    return _significant_team_tokens(left_name) & _significant_team_tokens(right_name)
+def _shared_significant_tokens(
+    left_name: str,
+    right_name: str,
+    *,
+    sport: str | None = None,
+) -> set[str]:
+    return _significant_team_tokens(left_name, sport=sport) & _significant_team_tokens(
+        right_name,
+        sport=sport,
+    )
 
 
 def _passes_anchored_low_conf(
@@ -965,11 +1014,11 @@ def _passes_anchored_low_conf(
 ) -> bool:
     """Lower-threshold corroborated merge for same-slot pairs.
 
-    Restricted to basketball (``_TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE``):
-    football has its own outcome_normalizer pairing flow and the basketball-
-    tuned thresholds (avg ≥ 70 / weak ≥ 50) would generate false positives
-    on common patterns such as ``Manchester United`` ↔ ``Manchester City``
-    (same league, shared significant token, weak side ≈ 62).
+    The subset/equal branch is cross-sport so explicit women-marker variants
+    can merge outside basketball. The looser shared-token + same-league branch
+    remains restricted to the historically tuned aggressive sports because it
+    can otherwise merge common false positives such as ``Manchester United`` ↔
+    ``Manchester City``.
 
     Requires:
 
@@ -987,11 +1036,6 @@ def _passes_anchored_low_conf(
       and Austria/Australia regression tests.
     """
 
-    if left_candidate.sport not in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
-        return False
-    if right_candidate.sport not in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
-        return False
-
     if top.avg_score < _ANCHORED_FUZZY_AVG_SCORE:
         return False
     if top.weak_side_score < _ANCHORED_FUZZY_SIDE_SCORE:
@@ -1007,10 +1051,15 @@ def _passes_anchored_low_conf(
         away_pair = (left_candidate.away_team, right_candidate.home_team)
     weak_pair = home_pair if top.home_score <= top.away_score else away_pair
 
-    if _is_subset_or_equal_token_pair(*weak_pair):
+    if _is_subset_or_equal_token_pair(*weak_pair, sport=left_candidate.sport):
         return True
 
-    if not _shared_significant_tokens(*weak_pair):
+    if left_candidate.sport not in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
+        return False
+    if right_candidate.sport not in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
+        return False
+
+    if not _shared_significant_tokens(*weak_pair, sport=left_candidate.sport):
         return False
 
     left_league = left_candidate.source_league_id
@@ -1106,6 +1155,7 @@ def _group_pair_resolution(
                     right_candidate.home_team,
                     right_candidate.away_team,
                     top,
+                    sport=left_candidate.sport,
                 )
                 and top.avg_score >= _HIGH_FUZZY_AVG_SCORE
                 and top.weak_side_score >= _HIGH_FUZZY_SIDE_SCORE

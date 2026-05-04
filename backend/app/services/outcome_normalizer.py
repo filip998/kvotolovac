@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 import logging
+import re
 
 from rapidfuzz import fuzz
 
@@ -43,15 +44,15 @@ _TEAM_QUALIFIER_TOKENS = {
     "women",
     "youth",
 }
-# Extra qualifier tokens / aliases that are only honored for sports in the
-# aggressive-merge allowlist. Keeping them out of the base set avoids
-# regressing pairing for other sports (notably football) where ``z`` is a
-# common Slavic city abbreviation (Zvornik, Zenica, Zemun, Zrenjanin) and
-# ``wom`` is a non-standard form that does not appear in the canonical
-# football registries — collapsing them onto ``women`` there would silently
-# block legitimate same-team pairings.
-_AGGRESSIVE_QUALIFIER_ALIASES = frozenset({"wom", "z"})
+# Cross-sport aliases for explicit women markers. Plain ASCII "z" is not in
+# this set because it is a common location abbreviation in football; only
+# explicit marker syntax such as "(Ž)" or "Ž/" is treated as women.
+_WOMEN_QUALIFIER_ALIASES = frozenset({"w", "wom", "women"})
 _AGGRESSIVE_MERGE_SPORTS = frozenset({"basketball"})
+_EXPLICIT_Z_WOMEN_MARKER_RE = re.compile(
+    r"(^|\s)ž(?=$|\s)|\(\s*[žz]\s*\)|^\s*[žz]\s*/",
+    re.IGNORECASE,
+)
 _SAME_ORIENTATION = "same"
 _REVERSED_ORIENTATION = "reversed"
 
@@ -136,12 +137,10 @@ def _team_qualifiers(name: str, *, sport: str | None = None) -> set[str]:
     tokens = normalize_identity_text(name).split()
     qualifiers: set[str] = set()
     youth_ages = {"17", "18", "19", "20", "21", "23"}
-    aggressive = sport in _AGGRESSIVE_MERGE_SPORTS
-    active_qualifier_tokens = (
-        _TEAM_QUALIFIER_TOKENS | _AGGRESSIVE_QUALIFIER_ALIASES
-        if aggressive
-        else _TEAM_QUALIFIER_TOKENS
-    )
+    active_qualifier_tokens = _TEAM_QUALIFIER_TOKENS | {"wom"}
+
+    if _EXPLICIT_Z_WOMEN_MARKER_RE.search(name):
+        qualifiers.add("women")
 
     def suffix_has_qualifier(start_index: int) -> bool:
         index = start_index
@@ -167,30 +166,20 @@ def _team_qualifiers(name: str, *, sport: str | None = None) -> set[str]:
             if index > 0 and (index == len(tokens) - 1 or next_token == "team" or suffix_has_qualifier(index + 1)):
                 qualifiers.add(token)
             continue
-        if aggressive and token in {"w", "wom", "z"}:
-            # Aliases for the "women" qualifier when they appear as a trailing
-            # suffix marker (e.g. "Sao Jose W", "Sao Jose Wom.", "Sao Jose (Ž)"
-            # whose normalised form is "sao jose z" after diacritic stripping).
-            # Restrict to suffix position so legitimate name initials such as
-            # "Z. Velickovic" do not flip a team's gender. The single-letter
-            # "z" alias additionally requires at least three tokens — this
-            # rules out 2-token names like "Real Z" / "Bayern Z" that would
-            # otherwise be tagged as women's teams purely on the trailing
-            # letter while keeping the user-reported "Sao Jose Z" pattern
-            # (3 tokens) covered.
-            #
-            # Sport-gated to ``_AGGRESSIVE_MERGE_SPORTS``: the same patterns
-            # collide with city abbreviations in non-target sports (e.g.
-            # football "FK Borac Z" = Zvornik), so for those sports the legacy
-            # behavior is preserved (``w`` → qualifier ``w``; ``wom``/``z``
-            # ignored).
+        if token in _WOMEN_QUALIFIER_ALIASES:
             is_suffix = index > 0 and (
                 index == len(tokens) - 1
                 or next_token in {"team", "women"}
                 or suffix_has_qualifier(index + 1)
             )
-            if is_suffix and (token != "z" or len(tokens) >= 3):
+            if is_suffix:
                 qualifiers.add("women")
+            continue
+        if token == "z":
+            # Plain ASCII Z is intentionally not a universal women alias.
+            # The explicit-marker regex above handles "(Ž)", "(Z)", "Ž/",
+            # and "Z/" without breaking football abbreviations such as
+            # "FK Borac Z" for Zvornik.
             continue
         if token not in active_qualifier_tokens:
             continue
