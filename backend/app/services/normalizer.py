@@ -693,6 +693,17 @@ def _resolve_contextual_player_name_replacements(
         # vs majority-spelled "Aaron"). A prefix relation between two
         # multi-character names ("Jo" / "John", "Steve" / "Steven") is treated
         # as ambiguous and left alone.
+        # Compute letter-sequence representations once so we can use them
+        # consistently from here down (the directional gate, the multi-initial
+        # guard below, and any future checks). ``raw_seq`` and ``best_seq``
+        # are split-on-hyphen letter parts, so comparing
+        # ``raw_seq[0]`` vs ``best_seq[0]`` is symmetric for hyphenated first
+        # names like "Karl-Anthony" (both yield ``"karl"``) — whereas the raw
+        # token would compare ``"karl-anthony"`` vs ``"karl"`` and bail
+        # spuriously.
+        raw_seq = tuple(_first_name_letter_sequence(raw_first_for_completeness))
+        best_seq = best_match.candidate_effective_first_seq
+
         if not best_match.raw_swapped:
             raw_is_abbreviated = (
                 all(len(part) == 1 for part in raw_first_for_completeness)
@@ -701,14 +712,23 @@ def _resolve_contextual_player_name_replacements(
             if not raw_is_abbreviated:
                 if name_counts[best_candidate] <= name_counts[raw_name]:
                     continue
-                first_raw = raw_first_for_completeness[0] if raw_first_for_completeness else ""
-                first_best = (
-                    best_match.candidate_effective_first_seq[0]
-                    if best_match.candidate_effective_first_seq
-                    else ""
-                )
-                if first_raw and first_best and (
-                    first_raw.startswith(first_best) or first_best.startswith(first_raw)
+                first_raw = raw_seq[0] if raw_seq else ""
+                first_best = best_seq[0] if best_seq else ""
+                # Identical first-name tokens are NOT an ambiguous prefix
+                # relation — they're the strongest possible signal that the
+                # two surface forms refer to the same person (the rest of the
+                # difference lives in the surname or in a Jr/Sr/II/III suffix
+                # that ``_player_name_parts`` already strips). Only a TRUE
+                # prefix relation between DIFFERENT tokens (e.g. "Jo"/"John",
+                # "Steve"/"Steven") should bail out here.
+                if (
+                    first_raw
+                    and first_best
+                    and first_raw != first_best
+                    and (
+                        first_raw.startswith(first_best)
+                        or first_best.startswith(first_raw)
+                    )
                 ):
                     continue
 
@@ -721,8 +741,6 @@ def _resolve_contextual_player_name_replacements(
         # different player) or contracting ``("c","j","k")`` down to
         # ``("c","j")`` (drops information) — is refused so a count majority
         # alone cannot decide it.
-        raw_seq = tuple(_first_name_letter_sequence(raw_first_for_completeness))
-        best_seq = best_match.candidate_effective_first_seq
         if (
             raw_seq
             and best_seq

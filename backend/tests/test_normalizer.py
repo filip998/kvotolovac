@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
 
 from app.services.normalizer import (
+    _resolve_contextual_player_name_replacements,
     generate_match_id,
     normalize_league_id,
     normalize_market_type,
@@ -1796,6 +1798,133 @@ def test_normalize_odds_resolves_suffix_kelly_oubre_jr():
         "Kelly Oubre Jr",
         "Kelly Oubre Jr",
     ]
+
+
+def test_normalize_odds_resolves_full_name_with_and_without_suffix():
+    """Wendell Carter (no suffix) and Wendell Carter Jr (with suffix) must merge.
+
+    Identical first names ARE the strongest signal that two surface forms
+    refer to the same player — the contextual resolver must not bail out
+    just because ``"wendell".startswith("wendell")`` is technically true.
+    """
+    raw = [
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="Wendell Carter",
+            threshold=12.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="Wendell Carter Jr",
+            threshold=12.5,
+            over_odds=1.80,
+            under_odds=1.90,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="nba",
+            home_team="Philadelphia 76ers",
+            away_team="Orlando Magic",
+            market_type="player_points",
+            player_name="Wendell Carter Jr",
+            threshold=12.5,
+            over_odds=1.78,
+            under_odds=1.92,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    assert [offer.player_name for offer in normalized] == [
+        "Wendell Carter Jr",
+        "Wendell Carter Jr",
+        "Wendell Carter Jr",
+    ]
+
+
+def test_normalize_odds_resolves_full_name_with_and_without_suffix_iii():
+    """Marvin Bagley (no suffix) and Marvin Bagley III (with suffix) must merge."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Detroit Pistons",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="Marvin Bagley",
+            threshold=10.5,
+            over_odds=1.90,
+            under_odds=1.80,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Detroit Pistons",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="Marvin Bagley III",
+            threshold=10.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="nba",
+            home_team="Detroit Pistons",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="Marvin Bagley III",
+            threshold=10.5,
+            over_odds=1.83,
+            under_odds=1.87,
+            start_time="2026-04-13T00:30:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    assert [offer.player_name for offer in normalized] == [
+        "Marvin Bagley III",
+        "Marvin Bagley III",
+        "Marvin Bagley III",
+    ]
+
+
+def test_resolve_contextual_player_name_variants_keeps_ambiguous_prefix_distinct():
+    """Different first-name tokens that happen to be in a true prefix
+    relation (Jo/John, Steve/Steven) must still NOT merge — that's the
+    ambiguity the directional gate was designed to protect."""
+    counts_jo = Counter(["Jo Smith", "John Smith", "John Smith"])
+    counts_steve = Counter(["Steve Curry", "Steven Curry", "Steven Curry"])
+    assert _resolve_contextual_player_name_replacements(counts_jo) == {}
+    assert _resolve_contextual_player_name_replacements(counts_steve) == {}
+
+
+def test_resolve_contextual_player_name_variants_hyphenated_first_with_suffix():
+    """Hyphenated first name with vs. without a Jr suffix must still merge.
+
+    The directional gate compares letter-sequence parts (split on hyphens)
+    to keep the comparison symmetric: ``"karl-anthony"`` raw token would
+    spuriously trip the prefix bail against ``"karl"`` (the first split
+    component), so both sides must be derived from the letter sequence.
+    """
+    counts = Counter(
+        ["Mary-Anne Smith", "Mary-Anne Smith Jr", "Mary-Anne Smith Jr"]
+    )
+    assert _resolve_contextual_player_name_replacements(counts) == {
+        "Mary-Anne Smith": "Mary-Anne Smith Jr",
+    }
 
 
 def test_normalize_odds_resolves_reversed_name_order():
