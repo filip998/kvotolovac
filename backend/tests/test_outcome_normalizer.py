@@ -367,6 +367,31 @@ def test_football_event_match_does_not_bypass_ranking_for_same_women_marker_styl
     assert _auto_review_alias_count() == 0
 
 
+def test_football_event_match_moves_whole_component_for_later_marker_pair(team_registry_file):
+    create_canonical_team(display_name="Sao Jose Wom.", sport="football")
+    create_canonical_team(display_name="Sao Jose Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Sao Jose Dos Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Santo Andre", sport="football")
+    raw = [
+        _offer("superbet", "Sao Jose Wom.", "Santo Andre", outcome_code="over"),
+        _offer("pinnbet", "Sao Jose Campos (Ž)", "Santo Andre", outcome_code="under"),
+        _offer(
+            "maxbet",
+            "Sao Jose Dos Campos (Ž)",
+            "Santo Andre",
+            outcome_code="under",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 3
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert unresolved == []
+    assert review_cases == []
+    assert _auto_review_alias_count() == 0
+
+
 def test_reversed_football_event_collapses_existing_women_marker_variant_canonicals(team_registry_file):
     create_canonical_team(display_name="Sao Jose Campos (Ž)", sport="football")
     create_canonical_team(display_name="Santo Andre (Ž)", sport="football")

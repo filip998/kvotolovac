@@ -434,6 +434,30 @@ def _reversed_slots(left: _OutcomeEventResolution, right: _OutcomeEventResolutio
     return left.slot.key == right.slot.reversed_key
 
 
+def _move_resolution_component(
+    resolutions: dict[tuple[str, str, str, str, str], _OutcomeEventResolution],
+    *,
+    source_resolution: _OutcomeEventResolution,
+    target_slot: _OutcomeEventSlot,
+    source_target_orientation: str,
+) -> None:
+    for event_key, resolution in list(resolutions.items()):
+        if resolution.slot.key != source_resolution.slot.key:
+            continue
+        relative_orientation = (
+            _SAME_ORIENTATION
+            if resolution.orientation == source_resolution.orientation
+            else _REVERSED_ORIENTATION
+        )
+        resolutions[event_key] = _OutcomeEventResolution(
+            slot=target_slot,
+            orientation=_orientation_from_pair(
+                source_target_orientation,
+                relative_orientation,
+            ),
+        )
+
+
 def _oriented_pair_team_names(
     pair: _OutcomeEventPair,
 ) -> tuple[tuple[str, str], tuple[str, str]]:
@@ -617,10 +641,14 @@ def _build_football_event_resolutions(
         if left_resolution is not None and right_resolution is not None:
             if _same_slot(left_resolution, right_resolution):
                 continue
-            if pair.orientation == _REVERSED_ORIENTATION and _reversed_slots(left_resolution, right_resolution):
-                resolutions[right_key] = _OutcomeEventResolution(
-                    slot=left_resolution.slot,
-                    orientation=_orientation_from_pair(
+            if pair.orientation == _REVERSED_ORIENTATION and _reversed_slots(
+                left_resolution, right_resolution
+            ):
+                _move_resolution_component(
+                    resolutions,
+                    source_resolution=right_resolution,
+                    target_slot=left_resolution.slot,
+                    source_target_orientation=_orientation_from_pair(
                         left_resolution.orientation,
                         pair.orientation,
                     ),
@@ -634,9 +662,11 @@ def _build_football_event_resolutions(
                     right_resolution,
                 ),
             ):
-                resolutions[right_key] = _OutcomeEventResolution(
-                    slot=left_resolution.slot,
-                    orientation=_orientation_from_pair(
+                _move_resolution_component(
+                    resolutions,
+                    source_resolution=right_resolution,
+                    target_slot=left_resolution.slot,
+                    source_target_orientation=_orientation_from_pair(
                         left_resolution.orientation,
                         pair.orientation,
                     ),
