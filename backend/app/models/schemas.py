@@ -442,6 +442,7 @@ class ScrapeRuntimeSettings(BaseModel):
     enabled_bookmakers: list[str] = Field(default_factory=list)
     enabled_sports: list[str] = Field(default_factory=list)
     scrape_market_scope: ScrapeMarketScope = "all"
+    analysis_markets: list[str] = Field(default_factory=lambda: ["all"])
     scrape_lookahead_hours: int = Field(default=24, ge=0)
     scrape_interval_minutes: int = Field(default=10, ge=1)
     max_middle_opportunities_per_market: int = Field(default=10, ge=1)
@@ -457,6 +458,7 @@ class ScrapeRuntimeSettingsUpdate(BaseModel):
     enabled_bookmakers: Optional[list[str]] = None
     enabled_sports: Optional[list[str]] = None
     scrape_market_scope: Optional[ScrapeMarketScope] = None
+    analysis_markets: Optional[list[str]] = None
     scrape_lookahead_hours: Optional[int] = Field(default=None, ge=0)
     scrape_interval_minutes: Optional[int] = Field(default=None, ge=1)
     max_middle_opportunities_per_market: Optional[int] = Field(default=None, ge=1)
@@ -474,10 +476,19 @@ class ScrapeSettingsBookmakerOption(BaseModel):
     enabled: bool = False
 
 
+class ScrapeSettingsMarketOption(BaseModel):
+    token: str
+    label: str
+    sport: Optional[str] = None
+
+
 class ScrapeSettingsOptions(BaseModel):
     bookmakers: list[ScrapeSettingsBookmakerOption] = Field(default_factory=list)
     sports: list[str] = Field(default_factory=list)
     market_scopes: list[ScrapeMarketScope] = Field(default_factory=lambda: ["all", "player_props"])
+    analysis_market_options: list[ScrapeSettingsMarketOption] = Field(
+        default_factory=list
+    )
     detail_modes: list[ScraperDetailMode] = Field(default_factory=lambda: ["partial", "full"])
     scrape_interval_minutes_min: int = 1
     scrape_interval_minutes_max: int = 24 * 60

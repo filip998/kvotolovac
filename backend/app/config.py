@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     enabled_sports: str = "basketball"
     # player_props = skip outcome-offer lanes and persist/analyze player_* thresholds.
     scrape_market_scope: Literal["all", "player_props"] = "all"
+    # Empty = use scrape_market_scope compatibility behavior; "all" = no filtering.
+    analysis_markets: str = ""
     max_middle_opportunities_per_market: int = Field(default=10, ge=1)
     notification_gap_threshold: float = 1.5
     persist_inapp_notifications: bool = False

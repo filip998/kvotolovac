@@ -14,10 +14,18 @@ from ..models.schemas import (
     ScrapeRuntimeSettings,
     ScrapeRuntimeSettingsUpdate,
     ScrapeSettingsBookmakerOption,
+    ScrapeSettingsMarketOption,
     ScrapeSettingsOptions,
     ScrapeSettingsResponse,
 )
 from ..scrapers.registry import registry
+from .market_allowlist import (
+    ANALYSIS_MARKET_OPTIONS,
+    DEFAULT_ANALYSIS_MARKETS,
+    MarketAllowlistError,
+    legacy_analysis_markets_for_scope,
+    normalize_analysis_markets,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -60,6 +68,12 @@ def default_scrape_runtime_settings(
         enabled_bookmakers=enabled_bookmakers,
         enabled_sports=settings.enabled_sport_list,
         scrape_market_scope=settings.scrape_market_scope,
+        analysis_markets=list(
+            normalize_analysis_markets(
+                settings.analysis_markets,
+                legacy_scrape_market_scope=settings.scrape_market_scope,
+            )
+        ),
         scrape_lookahead_hours=settings.scrape_lookahead_hours,
         scrape_interval_minutes=settings.scrape_interval_minutes,
         max_middle_opportunities_per_market=settings.max_middle_opportunities_per_market,
@@ -78,7 +92,14 @@ def _settings_json(values: ScrapeRuntimeSettings) -> str:
 
 def _settings_from_json(raw: str) -> ScrapeRuntimeSettings:
     try:
-        values = ScrapeRuntimeSettings.model_validate(json.loads(raw))
+        payload = json.loads(raw)
+        if isinstance(payload, dict) and "analysis_markets" not in payload:
+            payload["analysis_markets"] = list(
+                legacy_analysis_markets_for_scope(
+                    payload.get("scrape_market_scope", "all")
+                )
+            )
+        values = ScrapeRuntimeSettings.model_validate(payload)
     except (json.JSONDecodeError, TypeError, ValidationError):
         logger.warning("Ignoring invalid persisted scrape runtime settings")
         return default_scrape_runtime_settings()
@@ -126,6 +147,16 @@ def validate_scrape_runtime_settings(
             "enabled_sports": _unique_ordered(values.enabled_sports),
         }
     )
+    try:
+        analysis_markets = list(
+            normalize_analysis_markets(
+                normalized.analysis_markets,
+                legacy_scrape_market_scope=normalized.scrape_market_scope,
+            )
+        )
+    except MarketAllowlistError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    normalized = normalized.model_copy(update={"analysis_markets": analysis_markets})
     allowed_bookmakers = set(available_bookmaker_ids())
     unknown_bookmakers = sorted(set(normalized.enabled_bookmakers) - allowed_bookmakers)
     if unknown_bookmakers:
@@ -140,6 +171,22 @@ def validate_scrape_runtime_settings(
         raise HTTPException(
             status_code=422,
             detail=f"Unsupported sports: {', '.join(unknown_sports)}",
+        )
+    analysis_market_sports = {
+        token.split(":", 1)[0]
+        for token in normalized.analysis_markets
+        if token != DEFAULT_ANALYSIS_MARKETS[0]
+    }
+    unknown_analysis_market_sports = sorted(
+        analysis_market_sports - allowed_sports - {"*"}
+    )
+    if unknown_analysis_market_sports:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Unsupported analysis market sports: "
+                + ", ".join(unknown_analysis_market_sports)
+            ),
         )
 
     _validate_range(
@@ -189,11 +236,22 @@ def _sanitize_persisted_scrape_runtime_settings(
     enabled_sports = [
         sport for sport in _unique_ordered(values.enabled_sports) if sport in allowed_sports
     ]
+    try:
+        analysis_markets = list(
+            normalize_analysis_markets(
+                values.analysis_markets,
+                legacy_scrape_market_scope=values.scrape_market_scope,
+            )
+        )
+    except MarketAllowlistError:
+        logger.warning("Ignoring invalid persisted analysis market filters")
+        analysis_markets = list(DEFAULT_ANALYSIS_MARKETS)
 
     return values.model_copy(
         update={
             "enabled_bookmakers": enabled_bookmakers,
             "enabled_sports": enabled_sports,
+            "analysis_markets": analysis_markets,
             "scrape_interval_minutes": _clamp(
                 values.scrape_interval_minutes,
                 minimum=1,
@@ -334,6 +392,10 @@ async def update_scrape_settings(
         applied, pending, _, _ = await _load_settings_row_unlocked()
         base = pending or applied
         update_data = patch.model_dump(exclude_unset=True, exclude_none=True)
+        if "scrape_market_scope" in update_data and "analysis_markets" not in update_data:
+            update_data["analysis_markets"] = list(
+                legacy_analysis_markets_for_scope(update_data["scrape_market_scope"])
+            )
         candidate = validate_scrape_runtime_settings(base.model_copy(update=update_data))
 
         db = await get_db()
@@ -431,6 +493,14 @@ def _settings_options(*, applied: ScrapeRuntimeSettings) -> ScrapeSettingsOption
     return ScrapeSettingsOptions(
         bookmakers=bookmakers,
         sports=_available_sports(),
+        analysis_market_options=[
+            ScrapeSettingsMarketOption(
+                token=option.token,
+                label=option.label,
+                sport=option.sport,
+            )
+            for option in ANALYSIS_MARKET_OPTIONS
+        ],
         scrape_interval_minutes_max=_SCRAPE_INTERVAL_MINUTES_MAX,
         scrape_lookahead_hours_max=_SCRAPE_LOOKAHEAD_HOURS_MAX,
         max_middle_opportunities_per_market_max=_MAX_MIDDLE_OPPORTUNITIES_PER_MARKET_MAX,

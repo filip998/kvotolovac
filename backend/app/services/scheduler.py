@@ -13,7 +13,6 @@ from ..models.schemas import (
     NormalizedOutcomeOffer,
     RawOddsData,
     RawOutcomeOffer,
-    ScrapeMarketScope,
     ScrapeRuntimeSettings,
     ScrapeRuntimeSettingsUpdate,
     ScrapeSettingsResponse,
@@ -24,10 +23,13 @@ from ..scrapers.base import BaseScraper, ScraperCapability
 from ..scrapers.registry import registry
 from ..models.schemas import ScanProgressOut
 from ..services.league_registry import league_country, league_display_name
+from ..services.market_allowlist import (
+    MarketAllowlist,
+    analysis_market_allowlist,
+)
 from ..services.normalizer import (
     ANCHORED_AUTO_APPLY_THRESHOLD,
     log_unresolved_shared_platform_diagnostics,
-    normalize_market_type,
     normalize_odds_with_diagnostics,
     resolve_team_name,
 )
@@ -119,59 +121,77 @@ def _is_auto_alias_candidate(case) -> bool:
 def _enabled_scraper_capabilities(
     scraper: BaseScraper,
     enabled_sports: set[str],
-    market_scope: ScrapeMarketScope,
+    market_allowlist: MarketAllowlist,
 ) -> list[ScraperCapability]:
     return [
         capability
         for capability in scraper.get_scraper_capabilities()
-        if _is_enabled_scraper_capability(capability, enabled_sports, market_scope)
+        if _is_enabled_scraper_capability(capability, enabled_sports, market_allowlist)
     ]
 
 
 def _is_enabled_scraper_capability(
     capability: ScraperCapability,
     enabled_sports: set[str],
-    market_scope: ScrapeMarketScope,
+    market_allowlist: MarketAllowlist,
 ) -> bool:
     if capability.sport not in enabled_sports:
         return False
-    if market_scope == "player_props" and capability.lane == "outcome_offer":
+    if not market_allowlist.has_filter_for_sport(capability.sport):
+        return False
+    if (
+        capability.lane == "outcome_offer"
+        and not market_allowlist.may_include_outcome_offer_markets(capability.sport)
+    ):
         return False
     return True
 
 
-def _is_player_market_type(market_type: str) -> bool:
-    return normalize_market_type(market_type).startswith("player_")
-
-
-def _filter_normalized_pipeline_batch_by_market_scope(
+def _filter_normalized_pipeline_batch_by_market_allowlist(
     batch: _NormalizedPipelineBatch,
-    market_scope: ScrapeMarketScope,
+    market_allowlist: MarketAllowlist,
 ) -> _NormalizedPipelineBatch:
-    if market_scope != "player_props":
+    if market_allowlist.allows_all:
         return batch
     return _NormalizedPipelineBatch(
-        odds=[row for row in batch.odds if _is_player_market_type(row.market_type)],
-        outcome_offers=[],
+        odds=[
+            row
+            for row in batch.odds
+            if market_allowlist.allows(sport=row.sport, market_type=row.market_type)
+        ],
+        outcome_offers=[
+            row
+            for row in batch.outcome_offers
+            if market_allowlist.allows(sport=row.sport, market_type=row.market_type)
+        ],
         unresolved_odds=[
-            row for row in batch.unresolved_odds if _is_player_market_type(row.market_type)
+            row
+            for row in batch.unresolved_odds
+            if market_allowlist.allows(sport=row.sport, market_type=row.market_type)
         ],
         team_review_cases=batch.team_review_cases,
     )
 
 
-def _event_resolution_batch_for_market_scope(
+def _event_resolution_batch_for_market_allowlist(
     full_batch: _NormalizedPipelineBatch,
     persisted_batch: _NormalizedPipelineBatch,
-    market_scope: ScrapeMarketScope,
+    market_allowlist: MarketAllowlist,
 ) -> _NormalizedPipelineBatch:
-    if market_scope != "player_props":
+    if market_allowlist.allows_all:
         return full_batch
 
-    persisted_match_ids = {row.match_id for row in persisted_batch.odds}
+    persisted_match_ids = {
+        row.match_id
+        for row in [*persisted_batch.odds, *persisted_batch.outcome_offers]
+    }
     return _NormalizedPipelineBatch(
         odds=[row for row in full_batch.odds if row.match_id in persisted_match_ids],
-        outcome_offers=[],
+        outcome_offers=[
+            row
+            for row in full_batch.outcome_offers
+            if row.match_id in persisted_match_ids
+        ],
         unresolved_odds=full_batch.unresolved_odds,
         team_review_cases=full_batch.team_review_cases,
     )
@@ -1133,6 +1153,10 @@ class Scheduler:
             logger.info("Starting scrape cycle at %s", cycle_started_at_iso)
 
             enabled_bookmakers = set(runtime_settings.enabled_bookmakers)
+            market_allowlist = analysis_market_allowlist(
+                runtime_settings.analysis_markets,
+                legacy_scrape_market_scope=runtime_settings.scrape_market_scope,
+            )
             scrapers = [
                 scraper
                 for scraper in registry.get_all()
@@ -1148,7 +1172,7 @@ class Scheduler:
                 for capability in _enabled_scraper_capabilities(
                     scraper,
                     enabled_sports,
-                    runtime_settings.scrape_market_scope,
+                    market_allowlist,
                 )
             ]
             scrape_tasks = [
@@ -1193,14 +1217,14 @@ class Scheduler:
                 all_raw_outcome_offers,
                 log_unresolved_shared_platform=False,
             )
-            normalized_batch = _filter_normalized_pipeline_batch_by_market_scope(
+            normalized_batch = _filter_normalized_pipeline_batch_by_market_allowlist(
                 full_normalized_batch,
-                runtime_settings.scrape_market_scope,
+                market_allowlist,
             )
-            event_resolution_batch = _event_resolution_batch_for_market_scope(
+            event_resolution_batch = _event_resolution_batch_for_market_allowlist(
                 full_normalized_batch,
                 normalized_batch,
-                runtime_settings.scrape_market_scope,
+                market_allowlist,
             )
             normalized = normalized_batch.odds
             normalized_outcome_offers = normalized_batch.outcome_offers
@@ -1239,14 +1263,14 @@ class Scheduler:
                         all_raw,
                         all_raw_outcome_offers,
                     )
-                    normalized_batch = _filter_normalized_pipeline_batch_by_market_scope(
+                    normalized_batch = _filter_normalized_pipeline_batch_by_market_allowlist(
                         full_normalized_batch,
-                        runtime_settings.scrape_market_scope,
+                        market_allowlist,
                     )
-                    event_resolution_batch = _event_resolution_batch_for_market_scope(
+                    event_resolution_batch = _event_resolution_batch_for_market_allowlist(
                         full_normalized_batch,
                         normalized_batch,
-                        runtime_settings.scrape_market_scope,
+                        market_allowlist,
                     )
                     normalized = normalized_batch.odds
                     normalized_outcome_offers = normalized_batch.outcome_offers

@@ -519,6 +519,183 @@ async def test_scheduler_player_props_scope_skips_outcome_offer_capabilities(
 
 
 @pytest.mark.asyncio
+async def test_scheduler_analysis_markets_filter_basketball_player_props_after_context_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "analysis_markets", "basketball:player_*")
+    _register_test_scrapers(
+        StubScraper(
+            "meridian",
+            payload_by_league={
+                "euroleague": [
+                    RawOddsData(
+                        bookmaker_id="meridian",
+                        league_id="nba",
+                        home_team="Minnesota",
+                        away_team="Houston",
+                        market_type="game_total",
+                        player_name=None,
+                        threshold=219.5,
+                        over_odds=1.9,
+                        under_odds=1.9,
+                        start_time="2030-01-01T20:00:00+00:00",
+                    )
+                ],
+            },
+        ),
+        StubScraper(
+            "maxbet",
+            payload_by_league={
+                "euroleague": [
+                    RawOddsData(
+                        bookmaker_id="maxbet",
+                        league_id="nba",
+                        home_team="Houston",
+                        away_team="Kevin Durant",
+                        market_type="player_points",
+                        player_name="Kevin Durant",
+                        threshold=23.5,
+                        over_odds=1.85,
+                        under_odds=1.95,
+                        start_time="2030-01-01T20:00:00+00:00",
+                    )
+                ],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["matches_scraped"] == 1
+    assert result["odds_scraped"] == 1
+    matches = await odds_store.get_matches(sport="basketball")
+    assert len(matches) == 1
+    assert matches[0].home_team == "Minnesota Timberwolves"
+    assert matches[0].away_team == "Houston Rockets"
+    stored_odds = await odds_store.get_odds_for_match(matches[0].id)
+    assert [(row.market_type, row.player_name) for row in stored_odds] == [
+        ("player_points", "Kevin Durant")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_analysis_markets_filter_basketball_handicap(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "analysis_markets", "basketball:home_handicap_ot")
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds("alpha", 18.5, market_type="player_points"),
+                    _raw_odds(
+                        "alpha",
+                        5.5,
+                        market_type="home_handicap_ot",
+                        player_name=None,
+                    ),
+                ],
+            },
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds("beta", 20.5, market_type="player_points"),
+                    _raw_odds(
+                        "beta",
+                        7.5,
+                        market_type="home_handicap_ot",
+                        player_name=None,
+                    ),
+                ],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["odds_scraped"] == 2
+    matches = await odds_store.get_matches(sport="basketball")
+    stored_odds = []
+    for match in matches:
+        stored_odds.extend(await odds_store.get_odds_for_match(match.id))
+    assert {row.market_type for row in stored_odds} == {"home_handicap_ot"}
+
+
+@pytest.mark.asyncio
+async def test_scheduler_analysis_markets_filter_football_totals(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(settings, "enabled_sports", "football")
+    monkeypatch.setattr(settings, "analysis_markets", "football:football_total_goals")
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            leagues=(),
+            outcome_sports=("football",),
+            outcome_payload_by_sport={
+                "football": [
+                    _raw_outcome_offer(
+                        "alpha",
+                        "over",
+                        sport="football",
+                        market_type="football_total_goals",
+                        odds=1.90,
+                        line=2.5,
+                    ),
+                    _raw_outcome_offer(
+                        "alpha",
+                        "home",
+                        sport="football",
+                        market_type="football_result",
+                        odds=2.10,
+                    ),
+                ],
+            },
+        ),
+        StubScraper(
+            "beta",
+            leagues=(),
+            outcome_sports=("football",),
+            outcome_payload_by_sport={
+                "football": [
+                    _raw_outcome_offer(
+                        "beta",
+                        "under",
+                        sport="football",
+                        market_type="football_total_goals",
+                        odds=2.10,
+                        line=3.5,
+                    ),
+                    _raw_outcome_offer(
+                        "beta",
+                        "draw_or_away",
+                        sport="football",
+                        market_type="football_double_chance",
+                        odds=2.10,
+                    ),
+                ],
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["outcome_offers_scraped"] == 2
+    outcome_offers = await odds_store.get_outcome_offers(sport="football")
+    assert {offer.market_type for offer in outcome_offers} == {
+        "football_total_goals"
+    }
+    assert result["opportunities_found"] == 1
+    opportunities = await odds_store.get_opportunities(sport="football")
+    assert [(item.opportunity_type, item.market_type) for item in opportunities] == [
+        ("middle", "football_total_goals")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_scheduler_uses_runtime_enabled_bookmakers():
     _register_test_scrapers(
         StubScraper(

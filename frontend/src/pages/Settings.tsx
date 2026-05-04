@@ -6,8 +6,8 @@ import {
   useUpdateScrapeSettings,
 } from '../api/hooks';
 import type {
-  ScrapeMarketScope,
   ScrapeRuntimeSettings,
+  ScrapeSettingsMarketOption,
   ScraperDetailMode,
   ScrapeSettingsOptions,
 } from '../api/types';
@@ -21,15 +21,12 @@ type NumericSetting =
   | 'meridian_rate_limit_per_second'
   | 'notification_gap_threshold';
 
-const marketScopeLabels: Record<ScrapeMarketScope, string> = {
-  all: 'All supported markets',
-  player_props: 'Player props only',
-};
-
 const detailModeLabels: Record<ScraperDetailMode, string> = {
   partial: 'Partial',
   full: 'Full',
 };
+
+const ALL_MARKETS_TOKEN = 'all';
 
 function toggleValue(values: string[], value: string): string[] {
   return values.includes(value)
@@ -72,6 +69,67 @@ function summarizeList(values: string[], emptyLabel: string): string {
     return emptyLabel;
   }
   return values.map(titleCase).join(', ');
+}
+
+function normalizeAnalysisMarkets(values: string[]): string[] {
+  const cleaned = values.map((value) => value.trim()).filter(Boolean);
+  if (cleaned.length === 0 || cleaned.includes(ALL_MARKETS_TOKEN)) {
+    return [ALL_MARKETS_TOKEN];
+  }
+  return Array.from(new Set(cleaned));
+}
+
+function toggleAnalysisMarket(values: string[], token: string): string[] {
+  if (token === ALL_MARKETS_TOKEN) {
+    return [ALL_MARKETS_TOKEN];
+  }
+
+  const selected = normalizeAnalysisMarkets(values).filter(
+    (value) => value !== ALL_MARKETS_TOKEN
+  );
+  const next = selected.includes(token)
+    ? selected.filter((value) => value !== token)
+    : [...selected, token];
+  return next.length > 0 ? next : [ALL_MARKETS_TOKEN];
+}
+
+function marketLabel(
+  token: string,
+  options: ScrapeSettingsMarketOption[]
+): string {
+  const option = options.find((item) => item.token === token);
+  if (option) {
+    return option.label;
+  }
+  if (token === ALL_MARKETS_TOKEN) {
+    return 'All supported markets';
+  }
+  return titleCase(token.replace(':', ' · '));
+}
+
+function summarizeAnalysisMarkets(
+  values: string[],
+  options: ScrapeSettingsMarketOption[]
+): string {
+  const selected = normalizeAnalysisMarkets(values);
+  if (selected.includes(ALL_MARKETS_TOKEN)) {
+    return 'All supported markets';
+  }
+  if (selected.length <= 2) {
+    return selected.map((token) => marketLabel(token, options)).join(', ');
+  }
+  return `${selected.length} market filters selected`;
+}
+
+function customAnalysisMarkets(
+  values: string[],
+  options: ScrapeSettingsMarketOption[]
+): string[] {
+  const known = new Set([
+    ALL_MARKETS_TOKEN,
+    ...options.map((option) => option.token),
+  ]);
+  return normalizeAnalysisMarkets(values).filter((token) => !known.has(token));
 }
 
 function SectionTitle({
@@ -285,6 +343,11 @@ function SettingsForm({
   const triggerScrape = useTriggerScrape();
   const hasLocalChanges = settingsKey(draft) !== settingsKey(initialValues);
   const draftMatchesDefaults = settingsKey(draft) === settingsKey(defaultValues);
+  const selectedAnalysisMarkets = normalizeAnalysisMarkets(draft.analysis_markets);
+  const customMarketTokens = customAnalysisMarkets(
+    draft.analysis_markets,
+    options.analysis_market_options
+  );
 
   const setNumber = (field: NumericSetting, value: string) => {
     setDraft((current) => ({
@@ -429,23 +492,90 @@ function SettingsForm({
 
         <DisclosureRow
           title="Markets"
-          summary={marketScopeLabels[draft.scrape_market_scope]}
+          summary={summarizeAnalysisMarkets(
+            draft.analysis_markets,
+            options.analysis_market_options
+          )}
         >
-          <div className="flex flex-wrap gap-2">
-            {options.market_scopes.map((scope) => (
+          <div className="space-y-3">
+            <div className="flex flex-wrap gap-2">
               <ChoiceChip
-                key={scope}
-                selected={draft.scrape_market_scope === scope}
+                selected={selectedAnalysisMarkets.includes(ALL_MARKETS_TOKEN)}
                 onClick={() =>
                   setDraft((current) => ({
                     ...current,
-                    scrape_market_scope: scope,
+                    analysis_markets: [ALL_MARKETS_TOKEN],
+                    scrape_market_scope: 'all',
                   }))
                 }
               >
-                {marketScopeLabels[scope]}
+                All supported markets
               </ChoiceChip>
-            ))}
+            </div>
+
+            {options.sports.map((sport) => {
+              const sportOptions = options.analysis_market_options.filter(
+                (option) => option.sport === sport
+              );
+              if (sportOptions.length === 0) {
+                return null;
+              }
+              return (
+                <div key={sport} className="space-y-2">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-text-muted">
+                    {titleCase(sport)}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {sportOptions.map((option) => (
+                      <ChoiceChip
+                        key={option.token}
+                        selected={selectedAnalysisMarkets.includes(option.token)}
+                        onClick={() =>
+                          setDraft((current) => ({
+                            ...current,
+                            analysis_markets: toggleAnalysisMarket(
+                              current.analysis_markets,
+                              option.token
+                            ),
+                            scrape_market_scope: 'all',
+                          }))
+                        }
+                      >
+                        {option.label}
+                      </ChoiceChip>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+
+            {customMarketTokens.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-semibold uppercase tracking-wide text-text-muted">
+                  Custom
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {customMarketTokens.map((token) => (
+                    <ChoiceChip
+                      key={token}
+                      selected
+                      onClick={() =>
+                        setDraft((current) => ({
+                          ...current,
+                          analysis_markets: toggleAnalysisMarket(
+                            current.analysis_markets,
+                            token
+                          ),
+                          scrape_market_scope: 'all',
+                        }))
+                      }
+                    >
+                      {marketLabel(token, options.analysis_market_options)}
+                    </ChoiceChip>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </DisclosureRow>
       </section>

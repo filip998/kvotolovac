@@ -150,8 +150,10 @@ async def test_get_scrape_settings_defaults(client: AsyncClient):
     assert resp.status_code == 200
     data = resp.json()
     assert data["applied"]["scrape_market_scope"] == settings.scrape_market_scope
+    assert data["applied"]["analysis_markets"] == ["all"]
     assert data["applied"]["scrape_interval_minutes"] == settings.scrape_interval_minutes
     assert data["defaults"]["scrape_market_scope"] == settings.scrape_market_scope
+    assert data["defaults"]["analysis_markets"] == ["all"]
     assert data["defaults"]["scrape_interval_minutes"] == settings.scrape_interval_minutes
     assert set(data["defaults"]["enabled_bookmakers"]) == set(settings.bookmaker_list)
     assert data["pending"] is None
@@ -160,6 +162,11 @@ async def test_get_scrape_settings_defaults(client: AsyncClient):
         "mozzart",
         "meridian",
         "maxbet",
+    }
+    assert {item["token"] for item in data["options"]["analysis_market_options"]} >= {
+        "basketball:player_*",
+        "basketball:home_handicap_ot",
+        "football:football_total_goals",
     }
 
 
@@ -190,11 +197,35 @@ async def test_patch_scrape_settings_applies_immediately_when_idle(client: Async
     assert data["has_pending_changes"] is False
     assert data["applied"]["enabled_bookmakers"] == ["mozzart"]
     assert data["applied"]["scrape_market_scope"] == "player_props"
+    assert data["applied"]["analysis_markets"] == ["*:player_*"]
     assert data["applied"]["scrape_interval_minutes"] == 7
     assert data["applied"]["soccerbet_detail_mode"] == "full"
 
     get_resp = await client.get("/api/v1/settings/scrape")
     assert get_resp.json()["applied"]["enabled_bookmakers"] == ["mozzart"]
+
+
+@pytest.mark.asyncio
+async def test_patch_scrape_settings_accepts_analysis_markets(client: AsyncClient):
+    resp = await client.patch(
+        "/api/v1/settings/scrape",
+        json={
+            "enabled_bookmakers": ["mozzart"],
+            "enabled_sports": ["basketball"],
+            "analysis_markets": [
+                "basketball:player_*",
+                "basketball:home_handicap_ot",
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["applied"]["analysis_markets"] == [
+        "basketball:player_*",
+        "basketball:home_handicap_ot",
+    ]
+    assert data["applied"]["scrape_market_scope"] == "all"
 
 
 @pytest.mark.asyncio
@@ -345,6 +376,17 @@ async def test_patch_scrape_settings_rejects_unknown_bookmaker(client: AsyncClie
 
 
 @pytest.mark.asyncio
+async def test_patch_scrape_settings_rejects_invalid_analysis_markets(client: AsyncClient):
+    resp = await client.patch(
+        "/api/v1/settings/scrape",
+        json={"analysis_markets": ["all", "basketball:player_*"]},
+    )
+
+    assert resp.status_code == 422
+    assert "'all' cannot be combined" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_get_scrape_settings_sanitizes_stale_persisted_values(
     client: AsyncClient,
 ):
@@ -354,6 +396,7 @@ async def test_get_scrape_settings_sanitizes_stale_persisted_values(
         {
             "enabled_bookmakers": ["retired-bookmaker", "mozzart"],
             "enabled_sports": ["retired-sport", "basketball"],
+            "analysis_markets": ["basketball:player_*", "bad-token"],
             "rate_limit_per_second": 999.0,
         }
     )
@@ -370,6 +413,7 @@ async def test_get_scrape_settings_sanitizes_stale_persisted_values(
     data = resp.json()
     assert data["applied"]["enabled_bookmakers"] == ["mozzart"]
     assert data["applied"]["enabled_sports"] == ["basketball"]
+    assert data["applied"]["analysis_markets"] == ["all"]
     assert data["applied"]["rate_limit_per_second"] == 20.0
 
     patch_resp = await client.patch(

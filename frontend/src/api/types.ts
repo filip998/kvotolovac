@@ -331,6 +331,7 @@ export interface ScrapeRuntimeSettings {
   enabled_bookmakers: string[];
   enabled_sports: string[];
   scrape_market_scope: ScrapeMarketScope;
+  analysis_markets: string[];
   scrape_lookahead_hours: number;
   scrape_interval_minutes: number;
   max_middle_opportunities_per_market: number;
@@ -350,10 +351,17 @@ export interface ScrapeSettingsBookmakerOption {
   enabled: boolean;
 }
 
+export interface ScrapeSettingsMarketOption {
+  token: string;
+  label: string;
+  sport: string | null;
+}
+
 export interface ScrapeSettingsOptions {
   bookmakers: ScrapeSettingsBookmakerOption[];
   sports: string[];
   market_scopes: ScrapeMarketScope[];
+  analysis_market_options: ScrapeSettingsMarketOption[];
   detail_modes: ScraperDetailMode[];
   scrape_interval_minutes_min: number;
   scrape_interval_minutes_max: number;
