@@ -414,11 +414,17 @@ def test_normalize_odds_keeps_single_initial_separate_when_multi_initial_candida
     ]
 
 
-def test_normalize_odds_keeps_single_initial_separate_when_multi_initial_candidates_extend():
-    """A single initial must stay unresolved when one multi-initial candidate is
-    a strict prefix-extension of another (``("c","j")`` vs ``("c","j","k")``):
-    the candidates describe distinct identities, so picking one over the other
-    for ``C. McCollum`` would be guesswork."""
+def test_normalize_odds_collapses_single_initial_with_competing_extensions_when_clear_majority():
+    """Within one event, prefix-compatible abbreviation depths describe the
+    same player. When a single initial appears alongside two abbreviation
+    extensions of different length (``C.``/``C.J.``/``C.J.K.``) and one
+    extension carries the bookmaker majority, all surfaces merge into that
+    majority. The structural rule subsumes the older "multi-initial all-
+    single-letter" guard: same-length mismatched-position cases (``C.J.`` vs
+    ``C.K.``) are still rejected by `_letter_seq_collapse_compatible`'s same-
+    length branch, which is what guards against genuinely-different players
+    here. See ``test_normalize_odds_keeps_single_initial_separate_when_multi_initial_candidates_disagree``
+    for the strict counterpart."""
     raw = [
         RawOddsData(
             bookmaker_id="meridian",
@@ -434,18 +440,6 @@ def test_normalize_odds_keeps_single_initial_separate_when_multi_initial_candida
         ),
         RawOddsData(
             bookmaker_id="mozzart",
-            league_id="nba",
-            home_team="Chicago Bulls",
-            away_team="New York Knicks",
-            market_type="player_points",
-            player_name="C.J. McCollum",
-            threshold=18.5,
-            over_odds=1.9,
-            under_odds=1.9,
-            start_time="2026-04-11T01:30:00+00:00",
-        ),
-        RawOddsData(
-            bookmaker_id="maxbet",
             league_id="nba",
             home_team="Chicago Bulls",
             away_team="New York Knicks",
@@ -480,14 +474,26 @@ def test_normalize_odds_keeps_single_initial_separate_when_multi_initial_candida
             under_odds=1.9,
             start_time="2026-04-11T01:30:00+00:00",
         ),
+        RawOddsData(
+            bookmaker_id="superbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C.J.K. McCollum",
+            threshold=18.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
     ]
 
     normalized = normalize_odds(raw)
 
     assert [offer.player_name for offer in normalized] == [
-        "C. McCollum",
-        "C.J. McCollum",
-        "C.J. McCollum",
+        "C.J.K. McCollum",
+        "C.J.K. McCollum",
+        "C.J.K. McCollum",
         "C.J.K. McCollum",
         "C.J.K. McCollum",
     ]
@@ -720,12 +726,15 @@ def test_normalize_odds_keeps_surname_particle_player_separate_from_lookalike_fi
     assert [offer.player_name for offer in normalized] == ["St.Brown", "Stefan Brown"]
 
 
-def test_normalize_odds_does_not_extend_multi_initial_into_longer_initial_sequence():
-    """A multi-initial label like ``C.J.`` must NOT be rewritten into a longer
-    all-initial label like ``C.J.K.`` even when the longer form has the higher
-    bookmaker count. The user's directive only blesses the single-initial→
-    multi-initial expansion (``C.``→``C.J.``); a 2→3 initial extension adds a
-    NEW position and plausibly describes a different player."""
+def test_normalize_odds_extends_multi_initial_into_longer_initial_majority():
+    """Within one event, a 2-initial label like ``C.J.`` and a 3-initial label
+    like ``C.J.K.`` for the same surname describe the same player at different
+    abbreviation depths. The chance that two players whose first-name
+    abbreviations form a prefix chain co-occur in a single match is
+    effectively zero, so we let the bookmaker majority decide. This is the
+    inverse of `test_normalize_odds_keeps_single_initial_separate_when_multi_initial_candidates_disagree`,
+    where same-length mismatched-position cases (``C.J.`` vs ``C.K.``) stay
+    distinct via the structural per-position prefix check."""
     raw = [
         RawOddsData(
             bookmaker_id="meridian",
@@ -758,6 +767,59 @@ def test_normalize_odds_does_not_extend_multi_initial_into_longer_initial_sequen
             away_team="B",
             market_type="player_points",
             player_name="C.J.K. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert [offer.player_name for offer in normalized] == [
+        "C.J.K. McCollum",
+        "C.J.K. McCollum",
+        "C.J.K. McCollum",
+    ]
+
+
+def test_normalize_odds_contracts_longer_initial_sequence_into_shorter_majority():
+    """Mirror of the previous test: when the shorter abbreviation has the
+    bookmaker majority, the longer one merges down. Within one event, prefix-
+    compatible abbreviations across length describe the same player; the
+    count-based tie-break is what selects the canonical surface."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="C.J.K. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="C.J. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="C.J. McCollum",
             threshold=15.5,
             over_odds=1.9,
             under_odds=1.9,
@@ -769,60 +831,6 @@ def test_normalize_odds_does_not_extend_multi_initial_into_longer_initial_sequen
 
     assert [offer.player_name for offer in normalized] == [
         "C.J. McCollum",
-        "C.J.K. McCollum",
-        "C.J.K. McCollum",
-    ]
-
-
-def test_normalize_odds_does_not_contract_longer_initial_sequence_into_shorter():
-    """The mirror of the previous test: a longer all-initial label like
-    ``C.J.K.`` must NOT be rewritten down to a shorter ``C.J.`` even if the
-    shorter form has more bookmaker support. Dropping the ``K.`` initial loses
-    information and the two could legitimately describe different players;
-    refuse the merge so the count alone cannot decide it."""
-    raw = [
-        RawOddsData(
-            bookmaker_id="meridian",
-            league_id="nba",
-            home_team="A",
-            away_team="B",
-            market_type="player_points",
-            player_name="C.J.K. McCollum",
-            threshold=15.5,
-            over_odds=1.9,
-            under_odds=1.9,
-            start_time="2026-04-11T01:30:00+00:00",
-        ),
-        RawOddsData(
-            bookmaker_id="mozzart",
-            league_id="nba",
-            home_team="A",
-            away_team="B",
-            market_type="player_points",
-            player_name="C.J. McCollum",
-            threshold=15.5,
-            over_odds=1.9,
-            under_odds=1.9,
-            start_time="2026-04-11T01:30:00+00:00",
-        ),
-        RawOddsData(
-            bookmaker_id="maxbet",
-            league_id="nba",
-            home_team="A",
-            away_team="B",
-            market_type="player_points",
-            player_name="C.J. McCollum",
-            threshold=15.5,
-            over_odds=1.9,
-            under_odds=1.9,
-            start_time="2026-04-11T01:30:00+00:00",
-        ),
-    ]
-
-    normalized = normalize_odds(raw)
-
-    assert [offer.player_name for offer in normalized] == [
-        "C.J.K. McCollum",
         "C.J. McCollum",
         "C.J. McCollum",
     ]
@@ -2134,14 +2142,16 @@ def test_normalize_odds_resolves_three_variant_partial_initial_alongside_full_na
     assert names == {"Karl-Anthony Towns"}
 
 
-def test_normalize_odds_keeps_two_multi_initial_lengths_separate_with_full_name_bystander():
-    """Symmetric regression for the diversity-collapse fix: when *both* sides
-    of a length-mismatch are abbreviations (``("c","j")`` vs ``("c","j","k")``)
-    the new length-mismatch branch must NOT collapse them, even when a third,
-    non-abbreviated bystander is present in the bucket. The longer-side
-    abbreviation flag is the lock that keeps these as distinct identities —
-    ``C.J.K.`` plausibly has a real third-initial middle name that ``C.J.``
-    does not."""
+def test_normalize_odds_keeps_three_variant_bucket_distinct_when_no_count_majority():
+    """Conservative tie-break regression: with three structurally-related
+    variants (``C.J.``, ``C.J.K.``, ``Christopher James``) at equal count, no
+    merge happens. The diversity collapse stops short because ``("c","j","k")``
+    has no length-mismatch collapse path with ``("christopher","james")``: the
+    length-mismatch rule only fires when the SHORTER side is all single-letter
+    (the abbreviation), and here the shorter sequence
+    ``("christopher","james")`` is full-name. Two distinct fingerprints
+    survive, the diversity guard bails for raw=``C.J.``, and the ranking
+    tie-break holds the other two raws steady at equal count."""
     raw = [
         RawOddsData(
             bookmaker_id="365",
@@ -2182,12 +2192,6 @@ def test_normalize_odds_keeps_two_multi_initial_lengths_separate_with_full_name_
     ]
     normalized = normalize_odds(raw)
     names = {offer.player_name for offer in normalized}
-    # All three must remain distinct: ``C.J.K.`` never merges (extension is
-    # always ambiguous), ``Christopher James`` is the only non-abbreviation in
-    # the bucket but ``C.J.`` cannot unilaterally pick between it and
-    # ``C.J.K.``. The new length-mismatch collapse rule must NOT fire here
-    # because the ``C.J.K.`` candidate is itself an abbreviation
-    # (``longer_is_abbrev=True``).
     assert names == {
         "C.J. McCollum",
         "C.J.K. McCollum",

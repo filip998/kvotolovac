@@ -295,46 +295,49 @@ def _letter_seq_collapse_compatible(
 ) -> bool:
     """Equivalence test for the candidate-candidate diversity collapse.
 
-    Two candidate fingerprints may be merged when they describe the same
-    given-name set with no remaining ambiguity:
+    Two candidate fingerprints describe the same player when their given-name
+    parts are *prefix-compatible at every shared position*. The same physical
+    person can appear at many abbreviation depths within a single event —
+    ``Karl-Anthony Towns``, ``K.A. Towns``, ``K. Towns``, even ``K.A.J. Towns``
+    if the bookmaker writes a middle initial — but two players with the same
+    surname playing in the same event whose first-name parts diverge at any
+    position (``C.J.`` vs ``C.K.``) really are different people.
 
-    * Same length. Same-length per-position prefix-compatibility (no fuzzy
-      similarity — fuzzy matching is appropriate when comparing a single raw
-      label to a candidate, but using it across two distinct candidates would
-      silently merge near-twins like ``("jalen",)`` and ``("jaden",)``). For
-      multi-character prefix relations like ``("jar",)`` vs ``("jared",)`` at
-      least one side must be marked as an abbreviation; ``Jar.`` (surface dot)
-      collapses with ``Jared`` because it's an explicit abbreviation, while
-      ``Jo`` and ``John`` are both full names and the prefix relation is
-      coincidental. Single-letter initial expansion is always allowed
-      (``("v",)`` ↔ ``("vj",)``) regardless of the abbreviation flag — a
-      single-letter token is structurally an abbreviation.
+    Rules, applied symmetrically (call order does not matter; the helper
+    reorders by length and treats abbreviation flags as advisory):
 
-    * Different length. Only one direction is safe: a strictly-shorter
-      all-single-letter abbreviation collapses into a longer NON-abbreviated
-      sequence (a full first name) when every shorter-side position is
+    * Same length. Every position must be prefix-compatible. Single-letter
+      initials count as prefixes of any longer token starting with the same
+      letter (``("v",)`` ↔ ``("vj",)``, ``("k","a")`` ↔ ``("karl","anthony")``).
+      For multi-character prefix relations (``("jar",)`` vs ``("jared",)``) at
+      least one side must carry an explicit abbreviation flag — surface dot or
+      single-letter parts — so coincidental prefixes between two full first
+      names (``("jo",)`` vs ``("john",)``) stay distinct.
+
+    * Different length. The shorter side must be all single-letter (a
+      structural abbreviation), and every shorter-side position must be
       prefix-compatible with the corresponding position of the longer side.
-      This handles ``("k",)`` (a ``K. Towns`` surface) collapsing into
-      ``("karl","anthony")`` (``Karl-Anthony Towns`` after hyphen split) — the
-      same player viewed at two abbreviation depths. It deliberately does NOT
-      apply when both sides are abbreviations: ``("c","j")`` vs ``("c","j","k")``
-      describe two plausibly-different players (the third initial may be a real
-      middle name), so the multi-initial extension/contraction case bails on
-      length alone. Without this branch, three-variant buckets like
-      ``K.Towns`` + ``K.A.Towns`` + ``Karl-Anthony Towns`` keep
-      ``K.A.Towns`` un-merged because the diversity guard sees ``("k",)`` and
-      ``("karl","anthony")`` as competing identities.
+      This collapses ``("k",)`` ↔ ``("karl","anthony")`` (single initial into
+      a hyphenated full name), ``("c","j")`` ↔ ``("c","j","k")`` (multi-
+      initial extension/contraction), and ``("k",)`` ↔ ``("k","a","j")``
+      (single initial into longer abbreviation) — all "same player at a
+      different abbreviation depth" within an event. We deliberately do NOT
+      gate this on the longer side's abbreviation flag: per the project's
+      contextual-resolution intent, an event already gives us strong
+      same-player evidence (same teams, same start time, same surname), so
+      prefix-compatible first-name shapes always denote the same identity.
+      Mismatched-position cases (``("c","j")`` vs ``("c","k")``) still fail
+      the same-length check below; fuzzy near-twins (``("jalen",)`` vs
+      ``("jaden",)``) still fail because neither side is an abbreviation.
     """
 
     if not a or not b:
         return False
     if len(a) != len(b):
         if len(a) < len(b):
-            shorter, longer, longer_is_abbrev = a, b, b_is_abbrev
+            shorter, longer = a, b
         else:
-            shorter, longer, longer_is_abbrev = b, a, a_is_abbrev
-        if longer_is_abbrev:
-            return False
+            shorter, longer = b, a
         if not all(len(part) == 1 for part in shorter):
             return False
         for short_part, long_part in zip(shorter, longer):
@@ -759,24 +762,19 @@ def _resolve_contextual_player_name_replacements(
                 ):
                     continue
 
-        # Multi-initial all-single-letter guard: when raw and best are BOTH
-        # pure-initial sequences (every part is a single letter), the only
-        # length difference we accept is the user's blessed case
-        # ``("c",)`` → ``("c","j")`` (single initial expanding to a multi-
-        # initial label). Every other length difference — extending
-        # ``("c","j")`` to ``("c","j","k")`` (adds a NEW initial; plausibly a
-        # different player) or contracting ``("c","j","k")`` down to
-        # ``("c","j")`` (drops information) — is refused so a count majority
-        # alone cannot decide it.
-        if (
-            raw_seq
-            and best_seq
-            and len(raw_seq) != len(best_seq)
-            and all(len(part) == 1 for part in raw_seq)
-            and all(len(part) == 1 for part in best_seq)
-            and not (len(raw_seq) == 1 and len(best_seq) > 1)
-        ):
-            continue
+        # Earlier revisions of this resolver carried a "multi-initial all-
+        # single-letter" guard here that refused every length-mismatched pair
+        # of pure-initial sequences except the user-blessed
+        # ``("c",) → ("c","j")`` direction. That was over-conservative: within
+        # one event (same teams, same start time, same surname) two players
+        # whose abbreviated first names form a prefix chain across length
+        # almost never co-occur, so the chance of merging genuinely different
+        # players via this path is effectively zero. Mismatched-position
+        # cases (``("c","j")`` vs ``("c","k")``) are already filtered out by
+        # the same-length branch of `_letter_seq_collapse_compatible`, and
+        # fuzzy near-twins (``("jalen",)`` vs ``("jaden",)``) still bail
+        # because neither side is an abbreviation. The structural rule
+        # therefore subsumes what the directional gate used to enforce.
 
         if best_completeness < raw_completeness:
             continue
