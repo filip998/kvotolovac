@@ -491,6 +491,52 @@ def _pair_has_compatible_women_context(
     return has_women_pair
 
 
+def _women_marker_forms(name: str) -> frozenset[str]:
+    forms: set[str] = set()
+    if re.search(r"\(\s*[žz]\s*\)", name, flags=re.IGNORECASE):
+        forms.add("z:parenthesized")
+    if re.search(r"^\s*[žz]\s*/", name, flags=re.IGNORECASE):
+        forms.add("z:slash-prefix")
+    if re.search(r"(^|\s)ž(?=$|\s)", name, flags=re.IGNORECASE):
+        forms.add("z:standalone")
+
+    tokens = normalize_identity_text(name).split()
+    youth_ages = {"17", "18", "19", "20", "21", "23"}
+    active_qualifier_tokens = _TEAM_QUALIFIER_TOKENS | {"wom"}
+
+    def suffix_has_qualifier(start_index: int) -> bool:
+        index = start_index
+        while index < len(tokens):
+            token = tokens[index]
+            next_token = tokens[index + 1] if index + 1 < len(tokens) else None
+            if token == "team":
+                index += 1
+                continue
+            if token == "u" and next_token in youth_ages:
+                return True
+            if token in active_qualifier_tokens:
+                return True
+            index += 1
+        return False
+
+    for index, token in enumerate(tokens):
+        if token not in _WOMEN_QUALIFIER_ALIASES:
+            continue
+        next_token = tokens[index + 1] if index + 1 < len(tokens) else None
+        is_explicit_prefix = token in {"women", "wom"} and index == 0 and len(tokens) > 1
+        is_suffix = index > 0 and (
+            index == len(tokens) - 1
+            or next_token in {"team", "women"}
+            or suffix_has_qualifier(index + 1)
+        )
+        if is_explicit_prefix:
+            forms.add(f"{token}:prefix")
+        if is_suffix:
+            forms.add(f"{token}:suffix")
+
+    return frozenset(forms)
+
+
 def _pair_has_women_marker_variation(pair: _OutcomeEventPair) -> bool:
     for left_name, right_name in _oriented_pair_team_names(pair):
         left_qualifiers = _team_qualifiers(left_name, sport=pair.left.sport)
@@ -498,7 +544,7 @@ def _pair_has_women_marker_variation(pair: _OutcomeEventPair) -> bool:
         if (
             left_qualifiers == right_qualifiers
             and "women" in left_qualifiers
-            and normalize_identity_text(left_name) != normalize_identity_text(right_name)
+            and _women_marker_forms(left_name) != _women_marker_forms(right_name)
         ):
             return True
     return False

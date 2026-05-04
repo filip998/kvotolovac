@@ -321,6 +321,52 @@ def test_football_event_match_collapses_marker_variant_with_multiple_same_style_
     assert _auto_review_alias_count() == 0
 
 
+def test_football_event_match_collapses_prefix_suffix_women_marker_variants(team_registry_file):
+    create_canonical_team(display_name="Women Sao Jose Campos", sport="football")
+    create_canonical_team(display_name="Sao Jose Women", sport="football")
+    create_canonical_team(display_name="Santo Andre", sport="football")
+    raw = [
+        _offer("superbet", "Women Sao Jose Campos", "Santo Andre", outcome_code="over"),
+        _offer("pinnbet", "Sao Jose Women", "Santo Andre", outcome_code="under"),
+        _offer("maxbet", "Sao Jose Women", "Santo Andre", outcome_code="under"),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 3
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert unresolved == []
+    assert review_cases == []
+    assert _auto_review_alias_count() == 0
+
+
+def test_football_event_match_does_not_bypass_ranking_for_same_women_marker_style(team_registry_file):
+    create_canonical_team(display_name="Sao Jose (Ž)", sport="football")
+    create_canonical_team(display_name="Sao Jose Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Sao Jose Dos Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Santo Andre", sport="football")
+    raw = [
+        _offer("superbet", "Sao Jose (Ž)", "Santo Andre", outcome_code="over"),
+        _offer("pinnbet", "Sao Jose Campos (Ž)", "Santo Andre", outcome_code="under"),
+        _offer(
+            "maxbet",
+            "Sao Jose Dos Campos (Ž)",
+            "Santo Andre",
+            outcome_code="under",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+    match_ids = {offer.bookmaker_id: offer.match_id for offer in normalized}
+
+    assert len(normalized) == 3
+    assert match_ids["pinnbet"] == match_ids["maxbet"]
+    assert match_ids["superbet"] != match_ids["pinnbet"]
+    assert unresolved == []
+    assert review_cases == []
+    assert _auto_review_alias_count() == 0
+
+
 def test_reversed_football_event_collapses_existing_women_marker_variant_canonicals(team_registry_file):
     create_canonical_team(display_name="Sao Jose Campos (Ž)", sport="football")
     create_canonical_team(display_name="Santo Andre (Ž)", sport="football")
