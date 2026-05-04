@@ -488,6 +488,37 @@ def _oriented_pair_team_ids(
     )
 
 
+def _oriented_pair_team_ids_from_resolutions(
+    pair: _OutcomeEventPair,
+    resolutions: dict[tuple[str, str, str, str, str], _OutcomeEventResolution],
+) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    left_resolution = resolutions.get(_event_key(pair.left))
+    right_resolution = resolutions.get(_event_key(pair.right))
+    if left_resolution is None or right_resolution is None:
+        return None
+    return _oriented_pair_team_ids(pair, left_resolution, right_resolution)
+
+
+def _comparison_team_texts_are_compatible(
+    left_name: str,
+    right_name: str,
+    *,
+    sport: str | None = None,
+    team_ids: tuple[int, int] | None = None,
+) -> bool:
+    if team_ids is not None and team_ids[0] == team_ids[1]:
+        return True
+    left_text = _comparison_team_text(left_name, sport=sport)
+    right_text = _comparison_team_text(right_name, sport=sport)
+    if left_text == right_text:
+        return True
+    left_tokens = _significant_tokens(left_name, sport=sport)
+    right_tokens = _significant_tokens(right_name, sport=sport)
+    if not left_tokens or not right_tokens:
+        return False
+    return left_tokens <= right_tokens or right_tokens <= left_tokens
+
+
 def _pair_has_compatible_women_context(
     pair: _OutcomeEventPair,
     *,
@@ -501,17 +532,13 @@ def _pair_has_compatible_women_context(
             return False
         if "women" in left_qualifiers:
             has_women_pair = True
-            continue
-        left_text = _comparison_team_text(left_name, sport=pair.left.sport)
-        right_text = _comparison_team_text(right_name, sport=pair.left.sport)
-        if left_text == right_text:
-            continue
-        if (
-            oriented_team_ids is not None
-            and oriented_team_ids[index][0] == oriented_team_ids[index][1]
+        if not _comparison_team_texts_are_compatible(
+            left_name,
+            right_name,
+            sport=pair.left.sport,
+            team_ids=oriented_team_ids[index] if oriented_team_ids is not None else None,
         ):
-            continue
-        return False
+            return False
     return has_women_pair
 
 
@@ -574,7 +601,11 @@ def _pair_has_women_marker_variation(pair: _OutcomeEventPair) -> bool:
     return False
 
 
-def _rank_event_pairs(events: list[_OutcomeEvent]) -> list[_OutcomeEventPair]:
+def _rank_event_pairs(
+    events: list[_OutcomeEvent],
+    *,
+    resolutions: dict[tuple[str, str, str, str, str], _OutcomeEventResolution] | None = None,
+) -> list[_OutcomeEventPair]:
     events_by_slot: dict[tuple[str, str], list[_OutcomeEvent]] = defaultdict(list)
     for event in events:
         events_by_slot[(event.sport, event.start_time)].append(event)
@@ -611,8 +642,16 @@ def _rank_event_pairs(events: list[_OutcomeEvent]) -> list[_OutcomeEventPair]:
                 accepted.append(best)
 
         for pair in all_pairs:
+            oriented_team_ids = (
+                _oriented_pair_team_ids_from_resolutions(pair, resolutions)
+                if resolutions is not None
+                else None
+            )
             if (
-                _pair_has_compatible_women_context(pair)
+                _pair_has_compatible_women_context(
+                    pair,
+                    oriented_team_ids=oriented_team_ids,
+                )
                 and _pair_has_women_marker_variation(pair)
                 and pair not in accepted
             ):
@@ -632,7 +671,7 @@ def _build_football_event_resolutions(
             continue
         resolutions[_event_key(event)] = _OutcomeEventResolution(slot=slot)
 
-    for pair in _rank_event_pairs(events):
+    for pair in _rank_event_pairs(events, resolutions=resolutions):
         left_key = _event_key(pair.left)
         right_key = _event_key(pair.right)
         left_resolution = resolutions.get(left_key)
