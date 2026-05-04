@@ -2046,6 +2046,205 @@ def test_normalize_odds_resolves_multi_initial_against_hyphenated_name():
     assert names == {"Karl-Anthony Towns"}
 
 
+def test_normalize_odds_resolves_three_variant_partial_initial_alongside_full_name():
+    """Production regression: in the actual Knicks vs 76ers scrape the bucket
+    contained THREE Towns surfaces — ``K.Towns`` (mozzart, single initial),
+    ``K.A.Towns`` (balkanbet/volcanobet, multi-initial), and
+    ``Karl-Anthony Towns`` (everyone else). Before the diversity-collapse fix
+    the multi-initial form stayed split because ``("k",)`` and
+    ``("karl","anthony")`` looked like two distinct identities to the
+    candidate-diversity guard. All three surfaces must collapse into the fuller
+    variant."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="K.Towns",
+            threshold=22.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="K.A.Towns",
+            threshold=22.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="volcanobet",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="K.A.Towns",
+            threshold=22.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="Karl-Anthony Towns",
+            threshold=22.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="superbet",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="Karl-Anthony Towns",
+            threshold=22.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="Karl-Anthony Towns",
+            threshold=22.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {"Karl-Anthony Towns"}
+
+
+def test_normalize_odds_keeps_two_multi_initial_lengths_separate_with_full_name_bystander():
+    """Symmetric regression for the diversity-collapse fix: when *both* sides
+    of a length-mismatch are abbreviations (``("c","j")`` vs ``("c","j","k")``)
+    the new length-mismatch branch must NOT collapse them, even when a third,
+    non-abbreviated bystander is present in the bucket. The longer-side
+    abbreviation flag is the lock that keeps these as distinct identities —
+    ``C.J.K.`` plausibly has a real third-initial middle name that ``C.J.``
+    does not."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="C.J. McCollum",
+            threshold=18.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="C.J.K. McCollum",
+            threshold=18.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="Christopher James McCollum",
+            threshold=18.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    # All three must remain distinct: ``C.J.K.`` never merges (extension is
+    # always ambiguous), ``Christopher James`` is the only non-abbreviation in
+    # the bucket but ``C.J.`` cannot unilaterally pick between it and
+    # ``C.J.K.``. The new length-mismatch collapse rule must NOT fire here
+    # because the ``C.J.K.`` candidate is itself an abbreviation
+    # (``longer_is_abbrev=True``).
+    assert names == {
+        "C.J. McCollum",
+        "C.J.K. McCollum",
+        "Christopher James McCollum",
+    }
+
+
+def test_normalize_odds_keeps_full_first_name_versus_different_full_name_distinct():
+    """Regression for the diversity-collapse fix: when the bucket contains a
+    short abbreviation alongside *two* different full-name candidates whose
+    first-name tokens are themselves distinct (e.g., ``Joey Adam`` vs
+    ``Jerry Allen``), the resolver must not pick a winner. The two full names
+    don't collapse into each other (per-position prefix fails) and the
+    abbreviation can't unilaterally choose between them."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="J. Doe",
+            threshold=12.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="Joey Adam Doe",
+            threshold=12.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="superbet",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="Jerry Allen Doe",
+            threshold=12.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {"J. Doe", "Joey Adam Doe", "Jerry Allen Doe"}
+
+
 def test_normalize_odds_does_not_merge_different_players_with_swapped_tokens():
     raw = [
         RawOddsData(

@@ -298,25 +298,52 @@ def _letter_seq_collapse_compatible(
     Two candidate fingerprints may be merged when they describe the same
     given-name set with no remaining ambiguity:
 
-    * Same length. Different lengths mean one side carries a middle initial
-      the other doesn't account for (``("c","j")`` vs ``("c","j","k")`` —
-      distinct identities; the ambiguous initial must bail).
-    * Every position is exact-prefix-compatible (no fuzzy similarity — fuzzy
-      matching is appropriate when comparing a single raw label to a candidate,
-      but using it across two distinct candidates would silently merge
-      near-twins like ``("jalen",)`` and ``("jaden",)``).
-    * For multi-character prefix relations like ``("jar",)`` vs ``("jared",)``,
-      at least one side must be marked as an abbreviation. ``Jar.`` (surface
-      dot) collapses with ``Jared`` because it's an explicit abbreviation;
+    * Same length. Same-length per-position prefix-compatibility (no fuzzy
+      similarity — fuzzy matching is appropriate when comparing a single raw
+      label to a candidate, but using it across two distinct candidates would
+      silently merge near-twins like ``("jalen",)`` and ``("jaden",)``). For
+      multi-character prefix relations like ``("jar",)`` vs ``("jared",)`` at
+      least one side must be marked as an abbreviation; ``Jar.`` (surface dot)
+      collapses with ``Jared`` because it's an explicit abbreviation, while
       ``Jo`` and ``John`` are both full names and the prefix relation is
-      coincidental, so they stay distinct.
-    * Single-letter initial expansion is always allowed (``("v",)`` ↔
-      ``("vj",)``) regardless of the abbreviation flag — a single-letter token
-      is structurally an abbreviation.
+      coincidental. Single-letter initial expansion is always allowed
+      (``("v",)`` ↔ ``("vj",)``) regardless of the abbreviation flag — a
+      single-letter token is structurally an abbreviation.
+
+    * Different length. Only one direction is safe: a strictly-shorter
+      all-single-letter abbreviation collapses into a longer NON-abbreviated
+      sequence (a full first name) when every shorter-side position is
+      prefix-compatible with the corresponding position of the longer side.
+      This handles ``("k",)`` (a ``K. Towns`` surface) collapsing into
+      ``("karl","anthony")`` (``Karl-Anthony Towns`` after hyphen split) — the
+      same player viewed at two abbreviation depths. It deliberately does NOT
+      apply when both sides are abbreviations: ``("c","j")`` vs ``("c","j","k")``
+      describe two plausibly-different players (the third initial may be a real
+      middle name), so the multi-initial extension/contraction case bails on
+      length alone. Without this branch, three-variant buckets like
+      ``K.Towns`` + ``K.A.Towns`` + ``Karl-Anthony Towns`` keep
+      ``K.A.Towns`` un-merged because the diversity guard sees ``("k",)`` and
+      ``("karl","anthony")`` as competing identities.
     """
 
-    if not a or not b or len(a) != len(b):
+    if not a or not b:
         return False
+    if len(a) != len(b):
+        if len(a) < len(b):
+            shorter, longer, longer_is_abbrev = a, b, b_is_abbrev
+        else:
+            shorter, longer, longer_is_abbrev = b, a, a_is_abbrev
+        if longer_is_abbrev:
+            return False
+        if not all(len(part) == 1 for part in shorter):
+            return False
+        for short_part, long_part in zip(shorter, longer):
+            if not short_part or not long_part:
+                return False
+            if short_part == long_part or long_part.startswith(short_part):
+                continue
+            return False
+        return True
     for x, y in zip(a, b):
         if not x or not y:
             return False
