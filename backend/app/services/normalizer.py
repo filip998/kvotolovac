@@ -28,6 +28,7 @@ from .text_normalizer import (
     normalize_identity_text,
     tokenize_identity_text,
 )
+from .text_normalizer import _strip_diacritics
 
 logger = logging.getLogger(__name__)
 
@@ -234,17 +235,131 @@ def _player_name_completeness(first_tokens: list[str]) -> int:
     return sum(len(token) for token in first_tokens if len(token) > 1)
 
 
-def _has_multiple_initials(first_tokens: list[str]) -> bool:
-    return len(first_tokens) > 1 and all(len(token) == 1 for token in first_tokens)
+def _first_name_letter_sequence(first_tokens: list[str]) -> list[str]:
+    """Expand first-name tokens into the comparable given-name parts.
+
+    Hyphenated tokens like ``["karl-anthony"]`` split into ``["karl", "anthony"]`` so
+    they line up positionally with multi-initial inputs like ``["k", "a"]``. Multi-token
+    inputs (already split by spaces during tokenization) pass through as-is.
+    """
+
+    sequence: list[str] = []
+    for token in first_tokens:
+        for part in token.split("-"):
+            stripped = part.strip()
+            if stripped:
+                sequence.append(stripped)
+    return sequence
 
 
-def _collapse_first_name_variants(first_names: set[str]) -> set[str]:
-    collapsed: list[str] = []
-    for name in sorted(first_names, key=lambda value: (len(value), value), reverse=True):
-        if any(existing.startswith(name) or name.startswith(existing) for existing in collapsed):
+def _given_name_part_compatible(a: str, b: str) -> bool:
+    """One given-name part must be a prefix of the other (or fuzzy-match for typos)."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if a.startswith(b) or b.startswith(a):
+        return True
+    # Typo tolerance only for tokens long enough that fuzzy matching is meaningful;
+    # short tokens (initials) must match exactly via the prefix check above.
+    if min(len(a), len(b)) >= 3 and a[0] == b[0]:
+        return fuzz.ratio(a, b) >= 80
+    return False
+
+
+def _letter_seq_compatible(a: list[str], b: list[str]) -> bool:
+    """True iff two letter-sequences plausibly describe the same given-name set.
+
+    Same length: every position must be prefix-compatible. Different length: the
+    shorter side must be all single-letter initials so we can treat it as an
+    abbreviation of the longer name. This is the post–letter-sequence half of
+    `_check_first_name_match`, factored out so it can also be used to decide
+    whether two candidate fingerprints describe the same player.
+    """
+
+    if not a or not b:
+        return False
+    if len(a) == len(b):
+        return all(_given_name_part_compatible(x, y) for x, y in zip(a, b))
+    shorter, longer = (a, b) if len(a) < len(b) else (b, a)
+    if not all(len(part) == 1 for part in shorter):
+        return False
+    return all(_given_name_part_compatible(s, l) for s, l in zip(shorter, longer))
+
+
+def _letter_seq_collapse_compatible(
+    a: tuple[str, ...],
+    a_is_abbrev: bool,
+    b: tuple[str, ...],
+    b_is_abbrev: bool,
+) -> bool:
+    """Equivalence test for the candidate-candidate diversity collapse.
+
+    Two candidate fingerprints may be merged when they describe the same
+    given-name set with no remaining ambiguity:
+
+    * Same length. Different lengths mean one side carries a middle initial
+      the other doesn't account for (``("c","j")`` vs ``("c","j","k")`` —
+      distinct identities; the ambiguous initial must bail).
+    * Every position is exact-prefix-compatible (no fuzzy similarity — fuzzy
+      matching is appropriate when comparing a single raw label to a candidate,
+      but using it across two distinct candidates would silently merge
+      near-twins like ``("jalen",)`` and ``("jaden",)``).
+    * For multi-character prefix relations like ``("jar",)`` vs ``("jared",)``,
+      at least one side must be marked as an abbreviation. ``Jar.`` (surface
+      dot) collapses with ``Jared`` because it's an explicit abbreviation;
+      ``Jo`` and ``John`` are both full names and the prefix relation is
+      coincidental, so they stay distinct.
+    * Single-letter initial expansion is always allowed (``("v",)`` ↔
+      ``("vj",)``) regardless of the abbreviation flag — a single-letter token
+      is structurally an abbreviation.
+    """
+
+    if not a or not b or len(a) != len(b):
+        return False
+    for x, y in zip(a, b):
+        if not x or not y:
+            return False
+        if x == y:
             continue
-        collapsed.append(name)
-    return set(collapsed)
+        if len(x) == 1 and y.startswith(x):
+            continue
+        if len(y) == 1 and x.startswith(y):
+            continue
+        if a_is_abbrev and len(x) < len(y) and y.startswith(x):
+            continue
+        if b_is_abbrev and len(y) < len(x) and x.startswith(y):
+            continue
+        return False
+    return True
+
+
+def _collapse_first_name_sequences(
+    sequences: set[tuple[tuple[str, ...], bool]],
+) -> set[tuple[str, ...]]:
+    """Collapse equivalent ``(letter_sequence, is_abbreviation)`` pairs.
+
+    Pairs that pass `_letter_seq_collapse_compatible` are merged, keeping the
+    more informative member. The abbreviation flag (carried per fingerprint,
+    OR'd across all candidates that share a sequence) lets multi-character
+    prefix relations collapse only when at least one side is explicitly an
+    abbreviation (surface dot or single-letter parts).
+    """
+
+    items = sorted(
+        sequences,
+        key=lambda item: (sum(len(part) for part in item[0]), len(item[0]), 0 if item[1] else 1),
+        reverse=True,
+    )
+    kept: list[tuple[tuple[str, ...], bool]] = []
+    for seq, is_abbrev in items:
+        if any(
+            _letter_seq_collapse_compatible(seq, is_abbrev, existing_seq, existing_abbrev)
+            for existing_seq, existing_abbrev in kept
+        ):
+            continue
+        kept.append((seq, is_abbrev))
+    return {seq for seq, _ in kept}
 
 
 def _name_surface_richness(name: str) -> tuple[int, int, int]:
@@ -268,6 +383,79 @@ def _is_abbreviated_surface_token(token: str) -> bool:
     return bool(compact) and ("." in token or (len(compact) <= 2 and compact.isupper()))
 
 
+_SURNAME_PARTICLES: frozenset[str] = frozenset(
+    {
+        "st",
+        "mc",
+        "mac",
+        "de",
+        "del",
+        "della",
+        "van",
+        "von",
+        "der",
+        "den",
+        "la",
+        "le",
+        "du",
+        "da",
+        "di",
+        "do",
+        "el",
+        "bin",
+        "ben",
+        "al",
+        "abu",
+        "san",
+        "santa",
+    }
+)
+
+
+def _candidate_first_name_has_abbreviation_dot(name: str) -> bool:
+    """True iff the first-name portion of ``name``'s surface contains ``.``.
+
+    The first-name portion is the surface minus its trailing surname token.
+    Surnames may be glued onto the first-name portion without whitespace
+    (``Ja.Butler``, ``K.A.Towns``), so we locate the parsed surname inside the
+    surface and check the prefix that precedes it.
+
+    Surface and surname are both diacritic-folded before the search, so names
+    like ``Stef. Miljenović`` (parsed surname ``miljenovic``) still match.
+
+    Surname particles like ``St.``, ``Mc.``, ``Van.`` are NOT first-name
+    abbreviations — those forms (``St.Brown``) get parsed as
+    ``first=st last=brown`` by the simple parser, but the dot is part of the
+    composite surname, not a given-name marker. We guard against that here.
+
+    Examples:
+      * ``Jar.Butler`` → first-name portion ``Jar.`` → True.
+      * ``K.A.Towns`` → first-name portion ``K.A.`` → True.
+      * ``P.J. Tucker`` → first-name portion ``P.J. `` → True.
+      * ``Stef. Miljenović`` → first-name portion ``Stef. `` → True.
+      * ``John Williams`` → first-name portion ``John `` → False.
+      * ``St.Brown`` → first-name portion ``St.`` but ``st`` is a surname
+        particle → False.
+    """
+
+    parts = _player_name_parts(name)
+    if not parts:
+        return False
+    first_tokens, last_name = parts
+    if not last_name:
+        return False
+    if first_tokens and len(first_tokens) == 1 and first_tokens[0] in _SURNAME_PARTICLES:
+        return False
+    surface_folded = _strip_diacritics(name).lower()
+    last_folded = _strip_diacritics(last_name).lower()
+    if not surface_folded or not last_folded:
+        return False
+    idx = surface_folded.rfind(last_folded)
+    if idx <= 0:
+        return False
+    return "." in surface_folded[:idx]
+
+
 def _check_first_name_match(
     raw_first_tokens: list[str],
     candidate_first_tokens: list[str],
@@ -278,39 +466,60 @@ def _check_first_name_match(
         not raw_first_tokens
         or not candidate_first_tokens
         or raw_last_name != candidate_last_name
-        or _has_multiple_initials(raw_first_tokens)
-        or (len(raw_first_tokens) == 1 and len(raw_first_tokens[0]) == 1 and _has_multiple_initials(candidate_first_tokens))
     ):
         return False
 
-    raw_first = raw_first_tokens[0]
-    candidate_first = candidate_first_tokens[0]
-    if raw_first == candidate_first:
-        return True
-    if len(raw_first) == 1:
-        return candidate_first.startswith(raw_first)
-    if candidate_first.startswith(raw_first) or raw_first.startswith(candidate_first):
-        return True
-    return raw_first[0] == candidate_first[0] and fuzz.ratio(raw_first, candidate_first) >= 80
+    return _letter_seq_compatible(
+        _first_name_letter_sequence(raw_first_tokens),
+        _first_name_letter_sequence(candidate_first_tokens),
+    )
 
 
-def _is_contextual_player_match(raw_name: str, candidate_name: str) -> bool:
+@dataclass(frozen=True)
+class _ContextualMatch:
+    """Result of `_try_contextual_player_match`.
+
+    ``raw_swapped`` records whether the raw name was reversed for the match (e.g.
+    surface ended in an abbreviated token like "Edgecombe VJ"). The
+    ``candidate_effective_first`` is the candidate's first-name token *as observed
+    by the raw* — for candidate-side swaps this is the candidate's parsed last
+    name (the abbreviation that became the first name once swapped). The
+    ``candidate_effective_first_seq`` is the full letter-sequence form of that
+    same effective first name (e.g. ``("karl", "anthony")`` for
+    "Karl-Anthony Towns"), used for ambiguity detection across multiple
+    candidates.
+    """
+
+    raw_swapped: bool
+    candidate_swapped: bool
+    candidate_effective_first: str
+    candidate_effective_first_seq: tuple[str, ...]
+
+
+def _try_contextual_player_match(raw_name: str, candidate_name: str) -> _ContextualMatch | None:
     raw_parts = _player_name_parts(raw_name)
     candidate_parts = _player_name_parts(candidate_name)
     if not raw_parts or not candidate_parts:
-        return False
+        return None
 
     raw_first_tokens, raw_last_name = raw_parts
     candidate_first_tokens, candidate_last_name = candidate_parts
     raw_surface_tokens = _surface_person_tokens(raw_name)
     candidate_surface_tokens = _surface_person_tokens(candidate_name)
 
-    # Normal order match
-    if _check_first_name_match(raw_first_tokens, candidate_first_tokens, raw_last_name, candidate_last_name):
-        return True
+    candidate_normal_seq = tuple(_first_name_letter_sequence(candidate_first_tokens))
+    candidate_swapped_seq = tuple(_first_name_letter_sequence([candidate_last_name]))
 
-    # Reversed order is only safe when the swapped token looks like an
-    # abbreviated first name (e.g. "VJ", "J", "AJ"), not a full given name.
+    if _check_first_name_match(raw_first_tokens, candidate_first_tokens, raw_last_name, candidate_last_name):
+        return _ContextualMatch(
+            raw_swapped=False,
+            candidate_swapped=False,
+            candidate_effective_first=candidate_first_tokens[0],
+            candidate_effective_first_seq=candidate_normal_seq,
+        )
+
+    # Reversed raw is only safe when the swapped token looks like an abbreviated first
+    # name (e.g. "VJ", "J", "AJ"), not a full given name.
     if (
         len(raw_first_tokens) == 1
         and raw_surface_tokens
@@ -319,7 +528,12 @@ def _is_contextual_player_match(raw_name: str, candidate_name: str) -> bool:
         reversed_first = [raw_last_name]
         reversed_last = raw_first_tokens[0]
         if _check_first_name_match(reversed_first, candidate_first_tokens, reversed_last, candidate_last_name):
-            return True
+            return _ContextualMatch(
+                raw_swapped=True,
+                candidate_swapped=False,
+                candidate_effective_first=candidate_first_tokens[0],
+                candidate_effective_first_seq=candidate_normal_seq,
+            )
 
     if (
         len(candidate_first_tokens) == 1
@@ -329,9 +543,18 @@ def _is_contextual_player_match(raw_name: str, candidate_name: str) -> bool:
         reversed_first = [candidate_last_name]
         reversed_last = candidate_first_tokens[0]
         if _check_first_name_match(raw_first_tokens, reversed_first, raw_last_name, reversed_last):
-            return True
+            return _ContextualMatch(
+                raw_swapped=False,
+                candidate_swapped=True,
+                candidate_effective_first=candidate_last_name,
+                candidate_effective_first_seq=candidate_swapped_seq,
+            )
 
-    return False
+    return None
+
+
+def _is_contextual_player_match(raw_name: str, candidate_name: str) -> bool:
+    return _try_contextual_player_match(raw_name, candidate_name) is not None
 
 
 def _resolve_contextual_player_name_replacements(
@@ -374,61 +597,177 @@ def _resolve_contextual_player_name_replacements(
         if not raw_parts:
             continue
 
-        raw_first_tokens, _ = raw_parts
-        raw_completeness = _player_name_completeness(raw_first_tokens)
-        candidates = [
-            candidate
-            for candidate in observed_names
-            if candidate != raw_name and _is_contextual_player_match(raw_name, candidate)
-        ]
-        if not candidates:
-            continue
-        candidate_first_names = _collapse_first_name_variants(
-            {
-                _player_name_parts(candidate)[0][0]
-                for candidate in candidates
-                if _player_name_parts(candidate)
-            }
-        )
-        if len(candidate_first_names) > 1:
+        raw_first_tokens, raw_last_name = raw_parts
+        candidate_matches: list[tuple[str, _ContextualMatch]] = []
+        for candidate in observed_names:
+            if candidate == raw_name:
+                continue
+            match = _try_contextual_player_match(raw_name, candidate)
+            if match is not None:
+                candidate_matches.append((candidate, match))
+        if not candidate_matches:
             continue
 
-        ranked = sorted(
-            candidates,
-            key=lambda candidate: (
+        # Each candidate's *effective* letter-sequence (the given-name positions it
+        # contributes from raw's perspective, after any swap) is the diversity key.
+        # Reverse-swapped candidates are described by their swap-applied sequence
+        # (e.g. "Edgecombe VJ" cand-swap → ("vj",)), so swap-pair variants of the
+        # same player collapse together while genuinely-different multi-initial
+        # candidates with the same first initial (``("c","j")`` vs ``("c","k")``)
+        # remain distinct and trigger the bail below.
+        #
+        # Each fingerprint also carries an ``is_abbreviation`` flag — True when
+        # any candidate contributing that sequence is structurally an
+        # abbreviation (single-letter parts, or a `.` in the first-name portion
+        # of its surface, or it was matched via candidate-side swap of an
+        # abbreviated trailing token). The flag lets the collapse merge
+        # ``Jar.``/``Jared`` (one side abbreviated → same player) while keeping
+        # ``Jo``/``John`` distinct (neither abbreviated → coincidental prefix).
+        seq_abbrev: dict[tuple[str, ...], bool] = {}
+        for candidate, match in candidate_matches:
+            seq = match.candidate_effective_first_seq
+            if not seq:
+                continue
+            is_abbrev = (
+                match.candidate_swapped
+                or all(len(part) == 1 for part in seq)
+                or _candidate_first_name_has_abbreviation_dot(candidate)
+            )
+            seq_abbrev[seq] = seq_abbrev.get(seq, False) or is_abbrev
+        candidate_first_seqs = _collapse_first_name_sequences(
+            {(seq, abbrev) for seq, abbrev in seq_abbrev.items()}
+        )
+        if len(candidate_first_seqs) > 1:
+            continue
+
+        def _candidate_first_for_completeness(candidate: str, match: _ContextualMatch) -> list[str]:
+            if match.candidate_swapped:
+                return [match.candidate_effective_first]
+            cand_parts = _player_name_parts(candidate)
+            return cand_parts[0] if cand_parts else []
+
+        def _rank_key(item: tuple[str, _ContextualMatch]) -> tuple[int, int, int, str]:
+            candidate, match = item
+            return (
                 name_counts[candidate],
-                _player_name_completeness(_player_name_parts(candidate)[0]),
+                _player_name_completeness(_candidate_first_for_completeness(candidate, match)),
                 len(candidate.strip()),
                 candidate,
-            ),
-            reverse=True,
-        )
-        best_candidate = ranked[0]
+            )
+
+        ranked = sorted(candidate_matches, key=_rank_key, reverse=True)
+        best_candidate, best_match = ranked[0]
         best_parts = _player_name_parts(best_candidate)
         if not best_parts:
             continue
-        best_completeness = _player_name_completeness(best_parts[0])
+
+        best_completeness = _player_name_completeness(
+            _candidate_first_for_completeness(best_candidate, best_match)
+        )
+        if best_match.raw_swapped:
+            # Raw was reversed to align with candidate; its effective given-name token
+            # is its parsed last name (the abbreviated initials that became "first"
+            # after the swap).
+            raw_first_for_completeness = [raw_last_name]
+        else:
+            raw_first_for_completeness = raw_first_tokens
+        raw_completeness = _player_name_completeness(raw_first_for_completeness)
+
+        # Directional gate: only allow raw → best replacement when the call site
+        # has a clear signal that raw is *meant* to be expanded into best, not
+        # just coincidentally prefix-compatible. Three accepted signals:
+        #
+        # 1. ``best_match.raw_swapped`` — the raw label is in reversed order
+        #    (e.g. "Edgecombe VJ"); replacement normalises orientation, the name
+        #    content is unchanged.
+        # 2. raw's effective first sequence is all single-letter initials
+        #    ("C.", "K.A.", "VJ-as-initials") — a true abbreviation that wants
+        #    to be expanded.
+        # 3. raw's surface contains a "." in the first-name portion ("Aar.",
+        #    "Jar.") — an explicit abbreviation marker even when the abbreviated
+        #    token is more than one letter long.
+        #
+        # Without one of those signals we still allow the replacement when raw
+        # and best are NOT in a prefix relation but raw is decisively
+        # out-counted by best — that's the typo-correction case (e.g. "Arron"
+        # vs majority-spelled "Aaron"). A prefix relation between two
+        # multi-character names ("Jo" / "John", "Steve" / "Steven") is treated
+        # as ambiguous and left alone.
+        # Compute letter-sequence representations once so we can use them
+        # consistently from here down (the directional gate, the multi-initial
+        # guard below, and any future checks). ``raw_seq`` and ``best_seq``
+        # are split-on-hyphen letter parts, so comparing
+        # ``raw_seq[0]`` vs ``best_seq[0]`` is symmetric for hyphenated first
+        # names like "Karl-Anthony" (both yield ``"karl"``) — whereas the raw
+        # token would compare ``"karl-anthony"`` vs ``"karl"`` and bail
+        # spuriously.
+        raw_seq = tuple(_first_name_letter_sequence(raw_first_for_completeness))
+        best_seq = best_match.candidate_effective_first_seq
+
+        if not best_match.raw_swapped:
+            raw_is_abbreviated = (
+                all(len(part) == 1 for part in raw_first_for_completeness)
+                or _candidate_first_name_has_abbreviation_dot(raw_name)
+            )
+            if not raw_is_abbreviated:
+                if name_counts[best_candidate] <= name_counts[raw_name]:
+                    continue
+                first_raw = raw_seq[0] if raw_seq else ""
+                first_best = best_seq[0] if best_seq else ""
+                # Identical first-name tokens are NOT an ambiguous prefix
+                # relation — they're the strongest possible signal that the
+                # two surface forms refer to the same person (the rest of the
+                # difference lives in the surname or in a Jr/Sr/II/III suffix
+                # that ``_player_name_parts`` already strips). Only a TRUE
+                # prefix relation between DIFFERENT tokens (e.g. "Jo"/"John",
+                # "Steve"/"Steven") should bail out here.
+                if (
+                    first_raw
+                    and first_best
+                    and first_raw != first_best
+                    and (
+                        first_raw.startswith(first_best)
+                        or first_best.startswith(first_raw)
+                    )
+                ):
+                    continue
+
+        # Multi-initial all-single-letter guard: when raw and best are BOTH
+        # pure-initial sequences (every part is a single letter), the only
+        # length difference we accept is the user's blessed case
+        # ``("c",)`` → ``("c","j")`` (single initial expanding to a multi-
+        # initial label). Every other length difference — extending
+        # ``("c","j")`` to ``("c","j","k")`` (adds a NEW initial; plausibly a
+        # different player) or contracting ``("c","j","k")`` down to
+        # ``("c","j")`` (drops information) — is refused so a count majority
+        # alone cannot decide it.
+        if (
+            raw_seq
+            and best_seq
+            and len(raw_seq) != len(best_seq)
+            and all(len(part) == 1 for part in raw_seq)
+            and all(len(part) == 1 for part in best_seq)
+            and not (len(raw_seq) == 1 and len(best_seq) > 1)
+        ):
+            continue
+
         if best_completeness < raw_completeness:
             continue
         if (
             best_completeness == raw_completeness
             and name_counts[best_candidate] <= name_counts[raw_name]
         ):
-            continue
-
-        if len(ranked) > 1:
-            runner_up = ranked[1]
-            runner_up_parts = _player_name_parts(runner_up)
-            if runner_up_parts and (
-                name_counts[runner_up],
-                _player_name_completeness(runner_up_parts[0]),
-                len(runner_up.strip()),
-            ) == (
-                name_counts[best_candidate],
-                best_completeness,
-                len(best_candidate.strip()),
-            ):
+            # Tie-break: when raw was swapped to match best, prefer the un-swapped
+            # candidate even at equal counts so reverse-name pairs converge to the
+            # natural orientation. Otherwise stay conservative and don't replace.
+            if not best_match.raw_swapped:
                 continue
+
+        # The diversity guard above already collapsed all candidates whose effective
+        # letter-sequences describe the same player; any candidate that survived to
+        # ``ranked`` is therefore a variant (normal / raw-swap / cand-swap) of the
+        # single canonical given-name set, so there is no remaining ambiguity to
+        # resolve via a runner-up tie comparison.
 
         replacements[raw_name] = best_candidate
 
