@@ -434,6 +434,29 @@ def _reversed_slots(left: _OutcomeEventResolution, right: _OutcomeEventResolutio
     return left.slot.key == right.slot.reversed_key
 
 
+def _oriented_pair_team_names(
+    pair: _OutcomeEventPair,
+) -> tuple[tuple[str, str], tuple[str, str]]:
+    if pair.orientation == _SAME_ORIENTATION:
+        return (
+            (pair.left.home_team, pair.right.home_team),
+            (pair.left.away_team, pair.right.away_team),
+        )
+    return (
+        (pair.left.home_team, pair.right.away_team),
+        (pair.left.away_team, pair.right.home_team),
+    )
+
+
+def _pair_has_matching_women_context(pair: _OutcomeEventPair) -> bool:
+    for left_name, right_name in _oriented_pair_team_names(pair):
+        left_qualifiers = _team_qualifiers(left_name, sport=pair.left.sport)
+        right_qualifiers = _team_qualifiers(right_name, sport=pair.left.sport)
+        if left_qualifiers != right_qualifiers or "women" not in left_qualifiers:
+            return False
+    return True
+
+
 def _rank_event_pairs(events: list[_OutcomeEvent]) -> list[_OutcomeEventPair]:
     events_by_slot: dict[tuple[str, str], list[_OutcomeEvent]] = defaultdict(list)
     for event in events:
@@ -494,7 +517,19 @@ def _build_football_event_resolutions(
             if pair.orientation == _REVERSED_ORIENTATION and _reversed_slots(left_resolution, right_resolution):
                 resolutions[right_key] = _OutcomeEventResolution(
                     slot=left_resolution.slot,
-                    orientation=_orientation_from_pair(left_resolution.orientation, pair.orientation),
+                    orientation=_orientation_from_pair(
+                        left_resolution.orientation,
+                        pair.orientation,
+                    ),
+                )
+                continue
+            if _pair_has_matching_women_context(pair):
+                resolutions[right_key] = _OutcomeEventResolution(
+                    slot=left_resolution.slot,
+                    orientation=_orientation_from_pair(
+                        left_resolution.orientation,
+                        pair.orientation,
+                    ),
                 )
             continue
 

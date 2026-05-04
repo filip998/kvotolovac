@@ -220,6 +220,73 @@ def test_football_event_match_ignores_equivalent_women_marker_text(team_registry
     assert _auto_review_alias_count() == 0
 
 
+def test_football_event_match_collapses_existing_women_marker_variant_canonicals(team_registry_file):
+    create_canonical_team(display_name="Sao Jose Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Santo Andre (Ž)", sport="football")
+    create_canonical_team(display_name="Sao Jose Wom.", sport="football")
+    create_canonical_team(display_name="Santo Andre Wom.", sport="football")
+    raw = [
+        _offer(
+            "superbet",
+            "Sao Jose Campos (Ž)",
+            "Santo Andre (Ž)",
+            outcome_code="over",
+        ),
+        _offer(
+            "pinnbet",
+            "Sao Jose Wom.",
+            "Santo Andre Wom.",
+            outcome_code="under",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 2
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert {
+        (offer.home_team_id, offer.away_team_id) for offer in normalized
+    } == {(normalized[0].home_team_id, normalized[0].away_team_id)}
+    assert unresolved == []
+    assert review_cases == []
+    assert _auto_review_alias_count() == 0
+
+
+def test_reversed_football_event_collapses_existing_women_marker_variant_canonicals(team_registry_file):
+    create_canonical_team(display_name="Sao Jose Campos (Ž)", sport="football")
+    create_canonical_team(display_name="Santo Andre (Ž)", sport="football")
+    create_canonical_team(display_name="Sao Jose Wom.", sport="football")
+    create_canonical_team(display_name="Santo Andre Wom.", sport="football")
+    raw = [
+        _offer(
+            "superbet",
+            "Sao Jose Campos (Ž)",
+            "Santo Andre (Ž)",
+            market_type="football_result",
+            outcome_code="home",
+        ),
+        _offer(
+            "pinnbet",
+            "Santo Andre Wom.",
+            "Sao Jose Wom.",
+            market_type="football_result",
+            outcome_code="home",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 2
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert {
+        (offer.bookmaker_id, offer.outcome_code)
+        for offer in normalized
+    } == {("superbet", "home"), ("pinnbet", "away")}
+    assert unresolved == []
+    assert review_cases == []
+    assert _auto_review_alias_count() == 0
+
+
 def test_football_event_match_rejects_mismatched_team_qualifiers(team_registry_file):
     create_canonical_team(display_name="Manchester United", sport="football")
     create_canonical_team(display_name="Liverpool", sport="football")
