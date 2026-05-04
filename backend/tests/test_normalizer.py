@@ -414,11 +414,17 @@ def test_normalize_odds_keeps_single_initial_separate_when_multi_initial_candida
     ]
 
 
-def test_normalize_odds_keeps_single_initial_separate_when_multi_initial_candidates_extend():
-    """A single initial must stay unresolved when one multi-initial candidate is
-    a strict prefix-extension of another (``("c","j")`` vs ``("c","j","k")``):
-    the candidates describe distinct identities, so picking one over the other
-    for ``C. McCollum`` would be guesswork."""
+def test_normalize_odds_collapses_single_initial_with_competing_extensions_when_clear_majority():
+    """Within one event, prefix-compatible abbreviation depths describe the
+    same player. When a single initial appears alongside two abbreviation
+    extensions of different length (``C.``/``C.J.``/``C.J.K.``) and one
+    extension carries the bookmaker majority, all surfaces merge into that
+    majority. The structural rule subsumes the older "multi-initial all-
+    single-letter" guard: same-length mismatched-position cases (``C.J.`` vs
+    ``C.K.``) are still rejected by `_letter_seq_collapse_compatible`'s same-
+    length branch, which is what guards against genuinely-different players
+    here. See ``test_normalize_odds_keeps_single_initial_separate_when_multi_initial_candidates_disagree``
+    for the strict counterpart."""
     raw = [
         RawOddsData(
             bookmaker_id="meridian",
@@ -434,18 +440,6 @@ def test_normalize_odds_keeps_single_initial_separate_when_multi_initial_candida
         ),
         RawOddsData(
             bookmaker_id="mozzart",
-            league_id="nba",
-            home_team="Chicago Bulls",
-            away_team="New York Knicks",
-            market_type="player_points",
-            player_name="C.J. McCollum",
-            threshold=18.5,
-            over_odds=1.9,
-            under_odds=1.9,
-            start_time="2026-04-11T01:30:00+00:00",
-        ),
-        RawOddsData(
-            bookmaker_id="maxbet",
             league_id="nba",
             home_team="Chicago Bulls",
             away_team="New York Knicks",
@@ -480,14 +474,26 @@ def test_normalize_odds_keeps_single_initial_separate_when_multi_initial_candida
             under_odds=1.9,
             start_time="2026-04-11T01:30:00+00:00",
         ),
+        RawOddsData(
+            bookmaker_id="superbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C.J.K. McCollum",
+            threshold=18.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
     ]
 
     normalized = normalize_odds(raw)
 
     assert [offer.player_name for offer in normalized] == [
-        "C. McCollum",
-        "C.J. McCollum",
-        "C.J. McCollum",
+        "C.J.K. McCollum",
+        "C.J.K. McCollum",
+        "C.J.K. McCollum",
         "C.J.K. McCollum",
         "C.J.K. McCollum",
     ]
@@ -720,12 +726,15 @@ def test_normalize_odds_keeps_surname_particle_player_separate_from_lookalike_fi
     assert [offer.player_name for offer in normalized] == ["St.Brown", "Stefan Brown"]
 
 
-def test_normalize_odds_does_not_extend_multi_initial_into_longer_initial_sequence():
-    """A multi-initial label like ``C.J.`` must NOT be rewritten into a longer
-    all-initial label like ``C.J.K.`` even when the longer form has the higher
-    bookmaker count. The user's directive only blesses the single-initial→
-    multi-initial expansion (``C.``→``C.J.``); a 2→3 initial extension adds a
-    NEW position and plausibly describes a different player."""
+def test_normalize_odds_extends_multi_initial_into_longer_initial_majority():
+    """Within one event, a 2-initial label like ``C.J.`` and a 3-initial label
+    like ``C.J.K.`` for the same surname describe the same player at different
+    abbreviation depths. The chance that two players whose first-name
+    abbreviations form a prefix chain co-occur in a single match is
+    effectively zero, so we let the bookmaker majority decide. This is the
+    inverse of `test_normalize_odds_keeps_single_initial_separate_when_multi_initial_candidates_disagree`,
+    where same-length mismatched-position cases (``C.J.`` vs ``C.K.``) stay
+    distinct via the structural per-position prefix check."""
     raw = [
         RawOddsData(
             bookmaker_id="meridian",
@@ -758,6 +767,59 @@ def test_normalize_odds_does_not_extend_multi_initial_into_longer_initial_sequen
             away_team="B",
             market_type="player_points",
             player_name="C.J.K. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert [offer.player_name for offer in normalized] == [
+        "C.J.K. McCollum",
+        "C.J.K. McCollum",
+        "C.J.K. McCollum",
+    ]
+
+
+def test_normalize_odds_contracts_longer_initial_sequence_into_shorter_majority():
+    """Mirror of the previous test: when the shorter abbreviation has the
+    bookmaker majority, the longer one merges down. Within one event, prefix-
+    compatible abbreviations across length describe the same player; the
+    count-based tie-break is what selects the canonical surface."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="C.J.K. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="C.J. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="C.J. McCollum",
             threshold=15.5,
             over_odds=1.9,
             under_odds=1.9,
@@ -769,60 +831,6 @@ def test_normalize_odds_does_not_extend_multi_initial_into_longer_initial_sequen
 
     assert [offer.player_name for offer in normalized] == [
         "C.J. McCollum",
-        "C.J.K. McCollum",
-        "C.J.K. McCollum",
-    ]
-
-
-def test_normalize_odds_does_not_contract_longer_initial_sequence_into_shorter():
-    """The mirror of the previous test: a longer all-initial label like
-    ``C.J.K.`` must NOT be rewritten down to a shorter ``C.J.`` even if the
-    shorter form has more bookmaker support. Dropping the ``K.`` initial loses
-    information and the two could legitimately describe different players;
-    refuse the merge so the count alone cannot decide it."""
-    raw = [
-        RawOddsData(
-            bookmaker_id="meridian",
-            league_id="nba",
-            home_team="A",
-            away_team="B",
-            market_type="player_points",
-            player_name="C.J.K. McCollum",
-            threshold=15.5,
-            over_odds=1.9,
-            under_odds=1.9,
-            start_time="2026-04-11T01:30:00+00:00",
-        ),
-        RawOddsData(
-            bookmaker_id="mozzart",
-            league_id="nba",
-            home_team="A",
-            away_team="B",
-            market_type="player_points",
-            player_name="C.J. McCollum",
-            threshold=15.5,
-            over_odds=1.9,
-            under_odds=1.9,
-            start_time="2026-04-11T01:30:00+00:00",
-        ),
-        RawOddsData(
-            bookmaker_id="maxbet",
-            league_id="nba",
-            home_team="A",
-            away_team="B",
-            market_type="player_points",
-            player_name="C.J. McCollum",
-            threshold=15.5,
-            over_odds=1.9,
-            under_odds=1.9,
-            start_time="2026-04-11T01:30:00+00:00",
-        ),
-    ]
-
-    normalized = normalize_odds(raw)
-
-    assert [offer.player_name for offer in normalized] == [
-        "C.J.K. McCollum",
         "C.J. McCollum",
         "C.J. McCollum",
     ]
@@ -2044,6 +2052,539 @@ def test_normalize_odds_resolves_multi_initial_against_hyphenated_name():
     normalized = normalize_odds(raw)
     names = {offer.player_name for offer in normalized}
     assert names == {"Karl-Anthony Towns"}
+
+
+def test_normalize_odds_resolves_three_variant_partial_initial_alongside_full_name():
+    """Production regression: in the actual Knicks vs 76ers scrape the bucket
+    contained THREE Towns surfaces — ``K.Towns`` (mozzart, single initial),
+    ``K.A.Towns`` (balkanbet/volcanobet, multi-initial), and
+    ``Karl-Anthony Towns`` (everyone else). Before the diversity-collapse fix
+    the multi-initial form stayed split because ``("k",)`` and
+    ``("karl","anthony")`` looked like two distinct identities to the
+    candidate-diversity guard. All three surfaces must collapse into the fuller
+    variant."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="K.Towns",
+            threshold=22.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="K.A.Towns",
+            threshold=22.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="volcanobet",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="K.A.Towns",
+            threshold=22.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="Karl-Anthony Towns",
+            threshold=22.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="superbet",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="Karl-Anthony Towns",
+            threshold=22.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="Karl-Anthony Towns",
+            threshold=22.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {"Karl-Anthony Towns"}
+
+
+def test_normalize_odds_keeps_three_variant_bucket_distinct_when_no_count_majority():
+    """Conservative tie-break regression: with three structurally-related
+    variants (``C.J.``, ``C.J.K.``, ``Christopher James``) at equal count, no
+    merge happens. The diversity collapse stops short because ``("c","j","k")``
+    has no length-mismatch collapse path with ``("christopher","james")``: the
+    length-mismatch rule only fires when the SHORTER side is all single-letter
+    (the abbreviation), and here the shorter sequence
+    ``("christopher","james")`` is full-name. Two distinct fingerprints
+    survive, the diversity guard bails for raw=``C.J.``, and the ranking
+    tie-break holds the other two raws steady at equal count."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="C.J. McCollum",
+            threshold=18.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="C.J.K. McCollum",
+            threshold=18.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="Christopher James McCollum",
+            threshold=18.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {
+        "C.J. McCollum",
+        "C.J.K. McCollum",
+        "Christopher James McCollum",
+    }
+
+
+def test_normalize_odds_keeps_full_first_name_versus_different_full_name_distinct():
+    """Regression for the diversity-collapse fix: when the bucket contains a
+    short abbreviation alongside *two* different full-name candidates whose
+    first-name tokens are themselves distinct (e.g., ``Joey Adam`` vs
+    ``Jerry Allen``), the resolver must not pick a winner. The two full names
+    don't collapse into each other (per-position prefix fails) and the
+    abbreviation can't unilaterally choose between them."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="J. Doe",
+            threshold=12.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="Joey Adam Doe",
+            threshold=12.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="superbet",
+            league_id="nba",
+            home_team="New York Knicks",
+            away_team="Philadelphia 76ers",
+            market_type="player_points",
+            player_name="Jerry Allen Doe",
+            threshold=12.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-05-05T01:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {"J. Doe", "Joey Adam Doe", "Jerry Allen Doe"}
+
+
+def test_normalize_odds_refuses_contraction_when_bucket_carries_rival_extension():
+    """Round-2 review regression: under the relaxed abbreviation rules, a
+    bucket of ``{C.(5), C.J.(1), C.K.(1)}`` could silently merge BOTH
+    ``C.J.`` and ``C.K.`` into ``C.`` because the diversity guard only sees
+    each raw's own candidates — ``C.J.`` and ``C.K.`` never appear as
+    candidates for each other (their position-1 first-name initials diverge),
+    and each independently picks ``C.`` as best with no rival in sight. The
+    rival-extension guard inside ``_resolve_contextual_player_name_replacements``
+    catches that case: when ``best`` is a strict-shorter all-single-letter
+    contraction of ``raw``, the resolver scans the bucket for any other
+    surface that is a structural extension of ``best`` but incompatible with
+    ``raw``. Here ``C.K.`` is a rival extension of ``C.`` from ``C.J.``'s
+    perspective (and vice-versa), so neither contraction fires and all three
+    surfaces stay distinct."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="admiralbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="superbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C.J. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C.K. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = sorted({offer.player_name for offer in normalized})
+    assert names == ["C. McCollum", "C.J. McCollum", "C.K. McCollum"]
+
+
+def test_normalize_odds_falls_through_to_unambiguous_full_name_when_short_best_has_rival():
+    """Round-3 review regression (gpt-5.5): when the rival-extension guard
+    refuses ``best=C.`` for raw ``C.J.`` because ``C.K.`` is a sibling
+    extension, the resolver must fall through to the next-best candidate
+    rather than abandon raw entirely. In a mixed bucket
+    ``{C.(5), C.J.(1), Cameron John(1), C.K.(1)}`` the unambiguous full-name
+    candidate ``Cameron John McCollum`` is in raw=``C.J.``'s candidate list
+    too — `_letter_seq_compatible(('c','j'), ('cameron','john'))` passes via
+    same-length per-position prefix — and ``C.K.`` is NOT a candidate of
+    ``C.J.`` (mismatched at position 1), so ``Cameron John`` is unambiguous
+    from raw=``C.J.``'s perspective. Falling through, ``C.J.`` merges into
+    ``Cameron John McCollum``. ``C.`` (the original count majority) stays
+    distinct because, from raw=``C.``'s perspective, both ``C.J.`` and
+    ``C.K.`` are competing candidates so the diversity guard upstream
+    refuses it. ``C.K.`` stays distinct because its only candidate (``C.``)
+    has the same rival problem and its only fallback (``Cameron John``)
+    fails the same-length per-position prefix check at position 1
+    (``'k'`` vs ``'john'``)."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="admiralbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="superbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C.J. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="Cameron John McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="volcanobet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C.K. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = sorted({offer.player_name for offer in normalized})
+    assert names == ["C. McCollum", "C.K. McCollum", "Cameron John McCollum"]
+
+
+def test_normalize_odds_treats_same_length_full_name_as_rival_extension():
+    """Round-3 review regression (opus-4.7-xhigh and opus-4.7-1m): the
+    rival-extension guard previously skipped any candidate with a same-length
+    letter-sequence as ``best`` (filter was ``len(other_seq) <= len(best_seq)``).
+    A single-token full name like ``Carl`` (``letter-sequence = ('carl',)``)
+    was therefore never tested as a rival of ``best=C.``
+    (``letter-sequence = ('c',)``), even though ``Carl`` is just as plausible
+    an expansion of ``C.`` as ``C.J.`` is. A bucket of
+    ``{C.(5), C.J.(1), Carl(1)}`` then silently merged ``C.J. → C.``. The fix
+    admits same-length-but-different-content rivals (skipping only sequences
+    strictly shorter than ``best_seq`` and exact duplicates of it). ``Carl``
+    is now flagged as a rival of ``C.`` from ``C.J.``'s perspective via
+    ``_letter_seq_collapse_compatible(('carl',), False, ('c','j'), True)``,
+    which returns False (length mismatch with shorter side ``('carl',)`` not
+    all-single-letter), so the merge ``C.J. → C.`` is refused. ``C.J.`` has
+    no other compatible candidate to fall through to; ``Carl`` itself is
+    rejected by ``_letter_seq_compatible`` as a candidate of ``C.J.`` for the
+    same structural reason. ``C.`` bails upstream because the diversity guard
+    sees ``('c','j')`` and ``('carl',)`` as non-collapsing fingerprints.
+    ``Carl`` bails because the directional gate catches the ``Carl → C.``
+    prefix relation between non-abbreviated raws."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="admiralbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="superbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C.J. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="Carl McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = sorted({offer.player_name for offer in normalized})
+    assert names == ["C. McCollum", "C.J. McCollum", "Carl McCollum"]
 
 
 def test_normalize_odds_does_not_merge_different_players_with_swapped_tokens():

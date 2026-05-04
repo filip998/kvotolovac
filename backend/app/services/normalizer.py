@@ -295,28 +295,68 @@ def _letter_seq_collapse_compatible(
 ) -> bool:
     """Equivalence test for the candidate-candidate diversity collapse.
 
-    Two candidate fingerprints may be merged when they describe the same
-    given-name set with no remaining ambiguity:
+    Two candidate fingerprints describe the same player when their given-name
+    parts are *prefix-compatible at every shared position*. The same physical
+    person can appear at many abbreviation depths within a single event —
+    ``Karl-Anthony Towns``, ``K.A. Towns``, ``K. Towns`` — but two players
+    with the same surname playing in the same event whose first-name parts
+    diverge at any position (``C.J.`` vs ``C.K.``) really are different
+    people.
 
-    * Same length. Different lengths mean one side carries a middle initial
-      the other doesn't account for (``("c","j")`` vs ``("c","j","k")`` —
-      distinct identities; the ambiguous initial must bail).
-    * Every position is exact-prefix-compatible (no fuzzy similarity — fuzzy
-      matching is appropriate when comparing a single raw label to a candidate,
-      but using it across two distinct candidates would silently merge
-      near-twins like ``("jalen",)`` and ``("jaden",)``).
-    * For multi-character prefix relations like ``("jar",)`` vs ``("jared",)``,
-      at least one side must be marked as an abbreviation. ``Jar.`` (surface
-      dot) collapses with ``Jared`` because it's an explicit abbreviation;
-      ``Jo`` and ``John`` are both full names and the prefix relation is
-      coincidental, so they stay distinct.
-    * Single-letter initial expansion is always allowed (``("v",)`` ↔
-      ``("vj",)``) regardless of the abbreviation flag — a single-letter token
-      is structurally an abbreviation.
+    Rules, applied symmetrically (call order does not matter; the helper
+    reorders by length and treats abbreviation flags as advisory):
+
+    * Same length. Every position must be prefix-compatible. Single-letter
+      initials count as prefixes of any longer token starting with the same
+      letter (``("v",)`` ↔ ``("vj",)``, ``("k","a")`` ↔ ``("karl","anthony")``).
+      For multi-character prefix relations (``("jar",)`` vs ``("jared",)``) at
+      least one side must carry an explicit abbreviation flag — surface dot or
+      single-letter parts — so coincidental prefixes between two full first
+      names (``("jo",)`` vs ``("john",)``) stay distinct.
+
+    * Different length. The SHORTER side (by part count) must be all single-
+      letter (a structural abbreviation), and every shorter-side position
+      must be prefix-compatible with the corresponding position of the longer
+      side. This collapses ``("k",)`` ↔ ``("karl","anthony")`` (single
+      initial into a hyphenated full name), ``("c","j")`` ↔ ``("c","j","k")``
+      (multi-initial extension/contraction), and ``("k",)`` ↔ ``("k","a","j")``
+      (single initial into longer abbreviation) — all "same player at a
+      different abbreviation depth" within an event. We deliberately do NOT
+      gate this on the longer side's abbreviation flag: per the project's
+      contextual-resolution intent, an event already gives us strong
+      same-player evidence (same teams, same start time, same surname), so
+      prefix-compatible first-name shapes always denote the same identity.
+      Mismatched-position cases (``("c","j")`` vs ``("c","k")``) still fail
+      the same-length check below; fuzzy near-twins (``("jalen",)`` vs
+      ``("jaden",)``) still fail because neither side is an abbreviation.
+
+      Note that the rule keys on the SHORTER side being abbreviated. Pairs
+      like ``("k","a","j")`` (longer, all-initial) vs ``("karl","anthony")``
+      (shorter, full-name) currently return False because the shorter side
+      is not all-single-letter — that scenario simply leaves the bookmaker's
+      three-initial surface unmerged rather than producing an incorrect
+      identity. A separate rival-extension guard inside
+      ``_resolve_contextual_player_name_replacements`` further protects the
+      contraction direction (``raw=C.J.``, ``best=C.``) when the bucket
+      contains a sibling extension that makes ``best`` ambiguous.
     """
 
-    if not a or not b or len(a) != len(b):
+    if not a or not b:
         return False
+    if len(a) != len(b):
+        if len(a) < len(b):
+            shorter, longer = a, b
+        else:
+            shorter, longer = b, a
+        if not all(len(part) == 1 for part in shorter):
+            return False
+        for short_part, long_part in zip(shorter, longer):
+            if not short_part or not long_part:
+                return False
+            if short_part == long_part or long_part.startswith(short_part):
+                continue
+            return False
+        return True
     for x, y in zip(a, b):
         if not x or not y:
             return False
@@ -656,120 +696,194 @@ def _resolve_contextual_player_name_replacements(
             )
 
         ranked = sorted(candidate_matches, key=_rank_key, reverse=True)
-        best_candidate, best_match = ranked[0]
-        best_parts = _player_name_parts(best_candidate)
-        if not best_parts:
-            continue
-
-        best_completeness = _player_name_completeness(
-            _candidate_first_for_completeness(best_candidate, best_match)
-        )
-        if best_match.raw_swapped:
-            # Raw was reversed to align with candidate; its effective given-name token
-            # is its parsed last name (the abbreviated initials that became "first"
-            # after the swap).
-            raw_first_for_completeness = [raw_last_name]
-        else:
-            raw_first_for_completeness = raw_first_tokens
-        raw_completeness = _player_name_completeness(raw_first_for_completeness)
-
-        # Directional gate: only allow raw → best replacement when the call site
-        # has a clear signal that raw is *meant* to be expanded into best, not
-        # just coincidentally prefix-compatible. Three accepted signals:
-        #
-        # 1. ``best_match.raw_swapped`` — the raw label is in reversed order
-        #    (e.g. "Edgecombe VJ"); replacement normalises orientation, the name
-        #    content is unchanged.
-        # 2. raw's effective first sequence is all single-letter initials
-        #    ("C.", "K.A.", "VJ-as-initials") — a true abbreviation that wants
-        #    to be expanded.
-        # 3. raw's surface contains a "." in the first-name portion ("Aar.",
-        #    "Jar.") — an explicit abbreviation marker even when the abbreviated
-        #    token is more than one letter long.
-        #
-        # Without one of those signals we still allow the replacement when raw
-        # and best are NOT in a prefix relation but raw is decisively
-        # out-counted by best — that's the typo-correction case (e.g. "Arron"
-        # vs majority-spelled "Aaron"). A prefix relation between two
-        # multi-character names ("Jo" / "John", "Steve" / "Steven") is treated
-        # as ambiguous and left alone.
-        # Compute letter-sequence representations once so we can use them
-        # consistently from here down (the directional gate, the multi-initial
-        # guard below, and any future checks). ``raw_seq`` and ``best_seq``
-        # are split-on-hyphen letter parts, so comparing
-        # ``raw_seq[0]`` vs ``best_seq[0]`` is symmetric for hyphenated first
-        # names like "Karl-Anthony" (both yield ``"karl"``) — whereas the raw
-        # token would compare ``"karl-anthony"`` vs ``"karl"`` and bail
-        # spuriously.
-        raw_seq = tuple(_first_name_letter_sequence(raw_first_for_completeness))
-        best_seq = best_match.candidate_effective_first_seq
-
-        if not best_match.raw_swapped:
-            raw_is_abbreviated = (
-                all(len(part) == 1 for part in raw_first_for_completeness)
-                or _candidate_first_name_has_abbreviation_dot(raw_name)
-            )
-            if not raw_is_abbreviated:
-                if name_counts[best_candidate] <= name_counts[raw_name]:
-                    continue
-                first_raw = raw_seq[0] if raw_seq else ""
-                first_best = best_seq[0] if best_seq else ""
-                # Identical first-name tokens are NOT an ambiguous prefix
-                # relation — they're the strongest possible signal that the
-                # two surface forms refer to the same person (the rest of the
-                # difference lives in the surname or in a Jr/Sr/II/III suffix
-                # that ``_player_name_parts`` already strips). Only a TRUE
-                # prefix relation between DIFFERENT tokens (e.g. "Jo"/"John",
-                # "Steve"/"Steven") should bail out here.
-                if (
-                    first_raw
-                    and first_best
-                    and first_raw != first_best
-                    and (
-                        first_raw.startswith(first_best)
-                        or first_best.startswith(first_raw)
-                    )
-                ):
-                    continue
-
-        # Multi-initial all-single-letter guard: when raw and best are BOTH
-        # pure-initial sequences (every part is a single letter), the only
-        # length difference we accept is the user's blessed case
-        # ``("c",)`` → ``("c","j")`` (single initial expanding to a multi-
-        # initial label). Every other length difference — extending
-        # ``("c","j")`` to ``("c","j","k")`` (adds a NEW initial; plausibly a
-        # different player) or contracting ``("c","j","k")`` down to
-        # ``("c","j")`` (drops information) — is refused so a count majority
-        # alone cannot decide it.
-        if (
-            raw_seq
-            and best_seq
-            and len(raw_seq) != len(best_seq)
-            and all(len(part) == 1 for part in raw_seq)
-            and all(len(part) == 1 for part in best_seq)
-            and not (len(raw_seq) == 1 and len(best_seq) > 1)
-        ):
-            continue
-
-        if best_completeness < raw_completeness:
-            continue
-        if (
-            best_completeness == raw_completeness
-            and name_counts[best_candidate] <= name_counts[raw_name]
-        ):
-            # Tie-break: when raw was swapped to match best, prefer the un-swapped
-            # candidate even at equal counts so reverse-name pairs converge to the
-            # natural orientation. Otherwise stay conservative and don't replace.
-            if not best_match.raw_swapped:
+        chosen_replacement: str | None = None
+        for best_candidate, best_match in ranked:
+            best_parts = _player_name_parts(best_candidate)
+            if not best_parts:
                 continue
 
-        # The diversity guard above already collapsed all candidates whose effective
-        # letter-sequences describe the same player; any candidate that survived to
-        # ``ranked`` is therefore a variant (normal / raw-swap / cand-swap) of the
-        # single canonical given-name set, so there is no remaining ambiguity to
-        # resolve via a runner-up tie comparison.
+            best_completeness = _player_name_completeness(
+                _candidate_first_for_completeness(best_candidate, best_match)
+            )
+            if best_match.raw_swapped:
+                # Raw was reversed to align with candidate; its effective given-name
+                # token is its parsed last name (the abbreviated initials that became
+                # "first" after the swap).
+                raw_first_for_completeness = [raw_last_name]
+            else:
+                raw_first_for_completeness = raw_first_tokens
+            raw_completeness = _player_name_completeness(raw_first_for_completeness)
 
-        replacements[raw_name] = best_candidate
+            # Directional gate: only allow raw → best replacement when the call
+            # site has a clear signal that raw is *meant* to be expanded into
+            # best, not just coincidentally prefix-compatible. Three accepted
+            # signals:
+            #
+            # 1. ``best_match.raw_swapped`` — the raw label is in reversed
+            #    order (e.g. "Edgecombe VJ"); replacement normalises
+            #    orientation, the name content is unchanged.
+            # 2. raw's effective first sequence is all single-letter initials
+            #    ("C.", "K.A.", "VJ-as-initials") — a true abbreviation that
+            #    wants to be expanded.
+            # 3. raw's surface contains a "." in the first-name portion
+            #    ("Aar.", "Jar.") — an explicit abbreviation marker even when
+            #    the abbreviated token is more than one letter long.
+            #
+            # Without one of those signals we still allow the replacement when
+            # raw and best are NOT in a prefix relation but raw is decisively
+            # out-counted by best — that's the typo-correction case (e.g.
+            # "Arron" vs majority-spelled "Aaron"). A prefix relation between
+            # two multi-character names ("Jo" / "John", "Steve" / "Steven") is
+            # treated as ambiguous and left alone.
+            raw_seq = tuple(_first_name_letter_sequence(raw_first_for_completeness))
+            best_seq = best_match.candidate_effective_first_seq
+
+            if not best_match.raw_swapped:
+                raw_is_abbreviated = (
+                    all(len(part) == 1 for part in raw_first_for_completeness)
+                    or _candidate_first_name_has_abbreviation_dot(raw_name)
+                )
+                if not raw_is_abbreviated:
+                    if name_counts[best_candidate] <= name_counts[raw_name]:
+                        continue
+                    first_raw = raw_seq[0] if raw_seq else ""
+                    first_best = best_seq[0] if best_seq else ""
+                    # Identical first-name tokens are NOT an ambiguous prefix
+                    # relation — they're the strongest possible signal that
+                    # the two surface forms refer to the same person (the
+                    # rest of the difference lives in the surname or in a
+                    # Jr/Sr/II/III suffix that ``_player_name_parts`` already
+                    # strips). Only a TRUE prefix relation between DIFFERENT
+                    # tokens (e.g. "Jo"/"John", "Steve"/"Steven") should bail
+                    # out here.
+                    if (
+                        first_raw
+                        and first_best
+                        and first_raw != first_best
+                        and (
+                            first_raw.startswith(first_best)
+                            or first_best.startswith(first_raw)
+                        )
+                    ):
+                        continue
+
+            # Rival-extension guard. The relaxation lets ``raw`` contract into
+            # a strictly-shorter all-single-letter ``best`` (e.g.
+            # ``C.J. → C.``) when ``best`` is the only candidate ``raw``
+            # sees. The diversity guard upstream only inspects ``raw``'s own
+            # candidate set, so a sibling extension that diverges from ``raw``
+            # at a later position (``C.K.``) never appears in ``raw``'s
+            # candidate list — its first-name letter-sequence fails the same-
+            # length per-position prefix check vs ``raw_seq``. Without this
+            # guard, a bucket of ``{C.(5), C.J.(1), C.K.(1)}`` would silently
+            # merge BOTH ``C.J.`` and ``C.K.`` into ``C.`` even though the
+            # bucket itself testifies that ``C.`` is ambiguous between two
+            # different players.
+            #
+            # When ``best`` is a strict-shorter contraction of ``raw`` and
+            # ``best_seq`` is all single-letter, scan ``observed_names`` for
+            # any other surface that
+            # (a) shares the surname with ``best`` or ``raw``,
+            # (b) is itself a strict structural extension of ``best_seq``
+            #     (longer by part count, prefix-compatible at every
+            #     ``best_seq`` position), and
+            # (c) is NOT prefix-compatible with ``raw_seq`` via
+            #     ``_letter_seq_collapse_compatible`` (i.e., the rival could
+            #     be the source of ``best``'s contraction but is a different
+            #     identity from ``raw``).
+            # If such a rival exists, ``best`` is ambiguous and we fall
+            # through to the next ranked candidate. An earlier revision of
+            # this guard ``continue``d the whole raw on ambiguity, but that
+            # lost legitimate merges in mixed buckets like
+            # ``{C.(5), C.J.(1), Cameron John(1), C.K.(1)}`` where ``C.`` is
+            # ambiguous yet ``Cameron John`` is unambiguous and would safely
+            # absorb ``C.J.``. The fall-through preserves those merges.
+            if (
+                best_seq
+                and raw_seq
+                and len(best_seq) < len(raw_seq)
+                and all(len(part) == 1 for part in best_seq)
+            ):
+                best_parts_for_rival = _player_name_parts(best_candidate)
+                best_last_for_rival = (
+                    best_parts_for_rival[1] if best_parts_for_rival else ""
+                )
+                raw_is_abbrev_for_rival = (
+                    all(len(part) == 1 for part in raw_seq)
+                    or _candidate_first_name_has_abbreviation_dot(raw_name)
+                )
+                rival_found = False
+                for other_name in observed_names:
+                    if other_name == raw_name or other_name == best_candidate:
+                        continue
+                    other_parts = _player_name_parts(other_name)
+                    if not other_parts:
+                        continue
+                    other_first_tokens, other_last = other_parts
+                    if (
+                        other_last != raw_last_name
+                        and other_last != best_last_for_rival
+                    ):
+                        continue
+                    other_seq = tuple(
+                        _first_name_letter_sequence(other_first_tokens)
+                    )
+                    # Skip empty sequences, exact duplicates of ``best_seq``
+                    # (those are surface variants of ``best`` itself, not
+                    # rivals), and any sequence STRICTLY SHORTER than
+                    # ``best_seq``. Same-length rivals are admitted: a
+                    # single-token full name like ``("carl",)`` is exactly
+                    # the same kind of bucket-internal evidence as a
+                    # multi-initial extension like ``("c","j")`` — both make
+                    # ``best=C.`` ambiguous between two distinct identities.
+                    # Earlier revisions used ``len(other_seq) <= len(best_seq)``
+                    # which silently admitted the
+                    # ``{C.(5), C.J.(1), Carl(1)}`` over-merge.
+                    if (
+                        not other_seq
+                        or other_seq == best_seq
+                        or len(other_seq) < len(best_seq)
+                    ):
+                        continue
+                    if not all(
+                        other_seq[i] and other_seq[i].startswith(best_seq[i])
+                        for i in range(len(best_seq))
+                    ):
+                        continue
+                    other_is_abbrev = (
+                        all(len(part) == 1 for part in other_seq)
+                        or _candidate_first_name_has_abbreviation_dot(other_name)
+                    )
+                    if _letter_seq_collapse_compatible(
+                        other_seq,
+                        other_is_abbrev,
+                        raw_seq,
+                        raw_is_abbrev_for_rival,
+                    ):
+                        continue
+                    rival_found = True
+                    break
+                if rival_found:
+                    continue
+
+            if best_completeness < raw_completeness:
+                continue
+            if (
+                best_completeness == raw_completeness
+                and name_counts[best_candidate] <= name_counts[raw_name]
+            ):
+                # Tie-break: when raw was swapped to match best, prefer the
+                # un-swapped candidate even at equal counts so reverse-name
+                # pairs converge to the natural orientation. Otherwise stay
+                # conservative and don't replace.
+                if not best_match.raw_swapped:
+                    continue
+
+            chosen_replacement = best_candidate
+            break
+
+        if chosen_replacement is not None:
+            replacements[raw_name] = chosen_replacement
 
     return replacements
 
