@@ -828,7 +828,22 @@ def _resolve_contextual_player_name_replacements(
                     other_seq = tuple(
                         _first_name_letter_sequence(other_first_tokens)
                     )
-                    if not other_seq or len(other_seq) <= len(best_seq):
+                    # Skip empty sequences, exact duplicates of ``best_seq``
+                    # (those are surface variants of ``best`` itself, not
+                    # rivals), and any sequence STRICTLY SHORTER than
+                    # ``best_seq``. Same-length rivals are admitted: a
+                    # single-token full name like ``("carl",)`` is exactly
+                    # the same kind of bucket-internal evidence as a
+                    # multi-initial extension like ``("c","j")`` — both make
+                    # ``best=C.`` ambiguous between two distinct identities.
+                    # Earlier revisions used ``len(other_seq) <= len(best_seq)``
+                    # which silently admitted the
+                    # ``{C.(5), C.J.(1), Carl(1)}`` over-merge.
+                    if (
+                        not other_seq
+                        or other_seq == best_seq
+                        or len(other_seq) < len(best_seq)
+                    ):
                         continue
                     if not all(
                         other_seq[i] and other_seq[i].startswith(best_seq[i])

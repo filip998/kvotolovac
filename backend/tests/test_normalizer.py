@@ -2475,6 +2475,118 @@ def test_normalize_odds_falls_through_to_unambiguous_full_name_when_short_best_h
     assert names == ["C. McCollum", "C.K. McCollum", "Cameron John McCollum"]
 
 
+def test_normalize_odds_treats_same_length_full_name_as_rival_extension():
+    """Round-3 review regression (opus-4.7-xhigh and opus-4.7-1m): the
+    rival-extension guard previously skipped any candidate with a same-length
+    letter-sequence as ``best`` (filter was ``len(other_seq) <= len(best_seq)``).
+    A single-token full name like ``Carl`` (``letter-sequence = ('carl',)``)
+    was therefore never tested as a rival of ``best=C.``
+    (``letter-sequence = ('c',)``), even though ``Carl`` is just as plausible
+    an expansion of ``C.`` as ``C.J.`` is. A bucket of
+    ``{C.(5), C.J.(1), Carl(1)}`` then silently merged ``C.J. → C.``. The fix
+    admits same-length-but-different-content rivals (skipping only sequences
+    strictly shorter than ``best_seq`` and exact duplicates of it). ``Carl``
+    is now flagged as a rival of ``C.`` from ``C.J.``'s perspective via
+    ``_letter_seq_collapse_compatible(('carl',), False, ('c','j'), True)``,
+    which returns False (length mismatch with shorter side ``('carl',)`` not
+    all-single-letter), so the merge ``C.J. → C.`` is refused. ``C.J.`` has
+    no other compatible candidate to fall through to; ``Carl`` itself is
+    rejected by ``_letter_seq_compatible`` as a candidate of ``C.J.`` for the
+    same structural reason. ``C.`` bails upstream because the diversity guard
+    sees ``('c','j')`` and ``('carl',)`` as non-collapsing fingerprints.
+    ``Carl`` bails because the directional gate catches the ``Carl → C.``
+    prefix relation between non-abbreviated raws."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="admiralbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="superbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C.J. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="Carl McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = sorted({offer.player_name for offer in normalized})
+    assert names == ["C. McCollum", "C.J. McCollum", "Carl McCollum"]
+
+
 def test_normalize_odds_does_not_merge_different_players_with_swapped_tokens():
     raw = [
         RawOddsData(
