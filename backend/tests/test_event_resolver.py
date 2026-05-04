@@ -1857,3 +1857,214 @@ async def test_event_resolver_anchored_low_conf_does_not_apply_to_football(
     assert result.resolved_events == 2
     events = await odds_store.list_resolved_events(sport="football")
     assert {event.method for event in events} == {"exact"}
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_dot_expansion_does_not_apply_to_football(
+    team_registry_file,
+):
+    """Negative regression for round-2 review: the ``_expand_dotted_token``
+    pre-processing wrapped in ``_resolver_team_similarity`` is sport-gated to
+    basketball. Football fixtures with compound abbreviations like
+    ``St.Petersburg`` (Russia) and ``Stockholm Petersburg`` (a hypothetical
+    European team sharing the geographic suffix) must NOT auto-merge despite
+    pre-PR fuzzy similarity (~78) being insufficient for the standard
+    high-confidence path. Pre-fix, the dot expansion would inflate the score
+    to 100/100 and force a false-positive merge for any sport — this test
+    locks in the sport gate so the regression cannot return.
+    """
+
+    saint_petersburg = create_canonical_team(
+        display_name="St.Petersburg", sport="football"
+    )
+    stockholm_petersburg = create_canonical_team(
+        display_name="Stockholm Petersburg", sport="football"
+    )
+    cska = create_canonical_team(display_name="CSKA Moscow", sport="football")
+    league_id = "rpl"
+    await _seed_bookmakers("maxbet", "balkanbet")
+    await _seed_league(league_id, "football")
+    sp_match_id = generate_match_id(
+        saint_petersburg.team_id, cska.team_id, START_TIME, "football"
+    )
+    sk_match_id = generate_match_id(
+        stockholm_petersburg.team_id, cska.team_id, START_TIME, "football"
+    )
+    normalized = [
+        NormalizedOutcomeOffer(
+            match_id=sp_match_id,
+            bookmaker_id="maxbet",
+            league_id=league_id,
+            sport="football",
+            home_team_id=saint_petersburg.team_id,
+            away_team_id=cska.team_id,
+            home_team=saint_petersburg.team_name,
+            away_team=cska.team_name,
+            market_type="football_total_goals",
+            outcome_code="over",
+            odds=1.9,
+            line=2.5,
+            raw_label="Over 2.5",
+            start_time=START_TIME,
+        ),
+        NormalizedOutcomeOffer(
+            match_id=sk_match_id,
+            bookmaker_id="balkanbet",
+            league_id=league_id,
+            sport="football",
+            home_team_id=stockholm_petersburg.team_id,
+            away_team_id=cska.team_id,
+            home_team=stockholm_petersburg.team_name,
+            away_team=cska.team_name,
+            market_type="football_total_goals",
+            outcome_code="under",
+            odds=1.95,
+            line=2.5,
+            raw_label="Under 2.5",
+            start_time=START_TIME,
+        ),
+    ]
+    for row in normalized:
+        await _store_match(row)
+    raw = [
+        RawOutcomeOffer(
+            bookmaker_id=row.bookmaker_id,
+            league_id=league_id,
+            sport="football",
+            home_team=row.home_team,
+            away_team=row.away_team,
+            source_url=f"https://{row.bookmaker_id}.example/football-event",
+            market_type=row.market_type,
+            outcome_code=row.outcome_code,
+            odds=row.odds,
+            line=row.line,
+            raw_label=row.raw_label,
+            start_time=START_TIME,
+        )
+        for row in normalized
+    ]
+
+    result = await resolve_and_persist_events(
+        raw_odds=[],
+        raw_outcome_offers=raw,
+        normalized_odds=[],
+        normalized_outcome_offers=normalized,
+    )
+
+    assert result.resolved_events == 2, (
+        "St.Petersburg and Stockholm Petersburg are distinct football teams "
+        "that share only a geographic-suffix token; the resolver must not "
+        "merge them via dot expansion."
+    )
+    events = await odds_store.list_resolved_events(sport="football")
+    assert {event.method for event in events} == {"exact"}
+
+
+def test_expand_dotted_token_ambiguous_geographic_prefix_blocked():
+    """Defense-in-depth unit test: even within sports that allow dot
+    expansion, the ``_AMBIGUOUS_DOT_PREFIXES`` blocklist prevents short
+    geographic / honorific abbreviations (``St.``, ``Mt.``, ``Ft.``,
+    ``Pt.``, ``Dr.``, ``Mr.``, ``Av.``) from being substituted with
+    distinct counterpart tokens. The genuine ``Ch.`` → ``Cherno``
+    expansion is unaffected.
+
+    This is a unit test on the helper rather than an end-to-end resolver
+    test because the resolver's anchored low-confidence path can still
+    merge events through other corroborators (shared significant token +
+    same league). The blocklist's job is narrow: stop the dot-expansion
+    branch from inflating the fuzzy score for known-ambiguous prefixes.
+    """
+
+    from app.services.event_resolver import _expand_dotted_token  # noqa: PLC0415
+
+    # Each ambiguous prefix is preserved verbatim despite the counterpart
+    # offering a unique expansion candidate AND a shared anchor token
+    # ("Petersburg", "Olympus", etc.) that satisfies the structural anchor
+    # check. The blocklist short-circuits expansion before we reach the
+    # candidate selection.
+    assert _expand_dotted_token("St.Petersburg", "Stockholm Petersburg") == (
+        "St. Petersburg"
+    ), "`St.` is in the ambiguous-prefix blocklist and must not expand."
+    assert _expand_dotted_token("Mt.Vesuvius", "Manchester Vesuvius") == (
+        "Mt. Vesuvius"
+    ), "`Mt.` is in the ambiguous-prefix blocklist."
+    assert _expand_dotted_token("Pt.Lions", "Portland Lions") == "Pt. Lions"
+    assert _expand_dotted_token("Ft.Wayne", "Fortune Wayne") == "Ft. Wayne"
+
+    # Genuine non-ambiguous expansions still work (regression for the
+    # original Cherno More user case).
+    assert (
+        _expand_dotted_token("Ch.More", "Cherno More") == "Cherno More"
+    ), "Non-ambiguous prefix `Ch.` must continue to expand."
+    assert (
+        _expand_dotted_token("Spartak Pl.", "Spartak Pleven") == "Spartak Pleven"
+    ), "Non-ambiguous trailing-dot tokens still resolve."
+
+
+def test_team_qualifiers_z_alias_does_not_apply_to_football():
+    """Round-2 regression: the ``z``-suffix → ``women`` alias is sport-gated
+    to ``_AGGRESSIVE_MERGE_SPORTS``. In football, ``z`` is a common Slavic
+    city abbreviation (Zvornik, Zenica, Zemun, Zrenjanin) and aliasing it
+    to ``women`` would silently block legitimate same-team pairings.
+    Pre-fix, ``_team_qualifiers`` returned ``{women}`` for any 3+ token
+    name ending in literal ``z``, so ``FK Borac Z`` (an abbreviation for
+    ``FK Borac Zvornik``) and bare ``FK Borac Zvornik`` had divergent
+    qualifier sets and ``_same_team_context`` rejected them.
+    """
+
+    from app.services.outcome_normalizer import (  # noqa: PLC0415
+        _same_team_context,
+        _team_qualifiers,
+    )
+
+    # The core regression: in football the trailing ``z`` token must NOT
+    # be aliased to women, so qualifier sets stay equal across the
+    # abbreviated and full forms (both empty).
+    assert _team_qualifiers("FK Borac Z", sport="football") == set()
+    assert _team_qualifiers("FK Borac Zvornik", sport="football") == set()
+    assert _team_qualifiers("FK Crvena Zvezda Z", sport="football") == set()
+    assert _team_qualifiers("FK Crvena Zvezda", sport="football") == set()
+
+    # Therefore ``_same_team_context`` accepts these pairs in football, so
+    # they remain eligible for cross-bookmaker pairing and canonical-team
+    # merging — restoring pre-PR behavior.
+    assert _same_team_context("FK Borac Z", "FK Borac Zvornik", sport="football")
+    assert _same_team_context(
+        "FK Crvena Zvezda Z", "FK Crvena Zvezda", sport="football"
+    )
+
+    # Basketball retains the aggressive women-alias semantics that this PR
+    # added (3+ token guard still applies to avoid ``Real Z``-style
+    # collisions).
+    assert _team_qualifiers("Sao Jose Z", sport="basketball") == {"women"}
+    assert _team_qualifiers("Real Z", sport="basketball") == set(), (
+        "Two-token names must not flip to women on a trailing Z."
+    )
+
+    # Sports outside ``_AGGRESSIVE_MERGE_SPORTS`` (and ``sport=None``)
+    # also stay on the conservative path so any future call site that
+    # forgets to pass sport falls back to safe behavior.
+    assert _team_qualifiers("Sao Jose Z") == set()
+    assert _team_qualifiers("Sao Jose Z", sport="tennis") == set()
+
+
+def test_team_qualifiers_wom_alias_does_not_apply_to_football():
+    """Round-2 regression: ``wom`` is also basketball-only. In football the
+    alias is a no-op so legacy pairing behavior is preserved.
+    """
+
+    from app.services.outcome_normalizer import (  # noqa: PLC0415
+        _same_team_context,
+        _team_qualifiers,
+    )
+
+    assert _team_qualifiers("Sao Jose Wom", sport="football") == set()
+    assert _team_qualifiers("Sao Jose Women", sport="football") == {"women"}
+    # Cross-context with sport=None mirrors football (no aggressive aliases
+    # active) so unspecified-sport callers stay on the conservative path.
+    assert _team_qualifiers("Sao Jose Wom") == set()
+    # Basketball still aliases as expected.
+    assert _team_qualifiers("Sao Jose Wom", sport="basketball") == {"women"}
+    assert _same_team_context(
+        "Sao Jose Wom", "Sao Jose Women", sport="basketball"
+    )

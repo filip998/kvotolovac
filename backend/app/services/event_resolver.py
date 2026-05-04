@@ -147,8 +147,10 @@ def _is_unsafe_compound_subset_match(left_name: str, right_name: str) -> bool:
 def _canonical_team_auto_merge_score(
     source_team_name: str,
     target_team_name: str,
+    *,
+    sport: str | None = None,
 ) -> float | None:
-    if not _same_team_context(source_team_name, target_team_name):
+    if not _same_team_context(source_team_name, target_team_name, sport=sport):
         return None
     if _is_unsafe_compound_subset_match(source_team_name, target_team_name):
         return None
@@ -162,13 +164,16 @@ def _same_time_slot_orientation(
     source_slot: SameTimeCanonicalSlot,
     target_slot: SameTimeCanonicalSlot,
 ) -> tuple[tuple[int, int, str, str, float], tuple[int, int, str, str, float]] | None:
+    sport = source_slot.sport
     home_score = _canonical_team_auto_merge_score(
         source_slot.home_team,
         target_slot.home_team,
+        sport=sport,
     )
     away_score = _canonical_team_auto_merge_score(
         source_slot.away_team,
         target_slot.away_team,
+        sport=sport,
     )
     same_orientation = (
         (
@@ -190,10 +195,12 @@ def _same_time_slot_orientation(
     cross_home_score = _canonical_team_auto_merge_score(
         source_slot.home_team,
         target_slot.away_team,
+        sport=sport,
     )
     cross_away_score = _canonical_team_auto_merge_score(
         source_slot.away_team,
         target_slot.home_team,
+        sport=sport,
     )
     cross_orientation = (
         (
@@ -281,6 +288,7 @@ def _contextual_merge_source_ids(case) -> set[int]:
             _canonical_team_auto_merge_score(
                 candidate.team_name,
                 case.suggested_team_name,
+                sport=case.sport,
             )
             is None
         ):
@@ -548,6 +556,16 @@ def _raw_outcome_sources(raw_offers: list[RawOutcomeOffer]) -> list[_RawEventSou
 
 _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE: frozenset[str] = frozenset({"basketball"})
 
+# 2-letter dot-prefixes that overlap heavily with non-team words (street,
+# fort, mount, port, point, doctor, mister, avenue, saint) and would
+# otherwise produce false-positive expansions even within basketball
+# (e.g. ``St.Petersburg`` ↔ ``Stockholm Petersburg``). Keeping these out of
+# the dot-expansion logic preserves the genuine ``Ch.More`` ↔ ``Cherno More``
+# case while blocking the geographic collision class.
+_AMBIGUOUS_DOT_PREFIXES: frozenset[str] = frozenset(
+    {"st", "ft", "mt", "pt", "dr", "mr", "av"}
+)
+
 
 def _expand_dotted_token(name: str, counterpart: str) -> str:
     """Substitute dot-truncated tokens (``Ch.``, ``Pl.``, ``Ch.More``) by an
@@ -559,6 +577,10 @@ def _expand_dotted_token(name: str, counterpart: str) -> str:
     * Token must end with ``.`` and have at least 2 characters of prefix
       (1-letter prefixes are too ambiguous, e.g. ``B.`` could be Bayern,
       Brest, Belgrade, …).
+    * The prefix must not be in ``_AMBIGUOUS_DOT_PREFIXES`` — these short
+      geographic / honorific prefixes (``St``, ``Mt``, ``Ft``, …) collide
+      with real team-name tokens (``Stockholm``, ``Manchester``, ``Fort``,
+      …) and the structural anchor check below cannot disambiguate them.
     * The counterpart must contain exactly one token starting with that
       prefix; ambiguous expansions are dropped.
     * The source name must contain at least one OTHER non-dotted token that
@@ -592,6 +614,9 @@ def _expand_dotted_token(name: str, counterpart: str) -> str:
         if len(prefix) < 2:
             output.append(token)
             continue
+        if prefix in _AMBIGUOUS_DOT_PREFIXES:
+            output.append(token)
+            continue
         candidates = [
             candidate
             for candidate in counterpart_tokens
@@ -605,13 +630,24 @@ def _expand_dotted_token(name: str, counterpart: str) -> str:
     return " ".join(output)
 
 
-def _resolver_team_similarity(left: str, right: str) -> float:
+def _resolver_team_similarity(
+    left: str, right: str, *, sport: str | None = None
+) -> float:
     """Event-resolver-local team similarity that pre-expands dot-truncations.
 
     Equivalent to :func:`_team_similarity` (kept untouched on purpose so
     football paths see no regression) for cases without dotted abbreviations.
+
+    Sport-gated: dot expansion only fires for sports in
+    ``_TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE``. Football has its own
+    pairing flow with stricter handling, and the dot-expansion logic
+    cannot structurally distinguish ``Ch.More`` (basketball — should expand)
+    from ``St.Petersburg`` ↔ ``Stockholm Petersburg`` (football — would
+    incorrectly merge two distinct cities).
     """
 
+    if sport not in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
+        return _team_similarity(left, right)
     expanded_left = _expand_dotted_token(left, right)
     expanded_right = _expand_dotted_token(right, left)
     return _team_similarity(expanded_left, expanded_right)
@@ -622,22 +658,24 @@ def _orientation_scores(
     left_away: str,
     right_home: str,
     right_away: str,
+    *,
+    sport: str | None = None,
 ) -> list[_OrientationScore]:
     scores: list[_OrientationScore] = []
-    if _same_team_context(left_home, right_home) and _same_team_context(left_away, right_away):
+    if _same_team_context(left_home, right_home, sport=sport) and _same_team_context(left_away, right_away, sport=sport):
         scores.append(
             _OrientationScore(
                 orientation="as_listed",
-                home_score=_resolver_team_similarity(left_home, right_home),
-                away_score=_resolver_team_similarity(left_away, right_away),
+                home_score=_resolver_team_similarity(left_home, right_home, sport=sport),
+                away_score=_resolver_team_similarity(left_away, right_away, sport=sport),
             )
         )
-    if _same_team_context(left_home, right_away) and _same_team_context(left_away, right_home):
+    if _same_team_context(left_home, right_away, sport=sport) and _same_team_context(left_away, right_home, sport=sport):
         scores.append(
             _OrientationScore(
                 orientation="reversed",
-                home_score=_resolver_team_similarity(left_home, right_away),
-                away_score=_resolver_team_similarity(left_away, right_home),
+                home_score=_resolver_team_similarity(left_home, right_away, sport=sport),
+                away_score=_resolver_team_similarity(left_away, right_home, sport=sport),
             )
         )
     return sorted(scores, key=lambda score: score.avg_score, reverse=True)
@@ -681,6 +719,7 @@ def _source_match_score(source: _RawEventSource, candidate: EventCandidate) -> f
         source.away_team,
         candidate.home_team,
         candidate.away_team,
+        sport=source.sport,
     )
     if not scores:
         return 0.0
@@ -1035,6 +1074,7 @@ def _group_pair_resolution(
                 left_candidate.away_team,
                 right_candidate.home_team,
                 right_candidate.away_team,
+                sport=left_candidate.sport,
             )
             if not scores:
                 continue
@@ -1183,6 +1223,7 @@ def _event_member_orientation(primary: EventCandidate, member: EventCandidate) -
         primary.away_team,
         member.home_team,
         member.away_team,
+        sport=primary.sport,
     )
     if not scores:
         return "as_listed"
@@ -1326,9 +1367,22 @@ def build_event_resolution_groups(
                         # queue per the user's "few wrong is OK" preference,
                         # so adding a parallel audit row would defeat that
                         # goal and accumulate stale entries every cycle.
+                        left_rep = left.candidates[0] if left.candidates else None
+                        right_rep = right.candidates[0] if right.candidates else None
                         logger.info(
-                            "event_resolver.quorum_override match_ids=%s vs %s "
-                            "score=%.1f weak=%.1f bookmakers=%s vs %s",
+                            "event_resolver.quorum_override "
+                            "sport=%s start_time=%s "
+                            "left_teams=%s vs %s "
+                            "right_teams=%s vs %s "
+                            "match_ids=%s vs %s "
+                            "score=%.1f weak=%.1f "
+                            "bookmakers=%s vs %s",
+                            left_rep.sport if left_rep else "?",
+                            left_rep.start_time if left_rep else "?",
+                            left_rep.home_team if left_rep else "?",
+                            left_rep.away_team if left_rep else "?",
+                            right_rep.home_team if right_rep else "?",
+                            right_rep.away_team if right_rep else "?",
                             sorted(left.match_ids),
                             sorted(right.match_ids),
                             pair.score,

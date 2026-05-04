@@ -40,11 +40,18 @@ _TEAM_QUALIFIER_TOKENS = {
     "u21",
     "u23",
     "w",
-    "wom",
     "women",
     "youth",
-    "z",
 }
+# Extra qualifier tokens / aliases that are only honored for sports in the
+# aggressive-merge allowlist. Keeping them out of the base set avoids
+# regressing pairing for other sports (notably football) where ``z`` is a
+# common Slavic city abbreviation (Zvornik, Zenica, Zemun, Zrenjanin) and
+# ``wom`` is a non-standard form that does not appear in the canonical
+# football registries — collapsing them onto ``women`` there would silently
+# block legitimate same-team pairings.
+_AGGRESSIVE_QUALIFIER_ALIASES = frozenset({"wom", "z"})
+_AGGRESSIVE_MERGE_SPORTS = frozenset({"basketball"})
 _SAME_ORIENTATION = "same"
 _REVERSED_ORIENTATION = "reversed"
 
@@ -125,10 +132,16 @@ def _team_similarity(left: str, right: str) -> float:
     return float(fuzz.token_sort_ratio(left_key, right_key))
 
 
-def _team_qualifiers(name: str) -> set[str]:
+def _team_qualifiers(name: str, *, sport: str | None = None) -> set[str]:
     tokens = normalize_identity_text(name).split()
     qualifiers: set[str] = set()
     youth_ages = {"17", "18", "19", "20", "21", "23"}
+    aggressive = sport in _AGGRESSIVE_MERGE_SPORTS
+    active_qualifier_tokens = (
+        _TEAM_QUALIFIER_TOKENS | _AGGRESSIVE_QUALIFIER_ALIASES
+        if aggressive
+        else _TEAM_QUALIFIER_TOKENS
+    )
 
     def suffix_has_qualifier(start_index: int) -> bool:
         index = start_index
@@ -140,7 +153,7 @@ def _team_qualifiers(name: str) -> set[str]:
                 continue
             if token == "u" and next_token in youth_ages:
                 return True
-            if token in _TEAM_QUALIFIER_TOKENS:
+            if token in active_qualifier_tokens:
                 return True
             index += 1
         return False
@@ -154,7 +167,7 @@ def _team_qualifiers(name: str) -> set[str]:
             if index > 0 and (index == len(tokens) - 1 or next_token == "team" or suffix_has_qualifier(index + 1)):
                 qualifiers.add(token)
             continue
-        if token in {"w", "wom", "z"}:
+        if aggressive and token in {"w", "wom", "z"}:
             # Aliases for the "women" qualifier when they appear as a trailing
             # suffix marker (e.g. "Sao Jose W", "Sao Jose Wom.", "Sao Jose (Ž)"
             # whose normalised form is "sao jose z" after diacritic stripping).
@@ -165,6 +178,12 @@ def _team_qualifiers(name: str) -> set[str]:
             # otherwise be tagged as women's teams purely on the trailing
             # letter while keeping the user-reported "Sao Jose Z" pattern
             # (3 tokens) covered.
+            #
+            # Sport-gated to ``_AGGRESSIVE_MERGE_SPORTS``: the same patterns
+            # collide with city abbreviations in non-target sports (e.g.
+            # football "FK Borac Z" = Zvornik), so for those sports the legacy
+            # behavior is preserved (``w`` → qualifier ``w``; ``wom``/``z``
+            # ignored).
             is_suffix = index > 0 and (
                 index == len(tokens) - 1
                 or next_token in {"team", "women"}
@@ -173,14 +192,14 @@ def _team_qualifiers(name: str) -> set[str]:
             if is_suffix and (token != "z" or len(tokens) >= 3):
                 qualifiers.add("women")
             continue
-        if token not in _TEAM_QUALIFIER_TOKENS:
+        if token not in active_qualifier_tokens:
             continue
         qualifiers.add(token)
     return qualifiers
 
 
-def _same_team_context(left: str, right: str) -> bool:
-    return _team_qualifiers(left) == _team_qualifiers(right)
+def _same_team_context(left: str, right: str, *, sport: str | None = None) -> bool:
+    return _team_qualifiers(left, sport=sport) == _team_qualifiers(right, sport=sport)
 
 
 def _display_name_for_event(*names: str) -> str:
@@ -250,7 +269,7 @@ def _pair_candidates(left: _OutcomeEvent, right: _OutcomeEvent) -> _OutcomeEvent
     if left.bookmaker_id == right.bookmaker_id or left.sport != right.sport or left.start_time != right.start_time:
         return None
     candidates: list[_OutcomeEventPair] = []
-    if _same_team_context(left.home_team, right.home_team) and _same_team_context(left.away_team, right.away_team):
+    if _same_team_context(left.home_team, right.home_team, sport=left.sport) and _same_team_context(left.away_team, right.away_team, sport=left.sport):
         candidates.append(
             _OutcomeEventPair(
                 left=left,
@@ -260,7 +279,7 @@ def _pair_candidates(left: _OutcomeEvent, right: _OutcomeEvent) -> _OutcomeEvent
                 orientation=_SAME_ORIENTATION,
             )
         )
-    if _same_team_context(left.home_team, right.away_team) and _same_team_context(left.away_team, right.home_team):
+    if _same_team_context(left.home_team, right.away_team, sport=left.sport) and _same_team_context(left.away_team, right.home_team, sport=left.sport):
         candidates.append(
             _OutcomeEventPair(
                 left=left,
