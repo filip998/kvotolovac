@@ -298,10 +298,10 @@ def _letter_seq_collapse_compatible(
     Two candidate fingerprints describe the same player when their given-name
     parts are *prefix-compatible at every shared position*. The same physical
     person can appear at many abbreviation depths within a single event —
-    ``Karl-Anthony Towns``, ``K.A. Towns``, ``K. Towns``, even ``K.A.J. Towns``
-    if the bookmaker writes a middle initial — but two players with the same
-    surname playing in the same event whose first-name parts diverge at any
-    position (``C.J.`` vs ``C.K.``) really are different people.
+    ``Karl-Anthony Towns``, ``K.A. Towns``, ``K. Towns`` — but two players
+    with the same surname playing in the same event whose first-name parts
+    diverge at any position (``C.J.`` vs ``C.K.``) really are different
+    people.
 
     Rules, applied symmetrically (call order does not matter; the helper
     reorders by length and treats abbreviation flags as advisory):
@@ -314,12 +314,12 @@ def _letter_seq_collapse_compatible(
       single-letter parts — so coincidental prefixes between two full first
       names (``("jo",)`` vs ``("john",)``) stay distinct.
 
-    * Different length. The shorter side must be all single-letter (a
-      structural abbreviation), and every shorter-side position must be
-      prefix-compatible with the corresponding position of the longer side.
-      This collapses ``("k",)`` ↔ ``("karl","anthony")`` (single initial into
-      a hyphenated full name), ``("c","j")`` ↔ ``("c","j","k")`` (multi-
-      initial extension/contraction), and ``("k",)`` ↔ ``("k","a","j")``
+    * Different length. The SHORTER side (by part count) must be all single-
+      letter (a structural abbreviation), and every shorter-side position
+      must be prefix-compatible with the corresponding position of the longer
+      side. This collapses ``("k",)`` ↔ ``("karl","anthony")`` (single
+      initial into a hyphenated full name), ``("c","j")`` ↔ ``("c","j","k")``
+      (multi-initial extension/contraction), and ``("k",)`` ↔ ``("k","a","j")``
       (single initial into longer abbreviation) — all "same player at a
       different abbreviation depth" within an event. We deliberately do NOT
       gate this on the longer side's abbreviation flag: per the project's
@@ -329,6 +329,16 @@ def _letter_seq_collapse_compatible(
       Mismatched-position cases (``("c","j")`` vs ``("c","k")``) still fail
       the same-length check below; fuzzy near-twins (``("jalen",)`` vs
       ``("jaden",)``) still fail because neither side is an abbreviation.
+
+      Note that the rule keys on the SHORTER side being abbreviated. Pairs
+      like ``("k","a","j")`` (longer, all-initial) vs ``("karl","anthony")``
+      (shorter, full-name) currently return False because the shorter side
+      is not all-single-letter — that scenario simply leaves the bookmaker's
+      three-initial surface unmerged rather than producing an incorrect
+      identity. A separate rival-extension guard inside
+      ``_resolve_contextual_player_name_replacements`` further protects the
+      contraction direction (``raw=C.J.``, ``best=C.``) when the bucket
+      contains a sibling extension that makes ``best`` ambiguous.
     """
 
     if not a or not b:
@@ -775,6 +785,84 @@ def _resolve_contextual_player_name_replacements(
         # fuzzy near-twins (``("jalen",)`` vs ``("jaden",)``) still bail
         # because neither side is an abbreviation. The structural rule
         # therefore subsumes what the directional gate used to enforce.
+
+        # Rival-extension guard. The relaxation above lets ``raw`` contract
+        # into a strictly-shorter all-single-letter ``best`` (e.g.
+        # ``C.J. → C.``) when ``best`` is the only candidate ``raw`` sees.
+        # The diversity guard upstream only inspects ``raw``'s own candidate
+        # set, so a sibling extension that diverges from ``raw`` at a later
+        # position (``C.K.``) never appears in ``raw``'s candidate list — its
+        # first-name letter-sequence fails the same-length per-position
+        # prefix check vs ``raw_seq``. Without this guard, a bucket of
+        # ``{C.(5), C.J.(1), C.K.(1)}`` would silently merge BOTH ``C.J.``
+        # and ``C.K.`` into ``C.`` even though the bucket itself testifies
+        # that ``C.`` is ambiguous between two different players.
+        #
+        # When ``best`` is a strict-shorter contraction of ``raw`` and
+        # ``best_seq`` is all single-letter, scan ``observed_names`` for any
+        # other surface that
+        # (a) shares the surname with ``best`` or ``raw``,
+        # (b) is itself a strict structural extension of ``best_seq`` (longer
+        #     by part count, prefix-compatible at every ``best_seq``
+        #     position), and
+        # (c) is NOT prefix-compatible with ``raw_seq`` via
+        #     ``_letter_seq_collapse_compatible`` (i.e., the rival could be
+        #     the source of ``best``'s contraction but is a different
+        #     identity from ``raw``).
+        # If such a rival exists, ``best`` is ambiguous and the merge is
+        # refused. The extension direction (``raw_seq`` shorter than
+        # ``best_seq``) is already covered by the diversity guard, so this
+        # only fires for contractions.
+        if (
+            best_seq
+            and raw_seq
+            and len(best_seq) < len(raw_seq)
+            and all(len(part) == 1 for part in best_seq)
+        ):
+            best_parts_for_rival = _player_name_parts(best_candidate)
+            best_last_for_rival = (
+                best_parts_for_rival[1] if best_parts_for_rival else ""
+            )
+            raw_is_abbrev_for_rival = (
+                all(len(part) == 1 for part in raw_seq)
+                or _candidate_first_name_has_abbreviation_dot(raw_name)
+            )
+            rival_found = False
+            for other_name in observed_names:
+                if other_name == raw_name or other_name == best_candidate:
+                    continue
+                other_parts = _player_name_parts(other_name)
+                if not other_parts:
+                    continue
+                other_first_tokens, other_last = other_parts
+                if (
+                    other_last != raw_last_name
+                    and other_last != best_last_for_rival
+                ):
+                    continue
+                other_seq = tuple(_first_name_letter_sequence(other_first_tokens))
+                if not other_seq or len(other_seq) <= len(best_seq):
+                    continue
+                if not all(
+                    other_seq[i] and other_seq[i].startswith(best_seq[i])
+                    for i in range(len(best_seq))
+                ):
+                    continue
+                other_is_abbrev = (
+                    all(len(part) == 1 for part in other_seq)
+                    or _candidate_first_name_has_abbreviation_dot(other_name)
+                )
+                if _letter_seq_collapse_compatible(
+                    other_seq,
+                    other_is_abbrev,
+                    raw_seq,
+                    raw_is_abbrev_for_rival,
+                ):
+                    continue
+                rival_found = True
+                break
+            if rival_found:
+                continue
 
         if best_completeness < raw_completeness:
             continue

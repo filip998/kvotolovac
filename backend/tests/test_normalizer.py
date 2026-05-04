@@ -2249,6 +2249,111 @@ def test_normalize_odds_keeps_full_first_name_versus_different_full_name_distinc
     assert names == {"J. Doe", "Joey Adam Doe", "Jerry Allen Doe"}
 
 
+def test_normalize_odds_refuses_contraction_when_bucket_carries_rival_extension():
+    """Round-2 review regression: under the relaxed abbreviation rules, a
+    bucket of ``{C.(5), C.J.(1), C.K.(1)}`` could silently merge BOTH
+    ``C.J.`` and ``C.K.`` into ``C.`` because the diversity guard only sees
+    each raw's own candidates — ``C.J.`` and ``C.K.`` never appear as
+    candidates for each other (their position-1 first-name initials diverge),
+    and each independently picks ``C.`` as best with no rival in sight. The
+    rival-extension guard inside ``_resolve_contextual_player_name_replacements``
+    catches that case: when ``best`` is a strict-shorter all-single-letter
+    contraction of ``raw``, the resolver scans the bucket for any other
+    surface that is a structural extension of ``best`` but incompatible with
+    ``raw``. Here ``C.K.`` is a rival extension of ``C.`` from ``C.J.``'s
+    perspective (and vice-versa), so neither contraction fires and all three
+    surfaces stay distinct."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="admiralbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="superbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C.J. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="Chicago Bulls",
+            away_team="New York Knicks",
+            market_type="player_points",
+            player_name="C.K. McCollum",
+            threshold=15.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-11T01:30:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = sorted({offer.player_name for offer in normalized})
+    assert names == ["C. McCollum", "C.J. McCollum", "C.K. McCollum"]
+
+
 def test_normalize_odds_does_not_merge_different_players_with_swapped_tokens():
     raw = [
         RawOddsData(
