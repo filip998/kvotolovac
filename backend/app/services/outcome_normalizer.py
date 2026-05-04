@@ -448,13 +448,60 @@ def _oriented_pair_team_names(
     )
 
 
-def _pair_has_matching_women_context(pair: _OutcomeEventPair) -> bool:
+def _oriented_pair_team_ids(
+    pair: _OutcomeEventPair,
+    left_resolution: _OutcomeEventResolution,
+    right_resolution: _OutcomeEventResolution,
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    if pair.orientation == _SAME_ORIENTATION:
+        return (
+            (left_resolution.slot.home_team_id, right_resolution.slot.home_team_id),
+            (left_resolution.slot.away_team_id, right_resolution.slot.away_team_id),
+        )
+    return (
+        (left_resolution.slot.home_team_id, right_resolution.slot.away_team_id),
+        (left_resolution.slot.away_team_id, right_resolution.slot.home_team_id),
+    )
+
+
+def _pair_has_compatible_women_context(
+    pair: _OutcomeEventPair,
+    *,
+    oriented_team_ids: tuple[tuple[int, int], tuple[int, int]] | None = None,
+) -> bool:
+    has_women_pair = False
+    for index, (left_name, right_name) in enumerate(_oriented_pair_team_names(pair)):
+        left_qualifiers = _team_qualifiers(left_name, sport=pair.left.sport)
+        right_qualifiers = _team_qualifiers(right_name, sport=pair.left.sport)
+        if left_qualifiers != right_qualifiers:
+            return False
+        if "women" in left_qualifiers:
+            has_women_pair = True
+            continue
+        left_text = _comparison_team_text(left_name, sport=pair.left.sport)
+        right_text = _comparison_team_text(right_name, sport=pair.left.sport)
+        if left_text == right_text:
+            continue
+        if (
+            oriented_team_ids is not None
+            and oriented_team_ids[index][0] == oriented_team_ids[index][1]
+        ):
+            continue
+        return False
+    return has_women_pair
+
+
+def _pair_has_women_marker_variation(pair: _OutcomeEventPair) -> bool:
     for left_name, right_name in _oriented_pair_team_names(pair):
         left_qualifiers = _team_qualifiers(left_name, sport=pair.left.sport)
         right_qualifiers = _team_qualifiers(right_name, sport=pair.left.sport)
-        if left_qualifiers != right_qualifiers or "women" not in left_qualifiers:
-            return False
-    return True
+        if (
+            left_qualifiers == right_qualifiers
+            and "women" in left_qualifiers
+            and normalize_identity_text(left_name) != normalize_identity_text(right_name)
+        ):
+            return True
+    return False
 
 
 def _rank_event_pairs(events: list[_OutcomeEvent]) -> list[_OutcomeEventPair]:
@@ -464,12 +511,14 @@ def _rank_event_pairs(events: list[_OutcomeEvent]) -> list[_OutcomeEventPair]:
 
     accepted: list[_OutcomeEventPair] = []
     for events in events_by_slot.values():
+        all_pairs: list[_OutcomeEventPair] = []
         candidates_by_event: dict[_OutcomeEvent, list[_OutcomeEventPair]] = defaultdict(list)
         for idx, left in enumerate(events):
             for right in events[idx + 1 :]:
                 pair = _pair_candidates(left, right)
                 if pair is None:
                     continue
+                all_pairs.append(pair)
                 candidates_by_event[left].append(pair)
                 candidates_by_event[right].append(pair)
 
@@ -490,6 +539,14 @@ def _rank_event_pairs(events: list[_OutcomeEvent]) -> list[_OutcomeEventPair]:
                 continue
             if best not in accepted:
                 accepted.append(best)
+
+        for pair in all_pairs:
+            if (
+                _pair_has_compatible_women_context(pair)
+                and _pair_has_women_marker_variation(pair)
+                and pair not in accepted
+            ):
+                accepted.append(pair)
 
     return sorted(accepted, key=lambda item: item.score, reverse=True)
 
@@ -523,7 +580,14 @@ def _build_football_event_resolutions(
                     ),
                 )
                 continue
-            if _pair_has_matching_women_context(pair):
+            if _pair_has_compatible_women_context(
+                pair,
+                oriented_team_ids=_oriented_pair_team_ids(
+                    pair,
+                    left_resolution,
+                    right_resolution,
+                ),
+            ):
                 resolutions[right_key] = _OutcomeEventResolution(
                     slot=left_resolution.slot,
                     orientation=_orientation_from_pair(
