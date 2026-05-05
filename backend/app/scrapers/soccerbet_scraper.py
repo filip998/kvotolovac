@@ -9,7 +9,7 @@ from typing import Literal
 from .base import BaseScraper
 from .http_client import HttpClient
 from ..config import settings
-from ..models.schemas import RawOddsData
+from ..models.schemas import RawOddsData, RawOutcomeOffer
 from ..services.scrape_window import current_utc_time, lookahead_cutoff
 from ..services.text_normalizer import normalize_identity_text
 
@@ -27,6 +27,7 @@ _PLAYER_PREVIEW_URL = (
 )
 _ALL_GAMES_URL = "https://www.soccerbet.rs/restapi/offer/sr/sport/B/mob"
 _ALL_PLAYERS_URL = "https://www.soccerbet.rs/restapi/offer/sr/ext/sport/B/PL/mob"
+_FOOTBALL_GAMES_URL = "https://www.soccerbet.rs/restapi/offer/sr/sport/S/mob"
 _DETAIL_URL = "https://www.soccerbet.rs/restapi/offer/sr/match-by-code/{match_code}"
 
 _DEFAULT_HEADERS: dict[str, str] = {
@@ -115,6 +116,18 @@ _GAME_TOTAL_LINES: tuple[ThresholdLine, ...] = (
     ThresholdLine(227, 228, "game_total"),
     ThresholdLine(50445, 50444, "game_total_ot"),
 )
+
+_FOOTBALL_OUTCOME_CODES: dict[str, tuple[str, str, float | None, str]] = {
+    "1": ("football_result", "home", None, "1"),
+    "2": ("football_result", "draw", None, "X"),
+    "3": ("football_result", "away", None, "2"),
+    "7": ("football_double_chance", "home_or_draw", None, "1X"),
+    "8": ("football_double_chance", "home_or_away", None, "12"),
+    "9": ("football_double_chance", "draw_or_away", None, "X2"),
+    # SoccerBet football exposes the 2.5 total as fixed "0-2" / "3+" picks.
+    "22": ("football_total_goals", "under", 2.5, "0-2"),
+    "24": ("football_total_goals", "over", 2.5, "3+"),
+}
 
 # OT-inclusive Asian handicap (full game). SoccerBet's existing basketball
 # list calls (/restapi/offer/sr/sport/B/mob and per-league preview) already
@@ -214,10 +227,14 @@ def _normalize_league_key(raw_league_name: str | None) -> str:
     return normalized
 
 
-def _extract_league_id(raw_league_name: str | None) -> str:
+def _extract_league_id(
+    raw_league_name: str | None,
+    *,
+    default: str = "basketball",
+) -> str:
     normalized = _normalize_league_key(raw_league_name)
     if not normalized:
-        return "basketball"
+        return default
     return _CANONICAL_LEAGUES.get(normalized, normalized.replace(" ", "_"))
 
 
@@ -356,6 +373,44 @@ def _parse_regular_match(match: dict) -> list[RawOddsData]:
     return results
 
 
+def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return []
+
+    bet_map = match.get("betMap") or {}
+    if not isinstance(bet_map, dict):
+        return []
+
+    league_id = _extract_league_id(match.get("leagueName"), default="football")
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    results: list[RawOutcomeOffer] = []
+
+    for code, (market_type, outcome_code, line, raw_label) in _FOOTBALL_OUTCOME_CODES.items():
+        for entry in _iter_group_entries(bet_map, int(code)):
+            odds = _parse_float(entry.get("ov"))
+            if odds is None or odds <= 0:
+                continue
+            results.append(
+                RawOutcomeOffer(
+                    bookmaker_id=_BOOKMAKER_ID,
+                    league_id=league_id,
+                    sport="football",
+                    home_team=home_team,
+                    away_team=away_team,
+                    market_type=market_type,
+                    outcome_code=outcome_code,
+                    odds=odds,
+                    line=line,
+                    raw_label=raw_label,
+                    start_time=start_time,
+                )
+            )
+
+    return results
+
+
 def _parse_player_match(
     match: dict,
     matchup_by_super_code: dict[int, MatchContext],
@@ -441,6 +496,9 @@ class SoccerBetScraper(BaseScraper):
 
     def get_supported_leagues(self) -> list[str]:
         return ["basketball"]
+
+    def get_supported_outcome_sports(self) -> list[str]:
+        return ["football"]
 
     async def _fetch_groups(self) -> list[str]:
         try:
@@ -553,6 +611,9 @@ class SoccerBetScraper(BaseScraper):
 
     async def _fetch_all_player_preview(self) -> list[dict]:
         return await self._fetch_preview_rows(_ALL_PLAYERS_URL)
+
+    async def _fetch_football_preview(self) -> list[dict]:
+        return await self._fetch_preview_rows(_FOOTBALL_GAMES_URL)
 
     async def _fetch_detail(self, match_code: int, semaphore: asyncio.Semaphore) -> dict | None:
         async with semaphore:
@@ -671,3 +732,19 @@ class SoccerBetScraper(BaseScraper):
             self._detail_mode,
         )
         return all_results
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        if sport != "football":
+            return []
+
+        football_matches = await self._fetch_football_preview()
+        results: list[RawOutcomeOffer] = []
+        for match in football_matches:
+            results.extend(_parse_football_outcome_match(match))
+
+        logger.info(
+            "SoccerBet scraped %d football outcome offers from %d previews",
+            len(results),
+            len(football_matches),
+        )
+        return results

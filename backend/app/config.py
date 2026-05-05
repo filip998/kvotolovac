@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     cors_origins: str = "*"
     bookmakers: str = "mozzart,maxbet,oktagonbet,meridian,admiralbet,balkanbet,merkurxtip,pinnbet,soccerbet,superbet,betole,365,volcanobet"
-    enabled_sports: str = "basketball"
+    enabled_sports: str = "basketball,football"
     # player_props = skip outcome-offer lanes and persist/analyze player_* thresholds.
     scrape_market_scope: Literal["all", "player_props"] = "all"
     # Empty = use scrape_market_scope compatibility behavior; "all" = no filtering.

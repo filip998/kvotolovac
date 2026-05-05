@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -10,6 +12,7 @@ from app.scrapers.soccerbet_scraper import (
     _ALL_GAMES_URL,
     _ALL_PLAYERS_URL,
     _DETAIL_URL,
+    _FOOTBALL_GAMES_URL,
     _GROUPS_URL,
     _GROUP_LEAGUES_URL,
     _LEAGUE_PREVIEW_URL,
@@ -17,6 +20,7 @@ from app.scrapers.soccerbet_scraper import (
     _build_matchup_index,
     _extract_league_id,
     _parse_handicap_spec,
+    _parse_football_outcome_match,
     _parse_player_match,
     _parse_regular_match,
 )
@@ -45,6 +49,7 @@ def _group_with_status(tt: int, *entries: tuple[str, float, str]) -> dict[str, d
 
 
 KICKOFF_MS = int((datetime.now(tz=timezone.utc) + timedelta(hours=2)).timestamp() * 1000)
+FOOTBALL_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "soccerbet_football_offer.json"
 
 REGULAR_PREVIEW_MATCH = {
     "id": 514392889,
@@ -157,6 +162,11 @@ GROUP_LEAGUES_RESPONSE = {
 }
 
 
+def _football_fixture_data() -> dict:
+    with FOOTBALL_FIXTURE_PATH.open() as f:
+        return json.load(f)
+
+
 def test_extract_league_id_strips_players_suffix():
     assert _extract_league_id("NBA Play off Igrači") == "nba"
 
@@ -180,6 +190,55 @@ def test_parse_regular_match_detail_returns_both_total_types():
 
     assert {row.market_type for row in results} == {"game_total", "game_total_ot"}
     assert {row.threshold for row in results if row.market_type == "game_total"} == {208.5}
+
+
+def test_parse_football_outcome_match_from_live_fixture_emits_target_markets():
+    match = _football_fixture_data()["esMatches"][0]
+
+    results = _parse_football_outcome_match(match)
+
+    assert len(results) == 8
+    assert {row.bookmaker_id for row in results} == {"soccerbet"}
+    assert {row.sport for row in results} == {"football"}
+    assert {row.league_id for row in results} == {"etiopija_1"}
+    assert {row.home_team for row in results} == {"Shire Endaselassie"}
+    assert {row.away_team for row in results} == {"Ethio Electric"}
+    assert {row.start_time for row in results} == {"2026-05-05T15:00:00+00:00"}
+    assert {(row.market_type, row.outcome_code, row.line, row.raw_label) for row in results} == {
+        ("football_result", "home", None, "1"),
+        ("football_result", "draw", None, "X"),
+        ("football_result", "away", None, "2"),
+        ("football_double_chance", "home_or_draw", None, "1X"),
+        ("football_double_chance", "home_or_away", None, "12"),
+        ("football_double_chance", "draw_or_away", None, "X2"),
+        ("football_total_goals", "under", 2.5, "0-2"),
+        ("football_total_goals", "over", 2.5, "3+"),
+    }
+
+
+def test_parse_football_outcome_match_skips_locked_or_invalid_entries():
+    match = {
+        "home": "Team A",
+        "away": "Team B",
+        "leagueName": "Test Football",
+        "kickOffTime": 1777993200000,
+        "betMap": {
+            "9": _group_with_status(9, ("NULL", 1.42, "L")),
+            "22": _group_with_status(22, ("NULL", 1.78, "U")),
+            "24": _group_with_status(24, ("NULL", 0.0, "U")),
+        },
+    }
+
+    results = _parse_football_outcome_match(match)
+
+    assert [(row.market_type, row.outcome_code, row.odds) for row in results] == [
+        ("football_total_goals", "under", 1.78),
+    ]
+
+
+def test_parse_football_outcome_match_skips_invalid_shape():
+    assert _parse_football_outcome_match({}) == []
+    assert _parse_football_outcome_match({"home": "Team A", "away": "Team B", "betMap": []}) == []
 
 
 # ── Handicap (+OT) parsing ──────────────────────────────────────────────
@@ -418,6 +477,40 @@ async def test_scrape_odds_partial_mode_uses_broad_preview_feeds_only():
     called_urls = [call.args[0] for call in http_client.get_json.call_args_list]
     assert set(called_urls) == {_ALL_GAMES_URL, _ALL_PLAYERS_URL}
     assert len(called_urls) == 2
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_uses_football_preview_feed():
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del params, headers
+        if url == _FOOTBALL_GAMES_URL:
+            return _football_fixture_data()
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    http_client = AsyncMock()
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = SoccerBetScraper(http_client=http_client)
+    results = await scraper.scrape_outcome_offers("football")
+
+    assert len(results) == 8
+    assert {row.market_type for row in results} == {
+        "football_result",
+        "football_double_chance",
+        "football_total_goals",
+    }
+    assert [call.args[0] for call in http_client.get_json.call_args_list] == [
+        _FOOTBALL_GAMES_URL,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_ignores_non_football_sport():
+    http_client = AsyncMock()
+    scraper = SoccerBetScraper(http_client=http_client)
+
+    assert await scraper.scrape_outcome_offers("basketball") == []
+    http_client.get_json.assert_not_called()
 
 
 @pytest.mark.asyncio

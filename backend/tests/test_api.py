@@ -151,6 +151,8 @@ async def test_get_scrape_settings_defaults(client: AsyncClient):
     assert resp.status_code == 200
     data = resp.json()
     assert data["applied"]["scrape_market_scope"] == settings.scrape_market_scope
+    assert data["applied"]["enabled_sports"] == settings.enabled_sport_list
+    assert "football" in data["defaults"]["enabled_sports"]
     assert data["applied"]["analysis_markets"] == ["all"]
     assert data["applied"]["scrape_interval_minutes"] == settings.scrape_interval_minutes
     assert data["defaults"]["scrape_market_scope"] == settings.scrape_market_scope
