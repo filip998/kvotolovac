@@ -1,0 +1,25 @@
+{
+  "id": "S",
+  "name": "Fudbal",
+  "type": "SPORT",
+  "esMatches": [
+    {
+      "id": 133099706,
+      "matchCode": 1001,
+      "leagueName": "Eredivisie",
+      "home": "Waalwijk",
+      "away": "Willem II",
+      "kickOffTime": 1777999500000,
+      "odds": {
+        "1": 2.27,
+        "2": 3.35,
+        "3": 3.05,
+        "7": 1.35,
+        "8": 1.3,
+        "9": 1.6,
+        "22": 2.03,
+        "24": 1.73
+      }
+    }
+  ]
+}

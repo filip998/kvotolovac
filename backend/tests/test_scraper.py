@@ -5,7 +5,7 @@ import pytest
 from app.scrapers.base import BaseScraper
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import ScraperRegistry
-from app.models.schemas import RawOddsData
+from app.models.schemas import RawOddsData, RawOutcomeOffer
 
 
 @pytest.mark.asyncio
@@ -58,6 +58,27 @@ async def test_mock_scraper_supports_365():
     assert scraper.get_bookmaker_name() == "365"
     assert len(data) > 0
     assert all(item.bookmaker_id == "365" for item in data)
+
+
+@pytest.mark.asyncio
+async def test_mock_scraper_supports_merkurxtip():
+    scraper = MockScraper("merkurxtip")
+    data = await scraper.scrape_odds("euroleague")
+
+    assert scraper.get_bookmaker_name() == "MERKUR X TIP"
+    assert len(data) > 0
+    assert all(item.bookmaker_id == "merkurxtip" for item in data)
+
+
+@pytest.mark.asyncio
+async def test_mock_scraper_supports_merkurxtip_football_outcomes():
+    scraper = MockScraper("merkurxtip")
+    data = await scraper.scrape_outcome_offers("football")
+
+    assert scraper.get_supported_outcome_sports() == ["football"]
+    assert len(data) > 0
+    assert all(isinstance(item, RawOutcomeOffer) for item in data)
+    assert all(item.bookmaker_id == "merkurxtip" for item in data)
 
 
 @pytest.mark.asyncio
