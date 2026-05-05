@@ -11,16 +11,18 @@ from app.scrapers.merkurxtip_scraper import (
     _parse_match_detail,
     _parse_game_total_ot_match,
     _parse_handicap_ot_match,
+    _parse_football_outcome_match,
     _get_player_matches,
     _get_total_match_ids,
     _parse_start_time,
     _extract_league_id,
 )
-from app.models.schemas import RawOddsData
+from app.models.schemas import RawOddsData, RawOutcomeOffer
 
 LEAGUE_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "merkurxtip_league.json"
 MATCH_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "merkurxtip_match.json"
 TOTALS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "merkurxtip_game_total_ot.json"
+FOOTBALL_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "merkurxtip_football_offer.json"
 
 
 @pytest.fixture
@@ -38,6 +40,12 @@ def match_data() -> dict:
 @pytest.fixture
 def totals_data() -> dict:
     with open(TOTALS_FIXTURE_PATH) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def football_data() -> dict:
+    with open(FOOTBALL_FIXTURE_PATH) as f:
         return json.load(f)
 
 
@@ -574,6 +582,62 @@ def test_parse_game_total_ot_match_does_not_emit_handicap_after_change():
     assert _parse_game_total_ot_match(match) == []
 
 
+# ── Football outcome offers ────────────────────────────────
+
+
+def test_parse_football_outcome_match_emits_mvp_markets(football_data):
+    results = _parse_football_outcome_match(football_data["esMatches"][0])
+
+    assert len(results) == 8
+    assert all(isinstance(r, RawOutcomeOffer) for r in results)
+    assert {r.bookmaker_id for r in results} == {"merkurxtip"}
+    assert {r.sport for r in results} == {"football"}
+    assert {r.league_id for r in results} == {"eredivisie"}
+    assert {r.home_team for r in results} == {"Waalwijk"}
+    assert {r.away_team for r in results} == {"Willem II"}
+    assert {r.start_time for r in results} == {"2026-05-05T16:45:00+00:00"}
+    assert {
+        (r.market_type, r.outcome_code, r.line, r.raw_label, r.odds)
+        for r in results
+    } == {
+        ("football_result", "home", None, "1", 2.27),
+        ("football_result", "draw", None, "X", 3.35),
+        ("football_result", "away", None, "2", 3.05),
+        ("football_double_chance", "home_or_draw", None, "1X", 1.35),
+        ("football_double_chance", "home_or_away", None, "12", 1.30),
+        ("football_double_chance", "draw_or_away", None, "X2", 1.60),
+        ("football_total_goals", "under", 2.5, "0-2", 2.03),
+        ("football_total_goals", "over", 2.5, "3+", 1.73),
+    }
+
+
+def test_parse_football_outcome_match_skips_invalid_rows():
+    base_match = {
+        "home": "Home",
+        "away": "Away",
+        "leagueName": "Test League",
+        "kickOffTime": 1777999500000,
+        "odds": {
+            "1": 0,
+            "2": -1,
+            "3": "bad",
+            "7": 1.55,
+        },
+    }
+
+    results = _parse_football_outcome_match(base_match)
+
+    assert len(results) == 1
+    assert results[0].market_type == "football_double_chance"
+    assert results[0].outcome_code == "home_or_draw"
+
+
+def test_parse_football_outcome_match_requires_teams_and_odds_map():
+    assert _parse_football_outcome_match({"away": "Away", "odds": {"1": 1.9}}) == []
+    assert _parse_football_outcome_match({"home": "Home", "odds": {"1": 1.9}}) == []
+    assert _parse_football_outcome_match({"home": "Home", "away": "Away", "odds": []}) == []
+
+
 # ── Integration: MerkurXTipScraper with mocked HTTP ──────
 
 
@@ -653,6 +717,39 @@ async def test_scraper_interface():
     assert scraper.get_bookmaker_id() == "merkurxtip"
     assert scraper.get_bookmaker_name() == "MERKUR X TIP"
     assert "basketball" in scraper.get_supported_leagues()
+    assert scraper.get_supported_outcome_sports() == ["football"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_football_uses_sport_listing(football_data):
+    scraper = MerkurXTipScraper()
+    calls: list[tuple[str, dict]] = []
+
+    async def mock_get(url, **kwargs):
+        calls.append((url, kwargs.get("params", {})))
+        if url.endswith("/sport/S/mob"):
+            return football_data
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_outcome_offers("football")
+
+    assert len(results) == 8
+    assert all(isinstance(r, RawOutcomeOffer) for r in results)
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/sport/S/mob")
+    assert calls[0][1]["hours"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_non_football_returns_empty():
+    scraper = MerkurXTipScraper()
+
+    with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get:
+        results = await scraper.scrape_outcome_offers("basketball")
+
+    assert results == []
+    mock_get.assert_not_called()
 
 
 @pytest.mark.asyncio

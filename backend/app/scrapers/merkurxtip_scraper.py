@@ -11,12 +11,13 @@ from typing import Literal
 from .base import BaseScraper
 from .http_client import HttpClient
 from ..config import settings
-from ..models.schemas import RawOddsData
+from ..models.schemas import RawOddsData, RawOutcomeOffer
 
 logger = logging.getLogger(__name__)
 
 _PLAYER_LIST_URL = "https://www.merkurxtip.rs/restapi/offer/sr/sport/SK/league-group/166/mob"
 _TOTALS_LIST_URL = "https://www.merkurxtip.rs/restapi/offer/sr/sport/B/mob"
+_FOOTBALL_GAMES_URL = "https://www.merkurxtip.rs/restapi/offer/sr/sport/S/mob"
 _LEAGUE_URL = "https://www.merkurxtip.rs/restapi/offer/sr/sport/SK/league/{league_id}/mob"
 _MATCH_URL = "https://www.merkurxtip.rs/restapi/offer/sr/match/{match_id}"
 
@@ -144,6 +145,18 @@ _HANDICAP_OT_LINES: list[tuple[str, str, str]] = [
     ("50430", "50431", "handicapOvertime"),
 ]
 
+_FOOTBALL_OUTCOME_CODES: dict[str, tuple[str, str, float | None, str]] = {
+    "1": ("football_result", "home", None, "1"),
+    "2": ("football_result", "draw", None, "X"),
+    "3": ("football_result", "away", None, "2"),
+    "7": ("football_double_chance", "home_or_draw", None, "1X"),
+    "8": ("football_double_chance", "home_or_away", None, "12"),
+    "9": ("football_double_chance", "draw_or_away", None, "X2"),
+    # MerkurXTip football exposes the 2.5 total as fixed "0-2" / "3+" picks.
+    "22": ("football_total_goals", "under", 2.5, "0-2"),
+    "24": ("football_total_goals", "over", 2.5, "3+"),
+}
+
 _KNOWN_LEAGUE_IDS: list[int] = [
     2314461,  # NBA Igrači
     2314422,  # ACB Igrači
@@ -159,12 +172,12 @@ def _parse_start_time(epoch_ms: int | None) -> str | None:
     return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).isoformat()
 
 
-def _extract_league_id(league_name: str) -> str:
+def _extract_league_id(league_name: str, *, default: str = "basketball") -> str:
     """Extract a canonical league ID from league name by stripping 'igrači' suffix.
 
     'ACB Igrači' → 'acb'
     'NBA Igrači' → 'nba'
-    'Igrači'     → 'basketball'
+    'Igrači'     → default
     """
     lower = league_name.lower()
     idx = lower.find("igrači")
@@ -172,7 +185,17 @@ def _extract_league_id(league_name: str) -> str:
         raw = lower[:idx].strip()
     else:
         raw = lower.strip()
-    return raw or "basketball"
+    return raw or default
+
+
+def _coerce_positive_odds(value: object) -> float | None:
+    try:
+        odds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if odds <= 0:
+        return None
+    return odds
 
 
 _REVERSED_NAME_RE = re.compile(
@@ -385,6 +408,43 @@ def _parse_handicap_ot_match(match: dict) -> list[RawOddsData]:
     return results
 
 
+def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return []
+
+    odds_map = match.get("odds") or {}
+    if not isinstance(odds_map, dict):
+        return []
+
+    league_id = _extract_league_id(match.get("leagueName", ""), default="football")
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    results: list[RawOutcomeOffer] = []
+
+    for code, (market_type, outcome_code, line, raw_label) in _FOOTBALL_OUTCOME_CODES.items():
+        odds = _coerce_positive_odds(odds_map.get(code))
+        if odds is None:
+            continue
+        results.append(
+            RawOutcomeOffer(
+                bookmaker_id="merkurxtip",
+                league_id=league_id,
+                sport="football",
+                home_team=home_team,
+                away_team=away_team,
+                market_type=market_type,
+                outcome_code=outcome_code,
+                odds=odds,
+                line=line,
+                raw_label=raw_label,
+                start_time=start_time,
+            )
+        )
+
+    return results
+
+
 def _get_player_matches(matches: list[dict]) -> list[dict]:
     """Extract player-prop matches whose list payload already contains parseable odds."""
     player_matches: list[dict] = []
@@ -462,6 +522,9 @@ class MerkurXTipScraper(BaseScraper):
     def get_supported_leagues(self) -> list[str]:
         return ["basketball"]
 
+    def get_supported_outcome_sports(self) -> list[str]:
+        return ["football"]
+
     async def _fetch_match_detail(
         self,
         match_id: int,
@@ -508,6 +571,22 @@ class MerkurXTipScraper(BaseScraper):
             return []
 
         return data.get("esMatches", [])
+
+    async def _fetch_football_matches(self) -> list[dict]:
+        try:
+            data = await self._http.get_json(
+                _FOOTBALL_GAMES_URL,
+                params=_list_params(),
+                headers=_DEFAULT_HEADERS,
+            )
+        except Exception:
+            logger.warning("MerkurXTip: failed to fetch football listing")
+            return []
+
+        matches = data.get("esMatches", [])
+        if not isinstance(matches, list):
+            return []
+        return [match for match in matches if isinstance(match, dict)]
 
     async def _fetch_league(self, league_id: int) -> list[dict]:
         """Fetch a legacy league listing and return list-parseable player matches."""
@@ -626,5 +705,21 @@ class MerkurXTipScraper(BaseScraper):
             len(total_match_ids),
             self._detail_mode,
             concurrency,
+        )
+        return results
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        if sport != "football":
+            return []
+
+        football_matches = await self._fetch_football_matches()
+        results: list[RawOutcomeOffer] = []
+        for match in football_matches:
+            results.extend(_parse_football_outcome_match(match))
+
+        logger.info(
+            "MerkurXTip scraped %d football outcome offers from %d matches",
+            len(results),
+            len(football_matches),
         )
         return results
