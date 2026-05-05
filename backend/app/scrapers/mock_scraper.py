@@ -330,6 +330,19 @@ _FOOTBALL_OUTCOME_MARKETS: dict[str, list[dict]] = {
         {"game": 1, "market": "football_total_goals", "outcome": "under", "odds": 1.78, "line": 2.5, "label": "0-2"},
         {"game": 1, "market": "football_total_goals", "outcome": "over", "odds": 2.16, "line": 2.5, "label": "3+"},
     ],
+    "365": [
+        {"game": 0, "market": "football_result", "outcome": "home", "odds": 2.38, "label": "1"},
+        {"game": 0, "market": "football_result", "outcome": "draw", "odds": 3.20, "label": "X"},
+        {"game": 0, "market": "football_result", "outcome": "away", "odds": 2.60, "label": "2"},
+        {"game": 0, "market": "football_double_chance", "outcome": "home_or_draw", "odds": 1.40, "label": "1X"},
+        {"game": 0, "market": "football_double_chance", "outcome": "home_or_away", "odds": 1.27, "label": "12"},
+        {"game": 0, "market": "football_double_chance", "outcome": "draw_or_away", "odds": 1.46, "label": "X2"},
+        {"game": 0, "market": "football_total_goals", "outcome": "under", "odds": 2.04, "line": 2.5, "label": "0-2"},
+        {"game": 0, "market": "football_total_goals", "outcome": "over", "odds": 1.85, "line": 2.5, "label": "3+"},
+        {"game": 1, "market": "football_double_chance", "outcome": "draw_or_away", "odds": 1.49, "label": "X2"},
+        {"game": 1, "market": "football_total_goals", "outcome": "under", "odds": 1.74, "line": 2.5, "label": "0-2"},
+        {"game": 1, "market": "football_total_goals", "outcome": "over", "odds": 2.20, "line": 2.5, "label": "3+"},
+    ],
 }
 
 
