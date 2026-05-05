@@ -9,17 +9,24 @@ import pytest
 
 from app.scrapers.betole_scraper import (
     BetOleScraper,
+    _FOOTBALL_DETAIL_URL_TEMPLATE,
+    _FOOTBALL_LIST_URL,
     _PLAYER_FEED_URL,
     _REGULAR_FEED_URL,
     _build_matchup_index,
     _extract_league_id,
+    _parse_football_double_chance_detail_match,
+    _parse_football_outcome_match,
     _parse_handicap_match,
     _parse_player_match,
     _parse_regular_match,
 )
+from app.models.schemas import RawOutcomeOffer
 
 REGULAR_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "betole_regular_league.json"
 PLAYER_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "betole_players_league.json"
+FOOTBALL_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "betole_football_offer.json"
+FOOTBALL_DETAIL_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "betole_football_match.json"
 
 EXTRA_REGULAR_LEAGUE = {
     "id": "2265038",
@@ -384,3 +391,279 @@ async def test_scrape_odds_builds_player_matchups_from_matched_regular_leagues(
     assert {(row.home_team, row.away_team, row.league_id) for row in player_rows} == {
         ("Detroit Pistons", "Orlando Magic", "nba")
     }
+
+
+@pytest.fixture
+def football_list_data() -> dict:
+    with open(FOOTBALL_FIXTURE_PATH) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def football_detail_data() -> dict:
+    with open(FOOTBALL_DETAIL_FIXTURE_PATH) as f:
+        return json.load(f)
+
+
+def test_parse_football_outcome_match_emits_result_and_totals(football_list_data):
+    results = _parse_football_outcome_match(football_list_data["esMatches"][0])
+
+    assert len(results) == 5
+    assert all(isinstance(r, RawOutcomeOffer) for r in results)
+    assert {r.bookmaker_id for r in results} == {"betole"}
+    assert {r.sport for r in results} == {"football"}
+    assert {r.league_id for r in results} == {"saudi_arabia_saudi_professional_league"}
+    assert {r.home_team for r in results} == {"Al Khaleej"}
+    assert {r.away_team for r in results} == {"Al Hilal Riyadh"}
+    assert {r.start_time for r in results} == {"2026-05-05T18:00:00+00:00"}
+    assert {
+        (r.market_type, r.outcome_code, r.line, r.raw_label, r.odds)
+        for r in results
+    } == {
+        ("football_result", "home", None, "1", 7.6),
+        ("football_result", "draw", None, "X", 5.5),
+        ("football_result", "away", None, "2", 1.26),
+        ("football_total_goals", "under", 2.5, "0-2", 2.93),
+        ("football_total_goals", "over", 2.5, "3+", 1.35),
+    }
+
+
+def test_parse_football_double_chance_detail_match_emits_double_chance(football_detail_data):
+    results = _parse_football_double_chance_detail_match(football_detail_data)
+
+    assert len(results) == 3
+    assert all(r.market_type == "football_double_chance" for r in results)
+    assert {r.sport for r in results} == {"football"}
+    assert {r.bookmaker_id for r in results} == {"betole"}
+    assert {
+        (r.outcome_code, r.raw_label, r.odds)
+        for r in results
+    } == {
+        ("home_or_draw", "1X", 3.2),
+        ("home_or_away", "12", 1.1),
+        ("draw_or_away", "X2", 1.04),
+    }
+
+
+def test_parse_football_outcome_match_skips_invalid_rows():
+    match = {
+        "home": "Home",
+        "away": "Away",
+        "leagueName": "Test League",
+        "kickOffTime": 1778002200000,
+        "odds": {
+            "1": 0,
+            "2": -1,
+            "3": "bad",
+            "22": 2.05,
+        },
+    }
+
+    results = _parse_football_outcome_match(match)
+
+    assert len(results) == 1
+    assert results[0].market_type == "football_total_goals"
+    assert results[0].outcome_code == "under"
+
+
+def test_parse_football_outcome_match_requires_teams_and_odds_map():
+    assert _parse_football_outcome_match({"away": "Away", "odds": {"1": 1.9}}) == []
+    assert _parse_football_outcome_match({"home": "Home", "odds": {"1": 1.9}}) == []
+    assert _parse_football_outcome_match({"home": "Home", "away": "Away", "odds": []}) == []
+
+
+def test_parse_football_double_chance_detail_match_requires_teams_and_odds():
+    assert _parse_football_double_chance_detail_match(
+        {"away": "Away", "odds": {"7": 1.5}}
+    ) == []
+    assert _parse_football_double_chance_detail_match(
+        {"home": "Home", "odds": {"7": 1.5}}
+    ) == []
+    assert _parse_football_double_chance_detail_match(
+        {"home": "Home", "away": "Away", "odds": []}
+    ) == []
+    # Non-double-chance codes are ignored even when present.
+    assert _parse_football_double_chance_detail_match(
+        {"home": "Home", "away": "Away", "odds": {"1": 1.9, "22": 2.0}}
+    ) == []
+
+
+def test_extract_league_id_default_kwarg_uses_football():
+    assert _extract_league_id("", default="football") == "football"
+    assert _extract_league_id(None, default="football") == "football"
+
+
+@pytest.mark.asyncio
+async def test_scraper_supports_football_outcomes():
+    scraper = BetOleScraper()
+    assert scraper.get_supported_outcome_sports() == ["football"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_football_uses_list_and_per_match_details(
+    football_list_data,
+    football_detail_data,
+):
+    list_calls: list[tuple[str, dict]] = []
+    detail_calls: list[str] = []
+
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del headers
+        if url == _FOOTBALL_LIST_URL:
+            list_calls.append((url, params or {}))
+            return football_list_data
+        expected_detail = _FOOTBALL_DETAIL_URL_TEMPLATE.format(match_id=90328755)
+        if url == expected_detail:
+            detail_calls.append(url)
+            return football_detail_data
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    http_client = AsyncMock()
+    http_client.rate_limit_per_second = 4.0
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = BetOleScraper(http_client=http_client)
+    results = await scraper.scrape_outcome_offers("football")
+
+    assert len(results) == 8
+    market_types = {r.market_type for r in results}
+    assert market_types == {
+        "football_result",
+        "football_double_chance",
+        "football_total_goals",
+    }
+    assert {r.bookmaker_id for r in results} == {"betole"}
+    assert {r.sport for r in results} == {"football"}
+    # All 8 offers reference the LIST match metadata, even the detail-derived ones.
+    assert {r.home_team for r in results} == {"Al Khaleej"}
+    assert {r.away_team for r in results} == {"Al Hilal Riyadh"}
+    assert {r.league_id for r in results} == {"saudi_arabia_saudi_professional_league"}
+    assert {r.start_time for r in results} == {"2026-05-05T18:00:00+00:00"}
+    assert len(list_calls) == 1
+    assert list_calls[0][1].get("hours")
+    assert detail_calls == [_FOOTBALL_DETAIL_URL_TEMPLATE.format(match_id=90328755)]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_football_returns_list_offers_when_detail_fails(
+    football_list_data,
+):
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del params, headers
+        if url == _FOOTBALL_LIST_URL:
+            return football_list_data
+        raise RuntimeError("detail unavailable")
+
+    http_client = AsyncMock()
+    http_client.rate_limit_per_second = 1.0
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = BetOleScraper(http_client=http_client)
+    results = await scraper.scrape_outcome_offers("football")
+
+    assert len(results) == 5
+    assert {r.market_type for r in results} == {
+        "football_result",
+        "football_total_goals",
+    }
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_football_overrides_detail_metadata_with_list(
+    football_list_data,
+):
+    drifting_detail = {
+        "id": 90328755,
+        # Detail's home/away differ in spacing/case from the list payload —
+        # if the parser used these, double-chance offers would land in a
+        # different normalized event than the list-derived offers.
+        "home": " AL  KHALEEJ ",
+        "away": "al hilal  RIYADH",
+        "leagueName": "Saudi Arabia, Saudi Professional League (Reserves)",
+        "kickOffTime": 1778004000999,
+        "sport": "S",
+        "odds": {"7": 3.2, "8": 1.1, "9": 1.04},
+    }
+
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del params, headers
+        if url == _FOOTBALL_LIST_URL:
+            return football_list_data
+        return drifting_detail
+
+    http_client = AsyncMock()
+    http_client.rate_limit_per_second = 4.0
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = BetOleScraper(http_client=http_client)
+    results = await scraper.scrape_outcome_offers("football")
+
+    dc = [r for r in results if r.market_type == "football_double_chance"]
+    assert len(dc) == 3
+    # Detail-derived offers must reuse the LIST match metadata so the
+    # event normalizer keys them onto the same event as the list-derived
+    # result/totals offers.
+    assert {r.home_team for r in dc} == {"Al Khaleej"}
+    assert {r.away_team for r in dc} == {"Al Hilal Riyadh"}
+    assert {r.league_id for r in dc} == {"saudi_arabia_saudi_professional_league"}
+    assert {r.start_time for r in dc} == {"2026-05-05T18:00:00+00:00"}
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_football_overrides_detail_metadata_when_list_field_missing(
+    football_list_data,
+):
+    # Stomp the list match's leagueName so we exercise the None-fallback
+    # branch.  The list parser will derive league_id="football" (default),
+    # and the detail parser must do the same — not silently fall back to
+    # the detail's leagueName, which would land double-chance in a
+    # different normalized event.
+    list_with_missing_field = json.loads(json.dumps(football_list_data))
+    list_with_missing_field["esMatches"][0]["leagueName"] = None
+
+    leaking_detail = {
+        "id": 90328755,
+        "home": "Al Khaleej",
+        "away": "Al Hilal Riyadh",
+        # Detail still knows the league — must NOT be used.
+        "leagueName": "Saudi Arabia, Saudi Professional League",
+        "kickOffTime": 1778004000000,
+        "sport": "S",
+        "odds": {"7": 3.2, "8": 1.1, "9": 1.04},
+    }
+
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del params, headers
+        if url == _FOOTBALL_LIST_URL:
+            return list_with_missing_field
+        return leaking_detail
+
+    http_client = AsyncMock()
+    http_client.rate_limit_per_second = 4.0
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = BetOleScraper(http_client=http_client)
+    results = await scraper.scrape_outcome_offers("football")
+
+    list_results = [
+        r for r in results if r.market_type in {"football_result", "football_total_goals"}
+    ]
+    dc = [r for r in results if r.market_type == "football_double_chance"]
+    assert dc, "expected detail-derived double chance offers"
+    # Both lanes must agree on league_id even when the list is missing
+    # the field — they should both fall back to the default rather than
+    # the detail's value leaking through.
+    assert {r.league_id for r in dc} == {"football"}
+    assert {r.league_id for r in list_results} == {"football"}
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_non_football_returns_empty():
+    http_client = AsyncMock()
+    http_client.rate_limit_per_second = 1.0
+
+    scraper = BetOleScraper(http_client=http_client)
+    results = await scraper.scrape_outcome_offers("basketball")
+
+    assert results == []
+    http_client.get_json.assert_not_called()

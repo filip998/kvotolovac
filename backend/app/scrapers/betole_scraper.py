@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .base import BaseScraper
 from .http_client import HttpClient
-from ..models.schemas import RawOddsData
+from ..config import settings
+from ..models.schemas import RawOddsData, RawOutcomeOffer
 from ..services.scrape_window import current_utc_time, lookahead_cutoff
 from ..services.text_normalizer import normalize_identity_text
 
@@ -15,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 _REGULAR_FEED_URL = "https://www.betole.com/restapi/offer/sr/sport/B/mob"
 _PLAYER_FEED_URL = "https://www.betole.com/restapi/offer/sr/sport/SK/mob"
+_FOOTBALL_LIST_URL = "https://www.betole.com/restapi/offer/sr/sport/S/mob"
+_FOOTBALL_DETAIL_URL_TEMPLATE = "https://www.betole.com/restapi/offer/sr/match/{match_id}"
 
 _DEFAULT_HEADERS: dict[str, str] = {
     "Accept": "application/json",
@@ -30,6 +34,23 @@ _DEFAULT_PARAMS: dict[str, str] = {
     "desktopVersion": "2.46.6.3",
     "locale": "sr",
 }
+
+_FOOTBALL_DETAIL_PARAMS: dict[str, str] = {
+    "annex": "0",
+}
+
+
+def _list_params() -> dict[str, str]:
+    """List-feed params with the configured lookahead window.
+
+    Used by the football outcome listing — the regular basketball feed
+    keeps the legacy unfiltered params for backward compatibility.
+    """
+    return {
+        **_DEFAULT_PARAMS,
+        "hours": str(settings.scrape_lookahead_hours),
+    }
+
 
 _BOOKMAKER_ID = "betole"
 
@@ -102,6 +123,43 @@ _CANONICAL_LEAGUES: dict[str, str] = {
 }
 
 
+# ── Football outcome offers ──
+#
+# BetOle is on the same Tipster/iBet white-label as MerkurXTip /
+# OktagonBet / SoccerBet / 365 — it shares the numeric tip-type
+# convention.  The football list feed (``/sport/S/mob``) returns the
+# whole-game result (codes 1/2/3) and the 2.5 totals (22 = 0-2 under,
+# 24 = 3+ over) directly in ``odds``, but does NOT include the double
+# chance picks (codes 7/8/9).  Those only show up in the per-match
+# detail feed (``/restapi/offer/sr/match/{id}``) — the bulk PUT
+# ``/ibet/offer/prematchesByIds.html`` that OktagonBet uses returns an
+# empty body for BetOle even with a session, so the per-match GET is
+# the only available source.
+_FOOTBALL_LIST_OUTCOME_CODES: dict[str, tuple[str, str, float | None, str]] = {
+    "1": ("football_result", "home", None, "1"),
+    "2": ("football_result", "draw", None, "X"),
+    "3": ("football_result", "away", None, "2"),
+    "22": ("football_total_goals", "under", 2.5, "0-2"),
+    "24": ("football_total_goals", "over", 2.5, "3+"),
+}
+
+_FOOTBALL_DETAIL_DOUBLE_CHANCE_CODES: dict[str, tuple[str, str]] = {
+    "7": ("home_or_draw", "1X"),
+    "8": ("home_or_away", "12"),
+    "9": ("draw_or_away", "X2"),
+}
+
+
+# Per-bookmaker concurrency caps for the per-match detail fetches.
+# The HttpClient enforces a global rate limit per bookmaker, so any
+# concurrency above ``ceil(rate_limit_per_second)`` cannot speed
+# things up — it just helps mask network latency between rate-limited
+# slots.  When the rate limit is disabled (0), cap at 10 to stay
+# polite.
+_MIN_DETAIL_CONCURRENCY = 2
+_UNLIMITED_DETAIL_CONCURRENCY = 10
+
+
 def _parse_int(value: object) -> int | None:
     try:
         return int(value)  # type: ignore[arg-type]
@@ -132,11 +190,21 @@ def _normalize_league_key(raw_name: str | None) -> str:
     return normalized
 
 
-def _extract_league_id(raw_name: str | None) -> str:
+def _extract_league_id(raw_name: str | None, *, default: str = "basketball") -> str:
     normalized = _normalize_league_key(raw_name)
     if not normalized:
-        return "basketball"
+        return default
     return _CANONICAL_LEAGUES.get(normalized, normalized.replace(" ", "_"))
+
+
+def _coerce_positive_odds(value: object) -> float | None:
+    try:
+        odds = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if odds <= 0:
+        return None
+    return odds
 
 
 def _within_lookahead(match: dict, cutoff_ms: int) -> bool:
@@ -343,6 +411,97 @@ def _parse_player_match(match: dict, matchup_index: MatchupIndex) -> list[RawOdd
     return results
 
 
+def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
+    """Emit list-derived football offers (result + 2.5 totals)."""
+
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return []
+
+    odds_map = match.get("odds") or {}
+    if not isinstance(odds_map, dict):
+        return []
+
+    league_id = _extract_league_id(match.get("leagueName", ""), default="football")
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    results: list[RawOutcomeOffer] = []
+    for code, (market_type, outcome_code, line, raw_label) in _FOOTBALL_LIST_OUTCOME_CODES.items():
+        odds = _coerce_positive_odds(odds_map.get(code))
+        if odds is None:
+            continue
+        results.append(
+            RawOutcomeOffer(
+                bookmaker_id=_BOOKMAKER_ID,
+                league_id=league_id,
+                sport="football",
+                home_team=home_team,
+                away_team=away_team,
+                market_type=market_type,
+                outcome_code=outcome_code,
+                odds=odds,
+                line=line,
+                raw_label=raw_label,
+                start_time=start_time,
+            )
+        )
+    return results
+
+
+def _parse_football_double_chance_detail_match(match: dict) -> list[RawOutcomeOffer]:
+    """Emit detail-derived football double-chance offers (codes 7/8/9).
+
+    Per-match detail responses also expose the result and totals, but
+    those are already emitted from the cheaper list endpoint — this
+    parser intentionally only mines codes 7/8/9 to avoid emitting two
+    rows per (match, market, outcome) tuple.
+    """
+
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return []
+
+    odds_map = match.get("odds") or {}
+    if not isinstance(odds_map, dict):
+        return []
+
+    league_id = _extract_league_id(match.get("leagueName", ""), default="football")
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    results: list[RawOutcomeOffer] = []
+    for code, (outcome_code, raw_label) in _FOOTBALL_DETAIL_DOUBLE_CHANCE_CODES.items():
+        odds = _coerce_positive_odds(odds_map.get(code))
+        if odds is None:
+            continue
+        results.append(
+            RawOutcomeOffer(
+                bookmaker_id=_BOOKMAKER_ID,
+                league_id=league_id,
+                sport="football",
+                home_team=home_team,
+                away_team=away_team,
+                market_type="football_double_chance",
+                outcome_code=outcome_code,
+                odds=odds,
+                line=None,
+                raw_label=raw_label,
+                start_time=start_time,
+            )
+        )
+    return results
+
+
+def _get_detail_fetch_concurrency(http_client: HttpClient, match_count: int) -> int:
+    if match_count <= 0:
+        return 0
+    if http_client.rate_limit_per_second <= 0:
+        return min(match_count, _UNLIMITED_DETAIL_CONCURRENCY)
+    return min(
+        match_count,
+        max(_MIN_DETAIL_CONCURRENCY, math.ceil(http_client.rate_limit_per_second)),
+    )
+
+
 class BetOleScraper(BaseScraper):
     def __init__(self, http_client: HttpClient | None = None) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
@@ -355,6 +514,9 @@ class BetOleScraper(BaseScraper):
 
     def get_supported_leagues(self) -> list[str]:
         return ["basketball"]
+
+    def get_supported_outcome_sports(self) -> list[str]:
+        return ["football"]
 
     async def _fetch_feed_rows(self, url: str, *, label: str) -> list[dict]:
         try:
@@ -427,5 +589,125 @@ class BetOleScraper(BaseScraper):
             len(handicap_results),
             len(regular_matches),
             unmatched_player_rows,
+        )
+        return results
+
+    async def _fetch_football_list(self) -> list[dict]:
+        try:
+            data = await self._http.get_json(
+                _FOOTBALL_LIST_URL,
+                params=_list_params(),
+                headers=_DEFAULT_HEADERS,
+            )
+        except Exception:
+            logger.warning("BetOle: failed to fetch football listing", exc_info=True)
+            return []
+
+        rows = data.get("esMatches") or []
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+
+    async def _fetch_football_detail(
+        self,
+        match_id: int,
+        semaphore: asyncio.Semaphore,
+    ) -> dict | None:
+        async with semaphore:
+            try:
+                detail = await self._http.get_json(
+                    _FOOTBALL_DETAIL_URL_TEMPLATE.format(match_id=match_id),
+                    params=_FOOTBALL_DETAIL_PARAMS,
+                    headers=_DEFAULT_HEADERS,
+                )
+            except Exception:
+                logger.warning(
+                    "BetOle: failed to fetch football match detail %s",
+                    match_id,
+                    exc_info=True,
+                )
+                return None
+        if not isinstance(detail, dict):
+            return None
+        return detail
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        """Scrape football outcome offers (result, double chance, 2.5 totals).
+
+        BetOle's bulk PUT endpoint that the OktagonBet sibling uses
+        (``/ibet/offer/prematchesByIds.html``) returns an empty body
+        for anonymous and cookie-bearing requests alike, so this
+        implementation enriches each list match with a per-match GET
+        to pick up the double chance picks (codes 7/8/9) that are not
+        present in the list payload.  Result and totals are parsed
+        from the cheaper list response to halve the work.
+        """
+
+        if sport != "football":
+            return []
+
+        list_matches = await self._fetch_football_list()
+        list_by_id: dict[int, dict] = {}
+        for match in list_matches:
+            match_id = _parse_int(match.get("id"))
+            if match_id is None:
+                continue
+            list_by_id[match_id] = match
+
+        if not list_by_id:
+            logger.info("BetOle: no football matches discovered")
+            return []
+
+        results: list[RawOutcomeOffer] = []
+        for list_match in list_by_id.values():
+            results.extend(_parse_football_outcome_match(list_match))
+
+        match_ids = list(list_by_id.keys())
+        concurrency = _get_detail_fetch_concurrency(self._http, len(match_ids))
+        semaphore = asyncio.Semaphore(max(1, concurrency))
+        details = await asyncio.gather(
+            *(self._fetch_football_detail(mid, semaphore) for mid in match_ids)
+        )
+
+        missing_detail_ids = 0
+        for match_id, detail in zip(match_ids, details):
+            if detail is None:
+                missing_detail_ids += 1
+                continue
+            list_match = list_by_id[match_id]
+            # Always emit detail-derived offers using the LIST match's
+            # team names, kickoff and league so they share the same
+            # normalized event key as the list-derived result/totals
+            # offers above.  The detail payload's metadata can drift
+            # (whitespace, league capitalization) and would silently
+            # land double-chance offers in a different normalized
+            # event.  We override unconditionally so that even when the
+            # list is missing a field (e.g., leagueName=None), both
+            # parsers fall back to the same default rather than the
+            # detail leaking its own value.
+            merged = {
+                **detail,
+                "home": list_match.get("home"),
+                "away": list_match.get("away"),
+                "kickOffTime": list_match.get("kickOffTime"),
+                "leagueName": list_match.get("leagueName"),
+            }
+            results.extend(_parse_football_double_chance_detail_match(merged))
+
+        if missing_detail_ids:
+            logger.warning(
+                "BetOle: %d/%d football detail fetches returned no data; "
+                "double chance will be missing for those matches",
+                missing_detail_ids,
+                len(match_ids),
+            )
+
+        logger.info(
+            "BetOle scraped %d football outcome offers from %d matches "
+            "(detail fetches: %d, concurrency: %d)",
+            len(results),
+            len(match_ids),
+            len(match_ids) - missing_detail_ids,
+            concurrency,
         )
         return results

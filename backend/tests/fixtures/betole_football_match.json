@@ -1,0 +1,20 @@
+{
+  "id": 90328755,
+  "matchCode": 36,
+  "home": "Al Khaleej",
+  "away": "Al Hilal Riyadh",
+  "kickOffTime": 1778004000000,
+  "leagueName": "Saudi Arabia, Saudi Professional League",
+  "leagueId": 2252256,
+  "sport": "S",
+  "odds": {
+    "1": 7.6,
+    "2": 5.5,
+    "3": 1.26,
+    "7": 3.2,
+    "8": 1.1,
+    "9": 1.04,
+    "22": 2.93,
+    "24": 1.35
+  }
+}
