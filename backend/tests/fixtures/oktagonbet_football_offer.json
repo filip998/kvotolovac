@@ -1,0 +1,23 @@
+{
+  "id": "S",
+  "name": "Fudbal",
+  "type": "SPORT",
+  "esMatches": [
+    {
+      "id": 42312714,
+      "matchCode": 1001,
+      "leagueName": "Austria 3 East",
+      "home": "Wiener Sport-Club",
+      "away": "Parndorf",
+      "kickOffTime": 1778002200000,
+      "sport": "S",
+      "odds": {
+        "1": 2.8,
+        "2": 3.5,
+        "3": 2.12,
+        "22": 2.22,
+        "24": 1.54
+      }
+    }
+  ]
+}

@@ -103,6 +103,7 @@ _BOOKMAKER_META = {
     "meridian": ("Meridian", "https://www.meridianbet.rs"),
     "maxbet": ("MaxBet", "https://www.maxbet.rs"),
     "balkanbet": ("BalkanBet", "https://www.balkanbet.rs"),
+    "oktagonbet": ("OktagonBet", "https://www.oktagonbet.com"),
     "merkurxtip": ("MERKUR X TIP", "https://www.merkurxtip.rs"),
     "soccerbet": ("SoccerBet", "https://www.soccerbet.rs"),
     "superbet": ("Superbet", "https://superbet.rs"),
@@ -131,6 +132,19 @@ _PLAYER_MARKETS["merkurxtip"] = [
         "over": round(max(1.01, market["over"] + (0.01 if idx % 2 == 0 else -0.02)), 2),
         "under": round(
             max(1.01, market["under"] + (-0.01 if idx % 2 == 0 else 0.02)),
+            2,
+        ),
+    }
+    for idx, market in enumerate(_PLAYER_MARKETS["maxbet"])
+]
+
+_PLAYER_MARKETS["oktagonbet"] = [
+    {
+        **market,
+        "threshold": market["threshold"] + (0.5 if idx % 4 in (0, 2) else 0.0),
+        "over": round(max(1.01, market["over"] + (0.02 if idx % 2 == 0 else -0.02)), 2),
+        "under": round(
+            max(1.01, market["under"] + (-0.02 if idx % 2 == 0 else 0.02)),
             2,
         ),
     }
@@ -290,6 +304,18 @@ _FOOTBALL_OUTCOME_MARKETS: dict[str, list[dict]] = {
         {"game": 0, "market": "football_total_goals", "outcome": "over", "odds": 1.88, "line": 2.5, "label": "3+"},
         {"game": 1, "market": "football_total_goals", "outcome": "under", "odds": 1.80, "line": 2.5, "label": "0-2"},
         {"game": 1, "market": "football_total_goals", "outcome": "over", "odds": 2.10, "line": 2.5, "label": "3+"},
+    ],
+    "oktagonbet": [
+        {"game": 0, "market": "football_result", "outcome": "home", "odds": 2.36, "label": "1"},
+        {"game": 0, "market": "football_result", "outcome": "draw", "odds": 3.18, "label": "X"},
+        {"game": 0, "market": "football_result", "outcome": "away", "odds": 2.62, "label": "2"},
+        {"game": 0, "market": "football_double_chance", "outcome": "home_or_draw", "odds": 1.38, "label": "1X"},
+        {"game": 0, "market": "football_double_chance", "outcome": "home_or_away", "odds": 1.25, "label": "12"},
+        {"game": 0, "market": "football_double_chance", "outcome": "draw_or_away", "odds": 1.47, "label": "X2"},
+        {"game": 0, "market": "football_total_goals", "outcome": "under", "odds": 2.03, "line": 2.5, "label": "0-2"},
+        {"game": 0, "market": "football_total_goals", "outcome": "over", "odds": 1.84, "line": 2.5, "label": "3+"},
+        {"game": 1, "market": "football_total_goals", "outcome": "under", "odds": 1.76, "line": 2.5, "label": "0-2"},
+        {"game": 1, "market": "football_total_goals", "outcome": "over", "odds": 2.18, "line": 2.5, "label": "3+"},
     ],
 }
 

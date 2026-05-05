@@ -9,12 +9,13 @@ from datetime import datetime, timezone
 from .base import BaseScraper
 from .http_client import HttpClient
 from ..config import settings
-from ..models.schemas import RawOddsData
+from ..models.schemas import RawOddsData, RawOutcomeOffer
 
 logger = logging.getLogger(__name__)
 
 _PLAYER_LIST_URL = "https://www.oktagonbet.com/restapi/offer/sr/sport/SK/mob"
 _TOTALS_LIST_URL = "https://www.oktagonbet.com/restapi/offer/sr/sport/B/mob"
+_FOOTBALL_LIST_URL = "https://www.oktagonbet.com/restapi/offer/sr/sport/S/mob"
 _BULK_URL = "https://www.oktagonbet.com/ibet/offer/prematchesByIds.html"
 # Conservative chunk size — observed 124 IDs/PUT working with ~1.4s latency.
 _BULK_CHUNK_SIZE = 150
@@ -131,6 +132,21 @@ _GAME_TOTAL_OT_LINES = [
 _HANDICAP_OT_LINES: list[tuple[str, str, str]] = [
     ("50430", "50431", "handicapOvertime"),
 ]
+
+_FOOTBALL_LIST_OUTCOME_CODES: dict[str, tuple[str, str, float | None, str]] = {
+    "1": ("football_result", "home", None, "1"),
+    "2": ("football_result", "draw", None, "X"),
+    "3": ("football_result", "away", None, "2"),
+    # OktagonBet list rows expose the 2.5 total as fixed "0-2" / "3+" picks.
+    "22": ("football_total_goals", "under", 2.5, "0-2"),
+    "24": ("football_total_goals", "over", 2.5, "3+"),
+}
+
+_FOOTBALL_BULK_DOUBLE_CHANCE_CODES: dict[int, tuple[str, str]] = {
+    7: ("home_or_draw", "1X"),
+    8: ("home_or_away", "12"),
+    9: ("draw_or_away", "X2"),
+}
 
 _LEAGUE_PREFIX = "igrači ~"
 
@@ -252,7 +268,7 @@ def _is_player_market(match: dict) -> bool:
     )
 
 
-def _extract_league_id(league_name: str) -> str:
+def _extract_league_id(league_name: str, *, default: str = "basketball") -> str:
     """Extract a canonical league ID from the league name.
 
     'Igrači ~ USA NBA' → 'nba'  (via canonical mapping)
@@ -267,7 +283,7 @@ def _extract_league_id(league_name: str) -> str:
 
     normalized = " ".join(raw.replace("_", " ").replace("-", " ").replace("~", " ").split())
     if not normalized:
-        return "basketball"
+        return default
     return _CANONICAL_LEAGUES.get(normalized, normalized.replace(" ", "_"))
 
 
@@ -450,6 +466,41 @@ def _parse_handicap_ot_match(match: dict) -> list[RawOddsData]:
     return results
 
 
+def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return []
+
+    odds_map = match.get("odds") or {}
+    if not isinstance(odds_map, dict):
+        return []
+
+    league_id = _extract_league_id(match.get("leagueName", ""), default="football")
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    results: list[RawOutcomeOffer] = []
+    for code, (market_type, outcome_code, line, raw_label) in _FOOTBALL_LIST_OUTCOME_CODES.items():
+        odds = _coerce_odd(odds_map.get(code))
+        if odds is None:
+            continue
+        results.append(
+            RawOutcomeOffer(
+                bookmaker_id="oktagonbet",
+                league_id=league_id,
+                sport="football",
+                home_team=home_team,
+                away_team=away_team,
+                market_type=market_type,
+                outcome_code=outcome_code,
+                odds=odds,
+                line=line,
+                raw_label=raw_label,
+                start_time=start_time,
+            )
+        )
+    return results
+
+
 def _parse_match_detail(match: dict) -> list[RawOddsData]:
     """Parse fixed-threshold player points ladders from a legacy detail-format match."""
     if not _is_player_market(match):
@@ -603,6 +654,52 @@ def _parse_bulk_match(match: dict, spec: SportSpec) -> list[RawOddsData]:
     return results
 
 
+def _parse_football_double_chance_bulk_match(match: dict) -> list[RawOutcomeOffer]:
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return []
+
+    league_id = _extract_league_id(match.get("leagueName", ""), default="football")
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    results: list[RawOutcomeOffer] = []
+    seen: set[int] = set()
+    for group in _iter_pick_groups(match):
+        if not isinstance(group, dict):
+            continue
+        for tip in group.get("tipTypes", []) or []:
+            if not isinstance(tip, dict):
+                continue
+            try:
+                tip_id = int(tip.get("tipTypeId"))
+            except (TypeError, ValueError):
+                continue
+            mapped = _FOOTBALL_BULK_DOUBLE_CHANCE_CODES.get(tip_id)
+            if mapped is None or tip_id in seen:
+                continue
+            odds = _coerce_odd(tip.get("value"))
+            if odds is None:
+                continue
+            seen.add(tip_id)
+            outcome_code, raw_label = mapped
+            results.append(
+                RawOutcomeOffer(
+                    bookmaker_id="oktagonbet",
+                    league_id=league_id,
+                    sport="football",
+                    home_team=home_team,
+                    away_team=away_team,
+                    market_type="football_double_chance",
+                    outcome_code=outcome_code,
+                    odds=odds,
+                    line=None,
+                    raw_label=raw_label,
+                    start_time=start_time,
+                )
+            )
+    return results
+
+
 def _chunked(items: list, size: int) -> Iterable[list]:
     for i in range(0, len(items), size):
         yield items[i : i + size]
@@ -628,6 +725,9 @@ class OktagonBetScraper(BaseScraper):
 
     def get_supported_leagues(self) -> list[str]:
         return list(_SPORT_SPECS.keys())
+
+    def get_supported_outcome_sports(self) -> list[str]:
+        return ["football"]
 
     async def _fetch_list(self, url: str, label: str) -> dict:
         try:
@@ -777,5 +877,60 @@ class OktagonBetScraper(BaseScraper):
             len(results),
             len(list_matches),
             (len(list_matches) + _BULK_CHUNK_SIZE - 1) // _BULK_CHUNK_SIZE,
+        )
+        return results
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        if sport != "football":
+            return []
+
+        list_payload = await self._fetch_list(_FOOTBALL_LIST_URL, "football outcomes")
+        list_matches: dict[int, dict] = {}
+        for match in list_payload.get("esMatches", []) or []:
+            if not isinstance(match, dict):
+                continue
+            match_id = match.get("id")
+            if not isinstance(match_id, int):
+                continue
+            list_matches[match_id] = match
+
+        if not list_matches:
+            logger.info("OktagonBet: no football matches discovered")
+            return []
+
+        results: list[RawOutcomeOffer] = []
+        for list_match in list_matches.values():
+            results.extend(_parse_football_outcome_match(list_match))
+
+        bulk_by_id = await self._fetch_bulk(list(list_matches.keys()))
+        missing_bulk_ids = [
+            mid for mid in list_matches
+            if mid not in bulk_by_id and str(mid) not in bulk_by_id
+        ]
+        if missing_bulk_ids:
+            logger.warning(
+                "OktagonBet: football bulk PUT returned no data for %d/%d matches (double chance will be missing for those)",
+                len(missing_bulk_ids),
+                len(list_matches),
+            )
+
+        for match_id, list_match in list_matches.items():
+            bulk_match = bulk_by_id.get(match_id) or bulk_by_id.get(str(match_id))
+            if not isinstance(bulk_match, dict):
+                continue
+            merged = {
+                **bulk_match,
+                **{
+                    k: list_match[k]
+                    for k in ("home", "away", "kickOffTime", "leagueName")
+                    if list_match.get(k) is not None
+                },
+            }
+            results.extend(_parse_football_double_chance_bulk_match(merged))
+
+        logger.info(
+            "OktagonBet scraped %d football outcome offers from %d matches",
+            len(results),
+            len(list_matches),
         )
         return results
