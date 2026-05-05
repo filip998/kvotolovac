@@ -9,12 +9,15 @@ import pytest
 
 from app.scrapers.bookmaker365_scraper import (
     Bookmaker365Scraper,
+    _FOOTBALL_LEAGUES_URL,
+    _FOOTBALL_LEAGUE_PREVIEW_URL,
     _PLAYER_LEAGUES_URL,
     _PLAYER_LEAGUE_PREVIEW_URL,
     _REGULAR_LEAGUES_URL,
     _REGULAR_LEAGUE_PREVIEW_URL,
     _build_matchup_index,
     _extract_league_id,
+    _parse_football_outcome_match,
     _parse_player_match,
     _parse_total_match,
     _GAME_TOTAL_LINES,
@@ -24,6 +27,12 @@ from app.scrapers.bookmaker365_scraper import (
 
 REGULAR_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "bookmaker365_regular_league.json"
 PLAYER_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "bookmaker365_player_league.json"
+FOOTBALL_CATEGORIES_FIXTURE_PATH = (
+    Path(__file__).parent / "fixtures" / "bookmaker365_football_categories.json"
+)
+FOOTBALL_LEAGUE_FIXTURE_PATH = (
+    Path(__file__).parent / "fixtures" / "bookmaker365_football_league.json"
+)
 
 REGULAR_LEAGUES_RESPONSE = {
     "categories": [
@@ -301,3 +310,198 @@ async def test_scrape_odds_uses_matched_regular_and_player_leagues(
     requested_urls = {call.args[0] for call in http_client.get_json.call_args_list}
     assert _PLAYER_LEAGUE_PREVIEW_URL.format(league_id="2300414") not in requested_urls
     assert _REGULAR_LEAGUE_PREVIEW_URL.format(league_id="2293537") in requested_urls
+
+
+@pytest.fixture
+def football_categories_data() -> dict:
+    return json.loads(FOOTBALL_CATEGORIES_FIXTURE_PATH.read_text())
+
+
+@pytest.fixture
+def football_league_data() -> dict:
+    return json.loads(FOOTBALL_LEAGUE_FIXTURE_PATH.read_text())
+
+
+def test_parse_football_outcome_match_emits_all_three_markets(football_league_data):
+    match = football_league_data["esMatches"][0]
+
+    results = _parse_football_outcome_match(match)
+
+    by_outcome = {(r.market_type, r.outcome_code): r for r in results}
+    assert (("football_result", "home")) in by_outcome
+    assert by_outcome[("football_result", "home")].odds == pytest.approx(1.88)
+    assert by_outcome[("football_result", "draw")].raw_label == "X"
+    assert by_outcome[("football_result", "away")].odds == pytest.approx(3.62)
+    assert by_outcome[("football_double_chance", "home_or_draw")].odds == pytest.approx(1.29)
+    assert by_outcome[("football_double_chance", "home_or_away")].raw_label == "12"
+    assert by_outcome[("football_double_chance", "draw_or_away")].odds == pytest.approx(1.93)
+    assert by_outcome[("football_total_goals", "under")].line == 2.5
+    assert by_outcome[("football_total_goals", "under")].odds == pytest.approx(2.91)
+    assert by_outcome[("football_total_goals", "over")].line == 2.5
+    assert by_outcome[("football_total_goals", "over")].odds == pytest.approx(1.41)
+
+    sample = next(iter(results))
+    assert sample.bookmaker_id == "365"
+    assert sample.sport == "football"
+    assert sample.home_team == "Liverpool"
+    assert sample.away_team == "Chelsea"
+    assert sample.start_time == "2026-05-09T11:30:00+00:00"
+
+
+def test_parse_football_outcome_match_skips_zero_or_missing_odds():
+    match = {
+        "home": "Home",
+        "away": "Away",
+        "leagueName": "X",
+        "kickOffTime": 1778326200000,
+        "odds": {"1": 1.5, "2": 0, "3": None, "22": -1, "24": "x"},
+    }
+
+    results = _parse_football_outcome_match(match)
+
+    assert {(r.market_type, r.outcome_code) for r in results} == {("football_result", "home")}
+
+
+def test_parse_football_outcome_match_returns_empty_without_teams():
+    match = {
+        "home": "",
+        "away": "Chelsea",
+        "kickOffTime": 1778326200000,
+        "odds": {"1": 1.5, "2": 3.0, "3": 2.0},
+    }
+
+    assert _parse_football_outcome_match(match) == []
+
+
+def test_parse_football_outcome_match_falls_back_to_default_league():
+    # When the league name is missing the parser must fall back to the
+    # generic ``football`` league id, NOT 365's basketball default.
+    match = {
+        "home": "A",
+        "away": "B",
+        "leagueName": None,
+        "kickOffTime": 1778326200000,
+        "odds": {"1": 1.5, "2": 3.0, "3": 2.0},
+    }
+
+    results = _parse_football_outcome_match(match)
+
+    assert {r.league_id for r in results} == {"football"}
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_football_fans_out_per_league(
+    football_categories_data, football_league_data, monkeypatch
+):
+    fixture_start = datetime(2026, 5, 9, 11, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "app.scrapers.bookmaker365_scraper.current_utc_time",
+        lambda: fixture_start - timedelta(hours=1),
+    )
+    monkeypatch.setattr(
+        "app.scrapers.bookmaker365_scraper.lookahead_cutoff",
+        lambda now: now + timedelta(hours=24),
+    )
+
+    second_league = {
+        "esMatches": [
+            {
+                "id": 99,
+                "sport": "S",
+                "home": "Real Madrid",
+                "away": "Barcelona",
+                "leagueName": "Liga Šampiona - Play Off",
+                "kickOffTime": int(fixture_start.timestamp() * 1000),
+                "odds": {"1": 2.1, "2": 3.5, "3": 3.2, "22": 2.0, "24": 1.8},
+            }
+        ]
+    }
+
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del params, headers
+        if url == _FOOTBALL_LEAGUES_URL:
+            return football_categories_data
+        if url == _FOOTBALL_LEAGUE_PREVIEW_URL.format(league_id="2222600"):
+            return second_league
+        if url == _FOOTBALL_LEAGUE_PREVIEW_URL.format(league_id="2222588"):
+            return football_league_data
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    http_client = AsyncMock()
+    http_client.rate_limit_per_second = 4.0
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = Bookmaker365Scraper(http_client=http_client)
+    results = await scraper.scrape_outcome_offers("football")
+
+    by_market = {r.market_type for r in results}
+    assert by_market == {
+        "football_result",
+        "football_double_chance",
+        "football_total_goals",
+    }
+    assert {r.bookmaker_id for r in results} == {"365"}
+    assert {r.home_team for r in results} == {"Liverpool", "Real Madrid"}
+
+    requested_urls = {call.args[0] for call in http_client.get_json.call_args_list}
+    assert _FOOTBALL_LEAGUES_URL in requested_urls
+    assert _FOOTBALL_LEAGUE_PREVIEW_URL.format(league_id="2222600") in requested_urls
+    assert _FOOTBALL_LEAGUE_PREVIEW_URL.format(league_id="2222588") in requested_urls
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_non_football_returns_empty():
+    http_client = AsyncMock()
+    http_client.rate_limit_per_second = 1.0
+
+    scraper = Bookmaker365Scraper(http_client=http_client)
+    results = await scraper.scrape_outcome_offers("basketball")
+
+    assert results == []
+    http_client.get_json.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_football_drops_matches_after_lookahead(
+    football_categories_data, monkeypatch
+):
+    # cutoff = now + 1h; the kickoff is 24h out, so the match must be
+    # filtered before it ever reaches the parser.
+    fixture_start = datetime(2026, 5, 9, 11, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "app.scrapers.bookmaker365_scraper.current_utc_time",
+        lambda: fixture_start - timedelta(hours=24),
+    )
+    monkeypatch.setattr(
+        "app.scrapers.bookmaker365_scraper.lookahead_cutoff",
+        lambda now: now + timedelta(hours=1),
+    )
+
+    far_future_league = {
+        "esMatches": [
+            {
+                "id": 1,
+                "sport": "S",
+                "home": "X",
+                "away": "Y",
+                "leagueName": "Liga Šampiona - Play Off",
+                "kickOffTime": int(fixture_start.timestamp() * 1000),
+                "odds": {"1": 1.9},
+            }
+        ]
+    }
+
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del params, headers
+        if url == _FOOTBALL_LEAGUES_URL:
+            return football_categories_data
+        return far_future_league
+
+    http_client = AsyncMock()
+    http_client.rate_limit_per_second = 4.0
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = Bookmaker365Scraper(http_client=http_client)
+    results = await scraper.scrape_outcome_offers("football")
+
+    assert results == []

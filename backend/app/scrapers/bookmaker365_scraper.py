@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from .base import BaseScraper
 from .http_client import HttpClient
-from ..models.schemas import RawOddsData
+from ..models.schemas import RawOddsData, RawOutcomeOffer
 from ..services.scrape_window import current_utc_time, lookahead_cutoff
 from ..services.text_normalizer import normalize_identity_text
 
@@ -20,6 +20,10 @@ _REGULAR_LEAGUE_PREVIEW_URL = (
 )
 _PLAYER_LEAGUE_PREVIEW_URL = (
     "https://ibet2.365.rs/restapi/offer/sr/sport/SK/league/{league_id}/mob"
+)
+_FOOTBALL_LEAGUES_URL = "https://ibet2.365.rs/restapi/offer/sr/categories/sport/S/l"
+_FOOTBALL_LEAGUE_PREVIEW_URL = (
+    "https://ibet2.365.rs/restapi/offer/sr/sport/S/league/{league_id}/mob"
 )
 
 _DEFAULT_HEADERS: dict[str, str] = {
@@ -138,6 +142,21 @@ _PLAYER_LEAGUE_SUFFIXES = (
     " broj poena skokova asistencija",
     " muckalica igraci",
 )
+
+# Football outcome lane.  365's per-league preview surfaces the same
+# Tipster-style codes that the SoccerBet/MerkurXTip/OktagonBet/BetOle
+# siblings use directly in the match's ``odds`` map — no detail call
+# needed.
+_FOOTBALL_OUTCOME_CODES: dict[str, tuple[str, str, float | None, str]] = {
+    "1": ("football_result", "home", None, "1"),
+    "2": ("football_result", "draw", None, "X"),
+    "3": ("football_result", "away", None, "2"),
+    "7": ("football_double_chance", "home_or_draw", None, "1X"),
+    "8": ("football_double_chance", "home_or_away", None, "12"),
+    "9": ("football_double_chance", "draw_or_away", None, "X2"),
+    "22": ("football_total_goals", "under", 2.5, "0-2"),
+    "24": ("football_total_goals", "over", 2.5, "3+"),
+}
 _CANONICAL_LEAGUES: dict[str, str] = {
     "nba play off": "nba",
     "nba play in": "nba",
@@ -181,10 +200,10 @@ def _normalize_league_key(raw_name: str | None) -> str:
     return normalized
 
 
-def _extract_league_id(raw_name: str | None) -> str:
+def _extract_league_id(raw_name: str | None, *, default: str = "basketball") -> str:
     normalized = _normalize_league_key(raw_name)
     if not normalized:
-        return "basketball"
+        return default
     return _CANONICAL_LEAGUES.get(normalized, normalized.replace(" ", "_"))
 
 
@@ -369,8 +388,52 @@ def _parse_player_match(match: dict, matchup_index: MatchupIndex) -> list[RawOdd
     return results
 
 
+def _coerce_positive_odds(value: object) -> float | None:
+    parsed = _parse_float(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
+
+
+def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return []
+
+    odds_map = match.get("odds") or {}
+    if not isinstance(odds_map, dict):
+        return []
+
+    league_id = _extract_league_id(match.get("leagueName", ""), default="football")
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    results: list[RawOutcomeOffer] = []
+
+    for code, (market_type, outcome_code, line, raw_label) in _FOOTBALL_OUTCOME_CODES.items():
+        odds = _coerce_positive_odds(odds_map.get(code))
+        if odds is None:
+            continue
+        results.append(
+            RawOutcomeOffer(
+                bookmaker_id=_BOOKMAKER_ID,
+                league_id=league_id,
+                sport="football",
+                home_team=home_team,
+                away_team=away_team,
+                market_type=market_type,
+                outcome_code=outcome_code,
+                odds=odds,
+                line=line,
+                raw_label=raw_label,
+                start_time=start_time,
+            )
+        )
+
+    return results
+
+
 class Bookmaker365Scraper(BaseScraper):
-    """365 basketball scraper backed by the public iBet-style offer API."""
+    """365 basketball + football scraper backed by the public iBet-style offer API."""
 
     def __init__(self, http_client: HttpClient | None = None) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
@@ -527,5 +590,39 @@ class Bookmaker365Scraper(BaseScraper):
             len(regular_matches),
             len(player_matches),
             len(handicap_results),
+        )
+        return results
+
+    def get_supported_outcome_sports(self) -> list[str]:
+        return ["football"]
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        if sport != "football":
+            return []
+
+        leagues = await self._fetch_league_categories(
+            _FOOTBALL_LEAGUES_URL,
+            label="football",
+        )
+        if not leagues:
+            return []
+
+        cutoff_ms = int(lookahead_cutoff(current_utc_time()).timestamp() * 1000)
+        matches = await self._fetch_previews(
+            leagues,
+            url_template=_FOOTBALL_LEAGUE_PREVIEW_URL,
+            label="football",
+            cutoff_ms=cutoff_ms,
+        )
+
+        results: list[RawOutcomeOffer] = []
+        for match in matches:
+            results.extend(_parse_football_outcome_match(match))
+
+        logger.info(
+            "365 scraped %d football outcome offers from %d matches across %d leagues",
+            len(results),
+            len(matches),
+            len(leagues),
         )
         return results

@@ -119,6 +119,22 @@ async def test_mock_scraper_supports_betole_football_outcomes():
 
 
 @pytest.mark.asyncio
+async def test_mock_scraper_supports_365_football_outcomes():
+    scraper = MockScraper("365")
+    data = await scraper.scrape_outcome_offers("football")
+
+    assert scraper.get_supported_outcome_sports() == ["football"]
+    assert len(data) > 0
+    assert all(isinstance(item, RawOutcomeOffer) for item in data)
+    assert all(item.bookmaker_id == "365" for item in data)
+    assert {item.market_type for item in data} == {
+        "football_result",
+        "football_double_chance",
+        "football_total_goals",
+    }
+
+
+@pytest.mark.asyncio
 async def test_mock_scraper_unsupported_league():
     scraper = MockScraper("mozzart")
     data = await scraper.scrape_odds("nba")

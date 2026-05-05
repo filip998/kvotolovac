@@ -1,0 +1,16 @@
+{
+  "categories": [
+    {
+      "id": "2222600",
+      "name": "Liga Šampiona - Play Off",
+      "count": 2,
+      "type": "LEAGUE"
+    },
+    {
+      "id": "2222588",
+      "name": "Liga Evrope - Play Off",
+      "count": 2,
+      "type": "LEAGUE"
+    }
+  ]
+}
