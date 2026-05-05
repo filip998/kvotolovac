@@ -2693,3 +2693,731 @@ def test_normalize_odds_does_not_merge_uppercase_three_letter_swapped_names():
         "LEO GRANT",
         "GRANT LEO",
     ]
+
+
+def test_normalize_odds_merges_compound_surname_with_hyphen_space_variant():
+    """Production regression: ``Shai Gilgeous-Alexander`` (hyphen) and
+    ``S. Gilgeous Alexander`` (space) describe the same NBA player. One
+    bookmaker emits the hyphenated surname; another drops the hyphen and
+    emits ``Gilgeous`` as if it were a middle name. ``_player_name_parts``
+    parses the two surfaces with different surname tokens
+    (``gilgeous-alexander`` vs ``alexander``), so without compound-surname
+    awareness in the resolver they never even reach the first-name match
+    step."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="S. Gilgeous Alexander",
+            threshold=29.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="Shai Gilgeous-Alexander",
+            threshold=29.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="Shai Gilgeous-Alexander",
+            threshold=29.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T01:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {"Shai Gilgeous-Alexander"}
+
+
+def test_normalize_odds_merges_surname_particle_variant():
+    """Production regression: ``A.St.Brown`` (one bookmaker) and
+    ``Amon-Ra St. Brown`` (another) describe the same player. ``St`` is a
+    surname particle that the simple parser leaves in the first-name token
+    list (``first=['a','st'], last='brown'`` and
+    ``first=['amon-ra','st'], last='brown'``). Without compound-surname
+    awareness the resolver tries to align ``('a','st')`` with
+    ``('amon','ra','st')``, fails, and the merge is missed."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="Detroit Pistons",
+            away_team="Indiana Pacers",
+            market_type="player_points",
+            player_name="A.St.Brown",
+            threshold=12.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Detroit Pistons",
+            away_team="Indiana Pacers",
+            market_type="player_points",
+            player_name="Amon-Ra St. Brown",
+            threshold=12.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="Detroit Pistons",
+            away_team="Indiana Pacers",
+            market_type="player_points",
+            player_name="Amon-Ra St. Brown",
+            threshold=12.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T01:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {"Amon-Ra St. Brown"}
+
+
+def test_normalize_odds_keeps_legitimate_particle_first_name_intact():
+    """Round-1 review regression (gpt-5.5): the particle-pull pass in
+    ``_resolver_player_parts`` originally fired even when the particle was
+    the player's actual first name. ``Van Jefferson`` (Lakers WR-turned-NBA
+    fan-favorite, but the example structurally applies to any
+    ``Van X`` / ``Mac X`` / ``Mc X`` name) was being parsed as
+    ``first=[], last='van jefferson'`` and lost its merge with the
+    abbreviated ``V. Jefferson`` surface. The guard now requires at least
+    one given-name token to remain after the pull, so ``Van Jefferson``
+    stays parsed as ``first=['van'], last='jefferson'`` and merges
+    normally."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="Los Angeles Lakers",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="V. Jefferson",
+            threshold=8.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Los Angeles Lakers",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="Van Jefferson",
+            threshold=8.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="Los Angeles Lakers",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="Van Jefferson",
+            threshold=8.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {"Van Jefferson"}
+
+
+def test_normalize_odds_does_not_consume_full_name_into_unrelated_compound_hint():
+    """Round-1 review regression (gpt-5.5): the multi-token surname
+    expansion in ``_resolver_player_parts`` originally allowed
+    ``n == len(full_tokens)``, so a hint harvested from one bucket member
+    could re-parse another player's normal two-token name as
+    ``first=[], last='full name'`` and break that player's legitimate
+    abbreviation merge. Specifically: a bucket of
+    ``{J. Paul, John Paul, Alice John-Paul}`` would harvest the hint
+    ``'john paul'`` from ``Alice John-Paul`` (her hyphenated surname folds
+    to two tokens), and then ``John Paul`` (a different player) would
+    re-parse as ``first=[], last='john paul'``, killing the merge
+    ``J. Paul → John Paul``. The guard now requires the expansion to leave
+    at least one given-name token, so ``John Paul`` stays parsed as
+    ``first=['john'], last='paul'`` and merges normally with ``J. Paul``.
+    ``Alice John-Paul`` remains a distinct identity (different surname
+    after fold)."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="J. Paul",
+            threshold=8.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="John Paul",
+            threshold=8.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="John Paul",
+            threshold=8.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="Alice John-Paul",
+            threshold=4.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = sorted({offer.player_name for offer in normalized})
+    assert names == ["Alice John-Paul", "John Paul"]
+
+
+def test_normalize_odds_pulls_chained_surname_particles():
+    """Particle pull iterates while the trailing first-name token stays a
+    surname particle. ``A. de la Cruz`` and ``Anna de la Cruz`` parse as
+    ``(['a','de','la'], 'cruz')`` and ``(['anna','de','la'], 'cruz')``.
+    Pulling only the trailing ``la`` would leave ``de`` in the first-name
+    list on both sides — the surnames would still match (``la cruz``) but
+    the comparison would have to align ``('a','de')`` with
+    ``('anna','de')`` instead of the cleaner single-position comparison.
+    Iterative pull leaves ``first=['a'], last='de la cruz'`` and
+    ``first=['anna'], last='de la cruz'`` on both sides so the merge
+    works on the abbreviation alone."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="A. de la Cruz",
+            threshold=10.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="Anna de la Cruz",
+            threshold=10.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="Anna de la Cruz",
+            threshold=10.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {"Anna de la Cruz"}
+
+
+def test_normalize_odds_picks_full_form_canonical_in_compound_surname_count_tie():
+    """Round-2 review regression (opus-4.7-xhigh): the resolver's
+    completeness ranking previously called the un-wrapped
+    ``_player_name_parts`` to feed ``_player_name_completeness``. For the
+    abbreviated surface ``S. Gilgeous Alexander`` the un-wrapper returned
+    ``first_tokens=['s','gilgeous']``, so the completeness score counted
+    ``gilgeous`` as a given-name token (8 chars) — outranking the proper
+    full form ``Shai Gilgeous-Alexander`` (whose first_tokens=['shai']
+    scores 4) on the completeness tiebreaker. In count-tied buckets the
+    abbreviated surface was therefore picked as the canonical merge target,
+    which is exactly the opposite of what the rank is supposed to express.
+
+    Routing both ``_candidate_first_for_completeness`` and
+    ``best_parts`` through ``_resolver_player_parts(name,
+    compound_surname_hints=...)`` aligns the completeness measure with the
+    parse used for matching: the abbreviated surface contributes
+    ``first_tokens=['s']`` (completeness 0) and the full form contributes
+    ``first_tokens=['shai']`` (completeness 4), so the full form wins the
+    tiebreaker."""
+    raw = []
+    for bm in ("balkanbet", "365"):
+        raw.append(
+            RawOddsData(
+                bookmaker_id=bm,
+                league_id="nba",
+                home_team="Oklahoma City Thunder",
+                away_team="Memphis Grizzlies",
+                market_type="player_points",
+                player_name="S. Gilgeous Alexander",
+                threshold=29.5,
+                over_odds=1.85,
+                under_odds=1.85,
+                start_time="2026-04-13T01:00:00+00:00",
+            )
+        )
+    for bm in ("mozzart", "maxbet"):
+        raw.append(
+            RawOddsData(
+                bookmaker_id=bm,
+                league_id="nba",
+                home_team="Oklahoma City Thunder",
+                away_team="Memphis Grizzlies",
+                market_type="player_points",
+                player_name="Shai Gilgeous-Alexander",
+                threshold=29.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2026-04-13T01:00:00+00:00",
+            )
+        )
+    raw.append(
+        RawOddsData(
+            bookmaker_id="superbet",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="Sh. Gilgeous-Alexander",
+            threshold=29.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T01:00:00+00:00",
+        )
+    )
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {"Shai Gilgeous-Alexander"}
+
+
+def test_resolver_player_parts_iterative_pull_handles_asymmetric_chain_depths():
+    """Round-2 review note (gpt-5.5): the previous chained-particles test
+    used symmetrically-shaped surfaces, so a non-iterative single-pull
+    would happen to leave both sides parsed as
+    ``(['anna','de'], 'la cruz')`` and ``(['a','de'], 'la cruz')`` — both
+    with surname ``la cruz`` and matching trailing ``de`` first-name
+    tokens — and the merge would pass even without iteration. This test
+    exercises the iterative pull directly with an asymmetric pair: one
+    surface has the compound surname space-separated (``A. de la Cruz``),
+    the other has it hyphenated (``Anna de-la-Cruz``). The hyphenated
+    surface parses straight to ``last='de la cruz'`` (one token, then
+    folded). The space surface needs both ``la`` and ``de`` pulled to
+    align — a single pull would leave it as
+    ``(['a','de'], 'la cruz')`` and the surnames ``la cruz`` and
+    ``de la cruz`` would not match."""
+
+    from app.services.normalizer import _resolver_player_parts
+
+    space = _resolver_player_parts("A. de la Cruz")
+    hyphen = _resolver_player_parts("Anna de-la-Cruz")
+    assert space == (["a"], "de la cruz")
+    assert hyphen == (["anna"], "de la cruz")
+
+    raw = [
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="A. de la Cruz",
+            threshold=10.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="Anna de-la-Cruz",
+            threshold=10.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="Anna de-la-Cruz",
+            threshold=10.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {"Anna de-la-Cruz"}
+
+
+def test_normalize_odds_compound_hint_does_not_steal_middle_name_token():
+    """Round-3 review regression (gpt-5.5): the multi-token expansion in
+    ``_resolver_player_parts`` was originally invoked unconditionally through
+    `_try_contextual_player_match`, so an unrelated bucket member's
+    compound-surname hint could destructively reparse a bystander's middle-
+    name token. With ``Alice John-Paul`` in the bucket contributing the hint
+    ``'john paul'``, the surface ``Mary John Paul`` was being reparsed as
+    ``first=['mary'], last='john paul'`` — turning ``john`` from a middle
+    name into part of the surname — and the legitimate
+    ``M.J. Paul → Mary John Paul`` merge stopped firing.
+
+    The conservative-then-hint guard in `_try_contextual_player_match` only
+    consults the bucket-wide hints when the simple particle/fold parse leaves
+    surnames mismatched. ``Mary John Paul`` and ``M.J. Paul`` already share
+    ``last='paul'`` under the simple parse, so the hint stays inert for that
+    pair and the abbreviation merge proceeds. ``Alice John-Paul`` keeps her
+    distinct identity (different first name, surname only matches under
+    hint expansion which is gated by first-name compatibility downstream)."""
+
+    raw = [
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="M.J. Paul",
+            threshold=8.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="Mary John Paul",
+            threshold=8.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="Mary John Paul",
+            threshold=8.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="Alice John-Paul",
+            threshold=4.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = sorted({offer.player_name for offer in normalized})
+    assert names == ["Alice John-Paul", "Mary John Paul"]
+
+
+def test_normalize_odds_count_tied_compound_surname_pair_does_not_cycle():
+    """Round-3 review regression (opus-4.7-1m): the existing
+    `..._picks_full_form_canonical_in_compound_surname_count_tie` test was
+    found to be a trivial-pass for the round-2 completeness fix because the
+    full-name ``Shai Gilgeous-Alexander`` rows in that bucket let
+    `_final_contextual_player_name` walk through any wrong intermediate
+    replacement and still terminate on the same canonical surface.
+
+    This bucket is the *discriminating* regression: only the abbreviated
+    ``S. Gilgeous Alexander`` and the dotted ``Sh. Gilgeous-Alexander``
+    surfaces, both at count 2. Under the pre-round-2 completeness ranking
+    (un-wrapped `_player_name_parts`), ``S.`` scores completeness 8
+    (counting ``gilgeous`` as a given-name token) and ``Sh.`` scores 2 — so
+    for raw ``Sh.`` the resolver picks ``S.`` as best (`Sh. → S.`), and for
+    raw ``S.`` the resolver picks ``Sh.`` as best (`S. → Sh.`). The two
+    replacements form a cycle that ``_final_contextual_player_name`` short-
+    circuits by simply *swapping* the names, leaving both surfaces in the
+    output (no merge).
+
+    Under the round-2 completeness fix (wrapped `_resolver_player_parts`),
+    both candidates score completeness 2 (``['s']`` and ``['sh']``
+    respectively), so the count tie is resolved by the wrapper-aligned
+    completeness measure plus the rank's tertiary length tiebreaker —
+    ``Sh. Gilgeous-Alexander`` wins for raw ``S.``, and the resolver
+    refuses the reverse direction for raw ``Sh.`` because best's
+    completeness is no longer above raw's. The bucket merges to a single
+    canonical surface."""
+    raw = []
+    for bm in ("balkanbet", "365"):
+        raw.append(
+            RawOddsData(
+                bookmaker_id=bm,
+                league_id="nba",
+                home_team="Oklahoma City Thunder",
+                away_team="Memphis Grizzlies",
+                market_type="player_points",
+                player_name="S. Gilgeous Alexander",
+                threshold=29.5,
+                over_odds=1.85,
+                under_odds=1.85,
+                start_time="2026-04-13T01:00:00+00:00",
+            )
+        )
+    for bm in ("mozzart", "maxbet"):
+        raw.append(
+            RawOddsData(
+                bookmaker_id=bm,
+                league_id="nba",
+                home_team="Oklahoma City Thunder",
+                away_team="Memphis Grizzlies",
+                market_type="player_points",
+                player_name="Sh. Gilgeous-Alexander",
+                threshold=29.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2026-04-13T01:00:00+00:00",
+            )
+        )
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {"Sh. Gilgeous-Alexander"}
+
+
+def test_normalize_odds_merges_reversed_compound_surname_with_full_form():
+    """Round-4 review regression (gpt-5.5): the reversed-name branches in
+    `_try_contextual_player_match` (raw-swap and candidate-swap) constructed
+    the swapped surname directly from the un-folded
+    ``raw_first_tokens[0]`` / ``candidate_first_tokens[0]`` token, so a
+    hyphenated compound surname presented in reversed order
+    (``Gilgeous-Alexander S.``) compared as ``gilgeous-alexander`` against
+    a non-reversed candidate's already-folded ``gilgeous alexander``. The
+    surname-equality check in `_check_first_name_match` is verbatim, so
+    the swap path silently failed. This regressed a very plausible
+    bookmaker surface — some scrapers emit ``Surname F.`` / ``Surname-Last
+    F.`` for player props, and combining that with another scraper's full
+    ``Shai Gilgeous-Alexander`` form in the same event bucket would have
+    left the abbreviated reversed form unmerged.
+
+    The fix folds the swapped surname (`_fold_surname(...)`) symmetrically
+    in both reversed branches before passing it to
+    `_check_first_name_match`."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="Gilgeous-Alexander S.",
+            threshold=29.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="Shai Gilgeous-Alexander",
+            threshold=29.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="Shai Gilgeous-Alexander",
+            threshold=29.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T01:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {"Shai Gilgeous-Alexander"}
+
+
+def test_normalize_odds_merges_space_separated_reversed_compound_surname():
+    """Round-5 review regression (gpt-5.5): the round-4 fold fix only
+    handled the reversed-name path when the pre-abbreviation side parses as
+    exactly one ``first_token`` — covering hyphenated reversed compounds
+    like ``Gilgeous-Alexander S.`` but missing the same surname emitted in
+    space-separated form (``Gilgeous Alexander S.``). The space form parses
+    as multiple ``first_tokens=['gilgeous','alexander']`` so the
+    ``len(raw_first_tokens) == 1`` guard skipped the reversed branch
+    entirely and the variant remained unmerged.
+
+    The fix admits a multi-token reversed surname when the joined+folded
+    form matches a bucket-context compound-surname hint. ``Gilgeous-
+    Alexander`` (hyphenated) contributes the hint ``'gilgeous alexander'``,
+    and the space-separated reversed surface ``Gilgeous Alexander S.``
+    is now reparsed against that hint as
+    ``surname='gilgeous alexander'``, ``first=['s']`` so the merge with
+    ``Shai Gilgeous-Alexander`` proceeds via the existing reversed-match
+    machinery."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="Gilgeous Alexander S.",
+            threshold=29.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="Shai Gilgeous-Alexander",
+            threshold=29.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T01:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="Oklahoma City Thunder",
+            away_team="Memphis Grizzlies",
+            market_type="player_points",
+            player_name="Shai Gilgeous-Alexander",
+            threshold=29.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T01:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {"Shai Gilgeous-Alexander"}
+
+
+def test_normalize_odds_merges_multi_particle_space_separated_reversed_compound():
+    """Round-5 review regression (gpt-5.5): same defect class as
+    `test_normalize_odds_merges_space_separated_reversed_compound_surname`,
+    but with a multi-particle compound surname (``Van Der Berg``). The
+    space-separated reversed surface ``Van Der Berg J.`` parses as
+    ``first=['van','der','berg'], last='j'`` and only matches the
+    hyphenated full form ``John Van-Der-Berg`` once the multi-token
+    reversed-surname branch consults the bucket hint
+    ``'van der berg'`` (folded from ``van-der-berg``)."""
+    raw = [
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="Van Der Berg J.",
+            threshold=10.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="John Van-Der-Berg",
+            threshold=10.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="365",
+            league_id="nba",
+            home_team="A",
+            away_team="B",
+            market_type="player_points",
+            player_name="John Van-Der-Berg",
+            threshold=10.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2026-04-13T03:00:00+00:00",
+        ),
+    ]
+    normalized = normalize_odds(raw)
+    names = {offer.player_name for offer in normalized}
+    assert names == {"John Van-Der-Berg"}
