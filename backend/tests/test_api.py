@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.config import settings
 from app.database import close_db, get_db, init_db
+from app.migrations.runner import upgrade_database
 from app.main import app
 from app.models.schemas import (
     NormalizedOdds,
@@ -150,6 +151,8 @@ async def test_get_scrape_settings_defaults(client: AsyncClient):
     assert resp.status_code == 200
     data = resp.json()
     assert data["applied"]["scrape_market_scope"] == settings.scrape_market_scope
+    assert data["applied"]["enabled_sports"] == settings.enabled_sport_list
+    assert "football" in data["defaults"]["enabled_sports"]
     assert data["applied"]["analysis_markets"] == ["all"]
     assert data["applied"]["scrape_interval_minutes"] == settings.scrape_interval_minutes
     assert data["defaults"]["scrape_market_scope"] == settings.scrape_market_scope
@@ -1860,6 +1863,7 @@ async def test_init_db_migrates_team_review_cases_to_nullable_suggested_name(tmp
         )
         await db.commit()
 
+    upgrade_database(str(db_path))
     await init_db(str(db_path))
     await odds_store.upsert_bookmaker("meridian", "Meridian")
     await odds_store.upsert_league("bulgaria_nbl", "Bulgaria NBL", "basketball", "Bulgaria")
@@ -1990,6 +1994,7 @@ async def test_init_db_rebuilds_legacy_tables_with_canonical_team_foreign_keys(t
         )
         await db.commit()
 
+    upgrade_database(str(db_path))
     await init_db(str(db_path))
     await odds_store.upsert_bookmaker("meridian", "Meridian")
     await odds_store.upsert_league("euroleague", "Euroleague", "basketball", "Europe")

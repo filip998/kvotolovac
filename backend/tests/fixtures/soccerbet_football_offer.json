@@ -1,0 +1,47 @@
+{
+  "systemTime": "2026/05/05 16:51:04",
+  "id": "S",
+  "type": "SPORT",
+  "esMatches": [
+    {
+      "id": 514474827,
+      "matchCode": 78417,
+      "home": "Shire Endaselassie",
+      "away": "Ethio Electric",
+      "kickOffTime": 1777993200000,
+      "status": 0,
+      "sport": "S",
+      "leagueId": 2516096,
+      "leagueName": "Etiopija 1",
+      "betMap": {
+        "1": {
+          "NULL": { "tt": 1, "s": "U", "ov": 4.3, "sv": "NULL" }
+        },
+        "2": {
+          "NULL": { "tt": 2, "s": "U", "ov": 2.55, "sv": "NULL" }
+        },
+        "3": {
+          "NULL": { "tt": 3, "s": "U", "ov": 2.05, "sv": "NULL" }
+        },
+        "7": {
+          "NULL": { "tt": 7, "s": "U", "ov": 1.6, "sv": "NULL" }
+        },
+        "8": {
+          "NULL": { "tt": 8, "s": "U", "ov": 1.4, "sv": "NULL" }
+        },
+        "9": {
+          "NULL": { "tt": 9, "s": "U", "ov": 1.14, "sv": "NULL" }
+        },
+        "22": {
+          "NULL": { "tt": 22, "s": "U", "ov": 1.31, "sv": "NULL" }
+        },
+        "24": {
+          "NULL": { "tt": 24, "s": "U", "ov": 3.15, "sv": "NULL" }
+        },
+        "207": {
+          "NULL": { "tt": 207, "s": "U", "ov": 1.7, "sv": "NULL" }
+        }
+      }
+    }
+  ]
+}

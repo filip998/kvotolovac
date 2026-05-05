@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from .base import BaseScraper
-from ..models.schemas import RawOddsData
+from ..models.schemas import RawOddsData, RawOutcomeOffer
 
 # ── Realistic Euroleague mock data ─────────────────────────
 # Each bookmaker has slightly different player name spellings and thresholds
@@ -102,6 +102,7 @@ _BOOKMAKER_META = {
     "mozzart": ("Mozzart", "https://www.mozzartbet.com"),
     "meridian": ("Meridian", "https://www.meridianbet.rs"),
     "maxbet": ("MaxBet", "https://www.maxbet.rs"),
+    "balkanbet": ("BalkanBet", "https://www.balkanbet.rs"),
     "soccerbet": ("SoccerBet", "https://www.soccerbet.rs"),
     "superbet": ("Superbet", "https://superbet.rs"),
     "betole": ("BetOle", "https://www.betole.com"),
@@ -213,6 +214,59 @@ _HANDICAP_MARKETS: dict[str, list[dict]] = {
     ],
 }
 
+_FOOTBALL_GAMES = [
+    {
+        "league": "uae_2",
+        "home": "Hatta SC",
+        "away": "Al Urooba UAE",
+        "start": (datetime.utcnow() + timedelta(hours=3)).isoformat(),
+    },
+    {
+        "league": "egypt_1_relegation_group",
+        "home": "El Gouna FC",
+        "away": "Haras El Hodood",
+        "start": (datetime.utcnow() + timedelta(hours=4)).isoformat(),
+    },
+]
+
+_FOOTBALL_OUTCOME_MARKETS: dict[str, list[dict]] = {
+    "maxbet": [
+        {"game": 0, "market": "football_result", "outcome": "home", "odds": 2.50, "label": "1"},
+        {"game": 0, "market": "football_result", "outcome": "draw", "odds": 3.15, "label": "X"},
+        {"game": 0, "market": "football_result", "outcome": "away", "odds": 2.55, "label": "2"},
+        {"game": 0, "market": "football_double_chance", "outcome": "home_or_draw", "odds": 1.42, "label": "1X"},
+        {"game": 0, "market": "football_double_chance", "outcome": "draw_or_away", "odds": 1.42, "label": "X2"},
+        {"game": 0, "market": "football_total_goals", "outcome": "under", "odds": 2.12, "line": 2.5, "label": "0-2"},
+        {"game": 0, "market": "football_total_goals", "outcome": "over", "odds": 1.73, "line": 2.5, "label": "3+"},
+        {"game": 1, "market": "football_result", "outcome": "home", "odds": 2.30, "label": "1"},
+        {"game": 1, "market": "football_total_goals", "outcome": "under", "odds": 2.15, "line": 2.5, "label": "0-2"},
+    ],
+    "balkanbet": [
+        {"game": 0, "market": "football_result", "outcome": "home", "odds": 2.40, "label": "1"},
+        {"game": 0, "market": "football_result", "outcome": "draw", "odds": 3.20, "label": "X"},
+        {"game": 0, "market": "football_result", "outcome": "away", "odds": 2.55, "label": "2"},
+        {"game": 0, "market": "football_double_chance", "outcome": "home_or_draw", "odds": 1.37, "label": "1X"},
+        {"game": 0, "market": "football_double_chance", "outcome": "home_or_away", "odds": 1.24, "label": "12"},
+        {"game": 0, "market": "football_double_chance", "outcome": "draw_or_away", "odds": 1.42, "label": "X2"},
+        {"game": 0, "market": "football_total_goals", "outcome": "under", "odds": 1.78, "line": 2.5, "label": "0-2"},
+        {"game": 0, "market": "football_total_goals", "outcome": "over", "odds": 1.82, "line": 2.5, "label": "3+"},
+        {"game": 1, "market": "football_double_chance", "outcome": "draw_or_away", "odds": 1.53, "label": "X2"},
+        {"game": 1, "market": "football_total_goals", "outcome": "over", "odds": 2.85, "line": 2.5, "label": "3+"},
+    ],
+    "soccerbet": [
+        {"game": 0, "market": "football_result", "outcome": "home", "odds": 2.45, "label": "1"},
+        {"game": 0, "market": "football_result", "outcome": "draw", "odds": 3.10, "label": "X"},
+        {"game": 0, "market": "football_result", "outcome": "away", "odds": 2.70, "label": "2"},
+        {"game": 0, "market": "football_double_chance", "outcome": "home_or_draw", "odds": 1.40, "label": "1X"},
+        {"game": 0, "market": "football_double_chance", "outcome": "home_or_away", "odds": 1.28, "label": "12"},
+        {"game": 0, "market": "football_double_chance", "outcome": "draw_or_away", "odds": 1.48, "label": "X2"},
+        {"game": 0, "market": "football_total_goals", "outcome": "under", "odds": 2.05, "line": 2.5, "label": "0-2"},
+        {"game": 0, "market": "football_total_goals", "outcome": "over", "odds": 1.85, "line": 2.5, "label": "3+"},
+        {"game": 1, "market": "football_total_goals", "outcome": "under", "odds": 1.74, "line": 2.5, "label": "0-2"},
+        {"game": 1, "market": "football_total_goals", "outcome": "over", "odds": 2.20, "line": 2.5, "label": "3+"},
+    ],
+}
+
 
 class MockScraper(BaseScraper):
     """Mock scraper returning realistic Euroleague basketball data."""
@@ -230,6 +284,9 @@ class MockScraper(BaseScraper):
 
     def get_supported_leagues(self) -> list[str]:
         return ["euroleague"]
+
+    def get_supported_outcome_sports(self) -> list[str]:
+        return ["football"] if self._bookmaker_id in _FOOTBALL_OUTCOME_MARKETS else []
 
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         if league_id != "euroleague":
@@ -268,6 +325,31 @@ class MockScraper(BaseScraper):
                     threshold=h["threshold"],
                     over_odds=h["over"],
                     under_odds=h["under"],
+                    start_time=game["start"],
+                )
+            )
+        return results
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        if sport != "football":
+            return []
+
+        markets = _FOOTBALL_OUTCOME_MARKETS.get(self._bookmaker_id, [])
+        results: list[RawOutcomeOffer] = []
+        for market in markets:
+            game = _FOOTBALL_GAMES[market["game"]]
+            results.append(
+                RawOutcomeOffer(
+                    bookmaker_id=self._bookmaker_id,
+                    league_id=game["league"],
+                    sport="football",
+                    home_team=game["home"],
+                    away_team=game["away"],
+                    market_type=market["market"],
+                    outcome_code=market["outcome"],
+                    odds=market["odds"],
+                    line=market.get("line"),
+                    raw_label=market["label"],
                     start_time=game["start"],
                 )
             )

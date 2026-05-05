@@ -7,6 +7,7 @@ import pytest
 
 from app.config import settings
 from app.database import init_db, close_db
+from app.migrations.runner import upgrade_database
 from app.services.league_registry import clear_league_registry_cache
 from app.services.team_registry import clear_team_registry_cache
 
@@ -18,6 +19,7 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{db_path}")
     clear_league_registry_cache()
     clear_team_registry_cache()
+    upgrade_database(str(db_path))
     conn = asyncio.run(init_db(str(db_path)))
     yield conn
     clear_league_registry_cache()
