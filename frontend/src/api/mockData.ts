@@ -152,6 +152,7 @@ export const mockMatches: Match[] = [
       { id: 'oktagonbet', name: 'OktagonBet' },
       { id: 'soccerbet', name: 'SoccerBet' },
       { id: 'merkurxtip', name: 'MERKUR X TIP' },
+      { id: 'betole', name: 'BetOle' },
     ],
   },
   {
@@ -169,6 +170,7 @@ export const mockMatches: Match[] = [
       { id: 'oktagonbet', name: 'OktagonBet' },
       { id: 'soccerbet', name: 'SoccerBet' },
       { id: 'merkurxtip', name: 'MERKUR X TIP' },
+      { id: 'betole', name: 'BetOle' },
     ],
   },
   {
@@ -254,6 +256,17 @@ export const mockFootballOutcomeOffers: OutcomeOffer[] = [
   { id: 1050, match_id: 'football-match-1', bookmaker_id: 'oktagonbet', bookmaker_name: 'OktagonBet', market_type: 'football_total_goals', outcome_code: 'over', odds: 1.84, line: 2.5, raw_label: '3+', scraped_at: ago(1) },
   { id: 1051, match_id: 'football-match-2', bookmaker_id: 'oktagonbet', bookmaker_name: 'OktagonBet', market_type: 'football_total_goals', outcome_code: 'under', odds: 1.76, line: 2.5, raw_label: '0-2', scraped_at: ago(1) },
   { id: 1052, match_id: 'football-match-2', bookmaker_id: 'oktagonbet', bookmaker_name: 'OktagonBet', market_type: 'football_total_goals', outcome_code: 'over', odds: 2.18, line: 2.5, raw_label: '3+', scraped_at: ago(1) },
+  { id: 1053, match_id: 'football-match-1', bookmaker_id: 'betole', bookmaker_name: 'BetOle', market_type: 'football_result', outcome_code: 'home', odds: 2.42, line: null, raw_label: '1', scraped_at: ago(1) },
+  { id: 1054, match_id: 'football-match-1', bookmaker_id: 'betole', bookmaker_name: 'BetOle', market_type: 'football_result', outcome_code: 'draw', odds: 3.22, line: null, raw_label: 'X', scraped_at: ago(1) },
+  { id: 1055, match_id: 'football-match-1', bookmaker_id: 'betole', bookmaker_name: 'BetOle', market_type: 'football_result', outcome_code: 'away', odds: 2.58, line: null, raw_label: '2', scraped_at: ago(1) },
+  { id: 1056, match_id: 'football-match-1', bookmaker_id: 'betole', bookmaker_name: 'BetOle', market_type: 'football_double_chance', outcome_code: 'home_or_draw', odds: 1.39, line: null, raw_label: '1X', scraped_at: ago(1) },
+  { id: 1057, match_id: 'football-match-1', bookmaker_id: 'betole', bookmaker_name: 'BetOle', market_type: 'football_double_chance', outcome_code: 'home_or_away', odds: 1.26, line: null, raw_label: '12', scraped_at: ago(1) },
+  { id: 1058, match_id: 'football-match-1', bookmaker_id: 'betole', bookmaker_name: 'BetOle', market_type: 'football_double_chance', outcome_code: 'draw_or_away', odds: 1.45, line: null, raw_label: 'X2', scraped_at: ago(1) },
+  { id: 1059, match_id: 'football-match-1', bookmaker_id: 'betole', bookmaker_name: 'BetOle', market_type: 'football_total_goals', outcome_code: 'under', odds: 2.06, line: 2.5, raw_label: '0-2', scraped_at: ago(1) },
+  { id: 1060, match_id: 'football-match-1', bookmaker_id: 'betole', bookmaker_name: 'BetOle', market_type: 'football_total_goals', outcome_code: 'over', odds: 1.83, line: 2.5, raw_label: '3+', scraped_at: ago(1) },
+  { id: 1061, match_id: 'football-match-2', bookmaker_id: 'betole', bookmaker_name: 'BetOle', market_type: 'football_double_chance', outcome_code: 'draw_or_away', odds: 1.51, line: null, raw_label: 'X2', scraped_at: ago(1) },
+  { id: 1062, match_id: 'football-match-2', bookmaker_id: 'betole', bookmaker_name: 'BetOle', market_type: 'football_total_goals', outcome_code: 'under', odds: 1.78, line: 2.5, raw_label: '0-2', scraped_at: ago(1) },
+  { id: 1063, match_id: 'football-match-2', bookmaker_id: 'betole', bookmaker_name: 'BetOle', market_type: 'football_total_goals', outcome_code: 'over', odds: 2.16, line: 2.5, raw_label: '3+', scraped_at: ago(1) },
 ];
 
 export const mockOpportunities: Opportunity[] = [
