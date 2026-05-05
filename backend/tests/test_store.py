@@ -8,6 +8,7 @@ import pytest
 
 from app.config import settings
 from app.database import close_db, get_db, init_db
+from app.migrations.runner import upgrade_database
 from app.models.schemas import (
     EventReviewCaseIn,
     NormalizedOdds,
@@ -728,6 +729,7 @@ async def test_legacy_discrepancies_table_is_dropped(
         )
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{legacy_db_path}")
 
+    upgrade_database(str(legacy_db_path))
     await init_db(str(legacy_db_path))
     db = await get_db()
     rows = await db.execute_fetchall(
@@ -765,6 +767,7 @@ async def test_match_bookmaker_sources_migration_is_snapshot_scoped(
         )
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{legacy_db_path}")
 
+    upgrade_database(str(legacy_db_path))
     await init_db(str(legacy_db_path))
     db = await get_db()
     columns = await db.execute_fetchall("PRAGMA table_info(match_bookmaker_sources)")
@@ -860,6 +863,7 @@ async def test_odds_history_migration_backfills_snapshot_metadata(
         )
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{legacy_db_path}")
 
+    upgrade_database(str(legacy_db_path))
     await init_db(str(legacy_db_path))
     db = await get_db()
     history_rows = await db.execute_fetchall(
@@ -935,6 +939,7 @@ async def test_resolved_event_id_migration_preserves_foreign_keys(
         )
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{legacy_db_path}")
 
+    upgrade_database(str(legacy_db_path))
     await init_db(str(legacy_db_path))
     db = await get_db()
     opportunity_fks = await db.execute_fetchall("PRAGMA foreign_key_list(opportunities)")
@@ -3054,6 +3059,7 @@ async def test_legacy_source_urls_are_backfilled_to_snapshot_sources(
         )
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{legacy_db_path}")
 
+    upgrade_database(str(legacy_db_path))
     await init_db(str(legacy_db_path))
 
     odds = await odds_store.get_odds_for_match("legacy-match")

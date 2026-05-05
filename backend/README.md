@@ -33,6 +33,40 @@ cd backend
 ./venv/bin/pytest -q
 ```
 
+## Database migrations
+
+Schema creation and upgrades are managed by Alembic migrations under
+`backend/app/migrations/`. Backend startup does **not** run migrations
+automatically; it verifies that the configured database is already at the latest
+revision and fails with an actionable error if it is not.
+
+Create or upgrade the configured local database before starting the backend:
+
+```bash
+cd backend
+./venv/bin/alembic upgrade head
+```
+
+`alembic` reads `DATABASE_URL` the same way the backend does, defaulting to
+`sqlite:///./kvotolovac.db`. To migrate a different SQLite file, set
+`DATABASE_URL` for the command:
+
+```bash
+cd backend
+DATABASE_URL=sqlite:////absolute/path/to/kvotolovac.db ./venv/bin/alembic upgrade head
+```
+
+Create a new migration revision for future schema changes:
+
+```bash
+cd backend
+./venv/bin/alembic revision -m "describe schema change"
+```
+
+Use raw SQL / `op.execute()` in migration files. Do not add ongoing schema
+compatibility blocks to `app/database.py`; add versioned migration revisions and
+fixture-backed upgrade tests instead.
+
 ## Configuration
 
 Settings are loaded from environment variables and `backend/.env`. Copy `backend/.env.example` to `backend/.env` for local overrides.

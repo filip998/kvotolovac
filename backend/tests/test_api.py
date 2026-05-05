@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.config import settings
 from app.database import close_db, get_db, init_db
+from app.migrations.runner import upgrade_database
 from app.main import app
 from app.models.schemas import (
     NormalizedOdds,
@@ -1860,6 +1861,7 @@ async def test_init_db_migrates_team_review_cases_to_nullable_suggested_name(tmp
         )
         await db.commit()
 
+    upgrade_database(str(db_path))
     await init_db(str(db_path))
     await odds_store.upsert_bookmaker("meridian", "Meridian")
     await odds_store.upsert_league("bulgaria_nbl", "Bulgaria NBL", "basketball", "Bulgaria")
@@ -1990,6 +1992,7 @@ async def test_init_db_rebuilds_legacy_tables_with_canonical_team_foreign_keys(t
         )
         await db.commit()
 
+    upgrade_database(str(db_path))
     await init_db(str(db_path))
     await odds_store.upsert_bookmaker("meridian", "Meridian")
     await odds_store.upsert_league("euroleague", "Euroleague", "basketball", "Europe")
