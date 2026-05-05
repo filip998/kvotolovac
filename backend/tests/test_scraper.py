@@ -82,6 +82,27 @@ async def test_mock_scraper_supports_merkurxtip_football_outcomes():
 
 
 @pytest.mark.asyncio
+async def test_mock_scraper_supports_oktagonbet():
+    scraper = MockScraper("oktagonbet")
+    data = await scraper.scrape_odds("euroleague")
+
+    assert scraper.get_bookmaker_name() == "OktagonBet"
+    assert len(data) > 0
+    assert all(item.bookmaker_id == "oktagonbet" for item in data)
+
+
+@pytest.mark.asyncio
+async def test_mock_scraper_supports_oktagonbet_football_outcomes():
+    scraper = MockScraper("oktagonbet")
+    data = await scraper.scrape_outcome_offers("football")
+
+    assert scraper.get_supported_outcome_sports() == ["football"]
+    assert len(data) > 0
+    assert all(isinstance(item, RawOutcomeOffer) for item in data)
+    assert all(item.bookmaker_id == "oktagonbet" for item in data)
+
+
+@pytest.mark.asyncio
 async def test_mock_scraper_unsupported_league():
     scraper = MockScraper("mozzart")
     data = await scraper.scrape_odds("nba")

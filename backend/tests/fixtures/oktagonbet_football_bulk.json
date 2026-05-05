@@ -1,0 +1,22 @@
+{
+  "42312714": {
+    "id": 42312714,
+    "leagueName": "Austria 3 East",
+    "home": "Wiener Sport-Club",
+    "away": "Parndorf",
+    "kickOffTime": 1778002200000,
+    "sport": "S",
+    "odBetPickGroups": [
+      {
+        "id": 4281,
+        "name": "Dupla Šansa",
+        "handicapParamValue": null,
+        "tipTypes": [
+          { "tipTypeId": 7, "name": "1X", "caption": "1X", "value": 1.58 },
+          { "tipTypeId": 8, "name": "12", "caption": "12", "value": 1.23 },
+          { "tipTypeId": 9, "name": "X2", "caption": "X2", "value": 1.34 }
+        ]
+      }
+    ]
+  }
+}

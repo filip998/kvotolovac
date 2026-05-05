@@ -15,15 +15,19 @@ from app.scrapers.oktagonbet_scraper import (
     _parse_handicap_ot_match,
     _parse_match_detail,
     _parse_bulk_match,
+    _parse_football_outcome_match,
+    _parse_football_double_chance_bulk_match,
     _parse_start_time,
     _is_player_market,
     _extract_league_id,
     _SPORT_SPECS,
 )
-from app.models.schemas import RawOddsData
+from app.models.schemas import RawOddsData, RawOutcomeOffer
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "oktagonbet_specials.json"
 TOTALS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "oktagonbet_basketball_totals.json"
+FOOTBALL_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "oktagonbet_football_offer.json"
+FOOTBALL_BULK_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "oktagonbet_football_bulk.json"
 
 
 @pytest.fixture
@@ -35,6 +39,18 @@ def fixture_data() -> dict:
 @pytest.fixture
 def totals_fixture_data() -> dict:
     with open(TOTALS_FIXTURE_PATH) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def football_data() -> dict:
+    with open(FOOTBALL_FIXTURE_PATH) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def football_bulk_data() -> dict:
+    with open(FOOTBALL_BULK_FIXTURE_PATH) as f:
         return json.load(f)
 
 
@@ -478,6 +494,91 @@ def test_parse_game_total_ot_match_does_not_emit_handicap_after_change():
     assert _parse_game_total_ot_match(match) == []
 
 
+def test_parse_football_outcome_match_emits_result_and_totals(football_data):
+    results = _parse_football_outcome_match(football_data["esMatches"][0])
+
+    assert len(results) == 5
+    assert all(isinstance(r, RawOutcomeOffer) for r in results)
+    assert {r.bookmaker_id for r in results} == {"oktagonbet"}
+    assert {r.sport for r in results} == {"football"}
+    assert {r.league_id for r in results} == {"austria_3_east"}
+    assert {r.home_team for r in results} == {"Wiener Sport-Club"}
+    assert {r.away_team for r in results} == {"Parndorf"}
+    assert {r.start_time for r in results} == {"2026-05-05T17:30:00+00:00"}
+    assert {
+        (r.market_type, r.outcome_code, r.line, r.raw_label, r.odds)
+        for r in results
+    } == {
+        ("football_result", "home", None, "1", 2.80),
+        ("football_result", "draw", None, "X", 3.50),
+        ("football_result", "away", None, "2", 2.12),
+        ("football_total_goals", "under", 2.5, "0-2", 2.22),
+        ("football_total_goals", "over", 2.5, "3+", 1.54),
+    }
+
+
+def test_parse_football_double_chance_bulk_match_emits_double_chance(football_bulk_data):
+    match = football_bulk_data["42312714"]
+    results = _parse_football_double_chance_bulk_match(match)
+
+    assert len(results) == 3
+    assert {
+        (r.market_type, r.outcome_code, r.raw_label, r.odds)
+        for r in results
+    } == {
+        ("football_double_chance", "home_or_draw", "1X", 1.58),
+        ("football_double_chance", "home_or_away", "12", 1.23),
+        ("football_double_chance", "draw_or_away", "X2", 1.34),
+    }
+
+
+def test_parse_football_outcome_match_skips_invalid_rows():
+    match = {
+        "home": "Home",
+        "away": "Away",
+        "leagueName": "Test League",
+        "kickOffTime": 1778002200000,
+        "odds": {
+            "1": 0,
+            "2": -1,
+            "3": "bad",
+            "22": 2.05,
+        },
+    }
+
+    results = _parse_football_outcome_match(match)
+
+    assert len(results) == 1
+    assert results[0].market_type == "football_total_goals"
+    assert results[0].outcome_code == "under"
+
+
+def test_parse_football_outcome_match_requires_teams_and_odds_map():
+    assert _parse_football_outcome_match({"away": "Away", "odds": {"1": 1.9}}) == []
+    assert _parse_football_outcome_match({"home": "Home", "odds": {"1": 1.9}}) == []
+    assert _parse_football_outcome_match({"home": "Home", "away": "Away", "odds": []}) == []
+
+
+def test_parse_football_double_chance_bulk_match_dedupes_duplicate_groups():
+    match = {
+        "home": "Home",
+        "away": "Away",
+        "leagueName": "Test League",
+        "kickOffTime": 1778002200000,
+        "odBetPickGroups": [
+            {"tipTypes": [{"tipTypeId": 7, "value": 1.50}]},
+            {"tipTypes": [{"tipTypeId": 7, "value": 9.99}, {"tipTypeId": 8, "value": 1.25}]},
+        ],
+    }
+
+    results = _parse_football_double_chance_bulk_match(match)
+
+    assert [(r.outcome_code, r.odds) for r in results] == [
+        ("home_or_draw", 1.50),
+        ("home_or_away", 1.25),
+    ]
+
+
 def test_parse_match_detail_fixed_thresholds():
     match = {
         "home": "Player1",
@@ -865,3 +966,65 @@ async def test_scraper_interface():
     assert scraper.get_bookmaker_id() == "oktagonbet"
     assert scraper.get_bookmaker_name() == "OktagonBet"
     assert "basketball" in scraper.get_supported_leagues()
+    assert scraper.get_supported_outcome_sports() == ["football"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_football_uses_list_and_bulk(football_data, football_bulk_data):
+    scraper = OktagonBetScraper()
+    calls: list[tuple[str, dict]] = []
+
+    async def mock_get(url, **kwargs):
+        calls.append((url, kwargs.get("params", {})))
+        if "/sport/S/mob" in url:
+            return football_data
+        raise AssertionError(f"Unexpected GET URL: {url}")
+
+    async def mock_put(url, **kwargs):
+        assert "prematchesByIds.html" in url
+        assert kwargs["json_body"] == [42312714]
+        return football_bulk_data
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get), \
+         patch.object(scraper._http, "put_json", side_effect=mock_put) as put_mock:
+        results = await scraper.scrape_outcome_offers("football")
+
+    assert len(results) == 8
+    assert all(isinstance(r, RawOutcomeOffer) for r in results)
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/sport/S/mob")
+    assert calls[0][1]["hours"]
+    assert put_mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_football_returns_list_offers_when_bulk_missing(football_data):
+    scraper = OktagonBetScraper()
+
+    async def mock_get(url, **kwargs):
+        if "/sport/S/mob" in url:
+            return football_data
+        raise AssertionError(f"Unexpected GET URL: {url}")
+
+    async def mock_put(url, **kwargs):
+        return {}
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get), \
+         patch.object(scraper._http, "put_json", side_effect=mock_put):
+        results = await scraper.scrape_outcome_offers("football")
+
+    assert len(results) == 5
+    assert {r.market_type for r in results} == {"football_result", "football_total_goals"}
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_non_football_returns_empty():
+    scraper = OktagonBetScraper()
+
+    with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get, \
+         patch.object(scraper._http, "put_json", new_callable=AsyncMock) as mock_put:
+        results = await scraper.scrape_outcome_offers("basketball")
+
+    assert results == []
+    mock_get.assert_not_called()
+    mock_put.assert_not_called()
