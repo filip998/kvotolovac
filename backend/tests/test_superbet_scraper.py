@@ -847,3 +847,301 @@ async def test_scrape_odds_retries_missing_batch_events_singly():
     assert any(row.player_name == "Matt Thomas" and row.threshold == 12.5 for row in results)
     requested_batches = [call.kwargs["params"]["events"] for call in http_client.get_sse_json.call_args_list]
     assert requested_batches == ["12629345,12645680", "12645680"]
+
+
+# ── Football outcome offers ─────────────────────────────────────────────
+
+
+from app.scrapers.superbet_scraper import (
+    _OUTCOME_SPORT_SPECS,
+    _parse_football_event_payload,
+)
+from app.models.schemas import RawOutcomeOffer
+
+
+_FOOTBALL_CONTEXT = EventContext(
+    event_id=12850987,
+    league_id="brazil_under_20",
+    home_team="Vila Nova GO U20",
+    away_team="Botafogo SP U20",
+    start_time=START_DT.isoformat(),
+    source_url="https://superbet.rs/kvote/fudbal/vila-nova-go-u20-vs-botafogo-sp-u20-12850987?mdt=o",
+)
+
+
+def _football_payload() -> dict:
+    """Synthesise a subscription payload mirroring the live shape."""
+    return {
+        "event_id": 12850987,
+        "fixture": {
+            "event_name": "Vila Nova GO U20·Botafogo SP U20",
+            "utc_date": START_Z,
+            "category_id": 74,
+            "tournament_id": 86166,
+        },
+        "markets": [
+            {
+                "id": 547,
+                "name": "Konačan ishod",
+                "metadata": {},
+                "odds": [
+                    {"price": 2.35, "status": 1, "display": True,
+                     "metadata": {"code": "1", "name": "1"}},
+                    {"price": 3.30, "status": 1, "display": True,
+                     "metadata": {"code": "0", "name": "X"}},
+                    {"price": 2.62, "status": 1, "display": True,
+                     "metadata": {"code": "2", "name": "2"}},
+                ],
+            },
+            {
+                "id": 531,
+                "name": "Dupla šansa",
+                "metadata": {},
+                "odds": [
+                    {"price": 1.38, "status": 1, "display": True,
+                     "metadata": {"code": "10", "name": "1X"}},
+                    {"price": 1.24, "status": 1, "display": True,
+                     "metadata": {"code": "12", "name": "12"}},
+                    {"price": 1.46, "status": 1, "display": True,
+                     "metadata": {"code": "02", "name": "X2"}},
+                ],
+            },
+            {
+                "id": 200734,
+                "name": "Ukupno golova",
+                "metadata": {},
+                "odds": [
+                    # 1.5 line (must be ignored - only 2.5 is in scope)
+                    {"price": 4.00, "status": 1, "display": True,
+                     "metadata": {"name": "Manje 1.5", "specifiers": {"total": "1.5"}}},
+                    {"price": 1.16, "status": 1, "display": True,
+                     "metadata": {"name": "Više 1.5", "specifiers": {"total": "1.5"}}},
+                    # 2.5 line (in scope)
+                    {"price": 2.15, "status": 1, "display": True,
+                     "metadata": {"name": "Manje 2.5", "specifiers": {"total": "2.5"}}},
+                    {"price": 1.61, "status": 1, "display": True,
+                     "metadata": {"name": "Više 2.5", "specifiers": {"total": "2.5"}}},
+                ],
+            },
+            # Off-scope market should be ignored entirely.
+            {
+                "id": 539,
+                "name": "Oba tima daju gol (GG)",
+                "metadata": {},
+                "odds": [
+                    {"price": 1.55, "status": 1, "display": True,
+                     "metadata": {"code": "GG", "name": "GG"}},
+                ],
+            },
+        ],
+    }
+
+
+def test_parse_football_event_payload_emits_three_target_markets():
+    offers = _parse_football_event_payload(_football_payload(), context=_FOOTBALL_CONTEXT)
+
+    by_key = {(o.market_type, o.outcome_code): o for o in offers}
+    # 1X2 result
+    assert by_key[("football_result", "home")].odds == 2.35
+    assert by_key[("football_result", "home")].raw_label == "1"
+    assert by_key[("football_result", "draw")].odds == 3.30
+    assert by_key[("football_result", "draw")].raw_label == "X"
+    assert by_key[("football_result", "away")].odds == 2.62
+    assert by_key[("football_result", "away")].raw_label == "2"
+    # Double chance
+    assert by_key[("football_double_chance", "home_or_draw")].odds == 1.38
+    assert by_key[("football_double_chance", "home_or_draw")].raw_label == "1X"
+    assert by_key[("football_double_chance", "home_or_away")].odds == 1.24
+    assert by_key[("football_double_chance", "home_or_away")].raw_label == "12"
+    assert by_key[("football_double_chance", "draw_or_away")].odds == 1.46
+    assert by_key[("football_double_chance", "draw_or_away")].raw_label == "X2"
+    # Total goals 2.5 only
+    assert by_key[("football_total_goals", "over")].odds == 1.61
+    assert by_key[("football_total_goals", "over")].line == 2.5
+    assert by_key[("football_total_goals", "over")].raw_label == "3+"
+    assert by_key[("football_total_goals", "under")].odds == 2.15
+    assert by_key[("football_total_goals", "under")].line == 2.5
+    assert by_key[("football_total_goals", "under")].raw_label == "0-2"
+    # Off-scope and off-line offers are excluded
+    assert all(not (o.market_type == "football_total_goals" and o.line == 1.5) for o in offers)
+    # Identity is preserved from context, not detail
+    assert all(o.home_team == "Vila Nova GO U20" for o in offers)
+    assert all(o.away_team == "Botafogo SP U20" for o in offers)
+    assert all(o.league_id == "brazil_under_20" for o in offers)
+    assert all(o.start_time == _FOOTBALL_CONTEXT.start_time for o in offers)
+    assert all(o.source_url == _FOOTBALL_CONTEXT.source_url for o in offers)
+    assert all(o.bookmaker_id == "superbet" for o in offers)
+    assert all(o.sport == "football" for o in offers)
+
+
+def test_parse_football_event_payload_skips_inactive_or_zero_odds():
+    payload = _football_payload()
+    payload["markets"][0]["odds"][0]["status"] = 0  # 1 = home, status off
+    payload["markets"][0]["odds"][1]["display"] = False  # X = draw, hidden
+    payload["markets"][2]["odds"][2]["price"] = 1.0  # under 2.5 at price 1.0
+
+    offers = _parse_football_event_payload(payload, context=_FOOTBALL_CONTEXT)
+    by_key = {(o.market_type, o.outcome_code) for o in offers}
+    assert ("football_result", "home") not in by_key
+    assert ("football_result", "draw") not in by_key
+    assert ("football_result", "away") in by_key
+    assert ("football_total_goals", "over") in by_key
+    assert ("football_total_goals", "under") not in by_key
+
+
+def test_parse_football_event_payload_tolerates_total_string_variants():
+    """The parser must accept ``"2.50"`` / ``" 2.5 "`` as the 2.5 line."""
+    payload = _football_payload()
+    # Replace the 2.5 odds with cosmetic variants
+    payload["markets"][2]["odds"] = [
+        {"price": 2.10, "status": 1, "display": True,
+         "metadata": {"name": "Manje 2.5", "specifiers": {"total": " 2.5 "}}},
+        {"price": 1.65, "status": 1, "display": True,
+         "metadata": {"name": "Više 2.5", "specifiers": {"total": "2.50"}}},
+    ]
+    offers = _parse_football_event_payload(payload, context=_FOOTBALL_CONTEXT)
+    by_key = {(o.market_type, o.outcome_code): o for o in offers}
+    assert by_key[("football_total_goals", "over")].line == 2.5
+    assert by_key[("football_total_goals", "over")].odds == 1.65
+    assert by_key[("football_total_goals", "under")].line == 2.5
+    assert by_key[("football_total_goals", "under")].odds == 2.10
+
+
+def test_parse_football_event_payload_uses_context_identity_not_detail():
+    """B1-style invariant: identity comes from EventContext, never from
+    the per-event subscription payload — even if the detail disagrees."""
+    payload = _football_payload()
+    # Pollute fixture with a different team name, league, and time
+    payload["fixture"] = {
+        "event_name": "Wrong Home·Wrong Away",
+        "utc_date": "2099-12-31T23:59:59Z",
+        "category_id": 999,
+        "tournament_id": 999,
+    }
+    offers = _parse_football_event_payload(payload, context=_FOOTBALL_CONTEXT)
+    assert offers, "expected non-empty offers"
+    assert all(o.home_team == _FOOTBALL_CONTEXT.home_team for o in offers)
+    assert all(o.away_team == _FOOTBALL_CONTEXT.away_team for o in offers)
+    assert all(o.start_time == _FOOTBALL_CONTEXT.start_time for o in offers)
+    assert all(o.league_id == _FOOTBALL_CONTEXT.league_id for o in offers)
+
+
+def test_parse_football_event_payload_ignores_unknown_codes():
+    payload = _football_payload()
+    payload["markets"][0]["odds"].append(
+        {"price": 5.0, "status": 1, "display": True,
+         "metadata": {"code": "9", "name": "?"}},
+    )
+    payload["markets"][1]["odds"].append(
+        {"price": 5.0, "status": 1, "display": True,
+         "metadata": {"code": "00", "name": "??"}},
+    )
+    offers = _parse_football_event_payload(payload, context=_FOOTBALL_CONTEXT)
+    # The original 3 result + 3 double chance + 2 totals (2.5) = 8 offers
+    assert len(offers) == 8
+
+
+def test_outcome_spec_does_not_pollute_basketball_league_list():
+    """Football must not appear in get_supported_leagues() (basketball lane)."""
+    scraper = SuperbetScraper(http_client=AsyncMock())
+    assert scraper.get_supported_leagues() == ["basketball"]
+    assert scraper.get_supported_outcome_sports() == ["football"]
+    assert "football" in _OUTCOME_SPORT_SPECS
+
+
+def test_extract_league_id_default_kwarg_falls_back_to_sport_scope():
+    """When the raw league name normalizes to empty, the fallback must
+    honour the caller-provided default — not the basketball constant.
+    Otherwise a football event with a degenerate league name (e.g.
+    a label that normalizes to '') would be tagged league_id='basketball'
+    and split off from the rest of the football canonical pool."""
+    assert _extract_league_id("", default="football") == "football"
+    assert _extract_league_id(None, default="football") == "football"
+    # A non-empty but normalize-to-empty label still falls back
+    assert _extract_league_id("---", default="football") == "football"
+    # Basketball callers (no kwarg) keep their existing behaviour
+    assert _extract_league_id("") == "basketball"
+    assert _extract_league_id(None) == "basketball"
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_only_supports_football():
+    scraper = SuperbetScraper(http_client=AsyncMock())
+    assert await scraper.scrape_outcome_offers("basketball") == []
+    assert await scraper.scrape_outcome_offers("tennis") == []
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_football_end_to_end():
+    """Verifies discover -> SSE -> parse pipeline for football and that
+    the market-groups call is NOT made for the football lane."""
+
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del headers
+        if url == _STRUCTURE_URL:
+            return {
+                "data": {
+                    "tournaments": [
+                        {"id": 86166, "localNames": {"sr-Latn-RS": "Brasileirao Serie A"}},
+                    ],
+                    "categories": [
+                        {"id": 74, "localNames": {"sr-Latn-RS": "Brazil"}},
+                    ],
+                }
+            }
+        if url == _MARKET_GROUPS_URL.format(sport_id=5):
+            raise AssertionError(
+                "Football lane must not request market-groups (no group-name "
+                "lookup is needed when classification is by market id)"
+            )
+        if url == _EVENTS_BY_DATE_URL:
+            assert params is not None
+            assert params["sportId"] == "5"
+            assert params["offerState"] == "prematch"
+            return {
+                "data": [
+                    {
+                        "eventId": 12850987,
+                        "sportId": 5,
+                        "matchName": "Vila Nova GO U20·Botafogo SP U20",
+                        "tournamentId": 86166,
+                        "categoryId": 74,
+                        "utcDate": START_Z,
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    async def fake_get_sse_json(url: str, *, params=None, headers=None, max_messages=1, read_timeout=None):
+        del headers
+        assert url == _EVENT_SUBSCRIPTION_URL
+        assert params == {"events": "12850987"}
+        assert max_messages == 1
+        assert read_timeout == 10.0
+        return [[_football_payload()]]
+
+    http_client = AsyncMock()
+    http_client.get_json.side_effect = fake_get_json
+    http_client.get_sse_json.side_effect = fake_get_sse_json
+
+    scraper = SuperbetScraper(http_client=http_client)
+    offers = await scraper.scrape_outcome_offers("football")
+
+    assert {o.market_type for o in offers} == {
+        "football_result",
+        "football_double_chance",
+        "football_total_goals",
+    }
+    assert {o.bookmaker_id for o in offers} == {"superbet"}
+    assert {o.sport for o in offers} == {"football"}
+    assert {o.home_team for o in offers} == {"Vila Nova GO U20"}
+    assert {o.away_team for o in offers} == {"Botafogo SP U20"}
+    assert {o.league_id for o in offers} == {"brasileirao_serie_a"}
+    assert {o.source_url for o in offers} == {
+        "https://superbet.rs/kvote/fudbal/vila-nova-go-u20-vs-botafogo-sp-u20-12850987?mdt=o"
+    }
+    # Total goals only at 2.5
+    totals = [o for o in offers if o.market_type == "football_total_goals"]
+    assert {o.line for o in totals} == {2.5}
+    assert {o.outcome_code for o in totals} == {"over", "under"}
+
