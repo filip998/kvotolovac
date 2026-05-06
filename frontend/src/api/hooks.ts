@@ -35,6 +35,7 @@ import {
   mockBookmakers,
   mockLeagues,
   mockMatches,
+  mockMatchOutcomeOfferScopes,
   mockOddsOffers,
   mockOpportunities,
   mockFootballOutcomeOffers,
@@ -983,6 +984,22 @@ export function useMatchOdds(matchId: string) {
         return mockOddsOffers.filter((o) => o.match_id === matchId);
       }
       const { data } = await client.get<OddsOffer[]>(`/matches/${matchId}/odds`);
+      return data;
+    },
+    enabled: !!matchId,
+  });
+}
+
+export function useMatchOutcomeOffers(matchId: string) {
+  return useQuery<OutcomeOffer[]>({
+    queryKey: ['matchOutcomeOffers', matchId],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        const scopedMatchIds = new Set(mockMatchOutcomeOfferScopes[matchId] ?? [matchId]);
+        return mockFootballOutcomeOffers.filter((offer) => scopedMatchIds.has(offer.match_id));
+      }
+      const { data } = await client.get<OutcomeOffer[]>(`/matches/${matchId}/market-offers`);
       return data;
     },
     enabled: !!matchId,

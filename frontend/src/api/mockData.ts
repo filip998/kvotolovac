@@ -348,6 +348,12 @@ export const mockFootballOutcomeOffers: OutcomeOffer[] = [
   { id: 1126, match_id: 'football-match-2', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', market_type: 'football_total_goals', outcome_code: 'over', odds: 2.12, line: 2.5, raw_label: '3+', scraped_at: ago(2) },
 ];
 
+export const mockMatchOutcomeOfferScopes: Record<string, string[]> = {
+  'football-match-1': ['football-match-1'],
+  'football-match-2': ['football-match-2'],
+  'football-match-3': ['football-match-3'],
+};
+
 export const mockOpportunities: Opportunity[] = [
   {
     id: 2001,

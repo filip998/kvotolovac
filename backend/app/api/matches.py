@@ -6,7 +6,14 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from ._params import parse_csv_query_values
-from ..models.schemas import MatchMergeIn, MatchMergeOut, MatchMergeTeamPairing, MatchOut, OddsOut
+from ..models.schemas import (
+    MatchMergeIn,
+    MatchMergeOut,
+    MatchMergeTeamPairing,
+    MatchOut,
+    OddsOut,
+    OutcomeOfferOut,
+)
 from ..services.scheduler import scheduler
 from ..services.team_registry import merge_canonical_teams
 from ..store import odds_store
@@ -47,6 +54,26 @@ async def get_match_odds(match_id: str):
     if not match:
         raise HTTPException(status_code=404, detail="Match not found")
     return await odds_store.get_odds_for_match(match_id)
+
+
+@router.get("/{match_id}/market-offers", response_model=list[OutcomeOfferOut])
+async def get_match_market_offers(
+    match_id: str,
+    bookmaker_ids: Optional[str] = Query(None),
+    market_type: Optional[str] = Query(None),
+    limit: int = Query(1000, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
+):
+    match = await odds_store.get_match(match_id, require_current_snapshot=True)
+    if not match:
+        raise HTTPException(status_code=404, detail="Match not found")
+    return await odds_store.get_outcome_offers_for_match(
+        match_id,
+        bookmaker_ids=parse_csv_query_values(bookmaker_ids),
+        market_type=market_type,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/{match_id}/history", response_model=list[OddsOut])
