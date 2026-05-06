@@ -155,6 +155,7 @@ export const mockMatches: Match[] = [
       { id: 'betole', name: 'BetOle' },
       { id: '365', name: '365' },
       { id: 'superbet', name: 'Superbet' },
+      { id: 'admiralbet', name: 'AdmiralBet' },
     ],
   },
   {
@@ -175,6 +176,7 @@ export const mockMatches: Match[] = [
       { id: 'betole', name: 'BetOle' },
       { id: '365', name: '365' },
       { id: 'superbet', name: 'Superbet' },
+      { id: 'admiralbet', name: 'AdmiralBet' },
     ],
   },
   {
@@ -293,6 +295,17 @@ export const mockFootballOutcomeOffers: OutcomeOffer[] = [
   { id: 1083, match_id: 'football-match-2', bookmaker_id: 'superbet', bookmaker_name: 'Superbet', market_type: 'football_result', outcome_code: 'home', odds: 1.92, line: null, raw_label: '1', scraped_at: ago(1) },
   { id: 1084, match_id: 'football-match-2', bookmaker_id: 'superbet', bookmaker_name: 'Superbet', market_type: 'football_total_goals', outcome_code: 'under', odds: 1.78, line: 2.5, raw_label: '0-2', scraped_at: ago(1) },
   { id: 1085, match_id: 'football-match-2', bookmaker_id: 'superbet', bookmaker_name: 'Superbet', market_type: 'football_total_goals', outcome_code: 'over', odds: 2.16, line: 2.5, raw_label: '3+', scraped_at: ago(1) },
+  { id: 1086, match_id: 'football-match-1', bookmaker_id: 'admiralbet', bookmaker_name: 'AdmiralBet', market_type: 'football_result', outcome_code: 'home', odds: 2.42, line: null, raw_label: '1', scraped_at: ago(1) },
+  { id: 1087, match_id: 'football-match-1', bookmaker_id: 'admiralbet', bookmaker_name: 'AdmiralBet', market_type: 'football_result', outcome_code: 'draw', odds: 3.20, line: null, raw_label: 'X', scraped_at: ago(1) },
+  { id: 1088, match_id: 'football-match-1', bookmaker_id: 'admiralbet', bookmaker_name: 'AdmiralBet', market_type: 'football_result', outcome_code: 'away', odds: 2.60, line: null, raw_label: '2', scraped_at: ago(1) },
+  { id: 1089, match_id: 'football-match-1', bookmaker_id: 'admiralbet', bookmaker_name: 'AdmiralBet', market_type: 'football_double_chance', outcome_code: 'home_or_draw', odds: 1.40, line: null, raw_label: '1X', scraped_at: ago(1) },
+  { id: 1090, match_id: 'football-match-1', bookmaker_id: 'admiralbet', bookmaker_name: 'AdmiralBet', market_type: 'football_double_chance', outcome_code: 'home_or_away', odds: 1.27, line: null, raw_label: '12', scraped_at: ago(1) },
+  { id: 1091, match_id: 'football-match-1', bookmaker_id: 'admiralbet', bookmaker_name: 'AdmiralBet', market_type: 'football_double_chance', outcome_code: 'draw_or_away', odds: 1.46, line: null, raw_label: 'X2', scraped_at: ago(1) },
+  { id: 1092, match_id: 'football-match-1', bookmaker_id: 'admiralbet', bookmaker_name: 'AdmiralBet', market_type: 'football_total_goals', outcome_code: 'under', odds: 2.10, line: 2.5, raw_label: '0-2', scraped_at: ago(1) },
+  { id: 1093, match_id: 'football-match-1', bookmaker_id: 'admiralbet', bookmaker_name: 'AdmiralBet', market_type: 'football_total_goals', outcome_code: 'over', odds: 1.80, line: 2.5, raw_label: '3+', scraped_at: ago(1) },
+  { id: 1094, match_id: 'football-match-2', bookmaker_id: 'admiralbet', bookmaker_name: 'AdmiralBet', market_type: 'football_result', outcome_code: 'home', odds: 1.94, line: null, raw_label: '1', scraped_at: ago(1) },
+  { id: 1095, match_id: 'football-match-2', bookmaker_id: 'admiralbet', bookmaker_name: 'AdmiralBet', market_type: 'football_total_goals', outcome_code: 'under', odds: 1.80, line: 2.5, raw_label: '0-2', scraped_at: ago(1) },
+  { id: 1096, match_id: 'football-match-2', bookmaker_id: 'admiralbet', bookmaker_name: 'AdmiralBet', market_type: 'football_total_goals', outcome_code: 'over', odds: 2.12, line: 2.5, raw_label: '3+', scraped_at: ago(1) },
 ];
 
 export const mockOpportunities: Opportunity[] = [
