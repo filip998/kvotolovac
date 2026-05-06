@@ -148,6 +148,7 @@ export const mockMatches: Match[] = [
     start_time: hours(2.25),
     status: 'upcoming',
     available_bookmakers: [
+      { id: 'mozzart', name: 'Mozzart' },
       { id: 'maxbet', name: 'MaxBet' },
       { id: 'balkanbet', name: 'BalkanBet' },
       { id: 'oktagonbet', name: 'OktagonBet' },
@@ -170,6 +171,7 @@ export const mockMatches: Match[] = [
     start_time: hours(2.5),
     status: 'upcoming',
     available_bookmakers: [
+      { id: 'mozzart', name: 'Mozzart' },
       { id: 'maxbet', name: 'MaxBet' },
       { id: 'balkanbet', name: 'BalkanBet' },
       { id: 'oktagonbet', name: 'OktagonBet' },
@@ -318,6 +320,18 @@ export const mockFootballOutcomeOffers: OutcomeOffer[] = [
   { id: 1102, match_id: 'football-match-2', bookmaker_id: 'pinnbet', bookmaker_name: 'PinnBet', market_type: 'football_result', outcome_code: 'home', odds: 1.96, line: null, raw_label: '1', scraped_at: ago(2) },
   { id: 1103, match_id: 'football-match-2', bookmaker_id: 'pinnbet', bookmaker_name: 'PinnBet', market_type: 'football_total_goals', outcome_code: 'under', odds: 1.82, line: 2.5, raw_label: '0-2', scraped_at: ago(2) },
   { id: 1104, match_id: 'football-match-2', bookmaker_id: 'pinnbet', bookmaker_name: 'PinnBet', market_type: 'football_total_goals', outcome_code: 'over', odds: 2.14, line: 2.5, raw_label: '3+', scraped_at: ago(2) },
+  // Mozzart — list-only football shape: result + double chance + 2.5 totals from betting/matches.
+  { id: 1105, match_id: 'football-match-1', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'football_result', outcome_code: 'home', odds: 2.48, line: null, raw_label: '1', scraped_at: ago(2) },
+  { id: 1106, match_id: 'football-match-1', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'football_result', outcome_code: 'draw', odds: 3.18, line: null, raw_label: 'X', scraped_at: ago(2) },
+  { id: 1107, match_id: 'football-match-1', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'football_result', outcome_code: 'away', odds: 2.62, line: null, raw_label: '2', scraped_at: ago(2) },
+  { id: 1108, match_id: 'football-match-1', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'football_double_chance', outcome_code: 'home_or_draw', odds: 1.41, line: null, raw_label: '1X', scraped_at: ago(2) },
+  { id: 1109, match_id: 'football-match-1', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'football_double_chance', outcome_code: 'home_or_away', odds: 1.29, line: null, raw_label: '12', scraped_at: ago(2) },
+  { id: 1110, match_id: 'football-match-1', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'football_double_chance', outcome_code: 'draw_or_away', odds: 1.47, line: null, raw_label: 'X2', scraped_at: ago(2) },
+  { id: 1111, match_id: 'football-match-1', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'football_total_goals', outcome_code: 'under', odds: 1.80, line: 2.5, raw_label: '0-2', scraped_at: ago(2) },
+  { id: 1112, match_id: 'football-match-1', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'football_total_goals', outcome_code: 'over', odds: 1.90, line: 2.5, raw_label: '3+', scraped_at: ago(2) },
+  { id: 1113, match_id: 'football-match-2', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'football_result', outcome_code: 'home', odds: 1.98, line: null, raw_label: '1', scraped_at: ago(2) },
+  { id: 1114, match_id: 'football-match-2', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'football_total_goals', outcome_code: 'under', odds: 1.76, line: 2.5, raw_label: '0-2', scraped_at: ago(2) },
+  { id: 1115, match_id: 'football-match-2', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'football_total_goals', outcome_code: 'over', odds: 2.18, line: 2.5, raw_label: '3+', scraped_at: ago(2) },
 ];
 
 export const mockOpportunities: Opportunity[] = [
@@ -1279,16 +1293,16 @@ export const mockSystemStatus: SystemStatus = {
   total_matches: 6,
   total_odds: mockOddsOffers.length,
   total_opportunities: mockOpportunities.length,
-  active_bookmakers: 11,
+  active_bookmakers: 12,
   scheduler_running: true,
   scan: {
     in_progress: true,
     phase: 'scraping',
     started_at: ago(0),
-    total_tasks: 11,
+    total_tasks: 12,
     completed_tasks: 4,
     failed_tasks: 1,
-    active_tasks: 6,
+    active_tasks: 7,
   },
   bookmaker_status: [
     { id: 'mozzart', name: 'Mozzart', last_scrape: ago(2), is_active: true },

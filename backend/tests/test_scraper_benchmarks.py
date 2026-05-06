@@ -106,7 +106,10 @@ async def test_failed_scraper_increments_failure_rate(monkeypatch, client: Async
     resp = await client.get("/api/v1/scraper-benchmarks")
     body = resp.json()
     by_bm = {s["bookmaker_id"]: s for s in body["scrapers"]}
-    # Both bookmakers used the patched method; both fail.
+    # Meridian only has the threshold-odds lane, so the patched scrape_odds
+    # makes it fail every attempted task. Mozzart also advertises football
+    # outcome offers in mock mode; that list-only lane still succeeds.
     assert by_bm["meridian"]["failure_rate"] == 1.0
-    assert by_bm["mozzart"]["failure_rate"] == 1.0
+    assert by_bm["mozzart"]["failure_rate"] == 0.5
     assert by_bm["meridian"]["raw_items"] == 0
+    assert by_bm["mozzart"]["raw_items"] > 0
