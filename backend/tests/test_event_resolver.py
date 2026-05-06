@@ -17,6 +17,7 @@ from app.services import event_resolver as event_resolver_module
 from app.services.event_resolver import (
     EventCandidate,
     _CandidateGroup,
+    _EventGroupBuildStats,
     _PairResolution,
     _comparison_team_text,
     _contextual_merge_source_ids,
@@ -151,6 +152,37 @@ def test_event_resolution_groups_keep_sports_separate_for_same_teams_and_time():
         ("basketball", "basketball-match"),
         ("football", "football-match"),
     }
+
+
+def test_event_resolution_benchmark_counts_pair_and_fuzzy_work():
+    candidates = [
+        EventCandidate(
+            match_id="basketball-a",
+            bookmaker_id="book-a",
+            sport="basketball",
+            start_time=START_TIME,
+            home_team_id=1,
+            away_team_id=2,
+            home_team="Basket Sibirsk",
+            away_team="CSKA Moscow",
+        ),
+        EventCandidate(
+            match_id="basketball-b",
+            bookmaker_id="book-b",
+            sport="basketball",
+            start_time=START_TIME,
+            home_team_id=3,
+            away_team_id=2,
+            home_team="Blec Sybirsk",
+            away_team="CSKA Moscow",
+        ),
+    ]
+    stats = _EventGroupBuildStats()
+
+    build_event_resolution_groups(candidates, stats=stats)
+
+    assert stats.pair_check_count == 1
+    assert stats.fuzzy_score_count >= 1
 
 
 async def _seed_bookmakers(*bookmaker_ids: str) -> None:

@@ -6,6 +6,8 @@ from app.config import settings
 from app.models.schemas import RawOutcomeOffer
 from app.services.normalizer import generate_match_id
 from app.services.outcome_normalizer import (
+    _FootballEventResolutionStats,
+    _build_football_event_resolutions,
     _same_team_context,
     _team_similarity,
     _team_qualifiers,
@@ -96,6 +98,19 @@ def test_cross_book_football_autocreate_reports_multiple_batch_created_teams(tea
     assert review_cases == []
     assert benchmark.auto_created_football_team_count == 2
     assert {"Batch Home FC", "Batch Away FC"} <= _canonical_team_names()
+
+
+def test_football_event_resolution_benchmark_counts_pair_and_fuzzy_work(team_registry_file):
+    raw = [
+        _offer("maxbet", "Basket Sibirsk", "CSKA Moscow", outcome_code="over"),
+        _offer("balkanbet", "Blec Sybirsk", "CSKA Moscow", outcome_code="under"),
+    ]
+    stats = _FootballEventResolutionStats()
+
+    _build_football_event_resolutions(raw, stats=stats)
+
+    assert stats.football_event_pair_candidate_count == 1
+    assert stats.football_event_fuzzy_score_count >= 1
 
 
 def test_one_strong_football_team_matches_event_without_alias_write(team_registry_file):

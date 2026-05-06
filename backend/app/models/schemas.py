@@ -575,6 +575,8 @@ class OutcomeNormalizationBenchmarkOut(BaseModel):
     normalized_outcome_offer_count: int = 0
     unresolved_outcome_offer_count: int = 0
     football_unique_event_count: int = 0
+    football_event_pair_candidate_count: int = 0
+    football_event_fuzzy_score_count: int = 0
     auto_created_football_team_count: int = 0
     auto_create_football_teams_ms: int = 0
     football_event_resolution_ms: int = 0
@@ -595,6 +597,7 @@ class EventResolverBenchmarkOut(BaseModel):
     candidate_count: int = 0
     exact_group_count: int = 0
     pair_check_count: int = 0
+    fuzzy_score_count: int = 0
     accepted_fuzzy_pair_count: int = 0
     review_case_count: int = 0
     persisted_resolved_event_count: int = 0
