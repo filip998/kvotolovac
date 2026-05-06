@@ -109,6 +109,7 @@ _BOOKMAKER_META = {
     "superbet": ("Superbet", "https://superbet.rs"),
     "betole": ("BetOle", "https://www.betole.com"),
     "365": ("365", "https://www.365.rs/"),
+    "admiralbet": ("AdmiralBet", "https://admiralbet.rs"),
     "volcanobet": ("VolcanoBet", "https://www.volcanobet.rs/sport-v2/prematch/events"),
 }
 
@@ -355,6 +356,19 @@ _FOOTBALL_OUTCOME_MARKETS: dict[str, list[dict]] = {
         {"game": 1, "market": "football_result", "outcome": "home", "odds": 1.92, "label": "1"},
         {"game": 1, "market": "football_total_goals", "outcome": "under", "odds": 1.78, "line": 2.5, "label": "0-2"},
         {"game": 1, "market": "football_total_goals", "outcome": "over", "odds": 2.16, "line": 2.5, "label": "3+"},
+    ],
+    "admiralbet": [
+        {"game": 0, "market": "football_result", "outcome": "home", "odds": 2.42, "label": "1"},
+        {"game": 0, "market": "football_result", "outcome": "draw", "odds": 3.20, "label": "X"},
+        {"game": 0, "market": "football_result", "outcome": "away", "odds": 2.60, "label": "2"},
+        {"game": 0, "market": "football_double_chance", "outcome": "home_or_draw", "odds": 1.40, "label": "1X"},
+        {"game": 0, "market": "football_double_chance", "outcome": "home_or_away", "odds": 1.27, "label": "12"},
+        {"game": 0, "market": "football_double_chance", "outcome": "draw_or_away", "odds": 1.46, "label": "X2"},
+        {"game": 0, "market": "football_total_goals", "outcome": "under", "odds": 2.10, "line": 2.5, "label": "0-2"},
+        {"game": 0, "market": "football_total_goals", "outcome": "over", "odds": 1.80, "line": 2.5, "label": "3+"},
+        {"game": 1, "market": "football_result", "outcome": "home", "odds": 1.94, "label": "1"},
+        {"game": 1, "market": "football_total_goals", "outcome": "under", "odds": 1.80, "line": 2.5, "label": "0-2"},
+        {"game": 1, "market": "football_total_goals", "outcome": "over", "odds": 2.12, "line": 2.5, "label": "3+"},
     ],
 }
 

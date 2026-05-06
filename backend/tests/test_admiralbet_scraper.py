@@ -19,11 +19,17 @@ from app.scrapers.admiralbet_scraper import (
     _parse_handicap_ot_bets,
     _parse_handicap_ot_event,
     _extract_league_id,
+    _parse_football_outcome_event,
+    _parse_total_line,
+    _resolve_total_line,
+    _FOOTBALL_OUTCOME_PARAMS,
+    _LIST_URL,
 )
-from app.models.schemas import RawOddsData
+from app.models.schemas import RawOddsData, RawOutcomeOffer
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "admiralbet_specials.json"
 TOTALS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "admiralbet_basketball_totals.json"
+FOOTBALL_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "admiralbet_football.json"
 
 
 @pytest.fixture
@@ -35,6 +41,12 @@ def fixture_data() -> list[dict]:
 @pytest.fixture
 def totals_fixture_data() -> list[dict]:
     with open(TOTALS_FIXTURE_PATH) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def football_fixture_data() -> list[dict]:
+    with open(FOOTBALL_FIXTURE_PATH) as f:
         return json.load(f)
 
 
@@ -738,3 +750,298 @@ async def test_scraper_interface():
     assert scraper.get_bookmaker_id() == "admiralbet"
     assert scraper.get_bookmaker_name() == "AdmiralBet"
     assert "basketball" in scraper.get_supported_leagues()
+
+
+# ── Football outcome lane ─────────────────────────────────
+
+
+def test_parse_football_outcome_event_happy_path(football_fixture_data):
+    event = football_fixture_data[0]
+    offers = _parse_football_outcome_event(event)
+
+    by_market: dict[str, list[RawOutcomeOffer]] = {}
+    for o in offers:
+        by_market.setdefault(o.market_type, []).append(o)
+
+    assert sorted(by_market) == [
+        "football_double_chance",
+        "football_result",
+        "football_total_goals",
+    ]
+    assert len(by_market["football_result"]) == 3
+    assert len(by_market["football_double_chance"]) == 3
+    # totals: 1.5 and 3.5 are skipped, only 2.5 over+under remain
+    assert len(by_market["football_total_goals"]) == 2
+
+    result_codes = {o.outcome_code for o in by_market["football_result"]}
+    assert result_codes == {"home", "draw", "away"}
+    dc_codes = {o.outcome_code for o in by_market["football_double_chance"]}
+    assert dc_codes == {"home_or_draw", "home_or_away", "draw_or_away"}
+
+    totals = by_market["football_total_goals"]
+    assert {t.outcome_code for t in totals} == {"over", "under"}
+    assert all(t.line == 2.5 for t in totals)
+    assert {t.raw_label for t in totals} == {"0-2", "3+"}
+
+    sample = by_market["football_result"][0]
+    assert sample.bookmaker_id == "admiralbet"
+    assert sample.sport == "football"
+    assert sample.home_team == "Deportivo Cuenca"
+    assert sample.away_team == "San Lorenzo"
+    # Naive AdmiralBet datetimes are treated as UTC and emitted with explicit offset
+    assert sample.start_time == "2026-05-06T02:00:00+00:00"
+
+
+def test_parse_football_outcome_event_normalizes_outcome_names(football_fixture_data):
+    event = football_fixture_data[0]
+    # Mutate one Konacan ishod outcome to add stray whitespace + lowercase
+    for bet in event["bets"]:
+        if bet.get("betTypeId") == 135:
+            bet["betOutcomes"][0]["name"] = " 1 "  # was "1"
+            bet["betOutcomes"][1]["name"] = "x"  # was "X"
+            break
+
+    offers = _parse_football_outcome_event(event)
+    result_codes = {
+        o.outcome_code for o in offers if o.market_type == "football_result"
+    }
+    assert result_codes == {"home", "draw", "away"}
+
+
+def test_parse_football_outcome_event_classifies_totals_by_diacritic_insensitive_name(
+    football_fixture_data,
+):
+    event = football_fixture_data[0]
+    # Stress: "Više" instead of "Vise" must still classify as over.
+    for bet in event["bets"]:
+        if bet.get("betTypeId") == 137 and bet.get("sBV") == "2.5":
+            for outcome in bet["betOutcomes"]:
+                if outcome["name"] == "Vise":
+                    outcome["name"] = "Više"
+                elif outcome["name"] == "Manje":
+                    outcome["name"] = "Manje  "  # whitespace + accent mix
+            break
+
+    offers = _parse_football_outcome_event(event)
+    totals = [o for o in offers if o.market_type == "football_total_goals"]
+    assert {t.outcome_code for t in totals} == {"over", "under"}
+
+
+def test_parse_football_outcome_event_skips_non_2_5_lines(football_fixture_data):
+    event = football_fixture_data[0]
+    offers = _parse_football_outcome_event(event)
+    totals = [o for o in offers if o.market_type == "football_total_goals"]
+    assert all(t.line == 2.5 for t in totals)
+    assert len(totals) == 2
+
+
+def test_parse_football_outcome_event_skips_non_playable_bets(football_fixture_data):
+    event = football_fixture_data[0]
+    for bet in event["bets"]:
+        bet["isPlayable"] = False
+
+    assert _parse_football_outcome_event(event) == []
+
+
+def test_parse_football_outcome_event_skips_non_playable_outcomes(football_fixture_data):
+    event = football_fixture_data[0]
+    for bet in event["bets"]:
+        if bet.get("betTypeId") == 135:
+            for outcome in bet["betOutcomes"]:
+                outcome["isPlayable"] = False
+            break
+
+    offers = _parse_football_outcome_event(event)
+    result_offers = [o for o in offers if o.market_type == "football_result"]
+    assert result_offers == []
+    # Other bets (DC, totals) are unaffected
+    assert any(o.market_type == "football_double_chance" for o in offers)
+
+
+def test_parse_football_outcome_event_skips_zero_or_negative_odds(football_fixture_data):
+    event = football_fixture_data[0]
+    for bet in event["bets"]:
+        if bet.get("betTypeId") == 135:
+            for outcome in bet["betOutcomes"]:
+                outcome["odd"] = 0
+            break
+
+    offers = _parse_football_outcome_event(event)
+    assert [o for o in offers if o.market_type == "football_result"] == []
+
+
+def test_parse_football_outcome_event_skips_unknown_outcome_codes(football_fixture_data):
+    event = football_fixture_data[0]
+    for bet in event["bets"]:
+        if bet.get("betTypeId") == 152:
+            for outcome in bet["betOutcomes"]:
+                outcome["name"] = "WAT"  # unknown code
+            break
+
+    offers = _parse_football_outcome_event(event)
+    assert [o for o in offers if o.market_type == "football_double_chance"] == []
+
+
+def test_parse_football_outcome_event_drops_offer_when_event_name_unparseable(
+    football_fixture_data,
+):
+    event = football_fixture_data[0]
+    event["name"] = "NoSeparator"
+    assert _parse_football_outcome_event(event) == []
+
+
+def test_parse_total_line_tolerates_string_variants():
+    assert _parse_total_line("2.5") == 2.5
+    assert _parse_total_line("2.50") == 2.5
+    assert _parse_total_line(" 2.5 ") == 2.5
+    assert _parse_total_line(2.5) == 2.5
+    assert _parse_total_line(None) is None
+    assert _parse_total_line("") is None
+    assert _parse_total_line("not-a-number") is None
+
+
+def test_resolve_total_line_prefers_bet_level_and_falls_back_to_outcome():
+    bet = {"sBV": "2.5"}
+    outcome = {"sBV": None}
+    assert _resolve_total_line(bet, outcome) == 2.5
+
+    bet = {"sBV": None}
+    outcome = {"sBV": "2.5"}
+    assert _resolve_total_line(bet, outcome) == 2.5
+
+    bet = {"sBV": "2.5"}
+    outcome = {"sBV": "2.5"}
+    assert _resolve_total_line(bet, outcome) == 2.5
+
+    bet = {"sBV": "2.5"}
+    outcome = {"sBV": "3.5"}
+    assert _resolve_total_line(bet, outcome) is None
+
+    bet = {"sBV": None}
+    outcome = {"sBV": None}
+    assert _resolve_total_line(bet, outcome) is None
+
+
+def test_parse_football_outcome_event_uses_outcome_level_sbv_when_bet_level_missing(
+    football_fixture_data,
+):
+    event = football_fixture_data[0]
+    for bet in event["bets"]:
+        if bet.get("betTypeId") == 137 and bet.get("sBV") == "2.5":
+            bet["sBV"] = None  # drop bet-level line, outcome-level "2.5" remains
+            break
+
+    offers = _parse_football_outcome_event(event)
+    totals = [o for o in offers if o.market_type == "football_total_goals"]
+    assert {t.outcome_code for t in totals} == {"over", "under"}
+    assert all(t.line == 2.5 for t in totals)
+
+
+def test_parse_football_outcome_event_falls_back_to_default_league(football_fixture_data):
+    event = football_fixture_data[0]
+    event["competitionName"] = None
+    offers = _parse_football_outcome_event(event)
+    assert offers
+    assert all(o.league_id == "football" for o in offers)
+
+
+def test_parse_football_outcome_event_falls_back_for_degenerate_competition(
+    football_fixture_data,
+):
+    event = football_fixture_data[0]
+    event["competitionName"] = "---"
+    offers = _parse_football_outcome_event(event)
+    assert offers
+    assert all(o.league_id == "football" for o in offers)
+
+
+def test_parse_football_outcome_event_emits_source_url_when_provided(football_fixture_data):
+    event = football_fixture_data[0]
+    offers = _parse_football_outcome_event(event, source_url="https://example/event/1")
+    assert offers
+    assert all(o.source_url == "https://example/event/1" for o in offers)
+
+
+def test_extract_league_id_default_kwarg_falls_back_for_empty_inputs():
+    # The football helper passes default="football" so degenerate league names
+    # don't silently land under the basketball default.
+    assert _extract_league_id(None, default="football") == "football"
+    assert _extract_league_id("", default="football") == "football"
+    assert _extract_league_id("   ", default="football") == "football"
+    assert _extract_league_id("---", default="football") == "football"
+    # Existing basketball callers (no kwarg) keep the old default.
+    assert _extract_league_id(None) == "basketball"
+
+
+def test_get_supported_outcome_sports_isolates_football_from_basketball_capability():
+    scraper = AdmiralBetScraper()
+    # threshold-odds lane: basketball only — football MUST NOT leak here,
+    # otherwise the unified pipeline would call scrape_odds("football") every cycle.
+    assert scraper.get_supported_leagues() == ["basketball"]
+    # outcome-offer lane: football
+    assert scraper.get_supported_outcome_sports() == ["football"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_returns_empty_for_non_football_without_http():
+    scraper = AdmiralBetScraper()
+    with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get:
+        results = await scraper.scrape_outcome_offers("basketball")
+    assert results == []
+    mock_get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_uses_football_params_and_24h_window(
+    monkeypatch, football_fixture_data
+):
+    scraper = AdmiralBetScraper()
+    captured: dict = {}
+    fixed_now = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.config.settings.scrape_lookahead_hours", 24)
+    monkeypatch.setattr("app.scrapers.admiralbet_scraper.current_utc_time", lambda: fixed_now)
+
+    async def mock_get(url, **kwargs):
+        captured["url"] = url
+        captured["params"] = kwargs.get("params", {})
+        return football_fixture_data
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_outcome_offers("football")
+
+    assert captured["url"] == _LIST_URL
+    params = captured["params"]
+    assert params["pageId"] == _FOOTBALL_OUTCOME_PARAMS["pageId"] == "14"
+    assert params["sportId"] == _FOOTBALL_OUTCOME_PARAMS["sportId"] == "1"
+    assert params["isLive"] == "false"
+    assert params["dateFrom"] == "2030-01-01T12:00:00"
+    assert params["dateTo"] == "2030-01-02T12:00:00"
+    assert params["eventMappingTypes"] == ["1", "2", "3", "4", "5"]
+
+    # Result shape sanity: at least one offer per target market.
+    market_types = {o.market_type for o in results}
+    assert market_types == {
+        "football_result",
+        "football_double_chance",
+        "football_total_goals",
+    }
+    # End-to-end UTC-naive pin: AdmiralBet treats naive datetimes as UTC.
+    assert all(o.start_time == "2026-05-06T02:00:00+00:00" for o in results)
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_handles_http_failure():
+    scraper = AdmiralBetScraper()
+    with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = Exception("boom")
+        results = await scraper.scrape_outcome_offers("football")
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_handles_non_list_response():
+    scraper = AdmiralBetScraper()
+    with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = {"error": "bad request"}
+        results = await scraper.scrape_outcome_offers("football")
+    assert results == []

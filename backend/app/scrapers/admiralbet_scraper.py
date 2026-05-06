@@ -11,7 +11,8 @@ from ..services.scrape_window import (
     format_utc_naive_seconds,
     lookahead_cutoff,
 )
-from ..models.schemas import RawOddsData
+from ..services.text_normalizer import normalize_identity_text
+from ..models.schemas import RawOddsData, RawOutcomeOffer
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,17 @@ _GAME_TOTAL_DEFAULT_PARAMS = {
     "eventMappingTypes": ["1", "2", "3", "4", "5"],
 }
 
+# Football outcome lane uses pageId=14 (smallest payload that still carries
+# all three target markets: Konacan ishod, Dupla sansa, Ukupno golova).
+_FOOTBALL_OUTCOME_PARAMS = {
+    "pageId": "14",
+    "sportId": "1",
+    "isLive": "false",
+    "dateFrom": "",  # filled at scrape time
+    "dateTo": "",  # filled at scrape time
+    "eventMappingTypes": ["1", "2", "3", "4", "5"],
+}
+
 _DEFAULT_HEADERS = {
     "accept": "application/utf8+json, application/json;q=0.9",
     "language": "sr-Latn",
@@ -47,6 +59,37 @@ _DEFAULT_HEADERS = {
 _BET_POINTS_MILESTONES = 1683  # "Postiže poena" — milestone outcomes (5+, 10+, …)
 _BET_GAME_TOTAL_OT = 213  # "Ukupno (+OT)"
 _BET_HANDICAP_OT = 191  # "Hendikep (+OT)" — signed sBV is team1's Asian handicap.
+
+# Football betTypeId constants (anchored on numeric IDs so localized name
+# drift cannot break classification).
+_BET_FOOTBALL_RESULT = 135  # "Konacan ishod"
+_BET_FOOTBALL_DOUBLE_CHANCE = 152  # "Dupla sansa"
+_BET_FOOTBALL_TOTAL_GOALS = 137  # "Ukupno golova"
+
+# Only the 2.5 line is in scope for football_total_goals.
+_FOOTBALL_TARGET_TOTAL_LINE = 2.5
+
+# Outcome maps for football. Keys are matched after stripping & uppercasing
+# the feed-supplied outcome.name to be robust against whitespace/case drift.
+_FOOTBALL_RESULT_OUTCOMES: dict[str, tuple[str, str]] = {
+    "1": ("home", "1"),
+    "X": ("draw", "X"),
+    "2": ("away", "2"),
+}
+_FOOTBALL_DOUBLE_CHANCE_OUTCOMES: dict[str, tuple[str, str]] = {
+    "1X": ("home_or_draw", "1X"),
+    "12": ("home_or_away", "12"),
+    "X2": ("draw_or_away", "X2"),
+}
+
+# Total-goals side classification keyed off accent/case-insensitive name.
+# Maps to (outcome_code, canonical raw_label) — the canonical raw_label
+# matches the convention used by the other football outcome scrapers
+# (SoccerBet/MerkurXTip/etc.) so the unified pipeline groups them.
+_FOOTBALL_TOTAL_SIDES: dict[str, tuple[str, str]] = {
+    "manje": ("under", "0-2"),
+    "vise": ("over", "3+"),
+}
 
 # Mapping of betTypeId → canonical market_type for player over/under props.
 _BET_OVER_UNDER_MAP: dict[int, str] = {
@@ -79,19 +122,27 @@ def _normalize_league_key(raw: str | None) -> str:
     return " ".join(raw.strip().lower().replace("_", " ").replace("-", " ").split())
 
 
-def _extract_league_id(competition_name: str | None) -> str:
+def _extract_league_id(
+    competition_name: str | None, *, default: str = "basketball"
+) -> str:
     """Map an AdmiralBet competitionName to a canonical league ID.
 
     Falls back to a lowercased slug of the competition name, which keeps
-    different competitions separated even without explicit mapping.
+    different competitions separated even without explicit mapping. When the
+    competition name is missing, empty, or normalises to an empty string
+    (e.g. ``"---"``), the supplied ``default`` is returned — pass
+    ``default="football"`` from football helpers so degenerate league names do
+    not silently land under the basketball default.
     """
     if not competition_name:
-        return "basketball"
+        return default
     raw = competition_name.strip().lower()
     normalized = _normalize_league_key(raw)
+    if not normalized:
+        return default
     if normalized in _COMPETITION_LEAGUE_MAP:
         return _COMPETITION_LEAGUE_MAP[normalized]
-    return raw or "basketball"
+    return raw or default
 
 # Milestone outcome thresholds — "5+" means 5 or more, equivalent to over 4.5
 _MILESTONE_THRESHOLDS: dict[str, float] = {
@@ -389,6 +440,134 @@ def _parse_handicap_ot_event(event: dict) -> list[RawOddsData]:
     return _parse_handicap_ot_bets(event, home_team, away_team, start_time, league_id)
 
 
+def _parse_total_line(value: object) -> float | None:
+    """Parse an AdmiralBet sBV/line value, tolerating ``"2.50"`` / ``" 2.5 "``."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _resolve_total_line(bet: dict, outcome: dict) -> float | None:
+    """Resolve the totals line for an Ukupno golova bet.
+
+    Prefers the bet-level ``sBV`` (carried at the market level), but falls
+    back to the outcome-level ``sBV``. Returns ``None`` when neither parses,
+    or when the two are present and disagree (defense in depth — we'd rather
+    drop a confusing offer than mis-classify it as 2.5).
+    """
+    bet_line = _parse_total_line(bet.get("sBV"))
+    outcome_line = _parse_total_line(outcome.get("sBV"))
+    if bet_line is not None and outcome_line is not None:
+        if abs(bet_line - outcome_line) > 1e-9:
+            return None
+        return bet_line
+    return bet_line if bet_line is not None else outcome_line
+
+
+def _parse_football_outcome_event(event: dict, *, source_url: str | None = None) -> list[RawOutcomeOffer]:
+    """Parse a single AdmiralBet football event into RawOutcomeOffer rows.
+
+    Emits up to:
+      * 3 result offers (1/X/2)
+      * 3 double-chance offers (1X/12/X2)
+      * 2 totals offers (over/under) at the 2.5 line — other lines are skipped
+    """
+    name = event.get("name", "")
+    home_team, away_team = _parse_event_name(name)
+    if not home_team or not away_team:
+        return []
+
+    start_time = _parse_start_time(event.get("dateTime"))
+    league_id = _extract_league_id(
+        event.get("competitionName"), default="football"
+    )
+
+    results: list[RawOutcomeOffer] = []
+    for bet in event.get("bets", []):
+        if not bet.get("isPlayable"):
+            continue
+        bet_type_id = bet.get("betTypeId")
+        if bet_type_id == _BET_FOOTBALL_RESULT:
+            outcome_lookup = _FOOTBALL_RESULT_OUTCOMES
+            market_type = "football_result"
+            line: float | None = None
+        elif bet_type_id == _BET_FOOTBALL_DOUBLE_CHANCE:
+            outcome_lookup = _FOOTBALL_DOUBLE_CHANCE_OUTCOMES
+            market_type = "football_double_chance"
+            line = None
+        elif bet_type_id == _BET_FOOTBALL_TOTAL_GOALS:
+            # Cheap pre-filter: if the bet-level sBV resolves and is not the
+            # target line, skip the whole bet without scanning outcomes.
+            bet_line = _parse_total_line(bet.get("sBV"))
+            if bet_line is not None and abs(bet_line - _FOOTBALL_TARGET_TOTAL_LINE) > 1e-9:
+                continue
+            outcome_lookup = None
+            market_type = "football_total_goals"
+            line = _FOOTBALL_TARGET_TOTAL_LINE
+        else:
+            continue
+
+        for outcome in bet.get("betOutcomes", []):
+            if not outcome.get("isPlayable"):
+                continue
+            odds_raw = outcome.get("odd")
+            try:
+                odds = float(odds_raw) if odds_raw is not None else None
+            except (TypeError, ValueError):
+                odds = None
+            if odds is None or odds <= 0:
+                continue
+
+            raw_name = (outcome.get("name") or "").strip()
+            if bet_type_id == _BET_FOOTBALL_TOTAL_GOALS:
+                resolved_line = _resolve_total_line(bet, outcome)
+                if resolved_line is None:
+                    continue
+                if abs(resolved_line - _FOOTBALL_TARGET_TOTAL_LINE) > 1e-9:
+                    continue
+                normalized_side = normalize_identity_text(raw_name)
+                mapping = _FOOTBALL_TOTAL_SIDES.get(normalized_side)
+                if mapping is None:
+                    continue
+                outcome_code, raw_label = mapping
+            else:
+                assert outcome_lookup is not None  # narrow for type checkers
+                key = raw_name.upper()
+                mapping = outcome_lookup.get(key)
+                if mapping is None:
+                    continue
+                outcome_code, raw_label = mapping
+
+            results.append(
+                RawOutcomeOffer(
+                    bookmaker_id="admiralbet",
+                    league_id=league_id,
+                    sport="football",
+                    home_team=home_team,
+                    away_team=away_team,
+                    source_url=source_url,
+                    market_type=market_type,
+                    outcome_code=outcome_code,
+                    odds=odds,
+                    line=line,
+                    raw_label=raw_label,
+                    start_time=start_time,
+                )
+            )
+
+    return results
+
+
 class AdmiralBetScraper(BaseScraper):
     """Scraper for AdmiralBet player props and OT-inclusive game totals.
 
@@ -407,6 +586,9 @@ class AdmiralBetScraper(BaseScraper):
 
     def get_supported_leagues(self) -> list[str]:
         return ["basketball"]
+
+    def get_supported_outcome_sports(self) -> list[str]:
+        return ["football"]
 
     async def _fetch_list(self, params: dict, label: str) -> list[dict]:
         try:
@@ -471,5 +653,30 @@ class AdmiralBetScraper(BaseScraper):
             len(player_data),
             len(total_results),
             len(basketball_events),
+        )
+        return results
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        if sport != "football":
+            return []
+
+        now = current_utc_time()
+        cutoff = lookahead_cutoff(now)
+        params = {
+            **_FOOTBALL_OUTCOME_PARAMS,
+            "dateFrom": format_utc_naive_seconds(now),
+            "dateTo": format_utc_naive_seconds(cutoff),
+        }
+
+        events = await self._fetch_list(params, "football events list")
+
+        results: list[RawOutcomeOffer] = []
+        for event in events:
+            results.extend(_parse_football_outcome_event(event))
+
+        logger.info(
+            "AdmiralBet scraped %d football outcome offers from %d events",
+            len(results),
+            len(events),
         )
         return results
