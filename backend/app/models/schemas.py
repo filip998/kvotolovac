@@ -535,6 +535,47 @@ class ScraperBenchmarkOut(BaseModel):
     failure_rate: float
 
 
+class ScrapeCapabilityBenchmarkOut(BaseModel):
+    """Per-capability scrape aggregates for the most recent scrape cycle."""
+
+    bookmaker_id: str
+    sport: str
+    lane: str
+    market_scope: str
+    league_id: Optional[str] = None
+    duration_ms: int = 0
+    raw_items: int = 0
+    request_count: int = 0
+    request_attempt_count: int = 0
+    leagues_attempted: int = 0
+    leagues_failed: int = 0
+    failure_rate: float = 0.0
+
+
+class ScraperRequestBenchmarkOut(BaseModel):
+    """HTTP request aggregates attributed to a scrape capability."""
+
+    bookmaker_id: str
+    sport: str
+    lane: str
+    market_scope: str
+    method: str
+    league_id: Optional[str] = None
+    request_count: int = 0
+    request_attempt_count: int = 0
+
+
+class MarketBenchmarkOut(BaseModel):
+    """Fetched and normalized item counts grouped by bookmaker/sport/market."""
+
+    bookmaker_id: str
+    sport: str
+    market_type: str
+    raw_items: int = 0
+    matches_after_normalization: int = 0
+    odds_count: int = 0
+
+
 class CycleBenchmarkOut(BaseModel):
     """Latest cycle benchmark snapshot."""
 
@@ -542,10 +583,16 @@ class CycleBenchmarkOut(BaseModel):
     cycle_finished_at: Optional[str] = None
     scrape_duration_ms: int = 0
     cycle_duration_ms: int = 0
+    phase_durations_ms: dict[str, int] = Field(default_factory=dict)
+    request_count: int = 0
+    request_attempt_count: int = 0
     total_raw_items: int = 0
     total_matches: int = 0
     total_odds: int = 0
     scrapers: list[ScraperBenchmarkOut] = Field(default_factory=list)
+    capabilities: list[ScrapeCapabilityBenchmarkOut] = Field(default_factory=list)
+    requests: list[ScraperRequestBenchmarkOut] = Field(default_factory=list)
+    markets: list[MarketBenchmarkOut] = Field(default_factory=list)
 
 
 class TeamReviewCandidate(BaseModel):

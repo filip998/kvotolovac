@@ -7,7 +7,9 @@ import app.scrapers.http_client as http_client_module
 import httpx
 import pytest
 
+from app.config import settings
 from app.scrapers.http_client import HttpClient
+from app.services import scraper_benchmarks
 
 
 class MockTransport(httpx.AsyncBaseTransport):
@@ -51,6 +53,56 @@ async def test_get_json_success():
     result = await client.get_json("https://example.com/api", params={"key": "value"})
     assert result == {"ok": True}
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_get_json_records_benchmark_request_context(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "benchmark_dir", str(tmp_path / "benchmarks"))
+    scraper_benchmarks.recorder._latest = None
+    scraper_benchmarks.recorder._reset()
+    scraper_benchmarks.recorder.begin_cycle("2026-05-06T00:00:00")
+
+    transport = MockTransport(
+        responses=[
+            httpx.Response(500, json={"error": "server error"}),
+            httpx.Response(200, json={"ok": True}),
+        ]
+    )
+    client = HttpClient(max_retries=1, backoff_base=0.01, rate_limit_per_second=0)
+    client._client = httpx.AsyncClient(transport=transport)
+
+    try:
+        with scraper_benchmarks.scrape_request_context(
+            bookmaker_id="maxbet",
+            sport="football",
+            lane="outcome_offer",
+            market_scope="outcome_offer",
+        ):
+            result = await client.get_json("https://example.com/api")
+
+        snapshot = scraper_benchmarks.recorder.publish(
+            matches_per_bookmaker={},
+            odds_per_bookmaker={},
+            total_unique_matches=0,
+        )
+    finally:
+        scraper_benchmarks.recorder._latest = None
+        scraper_benchmarks.recorder._reset()
+        await client.close()
+
+    assert result == {"ok": True}
+    assert transport.call_count == 2
+    assert snapshot.request_count == 1
+    assert snapshot.request_attempt_count == 2
+    assert len(snapshot.requests) == 1
+    request = snapshot.requests[0]
+    assert request.bookmaker_id == "maxbet"
+    assert request.sport == "football"
+    assert request.lane == "outcome_offer"
+    assert request.market_scope == "outcome_offer"
+    assert request.method == "GET"
+    assert request.request_count == 1
+    assert request.request_attempt_count == 2
 
 
 @pytest.mark.asyncio

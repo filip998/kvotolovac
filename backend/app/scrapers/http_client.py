@@ -8,6 +8,11 @@ from typing import Any
 
 import httpx
 
+from ..services.scraper_benchmarks import (
+    record_http_logical_request,
+    record_http_request_attempt,
+)
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30.0
@@ -96,6 +101,7 @@ class HttpClient:
         If ``form_data`` is provided it is sent as
         ``application/x-www-form-urlencoded`` body (``json_body`` is ignored).
         """
+        record_http_logical_request("POST")
         last_error: Exception | None = None
 
         for attempt in range(self._max_retries + 1):
@@ -103,6 +109,7 @@ class HttpClient:
                 client = await self._get_client()
                 merged_headers = {**self._default_headers, **(headers or {})}
                 await self._acquire_request_slot()
+                record_http_request_attempt("POST")
 
                 if form_data is not None:
                     response = await client.post(
@@ -152,6 +159,7 @@ class HttpClient:
         headers: dict[str, str] | None = None,
     ) -> dict:
         """GET JSON with retry, rate limiting, and proxy rotation."""
+        record_http_logical_request("GET")
         last_error: Exception | None = None
 
         for attempt in range(self._max_retries + 1):
@@ -159,6 +167,7 @@ class HttpClient:
                 client = await self._get_client()
                 merged_headers = {**self._default_headers, **(headers or {})}
                 await self._acquire_request_slot()
+                record_http_request_attempt("GET")
 
                 response = await client.get(
                     url,
@@ -205,6 +214,7 @@ class HttpClient:
         Returns the parsed JSON body. The body may be a dict, list, or other
         JSON-compatible value depending on the endpoint.
         """
+        record_http_logical_request("PUT")
         last_error: Exception | None = None
 
         for attempt in range(self._max_retries + 1):
@@ -214,6 +224,7 @@ class HttpClient:
                 client = await self._get_client()
                 merged_headers = {**self._default_headers, **(headers or {})}
                 await self._acquire_request_slot()
+                record_http_request_attempt("PUT")
 
                 response = await client.put(
                     url,
@@ -261,6 +272,7 @@ class HttpClient:
         if max_messages <= 0:
             raise ValueError("max_messages must be positive")
 
+        record_http_logical_request("GET_SSE")
         last_error: Exception | None = None
 
         for attempt in range(self._max_retries + 1):
@@ -270,6 +282,7 @@ class HttpClient:
                 client = await self._get_client()
                 merged_headers = {**self._default_headers, **(headers or {})}
                 await self._acquire_request_slot()
+                record_http_request_attempt("GET_SSE")
 
                 timeout = httpx.Timeout(
                     connect=self._timeout,

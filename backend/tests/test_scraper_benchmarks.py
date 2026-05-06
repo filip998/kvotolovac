@@ -55,6 +55,21 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert body["cycle_finished_at"] is not None
     assert body["scrape_duration_ms"] >= 0
     assert body["cycle_duration_ms"] >= 0
+    assert body["phase_durations_ms"]["scrape"] == body["scrape_duration_ms"]
+    for phase in [
+        "setup",
+        "register_bookmakers",
+        "normalize_threshold_odds",
+        "normalize_outcome_offers",
+        "persist_snapshot",
+        "resolve_events",
+        "analyze_opportunities",
+        "publish_opportunities",
+        "notify",
+    ]:
+        assert body["phase_durations_ms"][phase] >= 0
+    assert body["request_count"] == 0
+    assert body["request_attempt_count"] == 0
 
     bm_ids = {s["bookmaker_id"] for s in body["scrapers"]}
     assert {"mozzart", "meridian"}.issubset(bm_ids)
@@ -65,17 +80,56 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
         assert entry["odds_count"] >= 0
         assert 0.0 <= entry["failure_rate"] <= 1.0
 
+    assert body["capabilities"], "snapshot should contain per-capability rows"
+    capability_keys = {
+        (entry["bookmaker_id"], entry["sport"], entry["lane"], entry["market_scope"])
+        for entry in body["capabilities"]
+    }
+    assert ("mozzart", "basketball", "threshold_odds", "threshold_odds") in capability_keys
+    assert ("mozzart", "football", "outcome_offer", "outcome_offer") in capability_keys
+    for entry in body["capabilities"]:
+        assert entry["duration_ms"] >= 0
+        assert entry["raw_items"] >= 0
+        assert entry["request_count"] == 0
+        assert entry["request_attempt_count"] == 0
+        assert 0.0 <= entry["failure_rate"] <= 1.0
+
+    assert body["markets"], "snapshot should contain per-market rows"
+    market_keys = {
+        (entry["bookmaker_id"], entry["sport"], entry["market_type"])
+        for entry in body["markets"]
+    }
+    assert ("mozzart", "basketball", "player_points") in market_keys
+    assert any(
+        bookmaker_id == "mozzart"
+        and sport == "football"
+        and market_type.startswith("football_")
+        for bookmaker_id, sport, market_type in market_keys
+    )
+    for entry in body["markets"]:
+        assert entry["raw_items"] >= 0
+        assert entry["matches_after_normalization"] >= 0
+        assert entry["odds_count"] >= 0
+
     # Files written
     out_dir = Path(settings.benchmark_dir)
     snapshots = sorted(out_dir.glob("cycle-*.json"))
     assert len(snapshots) == 1
     on_disk = json.loads(snapshots[0].read_text())
     assert on_disk["scrapers"], "snapshot file should contain per-scraper rows"
+    assert on_disk["phase_durations_ms"] == body["phase_durations_ms"]
+    assert on_disk["capabilities"] == body["capabilities"]
+    assert on_disk["requests"] == body["requests"]
+    assert on_disk["markets"] == body["markets"]
 
     ndjson = (out_dir / "cycles.ndjson").read_text().strip().splitlines()
     assert len(ndjson) == 1
     parsed = json.loads(ndjson[0])
     assert parsed["scrapers"]
+    assert parsed["phase_durations_ms"] == body["phase_durations_ms"]
+    assert parsed["capabilities"] == body["capabilities"]
+    assert parsed["requests"] == body["requests"]
+    assert parsed["markets"] == body["markets"]
 
 
 @pytest.mark.asyncio
