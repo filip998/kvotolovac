@@ -589,6 +589,7 @@ class EventResolverBenchmarkOut(BaseModel):
 
     extract_event_candidates_ms: int = 0
     football_raw_resolution_candidates_ms: int = 0
+    reused_football_event_resolution_count: int = 0
     build_event_resolution_groups_ms: int = 0
     persist_event_resolution_groups_ms: int = 0
     candidate_count: int = 0

@@ -30,6 +30,7 @@ from .outcome_normalizer import (
     _same_team_context,
     _team_similarity,
     _team_qualifiers,
+    FootballEventResolutionMap,
 )
 from .text_normalizer import normalize_identity_text
 
@@ -509,6 +510,7 @@ class EventResolutionGroup:
 @dataclass
 class _EventCandidateExtractionStats:
     football_raw_resolution_candidates_ms: int = 0
+    reused_football_event_resolution_count: int = 0
 
 
 @dataclass
@@ -880,10 +882,16 @@ def _merge_candidate(
 def _football_raw_resolution_candidates(
     raw_offers: list[RawOutcomeOffer],
     stored_match_bookmakers: set[tuple[str, str]],
+    *,
+    football_event_resolutions: FootballEventResolutionMap | None = None,
 ) -> list[EventCandidate]:
     if not raw_offers:
         return []
-    event_resolutions = _build_football_event_resolutions(raw_offers)
+    event_resolutions = (
+        football_event_resolutions
+        if football_event_resolutions is not None
+        else _build_football_event_resolutions(raw_offers)
+    )
     seen_raw_events: set[tuple[str, str, str, str, str]] = set()
     candidates: list[EventCandidate] = []
     for raw in raw_offers:
@@ -930,6 +938,7 @@ def extract_event_candidates(
     raw_outcome_offers: list[RawOutcomeOffer],
     normalized_odds: list[NormalizedOdds],
     normalized_outcome_offers: list[NormalizedOutcomeOffer],
+    football_event_resolutions: FootballEventResolutionMap | None = None,
     stats: _EventCandidateExtractionStats | None = None,
 ) -> list[EventCandidate]:
     """Build one source-event candidate per bookmaker/match from the current scrape."""
@@ -988,7 +997,10 @@ def extract_event_candidates(
     football_candidates = _football_raw_resolution_candidates(
         raw_outcome_offers,
         stored_outcome_match_bookmakers,
+        football_event_resolutions=football_event_resolutions,
     )
+    if stats is not None and football_event_resolutions is not None:
+        stats.reused_football_event_resolution_count = len(football_candidates)
     if stats is not None:
         stats.football_raw_resolution_candidates_ms = _elapsed_ms(
             football_candidates_started_at
@@ -1652,6 +1664,7 @@ async def resolve_and_persist_events(
     raw_outcome_offers: list[RawOutcomeOffer],
     normalized_odds: list[NormalizedOdds],
     normalized_outcome_offers: list[NormalizedOutcomeOffer],
+    football_event_resolutions: FootballEventResolutionMap | None = None,
 ) -> EventResolverResult:
     extraction_stats = _EventCandidateExtractionStats()
     extraction_started_at = time.perf_counter()
@@ -1660,6 +1673,7 @@ async def resolve_and_persist_events(
         raw_outcome_offers=raw_outcome_offers,
         normalized_odds=normalized_odds,
         normalized_outcome_offers=normalized_outcome_offers,
+        football_event_resolutions=football_event_resolutions,
         stats=extraction_stats,
     )
     extract_event_candidates_ms = _elapsed_ms(extraction_started_at)
@@ -1683,6 +1697,9 @@ async def resolve_and_persist_events(
         extract_event_candidates_ms=extract_event_candidates_ms,
         football_raw_resolution_candidates_ms=(
             extraction_stats.football_raw_resolution_candidates_ms
+        ),
+        reused_football_event_resolution_count=(
+            extraction_stats.reused_football_event_resolution_count
         ),
         build_event_resolution_groups_ms=build_event_resolution_groups_ms,
         persist_event_resolution_groups_ms=persist_event_resolution_groups_ms,
