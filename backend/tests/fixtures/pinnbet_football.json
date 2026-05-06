@@ -1,0 +1,100 @@
+[
+  {
+    "id": 2215282,
+    "name": "Bayern Munich - Paris SG",
+    "competitionId": 12345,
+    "competitionName": "UEFA Champions League",
+    "regionId": 287,
+    "sportId": 1,
+    "dateTime": "2026-04-15T19:00:00",
+    "isPlayable": true,
+    "bets": [
+      {
+        "betTypeId": 1,
+        "betTypeName": "Konačan ishod",
+        "sBV": null,
+        "isPlayable": true,
+        "betOutcomes": [
+          {
+            "name": "1",
+            "odd": 1.63,
+            "isPlayable": true,
+            "sBV": null
+          },
+          {
+            "name": "X",
+            "odd": 5.2,
+            "isPlayable": true,
+            "sBV": null
+          },
+          {
+            "name": "2",
+            "odd": 4.45,
+            "isPlayable": true,
+            "sBV": null
+          }
+        ]
+      },
+      {
+        "betTypeId": 2,
+        "betTypeName": "Ukupno golova",
+        "sBV": "1.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {
+            "name": "manje",
+            "odd": 4.5,
+            "isPlayable": true,
+            "sBV": "1.5"
+          },
+          {
+            "name": "više",
+            "odd": 1.18,
+            "isPlayable": true,
+            "sBV": "1.5"
+          }
+        ]
+      },
+      {
+        "betTypeId": 2,
+        "betTypeName": "Ukupno golova",
+        "sBV": "2.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {
+            "name": "manje",
+            "odd": 2.3,
+            "isPlayable": true,
+            "sBV": "2.5"
+          },
+          {
+            "name": "više",
+            "odd": 1.55,
+            "isPlayable": true,
+            "sBV": "2.5"
+          }
+        ]
+      },
+      {
+        "betTypeId": 2,
+        "betTypeName": "Ukupno golova",
+        "sBV": "3.5",
+        "isPlayable": true,
+        "betOutcomes": [
+          {
+            "name": "manje",
+            "odd": 1.55,
+            "isPlayable": true,
+            "sBV": "3.5"
+          },
+          {
+            "name": "više",
+            "odd": 2.3,
+            "isPlayable": true,
+            "sBV": "3.5"
+          }
+        ]
+      }
+    ]
+  }
+]

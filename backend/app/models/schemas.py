@@ -450,6 +450,7 @@ class ScrapeRuntimeSettings(BaseModel):
     meridian_rate_limit_per_second: float = Field(default=2.0, ge=0)
     soccerbet_detail_mode: ScraperDetailMode = "partial"
     merkurxtip_detail_mode: ScraperDetailMode = "partial"
+    pinnbet_detail_mode: ScraperDetailMode = "partial"
     notification_gap_threshold: float = Field(default=1.5, ge=0)
     persist_inapp_notifications: bool = False
 
@@ -466,6 +467,7 @@ class ScrapeRuntimeSettingsUpdate(BaseModel):
     meridian_rate_limit_per_second: Optional[float] = Field(default=None, ge=0)
     soccerbet_detail_mode: Optional[ScraperDetailMode] = None
     merkurxtip_detail_mode: Optional[ScraperDetailMode] = None
+    pinnbet_detail_mode: Optional[ScraperDetailMode] = None
     notification_gap_threshold: Optional[float] = Field(default=None, ge=0)
     persist_inapp_notifications: Optional[bool] = None
 

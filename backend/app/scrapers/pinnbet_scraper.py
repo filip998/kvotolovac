@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
 from datetime import datetime, timezone
+from typing import Literal
 
 from .base import BaseScraper
 from .http_client import HttpClient
+from ..config import settings
 from ..services.scrape_window import (
     current_utc_time,
     format_utc_naive_seconds,
     lookahead_cutoff,
 )
-from ..models.schemas import RawOddsData
+from ..models.schemas import RawOddsData, RawOutcomeOffer
 from ..services.normalizer import normalize_team_name
 from ..services.text_normalizer import normalize_identity_text
 
@@ -19,13 +23,18 @@ logger = logging.getLogger(__name__)
 _BASE_LIST_URL = (
     "https://sportweb.pinnbet.rs/SportBookCacheWeb/api/offer/getWebEventsSelections"
 )
+_BASE_DETAIL_URL = (
+    "https://sportweb.pinnbet.rs/SportBookCacheWeb/api/offer/betsAndGroups"
+)
 
 _PLAYER_SPORT_ID = 3
 _GAME_TOTAL_SPORT_ID = 2
+_FOOTBALL_SPORT_ID = 1
 _OFFICE_ID = "6"
 _LANGUAGE = "sr-Latn"
 _PLAYER_PAGE_ID = 3
 _GAME_TOTAL_PAGE_ID = 35
+_FOOTBALL_PAGE_ID = 3
 
 _MAPPING_TYPE_PLAYER = 5
 _EVENT_MAPPING_TYPES = [1, 2, 3, 4, 5]
@@ -33,6 +42,47 @@ _BET_TYPE_GAME_TOTAL_OT = 167
 _GAME_TOTAL_OT_BET_NAME = "ukupno poena (+ot)"
 _BET_TYPE_HANDICAP_OT = 166
 _HANDICAP_OT_BET_NAME = "hendikep (+ot)"
+
+# Football betTypeId constants — anchored on numeric IDs so localized name
+# drift on the bookmaker side cannot break classification.
+_BET_FOOTBALL_RESULT = 1  # "Konacan ishod"
+_BET_FOOTBALL_TOTAL_GOALS = 2  # "Ukupno golova"
+_BET_FOOTBALL_DOUBLE_CHANCE = 3  # "Dupla sansa"
+
+# Only the 2.5 line is in scope for football_total_goals (matches the
+# canonical line used by every other football outcome scraper).
+_FOOTBALL_TARGET_TOTAL_LINE = 2.5
+
+# Outcome name → (outcome_code, raw_label).  Keys are matched after a
+# strip+upper pass so whitespace/case drift on the bookmaker side does
+# not break classification.
+_FOOTBALL_RESULT_OUTCOMES: dict[str, tuple[str, str]] = {
+    "1": ("home", "1"),
+    "X": ("draw", "X"),
+    "2": ("away", "2"),
+}
+_FOOTBALL_DOUBLE_CHANCE_OUTCOMES: dict[str, tuple[str, str]] = {
+    "1X": ("home_or_draw", "1X"),
+    "12": ("home_or_away", "12"),
+    "X2": ("draw_or_away", "X2"),
+}
+# Total-goals side classification keyed off accent/case-insensitive name.
+# Maps to (outcome_code, canonical raw_label) — the canonical raw_label
+# matches the convention used by the other football outcome scrapers
+# (BetOle/AdmiralBet/etc.) so the unified pipeline groups them.
+_FOOTBALL_TOTAL_SIDES: dict[str, tuple[str, str]] = {
+    "manje": ("under", "0-2"),
+    "vise": ("over", "3+"),
+}
+
+# Per-bookmaker concurrency caps for the per-event football detail
+# fetches (full mode only).  The HttpClient enforces a global rate
+# limit per bookmaker, so any concurrency above
+# ``ceil(rate_limit_per_second)`` cannot speed things up — it just
+# helps mask network latency between rate-limited slots.  When the
+# rate limit is disabled (0), cap at 10 to stay polite.
+_MIN_DETAIL_CONCURRENCY = 2
+_UNLIMITED_DETAIL_CONCURRENCY = 10
 
 _BET_TYPE_MARKETS: dict[int, str] = {
     1200: "player_points",
@@ -457,11 +507,297 @@ def _parse_event_detail(
     return results
 
 
-class PinnBetScraper(BaseScraper):
-    """Scraper for PinnBet basketball player props and OT-inclusive game totals."""
+def _parse_total_line(value: object) -> float | None:
+    """Parse a PinnBet sBV/line value, tolerating ``"2.50"`` / ``" 2.5 "`` / ``2.5``."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
 
-    def __init__(self, http_client: HttpClient | None = None) -> None:
+
+def _resolve_total_line(bet: dict, outcome: dict) -> float | None:
+    """Resolve the totals line for an Ukupno golova bet.
+
+    Prefers the bet-level ``sBV`` (carried at the market level), but
+    falls back to the outcome-level ``sBV``. Returns ``None`` when
+    neither parses, or when the two are present and disagree (defense
+    in depth — we'd rather drop a confusing offer than mis-classify
+    it as 2.5).
+    """
+    bet_line = _parse_total_line(bet.get("sBV"))
+    outcome_line = _parse_total_line(outcome.get("sBV"))
+    if bet_line is not None and outcome_line is not None:
+        if abs(bet_line - outcome_line) > 1e-9:
+            return None
+        return bet_line
+    return bet_line if bet_line is not None else outcome_line
+
+
+def _coerce_positive_odds(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        odds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if odds <= 0:
+        return None
+    return odds
+
+
+_FOOTBALL_BET_TYPES_FROM_LIST: frozenset[int] = frozenset({
+    _BET_FOOTBALL_RESULT,
+    _BET_FOOTBALL_TOTAL_GOALS,
+})
+
+
+def _emit_football_offers_from_bets(
+    *,
+    home_team: str,
+    away_team: str,
+    league_id: str,
+    start_time: str | None,
+    bets: list[dict],
+    bet_type_filter: frozenset[int],
+) -> list[RawOutcomeOffer]:
+    """Emit football outcome offers from a list/detail bets array.
+
+    ``bet_type_filter`` constrains which bet types we consider, which
+    lets the same parser walk both list bets (result + totals only) and
+    detail bets (double chance only) without duplicating logic.
+    """
+    results: list[RawOutcomeOffer] = []
+    for bet in bets:
+        bet_type_id = bet.get("betTypeId")
+        if not isinstance(bet_type_id, int) or bet_type_id not in bet_type_filter:
+            continue
+        if not bet.get("isPlayable"):
+            continue
+
+        if bet_type_id == _BET_FOOTBALL_RESULT:
+            outcome_lookup = _FOOTBALL_RESULT_OUTCOMES
+            market_type = "football_result"
+            line: float | None = None
+        elif bet_type_id == _BET_FOOTBALL_DOUBLE_CHANCE:
+            outcome_lookup = _FOOTBALL_DOUBLE_CHANCE_OUTCOMES
+            market_type = "football_double_chance"
+            line = None
+        elif bet_type_id == _BET_FOOTBALL_TOTAL_GOALS:
+            # Cheap pre-filter: if the bet-level sBV resolves and is not
+            # the target line, skip the whole bet without scanning outcomes.
+            bet_line = _parse_total_line(bet.get("sBV"))
+            if bet_line is not None and abs(bet_line - _FOOTBALL_TARGET_TOTAL_LINE) > 1e-9:
+                continue
+            outcome_lookup = None
+            market_type = "football_total_goals"
+            line = _FOOTBALL_TARGET_TOTAL_LINE
+        else:
+            continue
+
+        for outcome in bet.get("betOutcomes", []):
+            if not outcome.get("isPlayable"):
+                continue
+            odds = _coerce_positive_odds(outcome.get("odd"))
+            if odds is None:
+                continue
+
+            raw_name = (outcome.get("name") or "").strip()
+            if bet_type_id == _BET_FOOTBALL_TOTAL_GOALS:
+                resolved_line = _resolve_total_line(bet, outcome)
+                if resolved_line is None:
+                    continue
+                if abs(resolved_line - _FOOTBALL_TARGET_TOTAL_LINE) > 1e-9:
+                    continue
+                normalized_side = normalize_identity_text(raw_name)
+                mapping = _FOOTBALL_TOTAL_SIDES.get(normalized_side)
+                if mapping is None:
+                    continue
+                outcome_code, raw_label = mapping
+            else:
+                assert outcome_lookup is not None  # narrow for type checkers
+                key = raw_name.upper()
+                mapping = outcome_lookup.get(key)
+                if mapping is None:
+                    continue
+                outcome_code, raw_label = mapping
+
+            results.append(
+                RawOutcomeOffer(
+                    bookmaker_id="pinnbet",
+                    league_id=league_id,
+                    sport="football",
+                    home_team=home_team,
+                    away_team=away_team,
+                    market_type=market_type,
+                    outcome_code=outcome_code,
+                    odds=odds,
+                    line=line,
+                    raw_label=raw_label,
+                    start_time=start_time,
+                )
+            )
+
+    return results
+
+
+def _football_event_identity(event: dict) -> tuple[str, str, str | None]:
+    """Resolve (home, away, start_time) for a PinnBet football list event.
+
+    Returns ``("", "", None)`` when the event name is unparseable.
+    """
+    home_team, away_team = _parse_event_name(event.get("name", ""))
+    if not home_team or not away_team:
+        return "", "", None
+    start_time = _normalize_start_time(event.get("dateTime"))
+    return home_team, away_team, start_time
+
+
+def _parse_football_outcome_event(event: dict) -> list[RawOutcomeOffer]:
+    """Parse a PinnBet football list event into result + 2.5 totals offers.
+
+    Double chance is intentionally NOT emitted here — the list endpoint
+    does not expose betTypeId=3 for football.  The detail endpoint is
+    the only source for double chance and is only fetched in ``full``
+    mode.
+    """
+    home_team, away_team, start_time = _football_event_identity(event)
+    if not home_team or not away_team:
+        return []
+    league_id = _extract_league_id(event, fallback_league_id="football")
+    return _emit_football_offers_from_bets(
+        home_team=home_team,
+        away_team=away_team,
+        league_id=league_id,
+        start_time=start_time,
+        bets=event.get("bets", []),
+        bet_type_filter=_FOOTBALL_BET_TYPES_FROM_LIST,
+    )
+
+
+def _parse_football_double_chance_detail(
+    list_event: dict, detail_payload: dict
+) -> list[RawOutcomeOffer]:
+    """Emit football_double_chance offers from a per-event detail payload.
+
+    Identity (home/away/start_time/league_id) is taken UNCONDITIONALLY
+    from the list event so list-derived and detail-derived offers
+    share the same normalized event key.  The detail payload only
+    contributes its ``bets`` array.
+    """
+    home_team, away_team, start_time = _football_event_identity(list_event)
+    if not home_team or not away_team:
+        return []
+    league_id = _extract_league_id(list_event, fallback_league_id="football")
+    bets = detail_payload.get("bets") or []
+    if not isinstance(bets, list):
+        return []
+    return _emit_football_offers_from_bets(
+        home_team=home_team,
+        away_team=away_team,
+        league_id=league_id,
+        start_time=start_time,
+        bets=bets,
+        bet_type_filter=frozenset({_BET_FOOTBALL_DOUBLE_CHANCE}),
+    )
+
+
+def _football_detail_identity(event: dict) -> tuple[int, int, int, int] | None:
+    """Resolve the (sportId, regionId, competitionId, eventId) tuple needed
+    to build the detail URL.  Returns ``None`` when any field is missing.
+    """
+    try:
+        return (
+            int(event["sportId"]),
+            int(event["regionId"]),
+            int(event["competitionId"]),
+            int(event["id"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _football_event_completeness_score(event: dict) -> int:
+    """Score a list event by how usable it is for downstream parsing.
+
+    Higher is better.  We prefer rows that:
+      * have a parseable detail-id tuple (detail-eligible)
+      * have a ``bets`` array (so list-derived offers are emitted)
+      * carry a competition name (so league_id is non-degenerate)
+
+    This drives "best row wins" dedupe when the list happens to repeat
+    the same eventId across mapping types.
+    """
+    score = 0
+    if _football_detail_identity(event) is not None:
+        score += 4
+    bets = event.get("bets")
+    if isinstance(bets, list) and bets:
+        score += 2
+    if event.get("competitionName"):
+        score += 1
+    return score
+
+
+def _dedupe_football_events(events: list[dict]) -> dict[int, dict]:
+    """Collapse duplicate list rows by event id, keeping the most usable.
+
+    ``eventMappingTypes=1..5`` can return the same eventId multiple
+    times; without dedupe we'd silently emit duplicate list-derived
+    offers and (in full mode) issue redundant detail fetches.
+    """
+    by_id: dict[int, dict] = {}
+    for event in events:
+        try:
+            event_id = int(event["id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        existing = by_id.get(event_id)
+        if existing is None or (
+            _football_event_completeness_score(event)
+            > _football_event_completeness_score(existing)
+        ):
+            by_id[event_id] = event
+    return by_id
+
+
+def _get_detail_fetch_concurrency(http_client: HttpClient, match_count: int) -> int:
+    if match_count <= 0:
+        return 0
+    if http_client.rate_limit_per_second <= 0:
+        return min(match_count, _UNLIMITED_DETAIL_CONCURRENCY)
+    return min(
+        match_count,
+        max(_MIN_DETAIL_CONCURRENCY, math.ceil(http_client.rate_limit_per_second)),
+    )
+
+
+class PinnBetScraper(BaseScraper):
+    """Scraper for PinnBet basketball player props and OT-inclusive game totals.
+
+    Also emits football outcome offers (result, totals @ 2.5, and — in
+    ``full`` detail mode only — double chance via per-event detail
+    fetch).  Default ``partial`` mode skips the per-event fetch and
+    therefore cannot emit double chance, which the user explicitly
+    accepted as a trade-off for cycle speed.
+    """
+
+    def __init__(
+        self,
+        http_client: HttpClient | None = None,
+        *,
+        detail_mode: Literal["partial", "full"] | None = None,
+    ) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
+        self._detail_mode = detail_mode or settings.pinnbet_detail_mode
 
     def get_bookmaker_id(self) -> str:
         return "pinnbet"
@@ -471,6 +807,9 @@ class PinnBetScraper(BaseScraper):
 
     def get_supported_leagues(self) -> list[str]:
         return ["basketball"]
+
+    def get_supported_outcome_sports(self) -> list[str]:
+        return ["football"]
 
     async def _fetch_game_total_events(self) -> list[dict]:
         url = _build_list_url(
@@ -552,3 +891,138 @@ class PinnBetScraper(BaseScraper):
             len(basketball_events),
         )
         return all_results
+
+    async def _fetch_football_events(self) -> list[dict]:
+        url = _build_list_url(
+            _FOOTBALL_SPORT_ID,
+            page_id=_FOOTBALL_PAGE_ID,
+        )
+
+        try:
+            data = await self._http.get_json(url, headers=_DEFAULT_HEADERS)
+        except Exception:
+            logger.warning("PinnBet: failed to fetch football prematch events")
+            return []
+
+        if not isinstance(data, list):  # type: ignore[arg-type]
+            logger.warning(
+                "PinnBet: unexpected response type %s for football prematch events",
+                type(data).__name__,
+            )
+            return []
+
+        return [event for event in data if isinstance(event, dict)]
+
+    async def _fetch_football_detail(
+        self,
+        identity: tuple[int, int, int, int],
+        semaphore: asyncio.Semaphore,
+    ) -> dict | None:
+        sport_id, region_id, competition_id, event_id = identity
+        url = (
+            f"{_BASE_DETAIL_URL}/{sport_id}/{region_id}/{competition_id}/{event_id}"
+        )
+        async with semaphore:
+            try:
+                detail = await self._http.get_json(url, headers=_DEFAULT_HEADERS)
+            except Exception:
+                logger.warning(
+                    "PinnBet: failed to fetch football match detail %s/%s/%s/%s",
+                    sport_id,
+                    region_id,
+                    competition_id,
+                    event_id,
+                    exc_info=True,
+                )
+                return None
+        if not isinstance(detail, dict):
+            return None
+        return detail
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        """Scrape PinnBet football outcome offers.
+
+        ``partial`` mode (default): fetch the football list endpoint
+        once and emit football_result + football_total_goals @ 2.5.
+        Double chance is NOT emitted because PinnBet's list endpoint
+        does not expose betTypeId=3.
+
+        ``full`` mode: also fan out per-event detail fetches (rate-
+        limited via semaphore) and emit football_double_chance from
+        the detail bets, using identity fields from the LIST event so
+        list-derived and detail-derived offers share the same
+        normalized event.
+        """
+        if sport != "football":
+            return []
+
+        list_events = await self._fetch_football_events()
+        events_by_id = _dedupe_football_events(list_events)
+        if not events_by_id:
+            logger.info("PinnBet: no football matches discovered")
+            return []
+
+        results: list[RawOutcomeOffer] = []
+        for event in events_by_id.values():
+            results.extend(_parse_football_outcome_event(event))
+
+        detail_attempts = 0
+        detail_misses = 0
+        concurrency = 0
+        if self._detail_mode == "full":
+            detail_targets: list[tuple[int, tuple[int, int, int, int]]] = []
+            skipped_for_missing_ids = 0
+            for event_id, event in events_by_id.items():
+                identity = _football_detail_identity(event)
+                if identity is None:
+                    skipped_for_missing_ids += 1
+                    continue
+                detail_targets.append((event_id, identity))
+
+            if skipped_for_missing_ids:
+                logger.warning(
+                    "PinnBet: skipping detail fetch for %d football events with missing IDs",
+                    skipped_for_missing_ids,
+                )
+
+            if detail_targets:
+                concurrency = _get_detail_fetch_concurrency(
+                    self._http, len(detail_targets)
+                )
+                semaphore = asyncio.Semaphore(max(1, concurrency))
+                details = await asyncio.gather(
+                    *(
+                        self._fetch_football_detail(identity, semaphore)
+                        for _, identity in detail_targets
+                    )
+                )
+                detail_attempts = len(detail_targets)
+                for (event_id, _), detail in zip(detail_targets, details):
+                    if detail is None:
+                        detail_misses += 1
+                        continue
+                    list_event = events_by_id[event_id]
+                    results.extend(
+                        _parse_football_double_chance_detail(list_event, detail)
+                    )
+                if detail_misses:
+                    logger.warning(
+                        "PinnBet: %d/%d football detail fetches returned no data; "
+                        "double chance will be missing for those matches",
+                        detail_misses,
+                        detail_attempts,
+                    )
+
+        logger.info(
+            (
+                "PinnBet scraped %d football outcome offers from %d events "
+                "(detail mode=%s, attempts=%d, misses=%d, concurrency=%d)"
+            ),
+            len(results),
+            len(events_by_id),
+            self._detail_mode,
+            detail_attempts,
+            detail_misses,
+            concurrency,
+        )
+        return results

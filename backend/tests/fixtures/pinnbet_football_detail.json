@@ -1,0 +1,31 @@
+{
+  "bets": [
+    {
+      "betTypeId": 3,
+      "betTypeName": "Dupla sansa",
+      "sBV": null,
+      "isPlayable": true,
+      "betOutcomes": [
+        {
+          "name": "1X",
+          "odd": 1.22,
+          "isPlayable": true,
+          "sBV": null
+        },
+        {
+          "name": "12",
+          "odd": 1.17,
+          "isPlayable": true,
+          "sBV": null
+        },
+        {
+          "name": "X2",
+          "odd": 2.32,
+          "isPlayable": true,
+          "sBV": null
+        }
+      ]
+    }
+  ],
+  "groups": []
+}

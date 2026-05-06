@@ -339,6 +339,7 @@ export interface ScrapeRuntimeSettings {
   meridian_rate_limit_per_second: number;
   soccerbet_detail_mode: ScraperDetailMode;
   merkurxtip_detail_mode: ScraperDetailMode;
+  pinnbet_detail_mode: ScraperDetailMode;
   notification_gap_threshold: number;
   persist_inapp_notifications: boolean;
 }

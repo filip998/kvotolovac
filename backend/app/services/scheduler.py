@@ -1155,6 +1155,8 @@ class Scheduler:
             scraper.set_runtime_detail_mode(runtime_settings.soccerbet_detail_mode)
         if bookmaker_id == "merkurxtip":
             scraper.set_runtime_detail_mode(runtime_settings.merkurxtip_detail_mode)
+        if bookmaker_id == "pinnbet":
+            scraper.set_runtime_detail_mode(runtime_settings.pinnbet_detail_mode)
 
     def _configure_notification_service_for_runtime_settings(
         self,

@@ -190,6 +190,7 @@ async def test_patch_scrape_settings_applies_immediately_when_idle(client: Async
             "meridian_rate_limit_per_second": 4.0,
             "soccerbet_detail_mode": "full",
             "merkurxtip_detail_mode": "full",
+            "pinnbet_detail_mode": "full",
             "notification_gap_threshold": 2.5,
             "persist_inapp_notifications": True,
         },
@@ -205,6 +206,7 @@ async def test_patch_scrape_settings_applies_immediately_when_idle(client: Async
     assert data["applied"]["analysis_markets"] == ["*:player_*"]
     assert data["applied"]["scrape_interval_minutes"] == 7
     assert data["applied"]["soccerbet_detail_mode"] == "full"
+    assert data["applied"]["pinnbet_detail_mode"] == "full"
 
     get_resp = await client.get("/api/v1/settings/scrape")
     assert get_resp.json()["applied"]["enabled_bookmakers"] == ["mozzart"]

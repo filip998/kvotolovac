@@ -18,12 +18,26 @@ from app.scrapers.pinnbet_scraper import (
     _get_player_event_ids,
     _normalize_start_time,
     _resolve_matchup_from_short_name,
+    _parse_football_outcome_event,
+    _parse_football_double_chance_detail,
+    _parse_total_line,
+    _resolve_total_line,
+    _dedupe_football_events,
+    _football_detail_identity,
+    _football_event_completeness_score,
+    _BASE_DETAIL_URL,
+    _FOOTBALL_PAGE_ID,
+    _FOOTBALL_SPORT_ID,
 )
-from app.models.schemas import RawOddsData
+from app.models.schemas import RawOddsData, RawOutcomeOffer
 
 EVENTS_FIXTURE = Path(__file__).parent / "fixtures" / "pinnbet_events.json"
 BETS_FIXTURE = Path(__file__).parent / "fixtures" / "pinnbet_bets.json"
 TOTALS_FIXTURE = Path(__file__).parent / "fixtures" / "pinnbet_game_totals.json"
+FOOTBALL_FIXTURE = Path(__file__).parent / "fixtures" / "pinnbet_football.json"
+FOOTBALL_DETAIL_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "pinnbet_football_detail.json"
+)
 
 
 def _player_threshold_bet(
@@ -890,3 +904,581 @@ async def test_scraper_skips_stub_player_bets_without_detail_fallback(
     assert len(game_totals) == 11
     assert len(handicaps) == 1
     assert len(captured_urls) == 2
+
+
+# ── Football outcome lane ─────────────────────────────────
+
+
+@pytest.fixture
+def football_data() -> list[dict]:
+    with open(FOOTBALL_FIXTURE) as f:
+        return json.load(f)
+
+
+@pytest.fixture
+def football_detail_data() -> dict:
+    with open(FOOTBALL_DETAIL_FIXTURE) as f:
+        return json.load(f)
+
+
+def test_parse_football_outcome_event_emits_result_and_2_5_totals_only(football_data):
+    event = football_data[0]
+    offers = _parse_football_outcome_event(event)
+
+    by_market: dict[str, list[RawOutcomeOffer]] = {}
+    for o in offers:
+        by_market.setdefault(o.market_type, []).append(o)
+
+    # Partial mode never sees double chance — list parser must not emit it.
+    assert "football_double_chance" not in by_market
+    assert sorted(by_market) == ["football_result", "football_total_goals"]
+    assert {o.outcome_code for o in by_market["football_result"]} == {
+        "home",
+        "draw",
+        "away",
+    }
+    totals = by_market["football_total_goals"]
+    assert {t.outcome_code for t in totals} == {"over", "under"}
+    assert all(t.line == 2.5 for t in totals)
+    assert {t.raw_label for t in totals} == {"0-2", "3+"}
+
+    sample = by_market["football_result"][0]
+    assert sample.bookmaker_id == "pinnbet"
+    assert sample.sport == "football"
+    assert sample.home_team == "Bayern Munich"
+    assert sample.away_team == "Paris SG"
+    # PinnBet naive datetimes treated as UTC and emitted with explicit offset
+    assert sample.start_time == "2026-04-15T19:00:00+00:00"
+
+
+def test_parse_football_outcome_event_skips_non_2_5_lines(football_data):
+    event = football_data[0]
+    offers = _parse_football_outcome_event(event)
+    totals = [o for o in offers if o.market_type == "football_total_goals"]
+    assert len(totals) == 2
+    assert all(t.line == 2.5 for t in totals)
+
+
+def test_parse_football_outcome_event_skips_non_playable_bets(football_data):
+    event = football_data[0]
+    for bet in event["bets"]:
+        bet["isPlayable"] = False
+    assert _parse_football_outcome_event(event) == []
+
+
+def test_parse_football_outcome_event_skips_non_playable_outcomes(football_data):
+    event = football_data[0]
+    for bet in event["bets"]:
+        if bet.get("betTypeId") == 1:
+            for outcome in bet["betOutcomes"]:
+                outcome["isPlayable"] = False
+            break
+    offers = _parse_football_outcome_event(event)
+    assert [o for o in offers if o.market_type == "football_result"] == []
+    # Totals at 2.5 still come through.
+    assert any(o.market_type == "football_total_goals" for o in offers)
+
+
+def test_parse_football_outcome_event_skips_zero_or_negative_odds(football_data):
+    event = football_data[0]
+    for bet in event["bets"]:
+        if bet.get("betTypeId") == 1:
+            for outcome in bet["betOutcomes"]:
+                outcome["odd"] = 0
+            break
+    offers = _parse_football_outcome_event(event)
+    assert [o for o in offers if o.market_type == "football_result"] == []
+
+
+def test_parse_football_outcome_event_normalizes_outcome_names(football_data):
+    event = football_data[0]
+    # Stress: stray whitespace + lowercase on result outcomes; stripped+upper
+    # in the parser must still classify them.
+    for bet in event["bets"]:
+        if bet.get("betTypeId") == 1:
+            bet["betOutcomes"][0]["name"] = " 1 "
+            bet["betOutcomes"][1]["name"] = "x"
+            break
+    offers = _parse_football_outcome_event(event)
+    result_codes = {
+        o.outcome_code for o in offers if o.market_type == "football_result"
+    }
+    assert result_codes == {"home", "draw", "away"}
+
+
+def test_parse_football_outcome_event_classifies_totals_diacritic_insensitive(
+    football_data,
+):
+    event = football_data[0]
+    # Stress: "Više"/"Manje" with stray whitespace must still classify, AND
+    # the unaccented "vise" form (some bookmaker payloads strip diacritics)
+    # must also normalize via normalize_identity_text.
+    for bet in event["bets"]:
+        if bet.get("betTypeId") == 2 and bet.get("sBV") == "2.5":
+            for outcome in bet["betOutcomes"]:
+                if outcome["name"] == "više":
+                    outcome["name"] = "  vise  "
+                elif outcome["name"] == "manje":
+                    outcome["name"] = "Manje"
+            break
+    offers = _parse_football_outcome_event(event)
+    totals = [o for o in offers if o.market_type == "football_total_goals"]
+    assert {t.outcome_code for t in totals} == {"over", "under"}
+    assert {t.raw_label for t in totals} == {"3+", "0-2"}
+
+
+def test_parse_football_outcome_event_drops_offer_when_event_name_unparseable(
+    football_data,
+):
+    event = football_data[0]
+    event["name"] = "NoSeparator"
+    assert _parse_football_outcome_event(event) == []
+
+
+def test_parse_football_outcome_event_skips_unknown_outcome_codes(football_data):
+    event = football_data[0]
+    for bet in event["bets"]:
+        if bet.get("betTypeId") == 1:
+            for outcome in bet["betOutcomes"]:
+                outcome["name"] = "WAT"
+            break
+    offers = _parse_football_outcome_event(event)
+    assert [o for o in offers if o.market_type == "football_result"] == []
+
+
+def test_parse_football_outcome_event_falls_back_to_default_league(football_data):
+    event = football_data[0]
+    event["competitionName"] = None
+    event["competitionId"] = None
+    offers = _parse_football_outcome_event(event)
+    assert offers
+    assert all(o.league_id == "football" for o in offers)
+
+
+def test_parse_football_outcome_event_falls_back_for_degenerate_competition(
+    football_data,
+):
+    event = football_data[0]
+    event["competitionName"] = "---"
+    event["competitionId"] = None
+    offers = _parse_football_outcome_event(event)
+    assert offers
+    assert all(o.league_id == "football" for o in offers)
+
+
+def test_parse_total_line_tolerates_string_variants():
+    assert _parse_total_line("2.5") == 2.5
+    assert _parse_total_line("2.50") == 2.5
+    assert _parse_total_line(" 2.5 ") == 2.5
+    assert _parse_total_line(2.5) == 2.5
+    assert _parse_total_line(0.5) == 0.5
+    assert _parse_total_line(None) is None
+    assert _parse_total_line("") is None
+    assert _parse_total_line("not-a-number") is None
+
+
+def test_resolve_total_line_prefers_bet_level_and_falls_back_to_outcome():
+    assert _resolve_total_line({"sBV": "2.5"}, {"sBV": None}) == 2.5
+    assert _resolve_total_line({"sBV": None}, {"sBV": "2.5"}) == 2.5
+    assert _resolve_total_line({"sBV": "2.5"}, {"sBV": "2.5"}) == 2.5
+    # Disagreement → drop, defense in depth.
+    assert _resolve_total_line({"sBV": "2.5"}, {"sBV": "3.5"}) is None
+    assert _resolve_total_line({"sBV": None}, {"sBV": None}) is None
+
+
+def test_parse_football_outcome_event_uses_outcome_level_sbv_when_bet_level_missing(
+    football_data,
+):
+    event = football_data[0]
+    for bet in event["bets"]:
+        if bet.get("betTypeId") == 2 and bet.get("sBV") == "2.5":
+            bet["sBV"] = None  # drop bet-level line, outcome-level "2.5" remains
+            break
+    offers = _parse_football_outcome_event(event)
+    totals = [o for o in offers if o.market_type == "football_total_goals"]
+    assert {t.outcome_code for t in totals} == {"over", "under"}
+    assert all(t.line == 2.5 for t in totals)
+
+
+def test_parse_football_double_chance_detail_emits_three_offers(
+    football_data, football_detail_data
+):
+    list_event = football_data[0]
+    offers = _parse_football_double_chance_detail(list_event, football_detail_data)
+    assert len(offers) == 3
+    assert {o.outcome_code for o in offers} == {
+        "home_or_draw",
+        "home_or_away",
+        "draw_or_away",
+    }
+    assert {o.raw_label for o in offers} == {"1X", "12", "X2"}
+    assert all(o.market_type == "football_double_chance" for o in offers)
+    # Identity must come from the LIST event, never the detail payload.
+    assert all(o.home_team == "Bayern Munich" for o in offers)
+    assert all(o.away_team == "Paris SG" for o in offers)
+    assert all(o.start_time == "2026-04-15T19:00:00+00:00" for o in offers)
+    assert all(o.league_id == "uefa champions league" for o in offers)
+    assert all(o.line is None for o in offers)
+
+
+def test_parse_football_double_chance_detail_ignores_hostile_detail_metadata(
+    football_data, football_detail_data
+):
+    """B1 invariant — even when the detail payload supplies its own
+    home/away/start/league/source metadata that disagrees with the list,
+    the emitted offers MUST anchor on the list-event identity so list-
+    derived and detail-derived offers normalize to the same canonical event.
+    """
+    list_event = football_data[0]
+    hostile_detail = {
+        **football_detail_data,
+        # Fields that a future regression might be tempted to read instead
+        # of the list event.  All of these must be ignored.
+        "name": "Wrong Home - Wrong Away",
+        "homeTeam": "Wrong Home",
+        "awayTeam": "Wrong Away",
+        "competitionName": "Wrong League",
+        "competitionId": 99999,
+        "dateTime": "2099-12-31T23:59:59",
+        "sourceUrl": "https://attacker.invalid/",
+    }
+    offers = _parse_football_double_chance_detail(list_event, hostile_detail)
+    assert len(offers) == 3
+    assert all(o.home_team == "Bayern Munich" for o in offers)
+    assert all(o.away_team == "Paris SG" for o in offers)
+    assert all(o.start_time == "2026-04-15T19:00:00+00:00" for o in offers)
+    assert all(o.league_id == "uefa champions league" for o in offers)
+
+
+def test_parse_football_double_chance_detail_falls_back_when_list_league_is_none(
+    football_data, football_detail_data
+):
+    """B1 invariant edge case — when a list field that contributes to
+    identity is absent (here ``competitionName``), the parser must fall
+    back to the football scope's default league_id, NOT pull it from the
+    detail payload.  Pins the "even when the list field is None" branch.
+    """
+    list_event = {**football_data[0], "competitionName": None, "competitionId": None}
+    hostile_detail = {
+        **football_detail_data,
+        "competitionName": "Detail-Provided League",
+        "competitionId": 42,
+    }
+    offers = _parse_football_double_chance_detail(list_event, hostile_detail)
+    assert offers
+    assert all(o.league_id == "football" for o in offers)
+    assert all(o.home_team == "Bayern Munich" for o in offers)
+    assert all(o.away_team == "Paris SG" for o in offers)
+
+
+def test_parse_football_double_chance_detail_drops_when_event_name_unparseable(
+    football_data, football_detail_data
+):
+    list_event = {**football_data[0], "name": "NoSeparator"}
+    assert _parse_football_double_chance_detail(list_event, football_detail_data) == []
+
+
+def test_parse_football_double_chance_detail_handles_missing_bets_array(football_data):
+    list_event = football_data[0]
+    assert _parse_football_double_chance_detail(list_event, {}) == []
+    assert _parse_football_double_chance_detail(list_event, {"bets": None}) == []
+    assert _parse_football_double_chance_detail(list_event, {"bets": "garbage"}) == []
+
+
+def test_dedupe_football_events_picks_best_row_for_duplicate_event_id():
+    less_complete = {
+        "id": 999,
+        "name": "Foo - Bar",
+        "dateTime": "2026-04-15T19:00:00",
+        "competitionId": None,
+        "regionId": None,
+        "sportId": 1,
+    }
+    more_complete = {
+        "id": 999,
+        "name": "Foo - Bar",
+        "dateTime": "2026-04-15T19:00:00",
+        "competitionId": 12,
+        "competitionName": "Friendly",
+        "regionId": 7,
+        "sportId": 1,
+        "bets": [{"betTypeId": 1, "isPlayable": True, "betOutcomes": []}],
+    }
+    by_id = _dedupe_football_events([less_complete, more_complete])
+    assert list(by_id.keys()) == [999]
+    assert by_id[999] is more_complete
+
+    # Order shouldn't matter — best row still wins.
+    by_id = _dedupe_football_events([more_complete, less_complete])
+    assert by_id[999] is more_complete
+
+
+def test_dedupe_football_events_skips_events_without_id():
+    by_id = _dedupe_football_events(
+        [
+            {"name": "no-id", "dateTime": "2026-04-15T19:00:00"},
+            {"id": "not-int", "name": "x"},
+            {"id": 1, "name": "Foo - Bar", "dateTime": "2026-04-15T19:00:00"},
+        ]
+    )
+    assert list(by_id.keys()) == [1]
+
+
+def test_football_detail_identity_returns_none_for_missing_fields():
+    assert (
+        _football_detail_identity(
+            {"sportId": 1, "regionId": 2, "competitionId": 3, "id": 4}
+        )
+        == (1, 2, 3, 4)
+    )
+    assert _football_detail_identity({"sportId": 1, "regionId": 2, "competitionId": 3}) is None
+    assert _football_detail_identity(
+        {"sportId": 1, "regionId": 2, "competitionId": None, "id": 4}
+    ) is None
+    assert _football_detail_identity(
+        {"sportId": "x", "regionId": 2, "competitionId": 3, "id": 4}
+    ) is None
+
+
+def test_football_event_completeness_score_orders_rows():
+    rich = {
+        "id": 1,
+        "sportId": 1,
+        "regionId": 2,
+        "competitionId": 3,
+        "competitionName": "League",
+        "bets": [{}],
+    }
+    no_bets = {**rich, "bets": []}
+    no_competition = {**rich, "competitionName": None}
+    no_ids = {"id": 1, "sportId": 1, "regionId": None, "competitionId": None}
+    assert _football_event_completeness_score(rich) > _football_event_completeness_score(no_bets)
+    assert _football_event_completeness_score(rich) > _football_event_completeness_score(no_competition)
+    assert _football_event_completeness_score(rich) > _football_event_completeness_score(no_ids)
+
+
+def test_get_supported_outcome_sports_isolates_football_from_basketball_capability():
+    scraper = PinnBetScraper()
+    # threshold-odds lane: basketball only — football MUST NOT leak here,
+    # otherwise the unified pipeline would call scrape_odds("football") every cycle.
+    assert scraper.get_supported_leagues() == ["basketball"]
+    # outcome-offer lane: football
+    assert scraper.get_supported_outcome_sports() == ["football"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_returns_empty_for_non_football_without_http():
+    scraper = PinnBetScraper(detail_mode="full")
+    with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get:
+        results = await scraper.scrape_outcome_offers("basketball")
+    assert results == []
+    mock_get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_partial_mode_uses_only_list_endpoint(
+    football_data, football_detail_data
+):
+    scraper = PinnBetScraper(detail_mode="partial")
+    captured: list[str] = []
+
+    async def mock_get(url, **kwargs):
+        captured.append(url)
+        if "getWebEventsSelections" in url:
+            return football_data
+        raise AssertionError(
+            f"Unexpected detail call in partial mode: {url}"
+        )
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_outcome_offers("football")
+
+    assert len(captured) == 1
+    parsed = urlparse(captured[0])
+    assert parsed.path.endswith("/api/offer/getWebEventsSelections")
+    qs = parse_qs(parsed.query)
+    assert qs["pageId"] == [str(_FOOTBALL_PAGE_ID)]
+    assert qs["sportId"] == [str(_FOOTBALL_SPORT_ID)]
+    assert qs["isLive"] == ["false"]
+    assert qs["eventMappingTypes"] == ["1", "2", "3", "4", "5"]
+
+    # Partial mode emits result + 2.5 totals only — no double chance.
+    market_types = {o.market_type for o in results}
+    assert market_types == {"football_result", "football_total_goals"}
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_full_mode_fetches_detail_and_emits_double_chance(
+    football_data, football_detail_data
+):
+    scraper = PinnBetScraper(detail_mode="full")
+    captured_detail_urls: list[str] = []
+
+    async def mock_get(url, **kwargs):
+        if "getWebEventsSelections" in url:
+            return football_data
+        if "/betsAndGroups/" in url:
+            captured_detail_urls.append(url)
+            return football_detail_data
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_outcome_offers("football")
+
+    # Full mode issues exactly one detail fetch per deduped event with full IDs.
+    assert len(captured_detail_urls) == 1
+    expected = (
+        f"{_BASE_DETAIL_URL}/{_FOOTBALL_SPORT_ID}/287/12345/2215282"
+    )
+    assert captured_detail_urls[0] == expected
+
+    market_types = {o.market_type for o in results}
+    assert market_types == {
+        "football_result",
+        "football_total_goals",
+        "football_double_chance",
+    }
+    dc = [o for o in results if o.market_type == "football_double_chance"]
+    assert {o.outcome_code for o in dc} == {
+        "home_or_draw",
+        "home_or_away",
+        "draw_or_away",
+    }
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_full_mode_skips_detail_when_ids_missing(
+    football_data,
+):
+    scraper = PinnBetScraper(detail_mode="full")
+    # Drop competition/region IDs so detail URL cannot be built.
+    event = {**football_data[0], "regionId": None, "competitionId": None}
+
+    async def mock_get(url, **kwargs):
+        if "getWebEventsSelections" in url:
+            return [event]
+        raise AssertionError(f"Unexpected detail call: {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_outcome_offers("football")
+
+    # List-derived offers still emitted; double chance absent.
+    market_types = {o.market_type for o in results}
+    assert "football_double_chance" not in market_types
+    assert "football_result" in market_types
+    assert "football_total_goals" in market_types
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_full_mode_tolerates_detail_failure(
+    football_data,
+):
+    scraper = PinnBetScraper(detail_mode="full")
+
+    async def mock_get(url, **kwargs):
+        if "getWebEventsSelections" in url:
+            return football_data
+        if "/betsAndGroups/" in url:
+            raise Exception("boom")
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_outcome_offers("football")
+
+    # Detail failure must not poison list-derived offers.
+    market_types = {o.market_type for o in results}
+    assert "football_double_chance" not in market_types
+    assert "football_result" in market_types
+    assert "football_total_goals" in market_types
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_dedupes_events_before_emitting(
+    football_data,
+):
+    scraper = PinnBetScraper(detail_mode="partial")
+    # Same eventId duplicated — must not double-emit list-derived offers.
+    duplicated = [football_data[0], {**football_data[0]}]
+
+    async def mock_get(url, **kwargs):
+        if "getWebEventsSelections" in url:
+            return duplicated
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_outcome_offers("football")
+
+    # Single emission per (market, outcome_code).
+    seen = set()
+    for o in results:
+        key = (o.market_type, o.outcome_code)
+        assert key not in seen, f"Duplicate offer emitted: {key}"
+        seen.add(key)
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_handles_list_failure():
+    scraper = PinnBetScraper(detail_mode="full")
+    with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = Exception("boom")
+        results = await scraper.scrape_outcome_offers("football")
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_handles_non_list_response():
+    scraper = PinnBetScraper(detail_mode="full")
+    with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = {"error": "bad request"}
+        results = await scraper.scrape_outcome_offers("football")
+    assert results == []
+
+
+def test_set_runtime_detail_mode_overrides_init_default():
+    scraper = PinnBetScraper(detail_mode="partial")
+    assert scraper._detail_mode == "partial"
+    scraper.set_runtime_detail_mode("full")
+    assert scraper._detail_mode == "full"
+    scraper.set_runtime_detail_mode("partial")
+    assert scraper._detail_mode == "partial"
+
+
+def test_scheduler_applies_pinnbet_detail_mode_from_runtime_settings():
+    """Pin the scheduler branch that wires ``runtime_settings.pinnbet_detail_mode``
+    onto the registered PinnBet scraper.  Without this branch in
+    ``_apply_runtime_scraper_settings``, runtime overrides would silently
+    no-op on the scraper instance.
+    """
+    from app.models.schemas import ScrapeRuntimeSettings
+    from app.services.scheduler import Scheduler
+
+    scraper = PinnBetScraper(detail_mode="partial")
+    assert scraper._detail_mode == "partial"
+
+    runtime_settings = ScrapeRuntimeSettings(
+        enabled_bookmakers=["pinnbet"],
+        enabled_sports=["basketball", "football"],
+        scrape_market_scope="all",
+        analysis_markets=["all"],
+        scrape_lookahead_hours=24,
+        scrape_interval_minutes=10,
+        max_middle_opportunities_per_market=10,
+        rate_limit_per_second=1.0,
+        meridian_rate_limit_per_second=2.0,
+        soccerbet_detail_mode="partial",
+        merkurxtip_detail_mode="partial",
+        pinnbet_detail_mode="full",
+        notification_gap_threshold=1.5,
+        persist_inapp_notifications=False,
+    )
+
+    Scheduler(interval_minutes=1)._apply_runtime_scraper_settings(scraper, runtime_settings)
+    assert scraper._detail_mode == "full"
+
+    runtime_settings_partial = runtime_settings.model_copy(
+        update={"pinnbet_detail_mode": "partial"}
+    )
+    Scheduler(interval_minutes=1)._apply_runtime_scraper_settings(
+        scraper, runtime_settings_partial
+    )
+    assert scraper._detail_mode == "partial"
