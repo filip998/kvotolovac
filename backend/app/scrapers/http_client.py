@@ -4,6 +4,9 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -44,17 +47,36 @@ class HttpClient:
         self._default_headers = default_headers or {}
         self._last_request_time: float = 0.0
         self._rate_limit_lock: asyncio.Lock | None = None
+        self._rate_limit_override: ContextVar[float | None] = ContextVar(
+            f"http_client_rate_limit_override_{id(self)}",
+            default=None,
+        )
         self._client: httpx.AsyncClient | None = None
 
     @property
     def rate_limit_per_second(self) -> float:
-        if self._min_interval <= 0:
+        min_interval = self._effective_min_interval()
+        if min_interval <= 0:
             return 0.0
-        return 1.0 / self._min_interval
+        return 1.0 / min_interval
 
     @rate_limit_per_second.setter
     def rate_limit_per_second(self, value: float) -> None:
         self._min_interval = 1.0 / value if value > 0 else 0
+
+    @contextmanager
+    def use_rate_limit(self, rate_limit_per_second: float) -> Iterator[None]:
+        token = self._rate_limit_override.set(rate_limit_per_second)
+        try:
+            yield
+        finally:
+            self._rate_limit_override.reset(token)
+
+    def _effective_min_interval(self) -> float:
+        override = self._rate_limit_override.get()
+        if override is not None:
+            return 1.0 / override if override > 0 else 0
+        return self._min_interval
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -80,14 +102,15 @@ class HttpClient:
 
     async def _acquire_request_slot(self) -> int:
         started_at = time.perf_counter()
-        if self._min_interval <= 0:
+        min_interval = self._effective_min_interval()
+        if min_interval <= 0:
             return 0
         if self._rate_limit_lock is None:
             self._rate_limit_lock = asyncio.Lock()
         async with self._rate_limit_lock:
             elapsed = time.monotonic() - self._last_request_time
-            if elapsed < self._min_interval:
-                await asyncio.sleep(self._min_interval - elapsed)
+            if elapsed < min_interval:
+                await asyncio.sleep(min_interval - elapsed)
             self._last_request_time = time.monotonic()
         return _elapsed_ms(started_at)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from typing import Literal
 
@@ -82,6 +83,12 @@ class BaseScraper(abc.ABC):
         http_client = getattr(self, "_http", None)
         if http_client is not None and hasattr(http_client, "rate_limit_per_second"):
             http_client.rate_limit_per_second = rate_limit_per_second
+
+    def runtime_rate_limit(self, rate_limit_per_second: float) -> AbstractContextManager[None]:
+        http_client = getattr(self, "_http", None)
+        if http_client is not None and hasattr(http_client, "use_rate_limit"):
+            return http_client.use_rate_limit(rate_limit_per_second)
+        return nullcontext()
 
     def set_runtime_detail_mode(self, detail_mode: Literal["partial", "full"]) -> None:
         if hasattr(self, "_detail_mode"):

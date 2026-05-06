@@ -33,6 +33,7 @@ from ..models.schemas import (
     ScraperBenchmarkOut,
     ScraperRequestBenchmarkOut,
 )
+from .rate_limit_policy import RateLimitPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,7 @@ def _runtime_metadata(
     runtime_settings: ScrapeRuntimeSettings,
 ) -> BenchmarkRuntimeMetadataOut:
     proxy_count = len(settings.proxy_url_list)
+    rate_limit_policy = RateLimitPolicy.from_settings()
     return BenchmarkRuntimeMetadataOut(
         scraper_mode=settings.scraper_mode,
         enabled_bookmakers=list(runtime_settings.enabled_bookmakers),
@@ -150,6 +152,8 @@ def _runtime_metadata(
         scrape_lookahead_hours=runtime_settings.scrape_lookahead_hours,
         rate_limit_per_second=runtime_settings.rate_limit_per_second,
         meridian_rate_limit_per_second=runtime_settings.meridian_rate_limit_per_second,
+        bookmaker_rate_limits=rate_limit_policy.metadata_bookmaker_rate_limits(),
+        scrape_type_rate_limits=rate_limit_policy.metadata_scrape_type_rate_limits(),
         detail_modes={
             "betole": runtime_settings.betole_detail_mode,
             "soccerbet": runtime_settings.soccerbet_detail_mode,

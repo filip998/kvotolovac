@@ -535,6 +535,8 @@ class BenchmarkRuntimeMetadataOut(BaseModel):
     scrape_lookahead_hours: int = 0
     rate_limit_per_second: float = 0
     meridian_rate_limit_per_second: float = 0
+    bookmaker_rate_limits: dict[str, float] = Field(default_factory=dict)
+    scrape_type_rate_limits: dict[str, float] = Field(default_factory=dict)
     detail_modes: dict[str, ScraperDetailMode] = Field(default_factory=dict)
     proxies_configured: bool = False
     proxy_count: int = 0

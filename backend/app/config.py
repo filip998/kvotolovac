@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     proxy_list: str = ""
     rate_limit_per_second: float = 1.0
     meridian_rate_limit_per_second: float = 2.0
+    # Comma/semicolon-separated '<bookmaker>:<rate>' caps.
+    bookmaker_rate_limits: str = ""
+    # Comma/semicolon-separated '<bookmaker>:<lane>:<rate>' or
+    # '<bookmaker>:<lane>:<detail_mode>:<rate>' caps.
+    scrape_type_rate_limits: str = ""
     # partial = preview feeds only; full = preview feeds plus match-by-code enrichment.
     soccerbet_detail_mode: Literal["partial", "full"] = "partial"
     # partial = list feeds only; full = list feeds plus match detail for alternate totals.

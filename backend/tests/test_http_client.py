@@ -257,6 +257,15 @@ async def test_rate_limit_is_isolated_per_http_client():
     await client_b.close()
 
 
+def test_rate_limit_property_uses_context_override_for_scraper_concurrency():
+    client = HttpClient(rate_limit_per_second=3)
+
+    assert client.rate_limit_per_second == pytest.approx(3)
+    with client.use_rate_limit(0.5):
+        assert client.rate_limit_per_second == pytest.approx(0.5)
+    assert client.rate_limit_per_second == pytest.approx(3)
+
+
 class _FakeResponse:
     def __init__(self, lines: list[str], status_code: int = 200) -> None:
         self._lines = lines

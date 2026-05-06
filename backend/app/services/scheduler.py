@@ -28,6 +28,7 @@ from ..services.market_allowlist import (
     MarketAllowlist,
     analysis_market_allowlist,
 )
+from ..services.rate_limit_policy import DetailMode, RateLimitPolicy
 from ..services.normalizer import (
     ANCHORED_AUTO_APPLY_THRESHOLD,
     log_unresolved_shared_platform_diagnostics,
@@ -147,6 +148,21 @@ def _is_enabled_scraper_capability(
     ):
         return False
     return True
+
+
+def _runtime_detail_mode_for_scraper(
+    bookmaker_id: str,
+    runtime_settings: ScrapeRuntimeSettings,
+) -> DetailMode | None:
+    if bookmaker_id == "soccerbet":
+        return runtime_settings.soccerbet_detail_mode
+    if bookmaker_id == "merkurxtip":
+        return runtime_settings.merkurxtip_detail_mode
+    if bookmaker_id == "pinnbet":
+        return runtime_settings.pinnbet_detail_mode
+    if bookmaker_id == "betole":
+        return runtime_settings.betole_detail_mode
+    return None
 
 
 def _filter_normalized_pipeline_batch_by_market_allowlist(
@@ -1124,37 +1140,49 @@ class Scheduler:
         scraper: BaseScraper,
         capability: ScraperCapability,
         runtime_settings: ScrapeRuntimeSettings,
+        rate_limit_policy: RateLimitPolicy,
     ) -> _ScrapeBatch:
-        with benchmark_recorder.scrape_request_context(
+        effective_rate_limit = rate_limit_policy.effective_rate_limit(
             bookmaker_id=scraper.get_bookmaker_id(),
             lane=capability.lane,
-            sport=capability.sport,
-            league_id=capability.league_id,
-        ):
-            if capability.lane == "threshold_odds":
-                if capability.league_id is None:
-                    raise ValueError("threshold_odds capability is missing league_id")
-                return _ScrapeBatch(
-                    capability=capability,
-                    raw_odds=tuple(
-                        await self._scrape_one(
-                            scraper,
-                            capability.league_id,
-                            lookahead_hours=runtime_settings.scrape_lookahead_hours,
-                        )
-                    ),
-                )
-            if capability.lane == "outcome_offer":
-                return _ScrapeBatch(
-                    capability=capability,
-                    raw_outcome_offers=tuple(
-                        await self._scrape_outcome_one(
-                            scraper,
-                            capability.sport,
-                            lookahead_hours=runtime_settings.scrape_lookahead_hours,
-                        )
-                    ),
-                )
+            detail_mode=_runtime_detail_mode_for_scraper(
+                scraper.get_bookmaker_id(),
+                runtime_settings,
+            ),
+            global_rate_limit_per_second=runtime_settings.rate_limit_per_second,
+            meridian_rate_limit_per_second=runtime_settings.meridian_rate_limit_per_second,
+        )
+        with scraper.runtime_rate_limit(effective_rate_limit):
+            with benchmark_recorder.scrape_request_context(
+                bookmaker_id=scraper.get_bookmaker_id(),
+                lane=capability.lane,
+                sport=capability.sport,
+                league_id=capability.league_id,
+            ):
+                if capability.lane == "threshold_odds":
+                    if capability.league_id is None:
+                        raise ValueError("threshold_odds capability is missing league_id")
+                    return _ScrapeBatch(
+                        capability=capability,
+                        raw_odds=tuple(
+                            await self._scrape_one(
+                                scraper,
+                                capability.league_id,
+                                lookahead_hours=runtime_settings.scrape_lookahead_hours,
+                            )
+                        ),
+                    )
+                if capability.lane == "outcome_offer":
+                    return _ScrapeBatch(
+                        capability=capability,
+                        raw_outcome_offers=tuple(
+                            await self._scrape_outcome_one(
+                                scraper,
+                                capability.sport,
+                                lookahead_hours=runtime_settings.scrape_lookahead_hours,
+                            )
+                        ),
+                    )
         raise ValueError(f"Unsupported scraper capability lane: {capability.lane}")
 
     def _apply_runtime_scraper_settings(
@@ -1225,6 +1253,7 @@ class Scheduler:
             logger.info("Starting scrape cycle at %s", cycle_started_at_iso)
 
             enabled_bookmakers = set(runtime_settings.enabled_bookmakers)
+            rate_limit_policy = RateLimitPolicy.from_settings()
             market_allowlist = analysis_market_allowlist(
                 runtime_settings.analysis_markets,
                 legacy_scrape_market_scope=runtime_settings.scrape_market_scope,
@@ -1248,7 +1277,12 @@ class Scheduler:
                 )
             ]
             scrape_tasks = [
-                self._scrape_capability(scraper, capability, runtime_settings)
+                self._scrape_capability(
+                    scraper,
+                    capability,
+                    runtime_settings,
+                    rate_limit_policy,
+                )
                 for scraper, capability in scrape_capabilities
             ]
             self._scan_phase = "scraping"
