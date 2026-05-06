@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     soccerbet_detail_mode: Literal["partial", "full"] = "partial"
     # partial = list feeds only; full = list feeds plus match detail for alternate totals.
     merkurxtip_detail_mode: Literal["partial", "full"] = "partial"
+    # partial = football list feed only (result + 2.5 totals); full = list feed
+    # plus per-event detail fetch to also emit double chance.
+    pinnbet_detail_mode: Literal["partial", "full"] = "partial"
     scrape_lookahead_hours: int = Field(default=24, ge=0)
     benchmark_dir: str = str(
         Path(__file__).resolve().parent.parent / "benchmarks"

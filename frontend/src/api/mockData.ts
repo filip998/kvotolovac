@@ -38,6 +38,7 @@ export const mockBookmakers: Bookmaker[] = [
   { id: 'superbet', name: 'Superbet', is_active: true },
   { id: 'betole', name: 'BetOle', is_active: true },
   { id: '365', name: '365', is_active: true },
+  { id: 'pinnbet', name: 'PinnBet', is_active: true },
   { id: 'volcanobet', name: 'VolcanoBet', is_active: true },
 ];
 
@@ -156,6 +157,7 @@ export const mockMatches: Match[] = [
       { id: '365', name: '365' },
       { id: 'superbet', name: 'Superbet' },
       { id: 'admiralbet', name: 'AdmiralBet' },
+      { id: 'pinnbet', name: 'PinnBet' },
     ],
   },
   {
@@ -177,6 +179,7 @@ export const mockMatches: Match[] = [
       { id: '365', name: '365' },
       { id: 'superbet', name: 'Superbet' },
       { id: 'admiralbet', name: 'AdmiralBet' },
+      { id: 'pinnbet', name: 'PinnBet' },
     ],
   },
   {
@@ -306,6 +309,15 @@ export const mockFootballOutcomeOffers: OutcomeOffer[] = [
   { id: 1094, match_id: 'football-match-2', bookmaker_id: 'admiralbet', bookmaker_name: 'AdmiralBet', market_type: 'football_result', outcome_code: 'home', odds: 1.94, line: null, raw_label: '1', scraped_at: ago(1) },
   { id: 1095, match_id: 'football-match-2', bookmaker_id: 'admiralbet', bookmaker_name: 'AdmiralBet', market_type: 'football_total_goals', outcome_code: 'under', odds: 1.80, line: 2.5, raw_label: '0-2', scraped_at: ago(1) },
   { id: 1096, match_id: 'football-match-2', bookmaker_id: 'admiralbet', bookmaker_name: 'AdmiralBet', market_type: 'football_total_goals', outcome_code: 'over', odds: 2.12, line: 2.5, raw_label: '3+', scraped_at: ago(1) },
+  // PinnBet — partial-mode shape: result + 2.5 totals on game 0, partial on game 1.  No double chance (default mode).
+  { id: 1097, match_id: 'football-match-1', bookmaker_id: 'pinnbet', bookmaker_name: 'PinnBet', market_type: 'football_result', outcome_code: 'home', odds: 2.45, line: null, raw_label: '1', scraped_at: ago(2) },
+  { id: 1098, match_id: 'football-match-1', bookmaker_id: 'pinnbet', bookmaker_name: 'PinnBet', market_type: 'football_result', outcome_code: 'draw', odds: 3.18, line: null, raw_label: 'X', scraped_at: ago(2) },
+  { id: 1099, match_id: 'football-match-1', bookmaker_id: 'pinnbet', bookmaker_name: 'PinnBet', market_type: 'football_result', outcome_code: 'away', odds: 2.62, line: null, raw_label: '2', scraped_at: ago(2) },
+  { id: 1100, match_id: 'football-match-1', bookmaker_id: 'pinnbet', bookmaker_name: 'PinnBet', market_type: 'football_total_goals', outcome_code: 'under', odds: 2.08, line: 2.5, raw_label: '0-2', scraped_at: ago(2) },
+  { id: 1101, match_id: 'football-match-1', bookmaker_id: 'pinnbet', bookmaker_name: 'PinnBet', market_type: 'football_total_goals', outcome_code: 'over', odds: 1.82, line: 2.5, raw_label: '3+', scraped_at: ago(2) },
+  { id: 1102, match_id: 'football-match-2', bookmaker_id: 'pinnbet', bookmaker_name: 'PinnBet', market_type: 'football_result', outcome_code: 'home', odds: 1.96, line: null, raw_label: '1', scraped_at: ago(2) },
+  { id: 1103, match_id: 'football-match-2', bookmaker_id: 'pinnbet', bookmaker_name: 'PinnBet', market_type: 'football_total_goals', outcome_code: 'under', odds: 1.82, line: 2.5, raw_label: '0-2', scraped_at: ago(2) },
+  { id: 1104, match_id: 'football-match-2', bookmaker_id: 'pinnbet', bookmaker_name: 'PinnBet', market_type: 'football_total_goals', outcome_code: 'over', odds: 2.14, line: 2.5, raw_label: '3+', scraped_at: ago(2) },
 ];
 
 export const mockOpportunities: Opportunity[] = [
@@ -1289,6 +1301,7 @@ export const mockSystemStatus: SystemStatus = {
     { id: 'superbet', name: 'Superbet', last_scrape: ago(6), is_active: true },
     { id: 'betole', name: 'BetOle', last_scrape: ago(4), is_active: true },
     { id: '365', name: '365', last_scrape: ago(1), is_active: true },
+    { id: 'pinnbet', name: 'PinnBet', last_scrape: ago(2), is_active: true },
     { id: 'volcanobet', name: 'VolcanoBet', last_scrape: ago(4), is_active: true },
   ],
 };
@@ -1306,6 +1319,7 @@ export const mockScrapeSettings: ScrapeSettingsResponse = {
     meridian_rate_limit_per_second: 2,
     soccerbet_detail_mode: 'partial',
     merkurxtip_detail_mode: 'partial',
+    pinnbet_detail_mode: 'partial',
     notification_gap_threshold: 1.5,
     persist_inapp_notifications: false,
   },
@@ -1321,6 +1335,7 @@ export const mockScrapeSettings: ScrapeSettingsResponse = {
     meridian_rate_limit_per_second: 2,
     soccerbet_detail_mode: 'partial',
     merkurxtip_detail_mode: 'partial',
+    pinnbet_detail_mode: 'partial',
     notification_gap_threshold: 1.5,
     persist_inapp_notifications: false,
   },
