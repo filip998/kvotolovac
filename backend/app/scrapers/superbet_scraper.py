@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from .base import BaseScraper
 from .http_client import HttpClient
-from ..models.schemas import RawOddsData
+from ..models.schemas import RawOddsData, RawOutcomeOffer
 from ..services.scrape_window import current_utc_time, lookahead_cutoff
 from ..services.text_normalizer import normalize_identity_text
 
@@ -126,6 +126,51 @@ _PLAYER_TURNOVERS_MARKET_NAMES = {
 }
 
 
+# Football outcome-offer markets are surfaced in the SuperBet event
+# subscription payload as full-game match markets. Each is anchored on
+# its **stable numeric market id** (preferred over the localized name,
+# which can drift across releases). The codes inside each market come
+# from ``odds[].metadata.code`` and are scoped per market — there is no
+# cross-market collision because we look up the mapping only after we
+# have already classified the market by id.
+#
+# - ``Konačan ishod`` (id 547): 1X2 result.
+#   Codes: ``"1"`` = home, ``"0"`` = draw (X), ``"2"`` = away.
+# - ``Dupla šansa`` (id 531): double chance.
+#   Codes: ``"10"`` = 1X (home_or_draw), ``"12"`` = 12 (home_or_away),
+#   ``"02"`` = X2 (draw_or_away).
+# - ``Ukupno golova`` (id 200734): total goals ladder. Each over/under
+#   pair is keyed by ``odds[].metadata.specifiers["total"]`` (e.g.
+#   ``"2.5"``). The first MVP slice emits only the **2.5** line, with
+#   side derived from the localized prefix on ``metadata.name`` —
+#   ``Više`` = over, ``Manje`` = under. We compare the parsed float to
+#   ``2.5`` rather than doing string equality so cosmetic variants like
+#   ``"2.50"``/``" 2.5 "`` are handled.
+_FOOTBALL_RESULT_MARKET_ID = 547
+_FOOTBALL_DOUBLE_CHANCE_MARKET_ID = 531
+_FOOTBALL_TOTAL_GOALS_MARKET_ID = 200734
+_FOOTBALL_TARGET_TOTAL_LINE = 2.5
+
+_FOOTBALL_RESULT_OUTCOMES: dict[str, tuple[str, str]] = {
+    "1": ("home", "1"),
+    "0": ("draw", "X"),
+    "2": ("away", "2"),
+}
+
+_FOOTBALL_DOUBLE_CHANCE_OUTCOMES: dict[str, tuple[str, str]] = {
+    "10": ("home_or_draw", "1X"),
+    "12": ("home_or_away", "12"),
+    "02": ("draw_or_away", "X2"),
+}
+
+# Side detection for ``Ukupno golova`` is based on the localized prefix
+# of ``metadata.name`` (e.g. ``"Više 2.5"``/``"Manje 2.5"``). We
+# normalize once via ``normalize_identity_text`` so accent/case shifts
+# do not break the match — ``Više`` -> ``vise``, ``Manje`` -> ``manje``.
+_FOOTBALL_TOTAL_GOALS_OVER_PREFIX = "vise"
+_FOOTBALL_TOTAL_GOALS_UNDER_PREFIX = "manje"
+
+
 @dataclass(frozen=True)
 class SportSpec:
     scope_id: str
@@ -167,6 +212,21 @@ _SPORT_SPECS: dict[str, SportSpec] = {
         sport_name="basketball",
         sport_id=4,
         route_slug="kosarka",
+    ),
+}
+
+# Football is exposed only through the outcome-offer lane
+# (``scrape_outcome_offers``) and must NOT be advertised as a
+# threshold-odds league via ``get_supported_leagues()`` — otherwise the
+# unified pipeline would generate a bogus ``threshold_odds`` capability
+# for ``(basketball, football)`` and call ``scrape_odds("football")``
+# every cycle. Keep this lookup separate from ``_SPORT_SPECS``.
+_OUTCOME_SPORT_SPECS: dict[str, SportSpec] = {
+    "football": SportSpec(
+        scope_id="football",
+        sport_name="football",
+        sport_id=5,
+        route_slug="fudbal",
     ),
 }
 
@@ -221,10 +281,10 @@ def _normalize_league_key(raw_name: str | None) -> str:
     return normalize_identity_text(raw_name)
 
 
-def _extract_league_id(raw_name: str | None) -> str:
+def _extract_league_id(raw_name: str | None, *, default: str = "basketball") -> str:
     normalized = _normalize_league_key(raw_name)
     if not normalized:
-        return "basketball"
+        return default
     return _CANONICAL_LEAGUES.get(normalized, normalized.replace(" ", "_"))
 
 
@@ -481,6 +541,167 @@ def _extract_wrapped_event_id(value: dict) -> int | None:
     return _parse_int(fixture.get("event_id") or fixture.get("offer_id"))
 
 
+def _odd_is_displayable(odd: dict) -> bool:
+    if odd.get("display") is False:
+        return False
+    if odd.get("status") not in (1, "1", "active", "ACTIVE"):
+        return False
+    return True
+
+
+def _football_total_side_from_name(name: str | None) -> str | None:
+    if not isinstance(name, str):
+        return None
+    normalized = normalize_identity_text(name)
+    if not normalized:
+        return None
+    head = normalized.split(" ", 1)[0]
+    if head == _FOOTBALL_TOTAL_GOALS_OVER_PREFIX:
+        return "over"
+    if head == _FOOTBALL_TOTAL_GOALS_UNDER_PREFIX:
+        return "under"
+    return None
+
+
+def _parse_football_event_payload(
+    event_payload: dict,
+    *,
+    context: EventContext,
+    bookmaker_id: str = _BOOKMAKER_ID,
+) -> list[RawOutcomeOffer]:
+    """Emit Superbet football outcome offers from a subscription payload.
+
+    Identity fields (home/away/league/start_time) are taken from
+    ``context`` (built off ``events-by-date``) and never from the per-
+    event detail payload, so the same logical event always normalizes
+    consistently across batches.
+    """
+
+    markets = event_payload.get("markets")
+    if not isinstance(markets, list):
+        return []
+
+    results: list[RawOutcomeOffer] = []
+
+    for market in markets:
+        if not isinstance(market, dict):
+            continue
+        market_id = _parse_int(market.get("id"))
+        if market_id is None:
+            continue
+        if market_id not in (
+            _FOOTBALL_RESULT_MARKET_ID,
+            _FOOTBALL_DOUBLE_CHANCE_MARKET_ID,
+            _FOOTBALL_TOTAL_GOALS_MARKET_ID,
+        ):
+            continue
+
+        odds = market.get("odds")
+        if not isinstance(odds, list):
+            continue
+
+        for odd in odds:
+            if not isinstance(odd, dict) or not _odd_is_displayable(odd):
+                continue
+            price = _parse_float(odd.get("price"))
+            if price is None or price <= 1.0:
+                continue
+            metadata = odd.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+
+            offer = _parse_football_odd(
+                market_id=market_id,
+                metadata=metadata,
+                price=price,
+                context=context,
+                bookmaker_id=bookmaker_id,
+            )
+            if offer is not None:
+                results.append(offer)
+
+    return results
+
+
+def _parse_football_odd(
+    *,
+    market_id: int,
+    metadata: dict,
+    price: float,
+    context: EventContext,
+    bookmaker_id: str,
+) -> RawOutcomeOffer | None:
+    if market_id == _FOOTBALL_RESULT_MARKET_ID:
+        code = metadata.get("code")
+        mapping = _FOOTBALL_RESULT_OUTCOMES.get(str(code) if code is not None else "")
+        if mapping is None:
+            return None
+        outcome_code, raw_label = mapping
+        return RawOutcomeOffer(
+            bookmaker_id=bookmaker_id,
+            league_id=context.league_id,
+            sport="football",
+            home_team=context.home_team,
+            away_team=context.away_team,
+            source_url=context.source_url,
+            market_type="football_result",
+            outcome_code=outcome_code,
+            odds=price,
+            line=None,
+            raw_label=raw_label,
+            start_time=context.start_time,
+        )
+
+    if market_id == _FOOTBALL_DOUBLE_CHANCE_MARKET_ID:
+        code = metadata.get("code")
+        mapping = _FOOTBALL_DOUBLE_CHANCE_OUTCOMES.get(str(code) if code is not None else "")
+        if mapping is None:
+            return None
+        outcome_code, raw_label = mapping
+        return RawOutcomeOffer(
+            bookmaker_id=bookmaker_id,
+            league_id=context.league_id,
+            sport="football",
+            home_team=context.home_team,
+            away_team=context.away_team,
+            source_url=context.source_url,
+            market_type="football_double_chance",
+            outcome_code=outcome_code,
+            odds=price,
+            line=None,
+            raw_label=raw_label,
+            start_time=context.start_time,
+        )
+
+    if market_id == _FOOTBALL_TOTAL_GOALS_MARKET_ID:
+        specifiers = metadata.get("specifiers")
+        if not isinstance(specifiers, dict):
+            return None
+        line_value = _parse_float(specifiers.get("total"))
+        if line_value is None or line_value != _FOOTBALL_TARGET_TOTAL_LINE:
+            return None
+        side = _football_total_side_from_name(metadata.get("name"))
+        if side is None:
+            return None
+        raw_label = "3+" if side == "over" else "0-2"
+        return RawOutcomeOffer(
+            bookmaker_id=bookmaker_id,
+            league_id=context.league_id,
+            sport="football",
+            home_team=context.home_team,
+            away_team=context.away_team,
+            source_url=context.source_url,
+            market_type="football_total_goals",
+            outcome_code=side,
+            odds=price,
+            line=_FOOTBALL_TARGET_TOTAL_LINE,
+            raw_label=raw_label,
+            start_time=context.start_time,
+        )
+
+    return None
+
+
 def _iter_event_payloads(messages: list[object]) -> list[dict]:
     payloads: list[dict] = []
     for message in messages:
@@ -646,7 +867,10 @@ class SuperbetScraper(BaseScraper):
             if league_name is None and category_id is not None:
                 league_name = structure_lookup.category_names.get(category_id)
 
-            league_id = _extract_league_id(league_name or spec.scope_id)
+            league_id = _extract_league_id(
+                league_name or spec.scope_id,
+                default=spec.scope_id,
+            )
             start_time = _parse_start_time(event.get("utcDate"))
             contexts[event_id] = EventContext(
                 event_id=event_id,
@@ -751,3 +975,57 @@ class SuperbetScraper(BaseScraper):
             )
 
         return results
+
+    def get_supported_outcome_sports(self) -> list[str]:
+        return sorted(_OUTCOME_SPORT_SPECS)
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        spec = _OUTCOME_SPORT_SPECS.get(sport)
+        if spec is None:
+            return []
+
+        # Football classification is anchored on stable numeric market
+        # ids — no market-groups lookup is needed, so we save one HTTP
+        # call per cycle versus the basketball flow.
+        structure_lookup, raw_events = await asyncio.gather(
+            self._get_structure_lookup(spec),
+            self._fetch_events_by_date(spec),
+        )
+
+        contexts = self._build_event_contexts(
+            spec,
+            raw_events,
+            structure_lookup=structure_lookup,
+        )
+        if not contexts:
+            logger.warning("Superbet: no %s events discovered", spec.scope_id)
+            return []
+
+        event_ids = sorted(contexts)
+        detail_semaphore = asyncio.Semaphore(_DETAIL_CONCURRENCY)
+        detail_batches = await asyncio.gather(
+            *(
+                self._fetch_event_batch(batch, semaphore=detail_semaphore)
+                for batch in _chunked(event_ids, spec.detail_batch_size)
+            )
+        )
+
+        detail_by_event: dict[int, dict] = {}
+        for batch in detail_batches:
+            detail_by_event.update(batch)
+
+        offers: list[RawOutcomeOffer] = []
+        for event_id in event_ids:
+            payload = detail_by_event.get(event_id)
+            context = contexts.get(event_id)
+            if payload is None or context is None:
+                continue
+            offers.extend(
+                _parse_football_event_payload(
+                    payload,
+                    context=context,
+                    bookmaker_id=_BOOKMAKER_ID,
+                )
+            )
+
+        return offers
