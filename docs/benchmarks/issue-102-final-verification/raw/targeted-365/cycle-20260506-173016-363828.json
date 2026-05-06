@@ -1,0 +1,147 @@
+{
+  "cycle_duration_ms": 3527,
+  "cycle_finished_at": "2026-05-06T17:30:16.363725",
+  "cycle_started_at": "2026-05-06T17:30:12.836185",
+  "event_resolver": {
+    "accepted_fuzzy_pair_count": 0,
+    "build_event_resolution_groups_ms": 2,
+    "candidate_count": 40,
+    "exact_group_count": 40,
+    "extract_event_candidates_ms": 289,
+    "football_raw_resolution_candidates_ms": 2,
+    "fuzzy_score_count": 144,
+    "pair_check_count": 42,
+    "persist_event_resolution_groups_ms": 7,
+    "persisted_member_count": 40,
+    "persisted_resolved_event_count": 40,
+    "persisted_review_case_count": 21,
+    "reused_football_event_resolution_count": 0,
+    "review_case_count": 21
+  },
+  "metadata": {
+    "analysis_markets": [
+      "all"
+    ],
+    "bookmaker_rate_limits": {},
+    "detail_modes": {
+      "betole": "partial",
+      "merkurxtip": "partial",
+      "pinnbet": "partial",
+      "soccerbet": "partial"
+    },
+    "enabled_bookmakers": [
+      "365"
+    ],
+    "enabled_sports": [
+      "basketball",
+      "football"
+    ],
+    "meridian_rate_limit_per_second": 2.0,
+    "proxies_configured": false,
+    "proxy_count": 0,
+    "rate_limit_per_second": 1.0,
+    "scrape_lookahead_hours": 24,
+    "scrape_market_scope": "all",
+    "scrape_type_rate_limits": {},
+    "scraper_mode": "real"
+  },
+  "outcome_normalization": {
+    "auto_create_football_teams_ms": 3,
+    "auto_created_football_team_count": 0,
+    "football_event_fuzzy_score_count": 0,
+    "football_event_pair_candidate_count": 0,
+    "football_event_pair_ranking_ms": 0,
+    "football_event_resolution_ms": 43,
+    "football_event_slot_lookup_ms": 41,
+    "football_event_slot_mutation_ms": 0,
+    "football_unique_event_count": 86,
+    "normalized_outcome_offer_count": 0,
+    "raw_outcome_offer_count": 687,
+    "row_normalization_ms": 44,
+    "runs": 1,
+    "unresolved_outcome_offer_count": 516
+  },
+  "phase_durations_ms": {
+    "analyze_opportunities": 26,
+    "normalize_outcome_offers": 91,
+    "normalize_threshold_odds": 228,
+    "notify_opportunities": 0,
+    "persist_snapshot": 10,
+    "publish_opportunities": 1,
+    "register_bookmakers": 1,
+    "resolve_events": 299,
+    "scrape": 2554,
+    "team_auto_resolution": 313
+  },
+  "scrape_duration_ms": 2554,
+  "scrapers": [
+    {
+      "bookmaker_id": "365",
+      "duration_ms": 3237,
+      "failure_rate": 0.0,
+      "http": {
+        "attempts": 3,
+        "avg_latency_ms": 1582.33,
+        "errors": 0,
+        "logical_requests": 3,
+        "max_latency_ms": 2517,
+        "min_latency_ms": 678,
+        "retries": 0,
+        "status_classes": {
+          "2xx": 3
+        },
+        "total_elapsed_ms": 4747,
+        "total_network_ms": 273,
+        "total_rate_limit_wait_ms": 4437
+      },
+      "leagues_attempted": 2,
+      "leagues_failed": 0,
+      "matches_after_normalization": 40,
+      "odds_count": 619,
+      "raw_items": 1306,
+      "requests": [
+        {
+          "attempts": 1,
+          "avg_latency_ms": 678.0,
+          "errors": 0,
+          "lane": "outcome_offer",
+          "league_id": null,
+          "logical_requests": 1,
+          "max_latency_ms": 678,
+          "method": "GET",
+          "min_latency_ms": 678,
+          "retries": 0,
+          "sport": "football",
+          "status_classes": {
+            "2xx": 1
+          },
+          "total_elapsed_ms": 678,
+          "total_network_ms": 169,
+          "total_rate_limit_wait_ms": 477
+        },
+        {
+          "attempts": 2,
+          "avg_latency_ms": 2034.5,
+          "errors": 0,
+          "lane": "threshold_odds",
+          "league_id": "basketball",
+          "logical_requests": 2,
+          "max_latency_ms": 2517,
+          "method": "GET",
+          "min_latency_ms": 1552,
+          "retries": 0,
+          "sport": "basketball",
+          "status_classes": {
+            "2xx": 2
+          },
+          "total_elapsed_ms": 4069,
+          "total_network_ms": 104,
+          "total_rate_limit_wait_ms": 3960
+        }
+      ]
+    }
+  ],
+  "total_matches": 40,
+  "total_odds": 619,
+  "total_raw_items": 1306
+}
