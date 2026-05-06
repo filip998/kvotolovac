@@ -8,7 +8,11 @@ from datetime import datetime, timezone
 from .base import BaseScraper
 from .http_client import HttpClient
 from ..models.schemas import RawOddsData, RawOutcomeOffer
-from ..services.scrape_window import current_utc_time, lookahead_cutoff
+from ..services.scrape_window import (
+    configured_lookahead_hours,
+    current_utc_time,
+    lookahead_cutoff,
+)
 from ..services.text_normalizer import normalize_identity_text
 
 logger = logging.getLogger(__name__)
@@ -18,13 +22,16 @@ _PLAYER_LEAGUES_URL = "https://ibet2.365.rs/restapi/offer/sr/categories/sport/SK
 _REGULAR_LEAGUE_PREVIEW_URL = (
     "https://ibet2.365.rs/restapi/offer/sr/sport/B/league/{league_id}/mob"
 )
+_REGULAR_BULK_URL = "https://ibet2.365.rs/restapi/offer/sr/sport/B/mob"
 _PLAYER_LEAGUE_PREVIEW_URL = (
     "https://ibet2.365.rs/restapi/offer/sr/sport/SK/league/{league_id}/mob"
 )
+_PLAYER_BULK_URL = "https://ibet2.365.rs/restapi/offer/sr/sport/SK/mob"
 _FOOTBALL_LEAGUES_URL = "https://ibet2.365.rs/restapi/offer/sr/categories/sport/S/l"
 _FOOTBALL_LEAGUE_PREVIEW_URL = (
     "https://ibet2.365.rs/restapi/offer/sr/sport/S/league/{league_id}/mob"
 )
+_FOOTBALL_BULK_URL = "https://ibet2.365.rs/restapi/offer/sr/sport/S/mob"
 
 _DEFAULT_HEADERS: dict[str, str] = {
     "Accept": "application/json",
@@ -73,6 +80,15 @@ class MatchContext:
 class MatchupIndex:
     by_match_code: dict[int, MatchContext]
     by_team_slot: dict[tuple[str, int], MatchContext]
+
+
+@dataclass(frozen=True)
+class BasketballParseResult:
+    rows: list[RawOddsData]
+    regular_rows: list[RawOddsData]
+    player_rows: list[RawOddsData]
+    handicap_rows: list[RawOddsData]
+    unmatched_player_matches: int
 
 
 _PLAYER_THRESHOLD_LINES: tuple[ThresholdLine, ...] = (
@@ -215,6 +231,13 @@ def _is_supported_player_league(raw_name: str | None) -> bool:
 def _within_lookahead(match: dict, cutoff_ms: int) -> bool:
     kickoff = _parse_int(match.get("kickOffTime"))
     return kickoff is None or kickoff <= cutoff_ms
+
+
+def _bulk_params() -> dict[str, str]:
+    return {
+        **_DEFAULT_PARAMS,
+        "hours": str(configured_lookahead_hours()),
+    }
 
 
 def _collect_leagues(data: dict, *, player_view: bool) -> list[LeagueCategory]:
@@ -432,6 +455,66 @@ def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
     return results
 
 
+def _parse_basketball_matches(
+    regular_matches: list[dict],
+    player_matches: list[dict],
+) -> BasketballParseResult:
+    matchup_index = _build_matchup_index(regular_matches)
+
+    regular_total_results: list[RawOddsData] = []
+    ot_total_results: list[RawOddsData] = []
+    handicap_results: list[RawOddsData] = []
+    for match in regular_matches:
+        regular_total_results.extend(_parse_total_match(match, _GAME_TOTAL_LINES))
+        ot_total_results.extend(_parse_total_match(match, _GAME_TOTAL_OT_LINES))
+        handicap_results.extend(_parse_total_match(match, _HANDICAP_OT_LINES))
+
+    player_results: list[RawOddsData] = []
+    unmatched_player_matches = 0
+    for match in player_matches:
+        parsed = _parse_player_match(match, matchup_index)
+        if not parsed and _has_supported_player_param(match):
+            unmatched_player_matches += 1
+        player_results.extend(parsed)
+
+    regular_rows = regular_total_results + ot_total_results
+    rows = regular_rows + handicap_results + player_results
+    return BasketballParseResult(
+        rows=rows,
+        regular_rows=regular_rows,
+        player_rows=player_results,
+        handicap_rows=handicap_results,
+        unmatched_player_matches=unmatched_player_matches,
+    )
+
+
+def _basketball_bulk_is_usable(
+    regular_matches: list[dict],
+    player_matches: list[dict],
+    parsed: BasketballParseResult,
+) -> bool:
+    if not regular_matches:
+        return False
+    market_types = {row.market_type for row in parsed.regular_rows}
+    required_regular_markets = {"game_total", "game_total_ot"}
+    if not required_regular_markets.issubset(market_types):
+        return False
+    if not parsed.handicap_rows:
+        return False
+    if player_matches and (not parsed.player_rows or parsed.unmatched_player_matches):
+        return False
+    return True
+
+
+def _football_bulk_is_usable(rows: list[RawOutcomeOffer]) -> bool:
+    market_types = {row.market_type for row in rows}
+    return {
+        "football_result",
+        "football_double_chance",
+        "football_total_goals",
+    }.issubset(market_types)
+
+
 class Bookmaker365Scraper(BaseScraper):
     """365 basketball + football scraper backed by the public iBet-style offer API."""
 
@@ -468,6 +551,33 @@ class Bookmaker365Scraper(BaseScraper):
         if not leagues:
             logger.info("365: no %s leagues found", label)
         return leagues
+
+    async def _fetch_bulk_matches(
+        self,
+        url: str,
+        *,
+        label: str,
+        cutoff_ms: int,
+    ) -> list[dict] | None:
+        try:
+            data = await self._http.get_json(
+                url,
+                params=_bulk_params(),
+                headers=_DEFAULT_HEADERS,
+            )
+        except Exception:
+            logger.warning("365: failed to fetch %s bulk feed", label, exc_info=True)
+            return None
+
+        matches = data.get("esMatches") if isinstance(data, dict) else None
+        if not isinstance(matches, list):
+            logger.warning("365: %s bulk feed missing esMatches list", label)
+            return None
+        return [
+            match
+            for match in matches
+            if isinstance(match, dict) and _within_lookahead(match, cutoff_ms)
+        ]
 
     async def _fetch_league_preview(
         self,
@@ -522,10 +632,47 @@ class Bookmaker365Scraper(BaseScraper):
         results = await asyncio.gather(*(fetch_one(league) for league in leagues))
         return [match for preview in results for match in preview]
 
-    async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
-        if league_id != "basketball":
-            return []
+    async def _scrape_odds_bulk(self, cutoff_ms: int) -> BasketballParseResult | None:
+        regular_matches, player_matches = await asyncio.gather(
+            self._fetch_bulk_matches(
+                _REGULAR_BULK_URL,
+                label="regular basketball",
+                cutoff_ms=cutoff_ms,
+            ),
+            self._fetch_bulk_matches(
+                _PLAYER_BULK_URL,
+                label="basketball player props",
+                cutoff_ms=cutoff_ms,
+            ),
+        )
+        if regular_matches is None or player_matches is None:
+            return None
 
+        parsed = _parse_basketball_matches(regular_matches, player_matches)
+        if not _basketball_bulk_is_usable(regular_matches, player_matches, parsed):
+            logger.warning(
+                (
+                    "365: basketball bulk feed incomplete "
+                    "(regular matches=%d, player matches=%d, parsed rows=%d); falling back"
+                ),
+                len(regular_matches),
+                len(player_matches),
+                len(parsed.rows),
+            )
+            return None
+        logger.info(
+            (
+                "365: using basketball bulk feeds (%d regular matches, "
+                "%d player matches, %d rows, unmatched player rows=%d)"
+            ),
+            len(regular_matches),
+            len(player_matches),
+            len(parsed.rows),
+            parsed.unmatched_player_matches,
+        )
+        return parsed
+
+    async def _scrape_odds_per_league(self, cutoff_ms: int) -> BasketballParseResult:
         regular_leagues_task = self._fetch_league_categories(
             _REGULAR_LEAGUES_URL,
             label="regular basketball",
@@ -541,7 +688,6 @@ class Bookmaker365Scraper(BaseScraper):
         )
         selected_regular_leagues = _select_regular_leagues(regular_leagues, player_leagues)
 
-        cutoff_ms = int(lookahead_cutoff(current_utc_time()).timestamp() * 1000)
         regular_matches_task = self._fetch_previews(
             selected_regular_leagues,
             url_template=_REGULAR_LEAGUE_PREVIEW_URL,
@@ -559,39 +705,31 @@ class Bookmaker365Scraper(BaseScraper):
             player_matches_task,
         )
 
-        matchup_index = _build_matchup_index(regular_matches)
-
-        regular_total_results: list[RawOddsData] = []
-        ot_total_results: list[RawOddsData] = []
-        handicap_results: list[RawOddsData] = []
-        for match in regular_matches:
-            regular_total_results.extend(_parse_total_match(match, _GAME_TOTAL_LINES))
-            ot_total_results.extend(_parse_total_match(match, _GAME_TOTAL_OT_LINES))
-            handicap_results.extend(_parse_total_match(match, _HANDICAP_OT_LINES))
-
-        player_results: list[RawOddsData] = []
-        for match in player_matches:
-            player_results.extend(_parse_player_match(match, matchup_index))
-
-        results = (
-            regular_total_results
-            + ot_total_results
-            + handicap_results
-            + player_results
-        )
+        parsed = _parse_basketball_matches(regular_matches, player_matches)
         logger.info(
             (
-                "365 scraped %d basketball odds (%d regular leagues, %d player leagues, "
-                "%d regular matches, %d player matches; %d handicap rows)"
+                "365 scraped %d basketball odds via per-league fallback "
+                "(%d regular leagues, %d player leagues, %d regular matches, "
+                "%d player matches; %d handicap rows)"
             ),
-            len(results),
+            len(parsed.rows),
             len(selected_regular_leagues),
             len(player_leagues),
             len(regular_matches),
             len(player_matches),
-            len(handicap_results),
+            len(parsed.handicap_rows),
         )
-        return results
+        return parsed
+
+    async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
+        if league_id != "basketball":
+            return []
+
+        cutoff_ms = int(lookahead_cutoff(current_utc_time()).timestamp() * 1000)
+        parsed = await self._scrape_odds_bulk(cutoff_ms)
+        if parsed is None:
+            parsed = await self._scrape_odds_per_league(cutoff_ms)
+        return parsed.rows
 
     def get_supported_outcome_sports(self) -> list[str]:
         return ["football"]
@@ -600,6 +738,34 @@ class Bookmaker365Scraper(BaseScraper):
         if sport != "football":
             return []
 
+        cutoff_ms = int(lookahead_cutoff(current_utc_time()).timestamp() * 1000)
+        bulk_matches = await self._fetch_bulk_matches(
+            _FOOTBALL_BULK_URL,
+            label="football",
+            cutoff_ms=cutoff_ms,
+        )
+        if bulk_matches is not None:
+            bulk_results = [
+                result
+                for match in bulk_matches
+                for result in _parse_football_outcome_match(match)
+            ]
+            if _football_bulk_is_usable(bulk_results):
+                logger.info(
+                    "365: using football bulk feed (%d offers from %d matches)",
+                    len(bulk_results),
+                    len(bulk_matches),
+                )
+                return bulk_results
+            logger.warning(
+                (
+                    "365: football bulk feed incomplete "
+                    "(matches=%d, parsed offers=%d); falling back"
+                ),
+                len(bulk_matches),
+                len(bulk_results),
+            )
+
         leagues = await self._fetch_league_categories(
             _FOOTBALL_LEAGUES_URL,
             label="football",
@@ -607,7 +773,6 @@ class Bookmaker365Scraper(BaseScraper):
         if not leagues:
             return []
 
-        cutoff_ms = int(lookahead_cutoff(current_utc_time()).timestamp() * 1000)
         matches = await self._fetch_previews(
             leagues,
             url_template=_FOOTBALL_LEAGUE_PREVIEW_URL,
