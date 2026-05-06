@@ -8,19 +8,23 @@ import pytest
 
 from app.scrapers.mozzart_scraper import (
     MozzartScraper,
+    _BASKETBALL_SPORT_ID,
+    _FOOTBALL_SPORT_ID,
     _MATCHES_API_URL,
     _SPECIALS_API_URL,
     _MATCHES_HEADERS,
     _DEFAULT_HEADERS,
+    _build_matches_request_body,
     _extract_league_id,
     _extract_player_and_market,
+    _parse_football_outcome_match,
     _parse_game_total_items,
     _parse_handicap_items,
     _parse_items,
     _parse_signed_threshold,
     _parse_start_time,
 )
-from app.models.schemas import RawOddsData
+from app.models.schemas import RawOddsData, RawOutcomeOffer
 
 SPECIALS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mozzart_specials.json"
 MATCHES_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mozzart_matches.json"
@@ -623,3 +627,217 @@ async def test_scraper_interface():
     assert scraper.get_bookmaker_id() == "mozzart"
     assert scraper.get_bookmaker_name() == "Mozzart"
     assert "basketball" in scraper.get_supported_leagues()
+
+
+# ── Football outcome offers ────────────────────────────────
+
+
+def _football_odd(label: str, value: float, *, status: str = "ACTIVE") -> dict:
+    return {
+        "oddStatus": status,
+        "subgame": {"name": label},
+        "value": value,
+    }
+
+
+def _football_match(*, odds_groups: list[dict] | None = None) -> dict:
+    return {
+        "id": 687289,
+        "sport": {"id": 1, "name": "Fudbal"},
+        "competition": {"id": 12211, "name": "SVETSKO  PRVENSTVO"},
+        "startTime": 1781204400000,
+        "home": {"id": 12890, "name": "Mexico"},
+        "visitor": {"id": 12883, "name": "South Africa"},
+        "oddsGroup": odds_groups
+        if odds_groups is not None
+        else [
+            {
+                "groupName": "Konačan ishod",
+                "odds": [
+                    _football_odd("1", 1.52),
+                    _football_odd("X", 4.30),
+                    _football_odd("2", 6.25),
+                ],
+            },
+            {
+                "groupName": "Dupla šansa",
+                "odds": [
+                    _football_odd("1X", 1.12),
+                    _football_odd("12", 1.22),
+                    _football_odd("X2", 2.55),
+                ],
+            },
+            {
+                "groupName": "Ukupno golova na meču",
+                "odds": [
+                    _football_odd("2+", 1.28),
+                    _football_odd("0-2", 1.80),
+                    _football_odd("3+", 1.90),
+                ],
+            },
+            {
+                "groupName": "Oba tima daju gol",
+                "odds": [_football_odd("GG", 2.00), _football_odd("NG", 1.72)],
+            },
+        ],
+    }
+
+
+def test_build_matches_request_body_defaults_to_basketball_and_can_target_football():
+    default_body = _build_matches_request_body()
+    football_body = _build_matches_request_body(current_page=2, sport_id=_FOOTBALL_SPORT_ID)
+
+    assert default_body["sportId"] == _BASKETBALL_SPORT_ID
+    assert football_body["sportId"] == _FOOTBALL_SPORT_ID
+    assert football_body["currentPage"] == 2
+    assert football_body["matchTypeId"] == 0
+
+
+def test_parse_football_outcome_match_emits_list_only_target_markets():
+    offers = _parse_football_outcome_match(_football_match())
+
+    assert len(offers) == 8
+    assert all(isinstance(offer, RawOutcomeOffer) for offer in offers)
+    assert all(offer.bookmaker_id == "mozzart" for offer in offers)
+    assert all(offer.sport == "football" for offer in offers)
+    assert all(offer.home_team == "Mexico" for offer in offers)
+    assert all(offer.away_team == "South Africa" for offer in offers)
+    assert all(offer.league_id == "svetsko_prvenstvo" for offer in offers)
+    assert all(offer.start_time == "2026-06-11T19:00:00+00:00" for offer in offers)
+
+    assert {
+        (offer.market_type, offer.outcome_code, offer.line, offer.raw_label, offer.odds)
+        for offer in offers
+    } == {
+        ("football_result", "home", None, "1", 1.52),
+        ("football_result", "draw", None, "X", 4.30),
+        ("football_result", "away", None, "2", 6.25),
+        ("football_double_chance", "home_or_draw", None, "1X", 1.12),
+        ("football_double_chance", "home_or_away", None, "12", 1.22),
+        ("football_double_chance", "draw_or_away", None, "X2", 2.55),
+        ("football_total_goals", "under", 2.5, "0-2", 1.80),
+        ("football_total_goals", "over", 2.5, "3+", 1.90),
+    }
+
+
+def test_parse_football_outcome_match_normalizes_diacritics_and_labels():
+    match = _football_match(
+        odds_groups=[
+            {
+                "groupName": "Konacan ishod",
+                "odds": [_football_odd(" x ", 3.2)],
+            },
+            {
+                "groupName": "Dupla sansa",
+                "odds": [_football_odd(" x2 ", 1.5)],
+            },
+            {
+                "groupName": "Ukupno golova na mecu",
+                "odds": [_football_odd("0 - 2", 1.75), _football_odd("3 +", 2.05)],
+            },
+        ],
+    )
+
+    assert {
+        (offer.market_type, offer.outcome_code, offer.raw_label, offer.line)
+        for offer in _parse_football_outcome_match(match)
+    } == {
+        ("football_result", "draw", "x", None),
+        ("football_double_chance", "draw_or_away", "x2", None),
+        ("football_total_goals", "under", "0-2", 2.5),
+        ("football_total_goals", "over", "3+", 2.5),
+    }
+
+
+def test_parse_football_outcome_match_skips_non_target_or_invalid_odds():
+    match = _football_match(
+        odds_groups=[
+            {
+                "groupName": "Konačan ishod",
+                "odds": [
+                    _football_odd("1", 0),
+                    _football_odd("X", 3.2, status="SUSPENDED"),
+                    _football_odd("2", 2.4),
+                ],
+            },
+            {
+                "groupName": "Ukupno golova na meču",
+                "odds": [
+                    _football_odd("2+", 1.4),
+                    _football_odd("3+", -1),
+                    _football_odd("0-2", 1.7),
+                ],
+            },
+        ],
+    )
+
+    assert {
+        (offer.market_type, offer.outcome_code, offer.odds)
+        for offer in _parse_football_outcome_match(match)
+    } == {
+        ("football_result", "away", 2.4),
+        ("football_total_goals", "under", 1.7),
+    }
+
+
+def test_parse_football_outcome_match_requires_home_and_away():
+    match = _football_match()
+    match["home"] = None
+    assert _parse_football_outcome_match(match) == []
+
+
+def test_parse_football_outcome_match_falls_back_to_football_league():
+    match = _football_match()
+    match["competition"] = None
+
+    offers = _parse_football_outcome_match(match)
+
+    assert offers
+    assert {offer.league_id for offer in offers} == {"football"}
+
+
+def test_capability_isolation_for_mozzart():
+    scraper = MozzartScraper()
+
+    assert scraper.get_supported_leagues() == ["basketball"]
+    assert scraper.get_supported_outcome_sports() == ["football"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_uses_only_paginated_matches_endpoint():
+    page_one = [_football_match()] * 50
+    page_two = [_football_match()]
+
+    async def fake_post_json(url: str, *, json_body=None, headers=None):
+        del headers
+        assert url == _MATCHES_API_URL
+        assert json_body is not None
+        assert json_body["sportId"] == _FOOTBALL_SPORT_ID
+        assert json_body["matchTypeId"] == 0
+        if json_body["currentPage"] == 0:
+            return {"items": page_one}
+        if json_body["currentPage"] == 1:
+            return {"items": page_two}
+        raise AssertionError(f"Unexpected page: {json_body['currentPage']}")
+
+    http_client = AsyncMock()
+    http_client.post_json.side_effect = fake_post_json
+
+    offers = await MozzartScraper(http_client=http_client).scrape_outcome_offers("football")
+
+    assert len(offers) == 51 * 8
+    assert http_client.post_json.call_count == 2
+    assert {
+        call.kwargs["json_body"]["currentPage"]
+        for call in http_client.post_json.call_args_list
+    } == {0, 1}
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_unsupported_sport_does_not_fetch():
+    http_client = AsyncMock()
+
+    offers = await MozzartScraper(http_client=http_client).scrape_outcome_offers("tennis")
+
+    assert offers == []
+    http_client.post_json.assert_not_called()

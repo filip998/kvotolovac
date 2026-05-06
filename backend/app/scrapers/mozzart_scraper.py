@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 
 from .base import BaseScraper
 from .http_client import HttpClient
-from ..models.schemas import RawOddsData
+from ..models.schemas import RawOddsData, RawOutcomeOffer
+from ..services.text_normalizer import normalize_identity_text
 
 logger = logging.getLogger(__name__)
 
@@ -48,15 +49,38 @@ _PLAYER_GROUP_KEYWORDS = [
 ]
 
 _BASKETBALL_SPORT_ID = 2
+_FOOTBALL_SPORT_ID = 1
 _MATCHES_MATCH_TYPE = 0
 _SPECIALS_MATCH_TYPE = 2
 _MATCHES_DATE = "all"
 _PAGE_SIZE = 50
+_FOOTBALL_TOTAL_GOALS_LINE = 2.5
 _GAME_TOTAL_GROUP_NAMES = {
     "ukupno poena na meču",
     "ukupno poena na mecu",
 }
 _HANDICAP_GROUP_NAMES = {"hendikep"}
+_FOOTBALL_RESULT_GROUP_NAMES = {"konacan ishod"}
+_FOOTBALL_DOUBLE_CHANCE_GROUP_NAMES = {"dupla sansa"}
+_FOOTBALL_TOTAL_GOALS_GROUP_NAMES = {"ukupno golova na mecu"}
+_FOOTBALL_RESULT_OUTCOMES = {
+    "1": "home",
+    "x": "draw",
+    "2": "away",
+}
+_FOOTBALL_DOUBLE_CHANCE_OUTCOMES = {
+    "1x": "home_or_draw",
+    "12": "home_or_away",
+    "x2": "draw_or_away",
+}
+_FOOTBALL_TOTAL_GOALS_OUTCOMES = {
+    "0-2": "under",
+    "3": "over",
+}
+_FOOTBALL_TOTAL_GOALS_LABELS = {
+    "under": "0-2",
+    "over": "3+",
+}
 _CANONICAL_LEAGUES = {
     "nba": "nba",
     "usa nba": "nba",
@@ -102,13 +126,14 @@ def _build_matches_request_body(
     current_page: int = 0,
     competition_ids: list[int] | None = None,
     page_size: int = _PAGE_SIZE,
+    sport_id: int = _BASKETBALL_SPORT_ID,
 ) -> dict:
     return {
         "date": _MATCHES_DATE,
         "sort": "bycompetition",
         "currentPage": current_page,
         "pageSize": page_size,
-        "sportId": _BASKETBALL_SPORT_ID,
+        "sportId": sport_id,
         "competitionIds": competition_ids or [],
         "search": "",
         "matchTypeId": _MATCHES_MATCH_TYPE,
@@ -147,6 +172,11 @@ def _extract_league_id(competition_name: str | None) -> str:
     return raw.replace(" ", "_") or "basketball"
 
 
+def _extract_football_league_id(competition_name: str | None) -> str:
+    normalized = normalize_identity_text(competition_name)
+    return normalized.replace(" ", "_") or "football"
+
+
 def _parse_threshold(raw_value: object) -> float | None:
     try:
         threshold = float(raw_value)
@@ -165,6 +195,14 @@ def _parse_signed_threshold(raw_value: object) -> float | None:
         return float(raw_value)
     except (ValueError, TypeError):
         return None
+
+
+def _coerce_positive_odds(value: object) -> float | None:
+    try:
+        odds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return odds if odds > 0 else None
 
 
 def _assign_over_under(odds: dict[str, float | None], subgame_name: str, value: float) -> None:
@@ -367,6 +405,77 @@ def _parse_handicap_items(items: list[dict]) -> list[RawOddsData]:
     return results
 
 
+def _football_label_key(raw_label: object) -> str:
+    return normalize_identity_text(str(raw_label or ""), keep_hyphens=True).replace(" ", "")
+
+
+def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
+    home = ((match.get("home") or {}).get("name") or "").strip()
+    visitor = ((match.get("visitor") or {}).get("name") or "").strip()
+    if not home or not visitor:
+        return []
+
+    competition = (match.get("competition") or {}).get("name")
+    league_id = _extract_football_league_id(competition)
+    start_time = _parse_start_time(match.get("startTime"))
+
+    results: list[RawOutcomeOffer] = []
+    for group in match.get("oddsGroup") or []:
+        group_name = normalize_identity_text(group.get("groupName"))
+        if group_name in _FOOTBALL_RESULT_GROUP_NAMES:
+            market_type = "football_result"
+            outcome_lookup = _FOOTBALL_RESULT_OUTCOMES
+            line = None
+        elif group_name in _FOOTBALL_DOUBLE_CHANCE_GROUP_NAMES:
+            market_type = "football_double_chance"
+            outcome_lookup = _FOOTBALL_DOUBLE_CHANCE_OUTCOMES
+            line = None
+        elif group_name in _FOOTBALL_TOTAL_GOALS_GROUP_NAMES:
+            market_type = "football_total_goals"
+            outcome_lookup = _FOOTBALL_TOTAL_GOALS_OUTCOMES
+            line = _FOOTBALL_TOTAL_GOALS_LINE
+        else:
+            continue
+
+        for odd in group.get("odds") or []:
+            if odd.get("oddStatus") != "ACTIVE":
+                continue
+
+            raw_label = ((odd.get("subgame") or {}).get("name") or "").strip()
+            outcome_code = outcome_lookup.get(_football_label_key(raw_label))
+            odds = _coerce_positive_odds(odd.get("value"))
+            if outcome_code is None or odds is None:
+                continue
+
+            if market_type == "football_total_goals":
+                raw_label = _FOOTBALL_TOTAL_GOALS_LABELS[outcome_code]
+
+            results.append(
+                RawOutcomeOffer(
+                    bookmaker_id="mozzart",
+                    league_id=league_id,
+                    sport="football",
+                    home_team=home,
+                    away_team=visitor,
+                    market_type=market_type,
+                    outcome_code=outcome_code,
+                    odds=odds,
+                    line=line,
+                    raw_label=raw_label,
+                    start_time=start_time,
+                )
+            )
+
+    return results
+
+
+def _parse_football_outcome_items(items: list[dict]) -> list[RawOutcomeOffer]:
+    results: list[RawOutcomeOffer] = []
+    for match in items:
+        results.extend(_parse_football_outcome_match(match))
+    return results
+
+
 class MozzartScraper(BaseScraper):
     """Real scraper for Mozzart player props and game total over/under odds."""
 
@@ -397,12 +506,20 @@ class MozzartScraper(BaseScraper):
 
         return data.get("items", [])
 
-    async def _fetch_match_items(self) -> list[dict]:
+    async def _fetch_match_items(
+        self,
+        *,
+        sport_id: int = _BASKETBALL_SPORT_ID,
+        label: str = "match",
+    ) -> list[dict]:
         items: list[dict] = []
         current_page = 0
 
         while True:
-            body = _build_matches_request_body(current_page=current_page)
+            body = _build_matches_request_body(
+                current_page=current_page,
+                sport_id=sport_id,
+            )
             try:
                 data = await self._http.post_json(
                     _MATCHES_API_URL,
@@ -410,7 +527,7 @@ class MozzartScraper(BaseScraper):
                     headers=_MATCHES_HEADERS,
                 )
             except Exception:
-                logger.exception("Mozzart match scrape failed on page %d", current_page)
+                logger.exception("Mozzart %s scrape failed on page %d", label, current_page)
                 return items
 
             page_items = data.get("items", [])
@@ -422,6 +539,9 @@ class MozzartScraper(BaseScraper):
                 return items
 
             current_page += 1
+
+    def get_supported_outcome_sports(self) -> list[str]:
+        return ["football"]
 
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         if league_id != "basketball":
@@ -448,6 +568,26 @@ class MozzartScraper(BaseScraper):
             len(game_total_results),
             len(handicap_results),
             len(special_items),
+            len(match_items),
+        )
+        return results
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        if sport != "football":
+            return []
+
+        match_items = await self._fetch_match_items(
+            sport_id=_FOOTBALL_SPORT_ID,
+            label="football match",
+        )
+        if not match_items:
+            logger.warning("Mozzart returned 0 football prematch matches")
+            return []
+
+        results = _parse_football_outcome_items(match_items)
+        logger.info(
+            "Mozzart scraped %d football outcome offers from %d prematch matches",
+            len(results),
             len(match_items),
         )
         return results
