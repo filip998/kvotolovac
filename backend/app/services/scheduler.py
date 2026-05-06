@@ -47,7 +47,10 @@ from ..services.event_resolver import (
     _same_time_slot_orientation,
     resolve_and_persist_events,
 )
-from ..services.outcome_normalizer import normalize_outcome_offers_with_benchmark
+from ..services.outcome_normalizer import (
+    FootballEventResolutionMap,
+    normalize_outcome_offers_with_context,
+)
 from ..services.notifications import NotificationService, InAppNotificationProvider
 from ..services.scrape_window import (
     configured_lookahead_hours,
@@ -104,6 +107,7 @@ class _NormalizedPipelineBatch:
     outcome_offers: list[NormalizedOutcomeOffer] = field(default_factory=list)
     unresolved_odds: list[UnresolvedOddsDiagnostic] = field(default_factory=list)
     team_review_cases: list[TeamReviewDiagnostic] = field(default_factory=list)
+    football_event_resolutions: FootballEventResolutionMap = field(default_factory=dict)
 
 
 def _is_auto_alias_candidate(case) -> bool:
@@ -194,6 +198,7 @@ def _filter_normalized_pipeline_batch_by_market_allowlist(
             )
         ],
         team_review_cases=batch.team_review_cases,
+        football_event_resolutions=batch.football_event_resolutions,
     )
 
 
@@ -235,6 +240,7 @@ def _event_resolution_batch_for_market_allowlist(
         ],
         unresolved_odds=full_batch.unresolved_odds,
         team_review_cases=full_batch.team_review_cases,
+        football_event_resolutions=full_batch.football_event_resolutions,
     )
 
 
@@ -254,12 +260,11 @@ def _normalize_pipeline_batch(
         int((time.perf_counter() - threshold_started_at) * 1000),
     )
     outcome_started_at = time.perf_counter()
-    (
-        normalized_outcome_offers,
-        unresolved_outcome_offers,
-        outcome_team_review_cases,
-        outcome_benchmark,
-    ) = normalize_outcome_offers_with_benchmark(raw_outcome_offers)
+    outcome_result = normalize_outcome_offers_with_context(raw_outcome_offers)
+    normalized_outcome_offers = outcome_result.normalized
+    unresolved_outcome_offers = outcome_result.unresolved
+    outcome_team_review_cases = outcome_result.team_review_cases
+    outcome_benchmark = outcome_result.benchmark
     benchmark_recorder.record_phase_duration(
         "normalize_outcome_offers",
         int((time.perf_counter() - outcome_started_at) * 1000),
@@ -270,6 +275,7 @@ def _normalize_pipeline_batch(
         outcome_offers=normalized_outcome_offers,
         unresolved_odds=[*unresolved_odds, *unresolved_outcome_offers],
         team_review_cases=[*team_review_cases, *outcome_team_review_cases],
+        football_event_resolutions=outcome_result.football_event_resolutions,
     )
 
 
@@ -1427,6 +1433,9 @@ class Scheduler:
                     raw_outcome_offers=all_raw_outcome_offers,
                     normalized_odds=event_resolution_batch.odds,
                     normalized_outcome_offers=event_resolution_batch.outcome_offers,
+                    football_event_resolutions=(
+                        event_resolution_batch.football_event_resolutions
+                    ),
                 )
                 benchmark_recorder.record_phase_duration(
                     "resolve_events",

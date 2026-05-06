@@ -97,6 +97,19 @@ class _OutcomeEventResolution:
     orientation: str = _SAME_ORIENTATION
 
 
+FootballEventResolutionKey = tuple[str, str, str, str, str]
+FootballEventResolutionMap = dict[FootballEventResolutionKey, _OutcomeEventResolution]
+
+
+@dataclass(frozen=True)
+class OutcomeNormalizationResult:
+    normalized: list[NormalizedOutcomeOffer]
+    unresolved: list[UnresolvedOddsDiagnostic]
+    team_review_cases: list[TeamReviewDiagnostic]
+    benchmark: OutcomeNormalizationBenchmarkOut
+    football_event_resolutions: FootballEventResolutionMap
+
+
 @dataclass(frozen=True)
 class _OutcomeEventPair:
     left: _OutcomeEvent
@@ -691,11 +704,11 @@ def _build_football_event_resolutions(
     raw_list: list[RawOutcomeOffer],
     *,
     stats: _FootballEventResolutionStats | None = None,
-) -> dict[tuple[str, str, str, str, str], _OutcomeEventResolution]:
+) -> FootballEventResolutionMap:
     events = _unique_events(raw_list)
     if stats is not None:
         stats.football_unique_event_count = len(events)
-    resolutions: dict[tuple[str, str, str, str, str], _OutcomeEventResolution] = {}
+    resolutions: FootballEventResolutionMap = {}
     lookup_started_at = time.perf_counter()
     for event in events:
         slot = _resolve_event_slot(event)
@@ -920,14 +933,9 @@ def _normalized_offer_from_resolution(
     )
 
 
-def normalize_outcome_offers_with_benchmark(
+def normalize_outcome_offers_with_context(
     raw_list: list[RawOutcomeOffer],
-) -> tuple[
-    list[NormalizedOutcomeOffer],
-    list[UnresolvedOddsDiagnostic],
-    list[TeamReviewDiagnostic],
-    OutcomeNormalizationBenchmarkOut,
-]:
+) -> OutcomeNormalizationResult:
     autocreate_started_at = time.perf_counter()
     auto_created_team_count = _autocreate_cross_book_football_teams(raw_list)
     auto_create_football_teams_ms = _elapsed_ms(autocreate_started_at)
@@ -1060,7 +1068,30 @@ def normalize_outcome_offers_with_benchmark(
         row_normalization_ms=_elapsed_ms(row_normalization_started_at),
     )
 
-    return normalized, unresolved, team_review_cases, benchmark
+    return OutcomeNormalizationResult(
+        normalized=normalized,
+        unresolved=unresolved,
+        team_review_cases=team_review_cases,
+        benchmark=benchmark,
+        football_event_resolutions=event_resolutions,
+    )
+
+
+def normalize_outcome_offers_with_benchmark(
+    raw_list: list[RawOutcomeOffer],
+) -> tuple[
+    list[NormalizedOutcomeOffer],
+    list[UnresolvedOddsDiagnostic],
+    list[TeamReviewDiagnostic],
+    OutcomeNormalizationBenchmarkOut,
+]:
+    result = normalize_outcome_offers_with_context(raw_list)
+    return (
+        result.normalized,
+        result.unresolved,
+        result.team_review_cases,
+        result.benchmark,
+    )
 
 
 def normalize_outcome_offers_with_diagnostics(
