@@ -5,10 +5,12 @@ from dataclasses import dataclass
 import hashlib
 import logging
 import re
+import time
 
 from rapidfuzz import fuzz
 
 from ..models.schemas import (
+    EventResolverBenchmarkOut,
     EventReviewCaseIn,
     NormalizedOdds,
     NormalizedOutcomeOffer,
@@ -68,6 +70,10 @@ _LOW_SIGNAL_TEAM_TOKENS = {
     "club",
     "team",
 }
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return int((time.perf_counter() - started_at) * 1000)
 
 
 @dataclass(frozen=True)
@@ -500,12 +506,26 @@ class EventResolutionGroup:
     evidence: tuple[str, ...]
 
 
+@dataclass
+class _EventCandidateExtractionStats:
+    football_raw_resolution_candidates_ms: int = 0
+
+
+@dataclass
+class _EventGroupBuildStats:
+    exact_group_count: int = 0
+    pair_check_count: int = 0
+    accepted_fuzzy_pair_count: int = 0
+    review_case_count: int = 0
+
+
 @dataclass(frozen=True)
 class EventResolverResult:
     candidates: int
     resolved_events: int
     resolved_event_members: int
     review_cases: int
+    benchmark: EventResolverBenchmarkOut | None = None
 
 
 def _league_source(raw_league_id: str, bookmaker_id: str) -> tuple[str, str]:
@@ -910,6 +930,7 @@ def extract_event_candidates(
     raw_outcome_offers: list[RawOutcomeOffer],
     normalized_odds: list[NormalizedOdds],
     normalized_outcome_offers: list[NormalizedOutcomeOffer],
+    stats: _EventCandidateExtractionStats | None = None,
 ) -> list[EventCandidate]:
     """Build one source-event candidate per bookmaker/match from the current scrape."""
 
@@ -963,10 +984,16 @@ def extract_event_candidates(
     stored_outcome_match_bookmakers = {
         (offer.match_id, offer.bookmaker_id) for offer in normalized_outcome_offers
     }
-    for candidate in _football_raw_resolution_candidates(
+    football_candidates_started_at = time.perf_counter()
+    football_candidates = _football_raw_resolution_candidates(
         raw_outcome_offers,
         stored_outcome_match_bookmakers,
-    ):
+    )
+    if stats is not None:
+        stats.football_raw_resolution_candidates_ms = _elapsed_ms(
+            football_candidates_started_at
+        )
+    for candidate in football_candidates:
         _merge_candidate(candidates, candidate)
 
     return sorted(
@@ -1350,8 +1377,12 @@ def _build_exact_groups(candidates: list[EventCandidate]) -> list[_CandidateGrou
 
 def build_event_resolution_groups(
     candidates: list[EventCandidate],
+    *,
+    stats: _EventGroupBuildStats | None = None,
 ) -> tuple[list[EventResolutionGroup], list[EventReviewCaseIn]]:
     exact_groups = _build_exact_groups(candidates)
+    if stats is not None:
+        stats.exact_group_count = len(exact_groups)
     dsu = _DisjointSet(exact_groups)
     accepted_pairs: list[tuple[int, int, _PairResolution]] = []
     review_cases: dict[str, EventReviewCaseIn] = {}
@@ -1378,6 +1409,8 @@ def build_event_resolution_groups(
                 # an already-merged component).
                 if dsu.find(left.index) == dsu.find(right.index):
                     continue
+                if stats is not None:
+                    stats.pair_check_count += 1
                 pair = _group_pair_resolution(left, right)
                 if pair is None:
                     continue
@@ -1385,6 +1418,8 @@ def build_event_resolution_groups(
                     if dsu.can_union(left.index, right.index):
                         dsu.union(left.index, right.index)
                         accepted_pairs.append((left.index, right.index, pair))
+                        if stats is not None:
+                            stats.accepted_fuzzy_pair_count += 1
                     elif _quorum_resolution_passes(left, right, pair):
                         dsu.union(left.index, right.index)
                         quorum_pair = _PairResolution(
@@ -1403,6 +1438,8 @@ def build_event_resolution_groups(
                             ),
                         )
                         accepted_pairs.append((left.index, right.index, quorum_pair))
+                        if stats is not None:
+                            stats.accepted_fuzzy_pair_count += 1
                         # Log the override for operator visibility instead of
                         # emitting an audit review case. The override is
                         # explicitly intended to clear pairs from the manual
@@ -1513,6 +1550,9 @@ def build_event_resolution_groups(
             )
         )
 
+    if stats is not None:
+        stats.review_case_count = len(review_cases)
+
     return (
         sorted(
             resolutions,
@@ -1613,17 +1653,47 @@ async def resolve_and_persist_events(
     normalized_odds: list[NormalizedOdds],
     normalized_outcome_offers: list[NormalizedOutcomeOffer],
 ) -> EventResolverResult:
+    extraction_stats = _EventCandidateExtractionStats()
+    extraction_started_at = time.perf_counter()
     candidates = extract_event_candidates(
         raw_odds=raw_odds,
         raw_outcome_offers=raw_outcome_offers,
         normalized_odds=normalized_odds,
         normalized_outcome_offers=normalized_outcome_offers,
+        stats=extraction_stats,
     )
-    resolutions, review_cases = build_event_resolution_groups(candidates)
+    extract_event_candidates_ms = _elapsed_ms(extraction_started_at)
+
+    group_stats = _EventGroupBuildStats()
+    grouping_started_at = time.perf_counter()
+    resolutions, review_cases = build_event_resolution_groups(
+        candidates,
+        stats=group_stats,
+    )
+    build_event_resolution_groups_ms = _elapsed_ms(grouping_started_at)
+
+    persistence_started_at = time.perf_counter()
     result = await persist_event_resolution_groups(
         resolutions,
         review_cases,
         snapshot_id=snapshot_id,
+    )
+    persist_event_resolution_groups_ms = _elapsed_ms(persistence_started_at)
+    benchmark = EventResolverBenchmarkOut(
+        extract_event_candidates_ms=extract_event_candidates_ms,
+        football_raw_resolution_candidates_ms=(
+            extraction_stats.football_raw_resolution_candidates_ms
+        ),
+        build_event_resolution_groups_ms=build_event_resolution_groups_ms,
+        persist_event_resolution_groups_ms=persist_event_resolution_groups_ms,
+        candidate_count=len(candidates),
+        exact_group_count=group_stats.exact_group_count,
+        pair_check_count=group_stats.pair_check_count,
+        accepted_fuzzy_pair_count=group_stats.accepted_fuzzy_pair_count,
+        review_case_count=group_stats.review_case_count,
+        persisted_resolved_event_count=result.resolved_events,
+        persisted_member_count=result.resolved_event_members,
+        persisted_review_case_count=result.review_cases,
     )
     logger.info(
         "Resolved %d source-event candidates into %d events (%d members, %d review cases)",
@@ -1637,4 +1707,5 @@ async def resolve_and_persist_events(
         resolved_events=result.resolved_events,
         resolved_event_members=result.resolved_event_members,
         review_cases=result.review_cases,
+        benchmark=benchmark,
     )

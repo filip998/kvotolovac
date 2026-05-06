@@ -13,14 +13,26 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Optional
+from typing import Iterator, Optional
 
 from ..config import settings
-from ..models.schemas import CycleBenchmarkOut, ScraperBenchmarkOut
+from ..models.schemas import (
+    BenchmarkRuntimeMetadataOut,
+    CycleBenchmarkOut,
+    EventResolverBenchmarkOut,
+    HttpTimingBenchmarkOut,
+    OutcomeNormalizationBenchmarkOut,
+    ScrapeRuntimeSettings,
+    ScraperBenchmarkOut,
+    ScraperRequestBenchmarkOut,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +52,154 @@ class _BookmakerAcc:
         self.leagues_failed: int = 0
 
 
+@dataclass(frozen=True)
+class _HttpRequestContext:
+    bookmaker_id: str
+    lane: str | None
+    sport: str | None
+    league_id: str | None
+
+
+class _HttpTimingAcc:
+    __slots__ = (
+        "logical_requests",
+        "attempts",
+        "retries",
+        "errors",
+        "total_elapsed_ms",
+        "total_rate_limit_wait_ms",
+        "total_network_ms",
+        "min_latency_ms",
+        "max_latency_ms",
+        "status_classes",
+    )
+
+    def __init__(self) -> None:
+        self.logical_requests = 0
+        self.attempts = 0
+        self.retries = 0
+        self.errors = 0
+        self.total_elapsed_ms = 0
+        self.total_rate_limit_wait_ms = 0
+        self.total_network_ms = 0
+        self.min_latency_ms: int | None = None
+        self.max_latency_ms: int | None = None
+        self.status_classes: dict[str, int] = defaultdict(int)
+
+    def record(
+        self,
+        *,
+        elapsed_ms: int,
+        attempts: int,
+        rate_limit_wait_ms: int,
+        network_ms: int,
+        status_codes: list[int],
+        error: bool,
+    ) -> None:
+        self.logical_requests += 1
+        self.attempts += int(attempts)
+        self.retries += max(0, int(attempts) - 1)
+        self.errors += 1 if error else 0
+        self.total_elapsed_ms += int(elapsed_ms)
+        self.total_rate_limit_wait_ms += int(rate_limit_wait_ms)
+        self.total_network_ms += int(network_ms)
+        if self.min_latency_ms is None or elapsed_ms < self.min_latency_ms:
+            self.min_latency_ms = int(elapsed_ms)
+        if self.max_latency_ms is None or elapsed_ms > self.max_latency_ms:
+            self.max_latency_ms = int(elapsed_ms)
+        for status_code in status_codes:
+            status_class = f"{int(status_code) // 100}xx"
+            self.status_classes[status_class] += 1
+
+    def to_model(self) -> HttpTimingBenchmarkOut:
+        avg_latency = (
+            self.total_elapsed_ms / self.logical_requests
+            if self.logical_requests
+            else 0.0
+        )
+        return HttpTimingBenchmarkOut(
+            logical_requests=self.logical_requests,
+            attempts=self.attempts,
+            retries=self.retries,
+            errors=self.errors,
+            total_elapsed_ms=self.total_elapsed_ms,
+            total_rate_limit_wait_ms=self.total_rate_limit_wait_ms,
+            total_network_ms=self.total_network_ms,
+            min_latency_ms=self.min_latency_ms,
+            avg_latency_ms=round(avg_latency, 2),
+            max_latency_ms=self.max_latency_ms,
+            status_classes=dict(sorted(self.status_classes.items())),
+        )
+
+
+_HTTP_REQUEST_CONTEXT: ContextVar[_HttpRequestContext | None] = ContextVar(
+    "scraper_benchmark_http_request_context", default=None
+)
+
+
+def _runtime_metadata(
+    runtime_settings: ScrapeRuntimeSettings,
+) -> BenchmarkRuntimeMetadataOut:
+    proxy_count = len(settings.proxy_url_list)
+    return BenchmarkRuntimeMetadataOut(
+        scraper_mode=settings.scraper_mode,
+        enabled_bookmakers=list(runtime_settings.enabled_bookmakers),
+        enabled_sports=list(runtime_settings.enabled_sports),
+        scrape_market_scope=runtime_settings.scrape_market_scope,
+        analysis_markets=list(runtime_settings.analysis_markets),
+        scrape_lookahead_hours=runtime_settings.scrape_lookahead_hours,
+        rate_limit_per_second=runtime_settings.rate_limit_per_second,
+        meridian_rate_limit_per_second=runtime_settings.meridian_rate_limit_per_second,
+        detail_modes={
+            "soccerbet": runtime_settings.soccerbet_detail_mode,
+            "merkurxtip": runtime_settings.merkurxtip_detail_mode,
+            "pinnbet": runtime_settings.pinnbet_detail_mode,
+        },
+        proxies_configured=proxy_count > 0,
+        proxy_count=proxy_count,
+    )
+
+
+def _merge_outcome_metrics(
+    current: OutcomeNormalizationBenchmarkOut,
+    update: OutcomeNormalizationBenchmarkOut,
+) -> OutcomeNormalizationBenchmarkOut:
+    return OutcomeNormalizationBenchmarkOut(
+        runs=current.runs + update.runs,
+        raw_outcome_offer_count=update.raw_outcome_offer_count,
+        normalized_outcome_offer_count=update.normalized_outcome_offer_count,
+        unresolved_outcome_offer_count=update.unresolved_outcome_offer_count,
+        football_unique_event_count=update.football_unique_event_count,
+        auto_created_football_team_count=(
+            current.auto_created_football_team_count
+            + update.auto_created_football_team_count
+        ),
+        auto_create_football_teams_ms=(
+            current.auto_create_football_teams_ms
+            + update.auto_create_football_teams_ms
+        ),
+        football_event_resolution_ms=(
+            current.football_event_resolution_ms
+            + update.football_event_resolution_ms
+        ),
+        football_event_pair_ranking_ms=(
+            current.football_event_pair_ranking_ms
+            + update.football_event_pair_ranking_ms
+        ),
+        football_event_slot_lookup_ms=(
+            current.football_event_slot_lookup_ms
+            + update.football_event_slot_lookup_ms
+        ),
+        football_event_slot_mutation_ms=(
+            current.football_event_slot_mutation_ms
+            + update.football_event_slot_mutation_ms
+        ),
+        row_normalization_ms=(
+            current.row_normalization_ms + update.row_normalization_ms
+        ),
+    )
+
+
 class CycleBenchmarkRecorder:
     """Accumulates per-scraper stats for one in-flight cycle, then publishes."""
 
@@ -50,15 +210,34 @@ class CycleBenchmarkRecorder:
 
     def _reset(self) -> None:
         self._cycle_started_at: Optional[str] = None
+        self._metadata: BenchmarkRuntimeMetadataOut | None = None
         self._scrape_duration_ms: int = 0
         self._cycle_duration_ms: int = 0
         self._buckets: dict[str, _BookmakerAcc] = defaultdict(_BookmakerAcc)
+        self._http_by_bookmaker: dict[str, _HttpTimingAcc] = defaultdict(_HttpTimingAcc)
+        self._http_by_request: dict[
+            tuple[str, str | None, str | None, str | None, str],
+            _HttpTimingAcc,
+        ] = defaultdict(_HttpTimingAcc)
+        self._phase_durations_ms: dict[str, int] = {}
+        self._outcome_normalization = OutcomeNormalizationBenchmarkOut()
+        self._event_resolver = EventResolverBenchmarkOut()
 
     # ---- accumulation ---------------------------------------------------
-    def begin_cycle(self, cycle_started_at: str) -> None:
+    def begin_cycle(
+        self,
+        cycle_started_at: str,
+        *,
+        runtime_settings: ScrapeRuntimeSettings | None = None,
+    ) -> None:
         with self._lock:
             self._reset()
             self._cycle_started_at = cycle_started_at
+            self._metadata = (
+                _runtime_metadata(runtime_settings)
+                if runtime_settings is not None
+                else None
+            )
 
     def record_scrape_task(
         self,
@@ -83,6 +262,87 @@ class CycleBenchmarkRecorder:
             self._scrape_duration_ms = int(scrape_duration_ms)
             self._cycle_duration_ms = int(cycle_duration_ms)
 
+    def record_phase_duration(self, phase_name: str, duration_ms: int) -> None:
+        with self._lock:
+            self._phase_durations_ms[phase_name] = (
+                self._phase_durations_ms.get(phase_name, 0) + int(duration_ms)
+            )
+
+    def record_outcome_normalization(
+        self, metrics: OutcomeNormalizationBenchmarkOut
+    ) -> None:
+        with self._lock:
+            self._outcome_normalization = _merge_outcome_metrics(
+                self._outcome_normalization,
+                metrics,
+            )
+
+    def record_event_resolver(self, metrics: EventResolverBenchmarkOut) -> None:
+        with self._lock:
+            self._event_resolver = metrics
+
+    @contextmanager
+    def scrape_request_context(
+        self,
+        *,
+        bookmaker_id: str,
+        lane: str | None,
+        sport: str | None,
+        league_id: str | None,
+    ) -> Iterator[None]:
+        token = _HTTP_REQUEST_CONTEXT.set(
+            _HttpRequestContext(
+                bookmaker_id=bookmaker_id,
+                lane=lane,
+                sport=sport,
+                league_id=league_id,
+            )
+        )
+        try:
+            yield
+        finally:
+            _HTTP_REQUEST_CONTEXT.reset(token)
+
+    def record_http_request(
+        self,
+        *,
+        method: str,
+        elapsed_ms: int,
+        attempts: int,
+        rate_limit_wait_ms: int,
+        network_ms: int,
+        status_codes: list[int],
+        error: bool,
+    ) -> None:
+        context = _HTTP_REQUEST_CONTEXT.get()
+        if context is None:
+            return
+        normalized_method = method.upper()
+        with self._lock:
+            self._http_by_bookmaker[context.bookmaker_id].record(
+                elapsed_ms=elapsed_ms,
+                attempts=attempts,
+                rate_limit_wait_ms=rate_limit_wait_ms,
+                network_ms=network_ms,
+                status_codes=status_codes,
+                error=error,
+            )
+            request_key = (
+                context.bookmaker_id,
+                context.lane,
+                context.sport,
+                context.league_id,
+                normalized_method,
+            )
+            self._http_by_request[request_key].record(
+                elapsed_ms=elapsed_ms,
+                attempts=attempts,
+                rate_limit_wait_ms=rate_limit_wait_ms,
+                network_ms=network_ms,
+                status_codes=status_codes,
+                error=error,
+            )
+
     # ---- publish --------------------------------------------------------
     def publish(
         self,
@@ -101,9 +361,41 @@ class CycleBenchmarkRecorder:
         with self._lock:
             cycle_finished_at = datetime.utcnow().isoformat()
             scrapers: list[ScraperBenchmarkOut] = []
-            all_keys = set(self._buckets) | set(matches_per_bookmaker) | set(odds_per_bookmaker)
+            all_keys = (
+                set(self._buckets)
+                | set(matches_per_bookmaker)
+                | set(odds_per_bookmaker)
+                | set(self._http_by_bookmaker)
+            )
             for bm in sorted(all_keys):
                 acc = self._buckets.get(bm) or _BookmakerAcc()
+                request_rows = [
+                    ScraperRequestBenchmarkOut(
+                        lane=lane,
+                        sport=sport,
+                        league_id=league_id,
+                        method=method,
+                        **http_acc.to_model().model_dump(),
+                    )
+                    for (
+                        request_bookmaker_id,
+                        lane,
+                        sport,
+                        league_id,
+                        method,
+                    ),
+                    http_acc in sorted(
+                        self._http_by_request.items(),
+                        key=lambda item: (
+                            item[0][0],
+                            item[0][1] or "",
+                            item[0][2] or "",
+                            item[0][3] or "",
+                            item[0][4],
+                        ),
+                    )
+                    if request_bookmaker_id == bm
+                ]
                 attempted = acc.leagues_attempted
                 failure_rate = (
                     (acc.leagues_failed / attempted) if attempted > 0 else 0.0
@@ -120,6 +412,8 @@ class CycleBenchmarkRecorder:
                         leagues_attempted=attempted,
                         leagues_failed=acc.leagues_failed,
                         failure_rate=round(failure_rate, 4),
+                        http=self._http_by_bookmaker[bm].to_model(),
+                        requests=request_rows,
                     )
                 )
 
@@ -131,6 +425,10 @@ class CycleBenchmarkRecorder:
                 total_raw_items=sum(s.raw_items for s in scrapers),
                 total_matches=int(total_unique_matches),
                 total_odds=sum(s.odds_count for s in scrapers),
+                metadata=self._metadata,
+                phase_durations_ms=dict(sorted(self._phase_durations_ms.items())),
+                outcome_normalization=self._outcome_normalization,
+                event_resolver=self._event_resolver,
                 scrapers=scrapers,
             )
             self._latest = snapshot

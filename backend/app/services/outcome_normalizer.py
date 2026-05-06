@@ -4,11 +4,13 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 import logging
 import re
+import time
 
 from rapidfuzz import fuzz
 
 from ..models.schemas import (
     NormalizedOutcomeOffer,
+    OutcomeNormalizationBenchmarkOut,
     RawOddsData,
     RawOutcomeOffer,
     TeamReviewDiagnostic,
@@ -56,6 +58,10 @@ _EXPLICIT_Z_WOMEN_MARKER_RE = re.compile(
 )
 _SAME_ORIENTATION = "same"
 _REVERSED_ORIENTATION = "reversed"
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return int((time.perf_counter() - started_at) * 1000)
 
 
 @dataclass(frozen=True)
@@ -110,6 +116,14 @@ class _OutcomeEventPair:
     @property
     def weak_side_score(self) -> float:
         return min(self.home_score, self.away_score)
+
+
+@dataclass
+class _FootballEventResolutionStats:
+    football_unique_event_count: int = 0
+    football_event_pair_ranking_ms: int = 0
+    football_event_slot_lookup_ms: int = 0
+    football_event_slot_mutation_ms: int = 0
 
 
 def _significant_tokens(name: str, *, sport: str | None = None) -> set[str]:
@@ -238,7 +252,7 @@ def _display_name_for_event(*names: str) -> str:
     )
 
 
-def _autocreate_cross_book_football_teams(raw_list: list[RawOutcomeOffer]) -> None:
+def _autocreate_cross_book_football_teams(raw_list: list[RawOutcomeOffer]) -> int:
     matchup_counts: dict[tuple[str, str, tuple[str, str]], set[str]] = defaultdict(set)
     display_names: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
 
@@ -254,6 +268,7 @@ def _autocreate_cross_book_football_teams(raw_list: list[RawOutcomeOffer]) -> No
         display_names[(raw.sport, home_key)][raw.home_team.strip()] += 1
         display_names[(raw.sport, away_key)][raw.away_team.strip()] += 1
 
+    created_count = 0
     for (sport, _start_time, team_keys), bookmaker_ids in matchup_counts.items():
         if len(bookmaker_ids) < 2:
             continue
@@ -264,6 +279,8 @@ def _autocreate_cross_book_football_teams(raw_list: list[RawOutcomeOffer]) -> No
             display_name = max(counter.items(), key=lambda item: (item[1], len(item[0]), item[0]))[0]
             if resolve_team_name(display_name, sport=sport).team_id is None:
                 create_canonical_team(display_name=display_name, sport=sport)
+                created_count += 1
+    return created_count
 
 
 def _unique_events(raw_list: list[RawOutcomeOffer]) -> list[_OutcomeEvent]:
@@ -662,16 +679,28 @@ def _rank_event_pairs(
 
 def _build_football_event_resolutions(
     raw_list: list[RawOutcomeOffer],
+    *,
+    stats: _FootballEventResolutionStats | None = None,
 ) -> dict[tuple[str, str, str, str, str], _OutcomeEventResolution]:
     events = _unique_events(raw_list)
+    if stats is not None:
+        stats.football_unique_event_count = len(events)
     resolutions: dict[tuple[str, str, str, str, str], _OutcomeEventResolution] = {}
+    lookup_started_at = time.perf_counter()
     for event in events:
         slot = _resolve_event_slot(event)
         if slot is None:
             continue
         resolutions[_event_key(event)] = _OutcomeEventResolution(slot=slot)
+    if stats is not None:
+        stats.football_event_slot_lookup_ms += _elapsed_ms(lookup_started_at)
 
-    for pair in _rank_event_pairs(events, resolutions=resolutions):
+    ranking_started_at = time.perf_counter()
+    ranked_pairs = _rank_event_pairs(events, resolutions=resolutions)
+    if stats is not None:
+        stats.football_event_pair_ranking_ms += _elapsed_ms(ranking_started_at)
+
+    for pair in ranked_pairs:
         left_key = _event_key(pair.left)
         right_key = _event_key(pair.right)
         left_resolution = resolutions.get(left_key)
@@ -683,6 +712,7 @@ def _build_football_event_resolutions(
             if pair.orientation == _REVERSED_ORIENTATION and _reversed_slots(
                 left_resolution, right_resolution
             ):
+                mutation_started_at = time.perf_counter()
                 _move_resolution_component(
                     resolutions,
                     source_resolution=right_resolution,
@@ -692,6 +722,10 @@ def _build_football_event_resolutions(
                         pair.orientation,
                     ),
                 )
+                if stats is not None:
+                    stats.football_event_slot_mutation_ms += _elapsed_ms(
+                        mutation_started_at
+                    )
                 continue
             if _pair_has_compatible_women_context(
                 pair,
@@ -701,6 +735,7 @@ def _build_football_event_resolutions(
                     right_resolution,
                 ),
             ):
+                mutation_started_at = time.perf_counter()
                 _move_resolution_component(
                     resolutions,
                     source_resolution=right_resolution,
@@ -710,6 +745,10 @@ def _build_football_event_resolutions(
                         pair.orientation,
                     ),
                 )
+                if stats is not None:
+                    stats.football_event_slot_mutation_ms += _elapsed_ms(
+                        mutation_started_at
+                    )
             continue
 
         if left_resolution is not None:
@@ -726,7 +765,10 @@ def _build_football_event_resolutions(
             )
             continue
 
+        mutation_started_at = time.perf_counter()
         slot = _create_event_slot(pair)
+        if stats is not None:
+            stats.football_event_slot_mutation_ms += _elapsed_ms(mutation_started_at)
         if slot is None:
             continue
         resolutions[left_key] = _OutcomeEventResolution(slot=slot)
@@ -868,15 +910,27 @@ def _normalized_offer_from_resolution(
     )
 
 
-def normalize_outcome_offers_with_diagnostics(
+def normalize_outcome_offers_with_benchmark(
     raw_list: list[RawOutcomeOffer],
 ) -> tuple[
     list[NormalizedOutcomeOffer],
     list[UnresolvedOddsDiagnostic],
     list[TeamReviewDiagnostic],
+    OutcomeNormalizationBenchmarkOut,
 ]:
-    _autocreate_cross_book_football_teams(raw_list)
-    event_resolutions = _build_football_event_resolutions(raw_list)
+    autocreate_started_at = time.perf_counter()
+    auto_created_team_count = _autocreate_cross_book_football_teams(raw_list)
+    auto_create_football_teams_ms = _elapsed_ms(autocreate_started_at)
+
+    football_resolution_stats = _FootballEventResolutionStats()
+    event_resolution_started_at = time.perf_counter()
+    event_resolutions = _build_football_event_resolutions(
+        raw_list,
+        stats=football_resolution_stats,
+    )
+    football_event_resolution_ms = _elapsed_ms(event_resolution_started_at)
+
+    row_normalization_started_at = time.perf_counter()
     unresolved_event_rows = [
         raw
         for raw in raw_list
@@ -973,4 +1027,40 @@ def normalize_outcome_offers_with_diagnostics(
             )
         )
 
+    benchmark = OutcomeNormalizationBenchmarkOut(
+        runs=1,
+        raw_outcome_offer_count=len(raw_list),
+        normalized_outcome_offer_count=len(normalized),
+        unresolved_outcome_offer_count=len(unresolved),
+        football_unique_event_count=(
+            football_resolution_stats.football_unique_event_count
+        ),
+        auto_created_football_team_count=auto_created_team_count,
+        auto_create_football_teams_ms=auto_create_football_teams_ms,
+        football_event_resolution_ms=football_event_resolution_ms,
+        football_event_pair_ranking_ms=(
+            football_resolution_stats.football_event_pair_ranking_ms
+        ),
+        football_event_slot_lookup_ms=(
+            football_resolution_stats.football_event_slot_lookup_ms
+        ),
+        football_event_slot_mutation_ms=(
+            football_resolution_stats.football_event_slot_mutation_ms
+        ),
+        row_normalization_ms=_elapsed_ms(row_normalization_started_at),
+    )
+
+    return normalized, unresolved, team_review_cases, benchmark
+
+
+def normalize_outcome_offers_with_diagnostics(
+    raw_list: list[RawOutcomeOffer],
+) -> tuple[
+    list[NormalizedOutcomeOffer],
+    list[UnresolvedOddsDiagnostic],
+    list[TeamReviewDiagnostic],
+]:
+    normalized, unresolved, team_review_cases, _benchmark = (
+        normalize_outcome_offers_with_benchmark(raw_list)
+    )
     return normalized, unresolved, team_review_cases
