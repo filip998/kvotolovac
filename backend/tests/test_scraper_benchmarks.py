@@ -60,6 +60,8 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert set(body["metadata"]["enabled_bookmakers"]) == {"mozzart", "meridian"}
     assert body["metadata"]["proxy_count"] == 0
     assert body["metadata"]["proxies_configured"] is False
+    assert body["metadata"]["bookmaker_rate_limits"] == {}
+    assert body["metadata"]["scrape_type_rate_limits"] == {}
     assert body["metadata"]["detail_modes"] == {
         "betole": settings.betole_detail_mode,
         "merkurxtip": settings.merkurxtip_detail_mode,
@@ -146,6 +148,12 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
 ):
     secret_proxy = "http://user:secret-password@example.test:8080"
     monkeypatch.setattr(settings, "proxy_list", secret_proxy)
+    monkeypatch.setattr(settings, "bookmaker_rate_limits", "betole:0.5")
+    monkeypatch.setattr(
+        settings,
+        "scrape_type_rate_limits",
+        "betole:outcome_offer:partial:0.25",
+    )
     runtime_settings = ScrapeRuntimeSettings(
         enabled_bookmakers=["betole"],
         enabled_sports=["football"],
@@ -204,6 +212,10 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
     assert snapshot.metadata.proxies_configured is True
     assert snapshot.metadata.proxy_count == 1
     assert snapshot.metadata.analysis_markets == ["football:football_result"]
+    assert snapshot.metadata.bookmaker_rate_limits == {"betole": 0.5}
+    assert snapshot.metadata.scrape_type_rate_limits == {
+        "betole:outcome_offer:partial": 0.25
+    }
     scraper_row = snapshot.scrapers[0]
     assert scraper_row.http.logical_requests == 1
     assert scraper_row.http.attempts == 2

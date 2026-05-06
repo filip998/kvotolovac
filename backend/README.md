@@ -84,8 +84,12 @@ Settings are loaded from environment variables and `backend/.env`. Copy `backend
 | `PROXY_LIST` | empty | Comma-separated proxy URLs distributed to real scraper HTTP clients. |
 | `RATE_LIMIT_PER_SECOND` | `1.0` | Default per-scraper HTTP rate limit in real mode. |
 | `MERIDIAN_RATE_LIMIT_PER_SECOND` | `2.0` | Meridian-specific HTTP rate limit override. |
+| `BOOKMAKER_RATE_LIMITS` | empty | Optional comma/semicolon-separated caps in `<bookmaker>:<rate>` form, e.g. `betole:0.5,365:1`. Caps never raise a scraper above its default global/Meridian rate. |
+| `SCRAPE_TYPE_RATE_LIMITS` | empty | Optional comma/semicolon-separated caps in `<bookmaker>:<lane>:<rate>` or `<bookmaker>:<lane>:<detail_mode>:<rate>` form, e.g. `betole:outcome_offer:full:0.5`. |
 | `SOCCERBET_DETAIL_MODE` | `partial` | `partial` uses broad preview feeds; `full` adds match-by-code enrichment. |
 | `MERKURXTIP_DETAIL_MODE` | `partial` | `partial` uses list feeds; `full` adds match detail for alternate totals. |
+| `PINNBET_DETAIL_MODE` | `partial` | `partial` uses football list data; `full` adds per-event football detail. |
+| `BETOLE_DETAIL_MODE` | `partial` | `partial` uses football list data; `full` adds per-event football detail for double chance. |
 | `NOTIFICATION_GAP_THRESHOLD` | `1.5` | Minimum opportunity gap/margin threshold used by notification logic. |
 | `PERSIST_INAPP_NOTIFICATIONS` | `false` | Persist generated in-app notifications when enabled. |
 | `NOTIFICATION_RETENTION_DAYS` | `3` | Retention window for persisted notifications. |
@@ -124,6 +128,7 @@ Use this only when you intend to call live bookmaker endpoints. Each bookmaker h
 - The scheduler runs scraper tasks concurrently at the top level, so slow bookmakers do not stall the whole scrape phase.
 - In `real` mode, each scraper gets its own `HttpClient`, so HTTP rate limiting is isolated per bookmaker instead of shared globally.
 - Meridian is temporarily excluded from the default `BOOKMAKERS` list because its market-detail endpoint is often blocked by upstream Cloudflare protection. It can still be explicitly enabled with `BOOKMAKERS=...meridian...`; use `MERIDIAN_RATE_LIMIT_PER_SECOND` if Meridian needs a higher cap without changing other bookmakers.
+- `BOOKMAKER_RATE_LIMITS` and `SCRAPE_TYPE_RATE_LIMITS` are backend-only caps for isolating expensive paths without raising defaults. Scrape-type caps take precedence over bookmaker caps; detail-specific caps such as `betole:outcome_offer:full:0.5` apply only when that scraper is in the matching detail mode.
 - The API starts immediately and the initial scrape runs in the scheduler background loop instead of blocking app startup.
 - `GET /api/v1/status` includes live scan progress metadata while a cycle is running, so the frontend can show warmup/progress state instead of timing out on first load.
 - `POST /api/v1/scrape/trigger` rejects with `409` while a scan is already running, so callers do not queue duplicate full cycles behind the background scheduler.
