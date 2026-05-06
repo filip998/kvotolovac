@@ -159,6 +159,7 @@ export const mockMatches: Match[] = [
       { id: 'superbet', name: 'Superbet' },
       { id: 'admiralbet', name: 'AdmiralBet' },
       { id: 'pinnbet', name: 'PinnBet' },
+      { id: 'volcanobet', name: 'VolcanoBet' },
     ],
   },
   {
@@ -182,6 +183,7 @@ export const mockMatches: Match[] = [
       { id: 'superbet', name: 'Superbet' },
       { id: 'admiralbet', name: 'AdmiralBet' },
       { id: 'pinnbet', name: 'PinnBet' },
+      { id: 'volcanobet', name: 'VolcanoBet' },
     ],
   },
   {
@@ -332,6 +334,18 @@ export const mockFootballOutcomeOffers: OutcomeOffer[] = [
   { id: 1113, match_id: 'football-match-2', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'football_result', outcome_code: 'home', odds: 1.98, line: null, raw_label: '1', scraped_at: ago(2) },
   { id: 1114, match_id: 'football-match-2', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'football_total_goals', outcome_code: 'under', odds: 1.76, line: 2.5, raw_label: '0-2', scraped_at: ago(2) },
   { id: 1115, match_id: 'football-match-2', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'football_total_goals', outcome_code: 'over', odds: 2.18, line: 2.5, raw_label: '3+', scraped_at: ago(2) },
+  // VolcanoBet — Xtreme batched event-market shape: result + double chance + 2.5 totals.
+  { id: 1116, match_id: 'football-match-1', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', market_type: 'football_result', outcome_code: 'home', odds: 2.46, line: null, raw_label: '1', scraped_at: ago(2) },
+  { id: 1117, match_id: 'football-match-1', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', market_type: 'football_result', outcome_code: 'draw', odds: 3.16, line: null, raw_label: 'X', scraped_at: ago(2) },
+  { id: 1118, match_id: 'football-match-1', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', market_type: 'football_result', outcome_code: 'away', odds: 2.64, line: null, raw_label: '2', scraped_at: ago(2) },
+  { id: 1119, match_id: 'football-match-1', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', market_type: 'football_double_chance', outcome_code: 'home_or_draw', odds: 1.42, line: null, raw_label: '1X', scraped_at: ago(2) },
+  { id: 1120, match_id: 'football-match-1', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', market_type: 'football_double_chance', outcome_code: 'home_or_away', odds: 1.28, line: null, raw_label: '12', scraped_at: ago(2) },
+  { id: 1121, match_id: 'football-match-1', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', market_type: 'football_double_chance', outcome_code: 'draw_or_away', odds: 1.46, line: null, raw_label: 'X2', scraped_at: ago(2) },
+  { id: 1122, match_id: 'football-match-1', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', market_type: 'football_total_goals', outcome_code: 'under', odds: 1.88, line: 2.5, raw_label: '0-2', scraped_at: ago(2) },
+  { id: 1123, match_id: 'football-match-1', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', market_type: 'football_total_goals', outcome_code: 'over', odds: 1.92, line: 2.5, raw_label: '3+', scraped_at: ago(2) },
+  { id: 1124, match_id: 'football-match-2', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', market_type: 'football_result', outcome_code: 'home', odds: 2.02, line: null, raw_label: '1', scraped_at: ago(2) },
+  { id: 1125, match_id: 'football-match-2', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', market_type: 'football_total_goals', outcome_code: 'under', odds: 1.82, line: 2.5, raw_label: '0-2', scraped_at: ago(2) },
+  { id: 1126, match_id: 'football-match-2', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', market_type: 'football_total_goals', outcome_code: 'over', odds: 2.12, line: 2.5, raw_label: '3+', scraped_at: ago(2) },
 ];
 
 export const mockOpportunities: Opportunity[] = [
@@ -1299,10 +1313,10 @@ export const mockSystemStatus: SystemStatus = {
     in_progress: true,
     phase: 'scraping',
     started_at: ago(0),
-    total_tasks: 12,
+    total_tasks: 13,
     completed_tasks: 4,
     failed_tasks: 1,
-    active_tasks: 7,
+    active_tasks: 8,
   },
   bookmaker_status: [
     { id: 'mozzart', name: 'Mozzart', last_scrape: ago(2), is_active: true },

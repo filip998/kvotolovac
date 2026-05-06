@@ -19,6 +19,7 @@ from app.scrapers.volcanobet_scraper import (
     _extract_fixture_contexts,
     _extract_handicap_side,
     _parse_event_markets,
+    _parse_football_outcome_markets,
     _parse_game_handicap_ot_bet,
 )
 
@@ -649,3 +650,339 @@ async def test_scrape_odds_includes_handicap_market_id_in_event_filter():
     assert results[0].under_odds == 1.9
     assert results[0].home_team == "Houston Rockets"
     assert results[0].away_team == "L.A.Lakers"
+
+
+# ── Football outcome parsing ───────────────────────────────
+
+
+def _football_offer_base() -> dict:
+    return {
+        "o": {
+            "s": [
+                {"i": "1", "n": "Fudbal"},
+                {"i": "3", "n": "Košarka"},
+            ],
+            "le": [
+                {"i": "64", "si": "3", "n": "NBA"},
+                {"i": "11625", "si": "1", "n": "Češka 3"},
+            ],
+            "m": [
+                {
+                    "i": "1",
+                    "n": "Osnovna ponuda",
+                    "b": [{"p": "1"}, {"p": "x"}, {"p": "2"}],
+                    "st": [{"s": "1", "n": "Osnovna ponuda"}],
+                },
+                {
+                    "i": "10",
+                    "n": "Dupla šansa",
+                    "b": [{"p": "1x"}, {"p": "x2"}, {"p": "12"}],
+                    "st": [{"s": "1", "n": "Dupla šansa"}],
+                },
+                {
+                    "i": "18",
+                    "n": "Zbir golova",
+                    "b": [{"p": "under"}, {"p": "over"}],
+                    "st": [{"s": "1", "n": "Zbir golova"}],
+                },
+                {
+                    "i": "63",
+                    "n": "1.pol.-Dupla šansa",
+                    "b": [{"p": "1x"}, {"p": "x2"}, {"p": "12"}],
+                    "st": [{"s": "1", "n": "1.pol.-Dupla šansa"}],
+                },
+            ],
+        }
+    }
+
+
+def test_build_offer_base_lookup_discovers_football_market_ids_and_leagues():
+    lookup = _build_offer_base_lookup(_football_offer_base())
+
+    assert lookup.football_sport_id == "1"
+    assert lookup.football_league_names == {"11625": "Češka 3"}
+    assert lookup.football_result_market_ids == ("1",)
+    assert lookup.football_double_chance_market_ids == ("10",)
+    assert lookup.football_total_goals_market_ids == ("18",)
+    assert lookup.league_names == {"64": "NBA"}
+
+
+def test_extract_fixture_contexts_filters_to_upcoming_football_events():
+    lookup = _build_offer_base_lookup(_football_offer_base())
+    fixtures = {
+        "f": [
+            {
+                "ai": "FOOTBALL1",
+                "sd": "2026-05-06T15:00:00Z",
+                "s": "NSY",
+                "si": "1",
+                "lei": "11625",
+                "p": [
+                    {"n": "Ceske Budejovice B", "p": "1"},
+                    {"n": "Hostoun", "p": "2"},
+                ],
+            },
+            {
+                "ai": "BASKETBALL1",
+                "sd": "2026-05-06T15:00:00Z",
+                "s": "NSY",
+                "si": "3",
+                "lei": "64",
+                "p": [
+                    {"n": "Detroit Pistons", "p": "1"},
+                    {"n": "Orlando Magic", "p": "2"},
+                ],
+            },
+            {
+                "ai": "LIVE1",
+                "sd": "2026-05-06T15:00:00Z",
+                "s": "InProgress",
+                "si": "1",
+                "lei": "11625",
+                "p": [
+                    {"n": "Shanghai Port", "p": "1"},
+                    {"n": "Shenzhen Peng City", "p": "2"},
+                ],
+            },
+        ]
+    }
+
+    with patch(
+        "app.scrapers.volcanobet_scraper.lookahead_cutoff",
+        return_value=datetime(2026, 5, 7, 12, 0, tzinfo=timezone.utc),
+    ):
+        contexts = _extract_fixture_contexts(
+            fixtures,
+            lookup=lookup,
+            sport_id=lookup.football_sport_id,
+            league_names=lookup.football_league_names,
+            default_league_id="football",
+            now=datetime(2026, 5, 6, 12, 0, tzinfo=timezone.utc),
+        )
+
+    assert contexts == [
+        FixtureContext(
+            event_id="FOOTBALL1",
+            league_id="ceska_3",
+            home_team="Ceske Budejovice B",
+            away_team="Hostoun",
+            start_time="2026-05-06T15:00:00+00:00",
+            source_url=_SOURCE_URL,
+        )
+    ]
+
+
+def test_parse_football_outcome_markets_returns_target_offers():
+    context = FixtureContext(
+        event_id="FOOTBALL1",
+        league_id="ceska_3",
+        home_team="Ceske Budejovice B",
+        away_team="Hostoun",
+        start_time="2026-05-06T15:00:00+00:00",
+        source_url=_SOURCE_URL,
+    )
+    payload = {
+        "e": "FOOTBALL1",
+        "m": [
+            {
+                "id": "1",
+                "b": [
+                    {"id": "1", "n": "1", "od": 1.63, "s": "O"},
+                    {"id": "x", "n": "x", "od": 5.2, "s": "O"},
+                    {"id": "2", "n": "2", "od": 4.5, "s": "O"},
+                ],
+            },
+            {
+                "id": "10",
+                "b": [
+                    {"id": "1x", "n": "1X", "od": 1.12, "s": "O"},
+                    {"id": "x2", "n": "X2", "od": 1.95, "s": "O"},
+                    {"id": "12", "n": "12", "od": 1.18, "s": "O"},
+                ],
+            },
+            {
+                "id": "18",
+                "b": [
+                    {"id": "under", "n": "Manje", "bl": "2.5", "od": 1.9, "s": "O"},
+                    {"id": "over", "n": "Više", "bl": "2.5", "od": 1.8, "s": "O"},
+                    {"id": "under", "n": "Manje", "bl": "3.5", "od": 1.4, "s": "O"},
+                ],
+            },
+        ],
+    }
+
+    results = _parse_football_outcome_markets(
+        payload,
+        context=context,
+        result_market_ids={"1"},
+        double_chance_market_ids={"10"},
+        total_goals_market_ids={"18"},
+    )
+
+    assert len(results) == 8
+    by_key = {
+        (row.market_type, row.outcome_code, row.line): row
+        for row in results
+    }
+    assert by_key[("football_result", "home", None)].odds == 1.63
+    assert by_key[("football_result", "draw", None)].raw_label == "X"
+    assert by_key[("football_double_chance", "home_or_draw", None)].raw_label == "1X"
+    assert by_key[("football_double_chance", "home_or_away", None)].odds == 1.18
+    assert by_key[("football_total_goals", "under", 2.5)].raw_label == "0-2"
+    assert by_key[("football_total_goals", "over", 2.5)].raw_label == "3+"
+    assert all(row.sport == "football" for row in results)
+    assert all(row.bookmaker_id == "volcanobet" for row in results)
+
+
+def test_parse_football_outcome_markets_skips_invalid_or_closed_totals():
+    context = FixtureContext(
+        event_id="FOOTBALL1",
+        league_id="football",
+        home_team="Home",
+        away_team="Away",
+        start_time="2026-05-06T15:00:00+00:00",
+        source_url=_SOURCE_URL,
+    )
+    payload = {
+        "e": "FOOTBALL1",
+        "m": [
+            {
+                "id": "18",
+                "b": [
+                    {"id": "under", "bl": "3.5", "od": 1.9, "s": "O"},
+                    {"id": "over", "bl": "2.5", "od": 1.0, "s": "O"},
+                    {"id": "over", "bl": "2.5", "od": 1.9, "s": "C"},
+                    {"id": "yes", "bl": "2.5", "od": 1.9, "s": "O"},
+                ],
+            }
+        ],
+    }
+
+    assert (
+        _parse_football_outcome_markets(
+            payload,
+            context=context,
+            result_market_ids={"1"},
+            double_chance_market_ids={"10"},
+            total_goals_market_ids={"18"},
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_batches_football_event_markets():
+    fixtures = {
+        "f": [
+            {
+                "ai": "FOOTBALL1",
+                "sd": "2026-05-06T15:00:00Z",
+                "s": "NSY",
+                "si": "1",
+                "lei": "11625",
+                "p": [
+                    {"n": "Ceske Budejovice B", "p": "1"},
+                    {"n": "Hostoun", "p": "2"},
+                ],
+            },
+            {
+                "ai": "FOOTBALL2",
+                "sd": "2026-05-06T17:00:00Z",
+                "s": "NSY",
+                "si": "1",
+                "lei": "11625",
+                "p": [
+                    {"n": "Dila Gori", "p": "1"},
+                    {"n": "Iberia 1999", "p": "2"},
+                ],
+            },
+        ]
+    }
+    batch_payload = [
+        {
+            "e": "FOOTBALL1",
+            "m": [
+                {
+                    "id": "1",
+                    "b": [
+                        {"id": "1", "od": 1.63, "s": "O"},
+                        {"id": "x", "od": 5.2, "s": "O"},
+                        {"id": "2", "od": 4.5, "s": "O"},
+                    ],
+                },
+                {
+                    "id": "10",
+                    "b": [
+                        {"id": "1x", "od": 1.12, "s": "O"},
+                        {"id": "x2", "od": 1.95, "s": "O"},
+                        {"id": "12", "od": 1.18, "s": "O"},
+                    ],
+                },
+                {
+                    "id": "18",
+                    "b": [
+                        {"id": "under", "bl": "2.5", "od": 1.9, "s": "O"},
+                        {"id": "over", "bl": "2.5", "od": 1.8, "s": "O"},
+                    ],
+                },
+            ],
+        },
+        {
+            "e": "FOOTBALL2",
+            "m": [
+                {
+                    "id": "1",
+                    "b": [
+                        {"id": "1", "od": 2.1, "s": "O"},
+                        {"id": "x", "od": 3.15, "s": "O"},
+                        {"id": "2", "od": 3.4, "s": "O"},
+                    ],
+                }
+            ],
+        },
+    ]
+    captured_urls: list[str] = []
+
+    async def mock_get_json(url, *, params=None, headers=None):
+        if url == _OFFER_BASE_URL:
+            return _football_offer_base()
+        if url == _FIXTURES_URL:
+            return fixtures
+        captured_urls.append(url)
+        assert url.startswith(_EVENT_MARKETS_URL)
+        assert params is None
+        return batch_payload
+
+    http_client = AsyncMock()
+    http_client.get_json.side_effect = mock_get_json
+    scraper = VolcanoBetScraper(http_client=http_client)
+
+    with patch(
+        "app.scrapers.volcanobet_scraper.current_utc_time",
+        return_value=datetime(2026, 5, 6, 12, 0, tzinfo=timezone.utc),
+    ):
+        results = await scraper.scrape_outcome_offers("football")
+
+    assert len(captured_urls) == 1
+    event_markets_url = captured_urls[0]
+    assert "eventIds=FOOTBALL1" in event_markets_url
+    assert "eventIds=FOOTBALL2" in event_markets_url
+    assert "marketIds=1" in event_markets_url
+    assert "marketIds=10" in event_markets_url
+    assert "marketIds=18" in event_markets_url
+
+    assert len(results) == 11
+    assert sum(row.market_type == "football_result" for row in results) == 6
+    assert sum(row.market_type == "football_double_chance" for row in results) == 3
+    assert sum(row.market_type == "football_total_goals" for row in results) == 2
+    assert scraper.get_supported_leagues() == ["basketball"]
+    assert scraper.get_supported_outcome_sports() == ["football"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_unsupported_sport_does_not_fetch():
+    http_client = AsyncMock()
+    scraper = VolcanoBetScraper(http_client=http_client)
+
+    assert await scraper.scrape_outcome_offers("basketball") == []
+    http_client.get_json.assert_not_called()
