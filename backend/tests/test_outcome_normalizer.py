@@ -9,6 +9,7 @@ from app.services.outcome_normalizer import (
     _same_team_context,
     _team_similarity,
     _team_qualifiers,
+    normalize_outcome_offers_with_benchmark,
     normalize_outcome_offers_with_diagnostics,
 )
 from app.services.team_registry import create_canonical_team, remember_team_alias
@@ -80,6 +81,21 @@ def test_exact_cross_book_football_event_normalizes_without_auto_aliases(team_re
     assert unresolved == []
     assert review_cases == []
     assert _auto_review_alias_count() == 0
+
+
+def test_cross_book_football_autocreate_reports_multiple_batch_created_teams(team_registry_file):
+    raw = [
+        _offer("maxbet", "Batch Home FC", "Batch Away FC", outcome_code="over"),
+        _offer("balkanbet", "Batch Home FC", "Batch Away FC", outcome_code="under"),
+    ]
+
+    normalized, unresolved, review_cases, benchmark = normalize_outcome_offers_with_benchmark(raw)
+
+    assert len(normalized) == 2
+    assert unresolved == []
+    assert review_cases == []
+    assert benchmark.auto_created_football_team_count == 2
+    assert {"Batch Home FC", "Batch Away FC"} <= _canonical_team_names()
 
 
 def test_one_strong_football_team_matches_event_without_alias_write(team_registry_file):

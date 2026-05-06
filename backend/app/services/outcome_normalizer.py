@@ -18,7 +18,7 @@ from ..models.schemas import (
 )
 from .league_registry import resolve_league
 from .normalizer import generate_match_id, normalize_odds_with_diagnostics, resolve_team_name
-from .team_registry import create_canonical_team
+from .team_registry import create_canonical_team, create_canonical_teams_batch
 from .text_normalizer import normalize_identity_text
 
 logger = logging.getLogger(__name__)
@@ -268,7 +268,7 @@ def _autocreate_cross_book_football_teams(raw_list: list[RawOutcomeOffer]) -> in
         display_names[(raw.sport, home_key)][raw.home_team.strip()] += 1
         display_names[(raw.sport, away_key)][raw.away_team.strip()] += 1
 
-    created_count = 0
+    missing_display_names: dict[tuple[str, str], str] = {}
     for (sport, _start_time, team_keys), bookmaker_ids in matchup_counts.items():
         if len(bookmaker_ids) < 2:
             continue
@@ -278,8 +278,18 @@ def _autocreate_cross_book_football_teams(raw_list: list[RawOutcomeOffer]) -> in
                 continue
             display_name = max(counter.items(), key=lambda item: (item[1], len(item[0]), item[0]))[0]
             if resolve_team_name(display_name, sport=sport).team_id is None:
-                create_canonical_team(display_name=display_name, sport=sport)
-                created_count += 1
+                missing_display_names[(sport, team_key)] = display_name
+
+    created_count = 0
+    by_sport: dict[str, list[str]] = defaultdict(list)
+    for (sport, _team_key), display_name in missing_display_names.items():
+        by_sport[sport].append(display_name)
+    for sport, sport_display_names in by_sport.items():
+        resolutions = create_canonical_teams_batch(
+            display_names=sport_display_names,
+            sport=sport,
+        )
+        created_count += sum(1 for resolution in resolutions if resolution.source == "batch_create")
     return created_count
 
 

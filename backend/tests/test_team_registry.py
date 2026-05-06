@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 
 from app.config import settings
+from app.services import team_registry
 from app.services.team_registry import (
     clear_team_registry_cache,
     create_canonical_team,
@@ -193,3 +194,54 @@ def test_unmerge_canonical_team_rejects_legacy_history_without_snapshot(team_reg
 
     with pytest.raises(ValueError, match="before alias rollback metadata existed"):
         unmerge_canonical_team(source_team_id=source.team_id)
+
+
+def test_create_canonical_teams_batch_creates_multiple_teams_and_clears_once(
+    monkeypatch,
+    team_registry_file,
+):
+    clear_calls: list[bool] = []
+    original_clear = team_registry.clear_team_registry_cache
+
+    def spy_clear(*, reset_bootstrap: bool = True) -> None:
+        clear_calls.append(reset_bootstrap)
+        original_clear(reset_bootstrap=reset_bootstrap)
+
+    monkeypatch.setattr(team_registry, "clear_team_registry_cache", spy_clear)
+
+    resolutions = team_registry.create_canonical_teams_batch(
+        display_names=["Batch Alpha FC", "Batch Beta FC", "Batch Alpha FC"],
+        sport="football",
+    )
+
+    assert [resolution.team_name for resolution in resolutions] == [
+        "Batch Alpha FC",
+        "Batch Beta FC",
+    ]
+    assert {resolution.source for resolution in resolutions} == {"batch_create"}
+    assert clear_calls == [False]
+    assert (
+        team_registry.resolve_team_alias("Batch Alpha FC", sport="football").team_id
+        == resolutions[0].team_id
+    )
+    assert (
+        team_registry.resolve_team_alias("Batch Beta FC", sport="football").team_id
+        == resolutions[1].team_id
+    )
+
+
+def test_create_canonical_teams_batch_returns_existing_active_team(team_registry_file):
+    first = team_registry.create_canonical_team(
+        display_name="Existing Batch FC",
+        sport="football",
+    )
+
+    resolutions = team_registry.create_canonical_teams_batch(
+        display_names=["Existing Batch FC", "Fresh Batch FC"],
+        sport="football",
+    )
+
+    assert resolutions[0].team_id == first.team_id
+    assert resolutions[0].source == "canonical"
+    assert resolutions[1].team_name == "Fresh Batch FC"
+    assert resolutions[1].source == "batch_create"
