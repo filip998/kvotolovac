@@ -78,6 +78,7 @@ def default_scrape_runtime_settings(
         soccerbet_detail_mode=settings.soccerbet_detail_mode,
         merkurxtip_detail_mode=settings.merkurxtip_detail_mode,
         pinnbet_detail_mode=settings.pinnbet_detail_mode,
+        betole_detail_mode=settings.betole_detail_mode,
         notification_gap_threshold=settings.notification_gap_threshold,
         persist_inapp_notifications=settings.persist_inapp_notifications,
     )

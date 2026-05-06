@@ -704,6 +704,23 @@ function SettingsForm({
                 />
               </SettingRow>
 
+              <SettingRow
+                label="Detail mode · BetOle"
+                description="Full mode also fetches per-event football detail to add double chance."
+              >
+                <SelectControl
+                  value={draft.betole_detail_mode}
+                  options={options.detail_modes}
+                  getLabel={(mode) => detailModeLabels[mode]}
+                  onChange={(mode) =>
+                    setDraft((current) => ({
+                      ...current,
+                      betole_detail_mode: mode,
+                    }))
+                  }
+                />
+              </SettingRow>
+
               <SettingRow label="Min gap to notify" description="Smaller values can create more pings.">
                 <NumberControl
                   value={draft.notification_gap_threshold}

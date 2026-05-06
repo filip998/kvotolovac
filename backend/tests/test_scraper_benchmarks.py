@@ -61,6 +61,7 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert body["metadata"]["proxy_count"] == 0
     assert body["metadata"]["proxies_configured"] is False
     assert body["metadata"]["detail_modes"] == {
+        "betole": settings.betole_detail_mode,
         "merkurxtip": settings.merkurxtip_detail_mode,
         "pinnbet": settings.pinnbet_detail_mode,
         "soccerbet": settings.soccerbet_detail_mode,
@@ -158,6 +159,7 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
         soccerbet_detail_mode="partial",
         merkurxtip_detail_mode="full",
         pinnbet_detail_mode="partial",
+        betole_detail_mode="partial",
         notification_gap_threshold=1.5,
         persist_inapp_notifications=False,
     )

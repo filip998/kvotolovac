@@ -87,6 +87,17 @@ class BaseScraper(abc.ABC):
         if hasattr(self, "_detail_mode"):
             setattr(self, "_detail_mode", detail_mode)
 
+    def set_runtime_analysis_markets(
+        self,
+        analysis_markets: list[str],
+        *,
+        scrape_market_scope: str = "all",
+    ) -> None:
+        if hasattr(self, "_analysis_markets"):
+            setattr(self, "_analysis_markets", list(analysis_markets))
+        if hasattr(self, "_scrape_market_scope"):
+            setattr(self, "_scrape_market_scope", scrape_market_scope)
+
     @abc.abstractmethod
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         """Scrape odds for a given league and return raw data."""
