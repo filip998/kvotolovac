@@ -522,7 +522,7 @@ async def test_scrape_outcome_offers_football_uses_list_and_per_match_details(
     http_client.rate_limit_per_second = 4.0
     http_client.get_json.side_effect = fake_get_json
 
-    scraper = BetOleScraper(http_client=http_client)
+    scraper = BetOleScraper(http_client=http_client, detail_mode="full")
     results = await scraper.scrape_outcome_offers("football")
 
     assert len(results) == 8
@@ -545,6 +545,61 @@ async def test_scrape_outcome_offers_football_uses_list_and_per_match_details(
 
 
 @pytest.mark.asyncio
+async def test_scrape_outcome_offers_football_partial_mode_skips_details(
+    football_list_data,
+):
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del params, headers
+        if url == _FOOTBALL_LIST_URL:
+            return football_list_data
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    http_client = AsyncMock()
+    http_client.rate_limit_per_second = 4.0
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = BetOleScraper(http_client=http_client, detail_mode="partial")
+    results = await scraper.scrape_outcome_offers("football")
+
+    assert len(results) == 5
+    assert {r.market_type for r in results} == {
+        "football_result",
+        "football_total_goals",
+    }
+    requested_urls = [call.args[0] for call in http_client.get_json.call_args_list]
+    assert requested_urls == [_FOOTBALL_LIST_URL]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_football_skips_details_when_market_excluded(
+    football_list_data,
+):
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del params, headers
+        if url == _FOOTBALL_LIST_URL:
+            return football_list_data
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    http_client = AsyncMock()
+    http_client.rate_limit_per_second = 4.0
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = BetOleScraper(
+        http_client=http_client,
+        detail_mode="full",
+        analysis_markets=["football:football_result", "football:football_total_goals"],
+    )
+    results = await scraper.scrape_outcome_offers("football")
+
+    assert {r.market_type for r in results} == {
+        "football_result",
+        "football_total_goals",
+    }
+    requested_urls = [call.args[0] for call in http_client.get_json.call_args_list]
+    assert requested_urls == [_FOOTBALL_LIST_URL]
+
+
+@pytest.mark.asyncio
 async def test_scrape_outcome_offers_football_returns_list_offers_when_detail_fails(
     football_list_data,
 ):
@@ -558,7 +613,7 @@ async def test_scrape_outcome_offers_football_returns_list_offers_when_detail_fa
     http_client.rate_limit_per_second = 1.0
     http_client.get_json.side_effect = fake_get_json
 
-    scraper = BetOleScraper(http_client=http_client)
+    scraper = BetOleScraper(http_client=http_client, detail_mode="full")
     results = await scraper.scrape_outcome_offers("football")
 
     assert len(results) == 5
@@ -595,7 +650,7 @@ async def test_scrape_outcome_offers_football_overrides_detail_metadata_with_lis
     http_client.rate_limit_per_second = 4.0
     http_client.get_json.side_effect = fake_get_json
 
-    scraper = BetOleScraper(http_client=http_client)
+    scraper = BetOleScraper(http_client=http_client, detail_mode="full")
     results = await scraper.scrape_outcome_offers("football")
 
     dc = [r for r in results if r.market_type == "football_double_chance"]
@@ -642,7 +697,7 @@ async def test_scrape_outcome_offers_football_overrides_detail_metadata_when_lis
     http_client.rate_limit_per_second = 4.0
     http_client.get_json.side_effect = fake_get_json
 
-    scraper = BetOleScraper(http_client=http_client)
+    scraper = BetOleScraper(http_client=http_client, detail_mode="full")
     results = await scraper.scrape_outcome_offers("football")
 
     list_results = [
@@ -667,3 +722,35 @@ async def test_scrape_outcome_offers_non_football_returns_empty():
 
     assert results == []
     http_client.get_json.assert_not_called()
+
+
+def test_scheduler_applies_betole_detail_mode_and_analysis_markets():
+    from app.models.schemas import ScrapeRuntimeSettings
+    from app.services.scheduler import Scheduler
+
+    scraper = BetOleScraper(detail_mode="partial", analysis_markets=["all"])
+    assert scraper._detail_mode == "partial"
+
+    runtime_settings = ScrapeRuntimeSettings(
+        enabled_bookmakers=["betole"],
+        enabled_sports=["football"],
+        scrape_market_scope="all",
+        analysis_markets=["football:football_result"],
+        scrape_lookahead_hours=24,
+        scrape_interval_minutes=10,
+        max_middle_opportunities_per_market=10,
+        rate_limit_per_second=1.0,
+        meridian_rate_limit_per_second=2.0,
+        soccerbet_detail_mode="partial",
+        merkurxtip_detail_mode="partial",
+        pinnbet_detail_mode="partial",
+        betole_detail_mode="full",
+        notification_gap_threshold=1.5,
+        persist_inapp_notifications=False,
+    )
+
+    Scheduler(interval_minutes=1)._apply_runtime_scraper_settings(scraper, runtime_settings)
+
+    assert scraper._detail_mode == "full"
+    assert scraper._analysis_markets == ["football:football_result"]
+    assert scraper._should_fetch_football_details() is False

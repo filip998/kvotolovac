@@ -1169,12 +1169,18 @@ class Scheduler:
             else runtime_settings.rate_limit_per_second
         )
         scraper.set_runtime_rate_limit(rate_limit)
+        scraper.set_runtime_analysis_markets(
+            runtime_settings.analysis_markets,
+            scrape_market_scope=runtime_settings.scrape_market_scope,
+        )
         if bookmaker_id == "soccerbet":
             scraper.set_runtime_detail_mode(runtime_settings.soccerbet_detail_mode)
         if bookmaker_id == "merkurxtip":
             scraper.set_runtime_detail_mode(runtime_settings.merkurxtip_detail_mode)
         if bookmaker_id == "pinnbet":
             scraper.set_runtime_detail_mode(runtime_settings.pinnbet_detail_mode)
+        if bookmaker_id == "betole":
+            scraper.set_runtime_detail_mode(runtime_settings.betole_detail_mode)
 
     def _configure_notification_service_for_runtime_settings(
         self,

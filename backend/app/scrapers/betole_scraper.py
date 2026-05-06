@@ -5,11 +5,13 @@ import math
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Iterable, Literal
 
 from .base import BaseScraper
 from .http_client import HttpClient
 from ..config import settings
 from ..models.schemas import RawOddsData, RawOutcomeOffer
+from ..services.market_allowlist import analysis_market_allowlist
 from ..services.scrape_window import current_utc_time, lookahead_cutoff
 from ..services.text_normalizer import normalize_identity_text
 
@@ -503,8 +505,26 @@ def _get_detail_fetch_concurrency(http_client: HttpClient, match_count: int) -> 
 
 
 class BetOleScraper(BaseScraper):
-    def __init__(self, http_client: HttpClient | None = None) -> None:
+    def __init__(
+        self,
+        http_client: HttpClient | None = None,
+        detail_mode: Literal["partial", "full"] | None = None,
+        analysis_markets: Iterable[str] | None = None,
+        scrape_market_scope: str | None = None,
+    ) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
+        self._detail_mode = detail_mode or settings.betole_detail_mode
+        self._analysis_markets = (
+            list(analysis_markets)
+            if analysis_markets is not None
+            else list(
+                analysis_market_allowlist(
+                    settings.analysis_markets,
+                    legacy_scrape_market_scope=settings.scrape_market_scope,
+                ).tokens
+            )
+        )
+        self._scrape_market_scope = scrape_market_scope or settings.scrape_market_scope
 
     def get_bookmaker_id(self) -> str:
         return _BOOKMAKER_ID
@@ -631,16 +651,25 @@ class BetOleScraper(BaseScraper):
             return None
         return detail
 
+    def _should_fetch_football_details(self) -> bool:
+        if self._detail_mode != "full":
+            return False
+        allowlist = analysis_market_allowlist(
+            self._analysis_markets,
+            legacy_scrape_market_scope=self._scrape_market_scope,
+        )
+        return allowlist.allows(sport="football", market_type="football_double_chance")
+
     async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
-        """Scrape football outcome offers (result, double chance, 2.5 totals).
+        """Scrape football outcome offers (result, optional double chance, 2.5 totals).
 
         BetOle's bulk PUT endpoint that the OktagonBet sibling uses
         (``/ibet/offer/prematchesByIds.html``) returns an empty body
-        for anonymous and cookie-bearing requests alike, so this
-        implementation enriches each list match with a per-match GET
-        to pick up the double chance picks (codes 7/8/9) that are not
-        present in the list payload.  Result and totals are parsed
-        from the cheaper list response to halve the work.
+        for anonymous and cookie-bearing requests alike, so full mode
+        enriches each list match with a per-match GET to pick up the
+        double chance picks (codes 7/8/9) that are not present in the
+        list payload. Result and totals are always parsed from the
+        cheaper list response.
         """
 
         if sport != "football":
@@ -661,6 +690,18 @@ class BetOleScraper(BaseScraper):
         results: list[RawOutcomeOffer] = []
         for list_match in list_by_id.values():
             results.extend(_parse_football_outcome_match(list_match))
+
+        if not self._should_fetch_football_details():
+            logger.info(
+                (
+                    "BetOle scraped %d football outcome offers from %d matches "
+                    "(detail mode: %s, detail fetches skipped)"
+                ),
+                len(results),
+                len(list_by_id),
+                self._detail_mode,
+            )
+            return results
 
         match_ids = list(list_by_id.keys())
         concurrency = _get_detail_fetch_concurrency(self._http, len(match_ids))

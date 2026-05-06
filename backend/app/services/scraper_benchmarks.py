@@ -151,6 +151,7 @@ def _runtime_metadata(
         rate_limit_per_second=runtime_settings.rate_limit_per_second,
         meridian_rate_limit_per_second=runtime_settings.meridian_rate_limit_per_second,
         detail_modes={
+            "betole": runtime_settings.betole_detail_mode,
             "soccerbet": runtime_settings.soccerbet_detail_mode,
             "merkurxtip": runtime_settings.merkurxtip_detail_mode,
             "pinnbet": runtime_settings.pinnbet_detail_mode,
