@@ -522,6 +522,81 @@ class ScrapeResponse(BaseModel):
 
 
 # ── Scraper benchmarks ─────────────────────────────────────
+class BenchmarkRuntimeMetadataOut(BaseModel):
+    """Runtime configuration captured with a benchmark snapshot."""
+
+    scraper_mode: str
+    enabled_bookmakers: list[str] = Field(default_factory=list)
+    enabled_sports: list[str] = Field(default_factory=list)
+    scrape_market_scope: ScrapeMarketScope = "all"
+    analysis_markets: list[str] = Field(default_factory=list)
+    scrape_lookahead_hours: int = 0
+    rate_limit_per_second: float = 0
+    meridian_rate_limit_per_second: float = 0
+    detail_modes: dict[str, ScraperDetailMode] = Field(default_factory=dict)
+    proxies_configured: bool = False
+    proxy_count: int = 0
+
+
+class HttpTimingBenchmarkOut(BaseModel):
+    """Compact HTTP timing aggregate for benchmark snapshots."""
+
+    logical_requests: int = 0
+    attempts: int = 0
+    retries: int = 0
+    errors: int = 0
+    total_elapsed_ms: int = 0
+    total_rate_limit_wait_ms: int = 0
+    total_network_ms: int = 0
+    min_latency_ms: Optional[int] = None
+    avg_latency_ms: float = 0.0
+    max_latency_ms: Optional[int] = None
+    status_classes: dict[str, int] = Field(default_factory=dict)
+
+
+class ScraperRequestBenchmarkOut(HttpTimingBenchmarkOut):
+    """HTTP timing aggregate scoped to one scraper capability/method."""
+
+    lane: Optional[str] = None
+    sport: Optional[str] = None
+    league_id: Optional[str] = None
+    method: str
+
+
+class OutcomeNormalizationBenchmarkOut(BaseModel):
+    """Subphase metrics for football outcome-offer normalization."""
+
+    runs: int = 0
+    raw_outcome_offer_count: int = 0
+    normalized_outcome_offer_count: int = 0
+    unresolved_outcome_offer_count: int = 0
+    football_unique_event_count: int = 0
+    auto_created_football_team_count: int = 0
+    auto_create_football_teams_ms: int = 0
+    football_event_resolution_ms: int = 0
+    football_event_pair_ranking_ms: int = 0
+    football_event_slot_lookup_ms: int = 0
+    football_event_slot_mutation_ms: int = 0
+    row_normalization_ms: int = 0
+
+
+class EventResolverBenchmarkOut(BaseModel):
+    """Subphase metrics for resolved-event extraction/grouping/persistence."""
+
+    extract_event_candidates_ms: int = 0
+    football_raw_resolution_candidates_ms: int = 0
+    build_event_resolution_groups_ms: int = 0
+    persist_event_resolution_groups_ms: int = 0
+    candidate_count: int = 0
+    exact_group_count: int = 0
+    pair_check_count: int = 0
+    accepted_fuzzy_pair_count: int = 0
+    review_case_count: int = 0
+    persisted_resolved_event_count: int = 0
+    persisted_member_count: int = 0
+    persisted_review_case_count: int = 0
+
+
 class ScraperBenchmarkOut(BaseModel):
     """Per-scraper aggregates for the most recent scrape cycle."""
 
@@ -533,6 +608,8 @@ class ScraperBenchmarkOut(BaseModel):
     leagues_attempted: int
     leagues_failed: int
     failure_rate: float
+    http: HttpTimingBenchmarkOut = Field(default_factory=HttpTimingBenchmarkOut)
+    requests: list[ScraperRequestBenchmarkOut] = Field(default_factory=list)
 
 
 class CycleBenchmarkOut(BaseModel):
@@ -545,6 +622,14 @@ class CycleBenchmarkOut(BaseModel):
     total_raw_items: int = 0
     total_matches: int = 0
     total_odds: int = 0
+    metadata: Optional[BenchmarkRuntimeMetadataOut] = None
+    phase_durations_ms: dict[str, int] = Field(default_factory=dict)
+    outcome_normalization: OutcomeNormalizationBenchmarkOut = Field(
+        default_factory=OutcomeNormalizationBenchmarkOut
+    )
+    event_resolver: EventResolverBenchmarkOut = Field(
+        default_factory=EventResolverBenchmarkOut
+    )
     scrapers: list[ScraperBenchmarkOut] = Field(default_factory=list)
 
 

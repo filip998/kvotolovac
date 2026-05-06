@@ -46,7 +46,7 @@ from ..services.event_resolver import (
     _same_time_slot_orientation,
     resolve_and_persist_events,
 )
-from ..services.outcome_normalizer import normalize_outcome_offers_with_diagnostics
+from ..services.outcome_normalizer import normalize_outcome_offers_with_benchmark
 from ..services.notifications import NotificationService, InAppNotificationProvider
 from ..services.scrape_window import (
     configured_lookahead_hours,
@@ -228,15 +228,27 @@ def _normalize_pipeline_batch(
     *,
     log_unresolved_shared_platform: bool = True,
 ) -> _NormalizedPipelineBatch:
+    threshold_started_at = time.perf_counter()
     normalized_odds, unresolved_odds, team_review_cases = normalize_odds_with_diagnostics(
         raw_odds,
         log_unresolved_shared_platform=log_unresolved_shared_platform,
     )
+    benchmark_recorder.record_phase_duration(
+        "normalize_threshold_odds",
+        int((time.perf_counter() - threshold_started_at) * 1000),
+    )
+    outcome_started_at = time.perf_counter()
     (
         normalized_outcome_offers,
         unresolved_outcome_offers,
         outcome_team_review_cases,
-    ) = normalize_outcome_offers_with_diagnostics(raw_outcome_offers)
+        outcome_benchmark,
+    ) = normalize_outcome_offers_with_benchmark(raw_outcome_offers)
+    benchmark_recorder.record_phase_duration(
+        "normalize_outcome_offers",
+        int((time.perf_counter() - outcome_started_at) * 1000),
+    )
+    benchmark_recorder.record_outcome_normalization(outcome_benchmark)
     return _NormalizedPipelineBatch(
         odds=normalized_odds,
         outcome_offers=normalized_outcome_offers,
@@ -1113,30 +1125,36 @@ class Scheduler:
         capability: ScraperCapability,
         runtime_settings: ScrapeRuntimeSettings,
     ) -> _ScrapeBatch:
-        if capability.lane == "threshold_odds":
-            if capability.league_id is None:
-                raise ValueError("threshold_odds capability is missing league_id")
-            return _ScrapeBatch(
-                capability=capability,
-                raw_odds=tuple(
-                    await self._scrape_one(
-                        scraper,
-                        capability.league_id,
-                        lookahead_hours=runtime_settings.scrape_lookahead_hours,
-                    )
-                ),
-            )
-        if capability.lane == "outcome_offer":
-            return _ScrapeBatch(
-                capability=capability,
-                raw_outcome_offers=tuple(
-                    await self._scrape_outcome_one(
-                        scraper,
-                        capability.sport,
-                        lookahead_hours=runtime_settings.scrape_lookahead_hours,
-                    )
-                ),
-            )
+        with benchmark_recorder.scrape_request_context(
+            bookmaker_id=scraper.get_bookmaker_id(),
+            lane=capability.lane,
+            sport=capability.sport,
+            league_id=capability.league_id,
+        ):
+            if capability.lane == "threshold_odds":
+                if capability.league_id is None:
+                    raise ValueError("threshold_odds capability is missing league_id")
+                return _ScrapeBatch(
+                    capability=capability,
+                    raw_odds=tuple(
+                        await self._scrape_one(
+                            scraper,
+                            capability.league_id,
+                            lookahead_hours=runtime_settings.scrape_lookahead_hours,
+                        )
+                    ),
+                )
+            if capability.lane == "outcome_offer":
+                return _ScrapeBatch(
+                    capability=capability,
+                    raw_outcome_offers=tuple(
+                        await self._scrape_outcome_one(
+                            scraper,
+                            capability.sport,
+                            lookahead_hours=runtime_settings.scrape_lookahead_hours,
+                        )
+                    ),
+                )
         raise ValueError(f"Unsupported scraper capability lane: {capability.lane}")
 
     def _apply_runtime_scraper_settings(
@@ -1194,7 +1212,10 @@ class Scheduler:
             self._scan_completed_tasks = 0
             self._scan_failed_tasks = 0
             self._scan_active_tasks = 0
-            benchmark_recorder.begin_cycle(cycle_started_at_iso)
+            benchmark_recorder.begin_cycle(
+                cycle_started_at_iso,
+                runtime_settings=runtime_settings,
+            )
             logger.info("Starting scrape cycle at %s", cycle_started_at_iso)
 
             enabled_bookmakers = set(runtime_settings.enabled_bookmakers)
@@ -1233,6 +1254,7 @@ class Scheduler:
                 item for batch in scrape_batches for item in batch.raw_outcome_offers
             ]
             scrape_duration_ms = int((time.perf_counter() - scrape_started_at) * 1000)
+            benchmark_recorder.record_phase_duration("scrape", scrape_duration_ms)
             logger.info(
                 "Scrape phase complete: %d tasks, %d raw odds items, %d raw outcome offers in %d ms",
                 len(scrape_tasks),
@@ -1242,11 +1264,16 @@ class Scheduler:
             )
 
             self._scan_phase = "registering"
+            registering_started_at = time.perf_counter()
             for scraper in scrapers:
                 await odds_store.upsert_bookmaker(
                     id=scraper.get_bookmaker_id(),
                     name=scraper.get_bookmaker_name(),
                 )
+            benchmark_recorder.record_phase_duration(
+                "register_bookmakers",
+                int((time.perf_counter() - registering_started_at) * 1000),
+            )
 
             self._scan_phase = "normalizing"
             normalized = []
@@ -1279,6 +1306,7 @@ class Scheduler:
             applied_auto_merges: list[tuple[int, int]] = []
             auto_approved_team_review_case_ids: list[int] = []
             try:
+                team_auto_resolution_started_at = time.perf_counter()
                 (
                     same_time_auto_reviews,
                     same_time_auto_merges,
@@ -1303,6 +1331,10 @@ class Scheduler:
                     applied_auto_merges = await self._apply_canonical_merges(
                         pending_auto_merges
                     )
+                benchmark_recorder.record_phase_duration(
+                    "team_auto_resolution",
+                    int((time.perf_counter() - team_auto_resolution_started_at) * 1000),
+                )
                 if auto_approved_team_reviews or applied_auto_merges:
                     full_normalized_batch = _normalize_pipeline_batch(
                         all_raw,
@@ -1326,6 +1358,7 @@ class Scheduler:
 
                 self._scan_phase = "storing"
                 cycle_scraped_at = datetime.utcnow().isoformat()
+                persist_snapshot_started_at = time.perf_counter()
                 persisted_snapshot = await odds_store.persist_scrape_snapshot_batch(
                     snapshot_at=cycle_scraped_at,
                     odds=normalized,
@@ -1342,18 +1375,33 @@ class Scheduler:
                         "auto_approved_team_review_case_ids"
                     ]
                 )
-                await resolve_and_persist_events(
+                benchmark_recorder.record_phase_duration(
+                    "persist_snapshot",
+                    int((time.perf_counter() - persist_snapshot_started_at) * 1000),
+                )
+
+                resolve_events_started_at = time.perf_counter()
+                event_resolver_result = await resolve_and_persist_events(
                     snapshot_id=snapshot_id,
                     raw_odds=all_raw,
                     raw_outcome_offers=all_raw_outcome_offers,
                     normalized_odds=event_resolution_batch.odds,
                     normalized_outcome_offers=event_resolution_batch.outcome_offers,
                 )
+                benchmark_recorder.record_phase_duration(
+                    "resolve_events",
+                    int((time.perf_counter() - resolve_events_started_at) * 1000),
+                )
+                if event_resolver_result.benchmark is not None:
+                    benchmark_recorder.record_event_resolver(
+                        event_resolver_result.benchmark
+                    )
 
                 self._scan_phase = "analyzing"
                 canonical_analysis = _CanonicalAnalysisResult()
                 canonical_analysis_failed = False
                 canonical_analysis_error: str | None = None
+                analyze_started_at = time.perf_counter()
                 try:
                     canonical_analysis = await _load_current_canonical_analysis(
                         match_ids=seen_matches,
@@ -1366,8 +1414,13 @@ class Scheduler:
                     canonical_analysis_failed = True
                     canonical_analysis_error = f"{type(exc).__name__}: {exc}"
                     logger.exception("Canonical opportunity analysis failed")
+                benchmark_recorder.record_phase_duration(
+                    "analyze_opportunities",
+                    int((time.perf_counter() - analyze_started_at) * 1000),
+                )
                 opportunities = list(canonical_analysis.opportunities)
 
+                publish_opportunities_started_at = time.perf_counter()
                 if not canonical_analysis_failed:
                     await odds_store.publish_opportunities(
                         snapshot_id=snapshot_id,
@@ -1381,6 +1434,10 @@ class Scheduler:
                         snapshot_at=cycle_scraped_at,
                         error=canonical_analysis_error,
                     )
+                benchmark_recorder.record_phase_duration(
+                    "publish_opportunities",
+                    int((time.perf_counter() - publish_opportunities_started_at) * 1000),
+                )
 
                 if canonical_analysis_failed:
                     canonical_shadow = _CanonicalShadowResult(
@@ -1401,7 +1458,12 @@ class Scheduler:
                 self._configure_notification_service_for_runtime_settings(
                     runtime_settings
                 )
+                notify_started_at = time.perf_counter()
                 notified = await self._notification_service.notify_opportunities(opportunities)
+                benchmark_recorder.record_phase_duration(
+                    "notify_opportunities",
+                    int((time.perf_counter() - notify_started_at) * 1000),
+                )
             except Exception:
                 await odds_store.rollback_pending_transaction()
                 rollback_failed = False

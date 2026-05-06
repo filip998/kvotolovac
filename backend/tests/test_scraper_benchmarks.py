@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from app.config import settings
 from app.database import close_db, init_db
 from app.main import app
+from app.models.schemas import ScrapeRuntimeSettings
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
 from app.services import scraper_benchmarks
@@ -55,6 +56,23 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert body["cycle_finished_at"] is not None
     assert body["scrape_duration_ms"] >= 0
     assert body["cycle_duration_ms"] >= 0
+    assert body["metadata"]["scraper_mode"] == settings.scraper_mode
+    assert set(body["metadata"]["enabled_bookmakers"]) == {"mozzart", "meridian"}
+    assert body["metadata"]["proxy_count"] == 0
+    assert body["metadata"]["proxies_configured"] is False
+    assert body["metadata"]["detail_modes"] == {
+        "merkurxtip": settings.merkurxtip_detail_mode,
+        "pinnbet": settings.pinnbet_detail_mode,
+        "soccerbet": settings.soccerbet_detail_mode,
+    }
+    assert "scrape" in body["phase_durations_ms"]
+    assert "normalize_threshold_odds" in body["phase_durations_ms"]
+    assert "normalize_outcome_offers" in body["phase_durations_ms"]
+    assert "persist_snapshot" in body["phase_durations_ms"]
+    assert "resolve_events" in body["phase_durations_ms"]
+    assert body["outcome_normalization"]["runs"] >= 1
+    assert body["outcome_normalization"]["raw_outcome_offer_count"] >= 0
+    assert body["event_resolver"]["candidate_count"] >= 0
 
     bm_ids = {s["bookmaker_id"] for s in body["scrapers"]}
     assert {"mozzart", "meridian"}.issubset(bm_ids)
@@ -64,6 +82,8 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
         assert entry["matches_after_normalization"] >= 0
         assert entry["odds_count"] >= 0
         assert 0.0 <= entry["failure_rate"] <= 1.0
+        assert entry["http"]["logical_requests"] >= 0
+        assert isinstance(entry["requests"], list)
 
     # Files written
     out_dir = Path(settings.benchmark_dir)
@@ -76,6 +96,10 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert len(ndjson) == 1
     parsed = json.loads(ndjson[0])
     assert parsed["scrapers"]
+    assert parsed["metadata"]["enabled_bookmakers"]
+    assert parsed["phase_durations_ms"]
+    assert "outcome_normalization" in parsed
+    assert "event_resolver" in parsed
 
 
 @pytest.mark.asyncio
@@ -113,3 +137,85 @@ async def test_failed_scraper_increments_failure_rate(monkeypatch, client: Async
     assert by_bm["mozzart"]["failure_rate"] == 0.5
     assert by_bm["meridian"]["raw_items"] == 0
     assert by_bm["mozzart"]["raw_items"] > 0
+
+
+def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
+    monkeypatch,
+    tmp_path,
+):
+    secret_proxy = "http://user:secret-password@example.test:8080"
+    monkeypatch.setattr(settings, "proxy_list", secret_proxy)
+    runtime_settings = ScrapeRuntimeSettings(
+        enabled_bookmakers=["betole"],
+        enabled_sports=["football"],
+        scrape_market_scope="all",
+        analysis_markets=["football:football_result"],
+        scrape_lookahead_hours=36,
+        scrape_interval_minutes=10,
+        max_middle_opportunities_per_market=10,
+        rate_limit_per_second=1.0,
+        meridian_rate_limit_per_second=2.0,
+        soccerbet_detail_mode="partial",
+        merkurxtip_detail_mode="full",
+        pinnbet_detail_mode="partial",
+        notification_gap_threshold=1.5,
+        persist_inapp_notifications=False,
+    )
+
+    scraper_benchmarks.recorder.begin_cycle(
+        "2026-05-06T12:00:00",
+        runtime_settings=runtime_settings,
+    )
+    scraper_benchmarks.recorder.record_scrape_task(
+        bookmaker_id="betole",
+        duration_ms=50,
+        raw_items=12,
+        failed=False,
+    )
+    with scraper_benchmarks.recorder.scrape_request_context(
+        bookmaker_id="betole",
+        lane="outcome_offer",
+        sport="football",
+        league_id=None,
+    ):
+        scraper_benchmarks.recorder.record_http_request(
+            method="GET",
+            elapsed_ms=120,
+            attempts=2,
+            rate_limit_wait_ms=35,
+            network_ms=70,
+            status_codes=[429, 200],
+            error=False,
+        )
+    scraper_benchmarks.recorder.record_phase_durations(
+        scrape_duration_ms=50,
+        cycle_duration_ms=80,
+    )
+
+    snapshot = scraper_benchmarks.recorder.publish(
+        matches_per_bookmaker={"betole": 3},
+        odds_per_bookmaker={"betole": 12},
+        total_unique_matches=3,
+    )
+
+    assert snapshot.metadata is not None
+    assert snapshot.metadata.proxies_configured is True
+    assert snapshot.metadata.proxy_count == 1
+    assert snapshot.metadata.analysis_markets == ["football:football_result"]
+    scraper_row = snapshot.scrapers[0]
+    assert scraper_row.http.logical_requests == 1
+    assert scraper_row.http.attempts == 2
+    assert scraper_row.http.retries == 1
+    assert scraper_row.http.total_rate_limit_wait_ms == 35
+    assert scraper_row.http.total_network_ms == 70
+    assert scraper_row.http.status_classes == {"2xx": 1, "4xx": 1}
+    assert len(scraper_row.requests) == 1
+    request_row = scraper_row.requests[0]
+    assert request_row.lane == "outcome_offer"
+    assert request_row.sport == "football"
+    assert request_row.method == "GET"
+
+    out_dir = Path(settings.benchmark_dir)
+    persisted = "\n".join(path.read_text() for path in out_dir.glob("*"))
+    assert "secret-password" not in persisted
+    assert secret_proxy not in persisted
