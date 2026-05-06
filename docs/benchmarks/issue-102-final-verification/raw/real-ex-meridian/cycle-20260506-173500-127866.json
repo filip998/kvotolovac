@@ -1,0 +1,911 @@
+{
+  "cycle_duration_ms": 64146,
+  "cycle_finished_at": "2026-05-06T17:35:00.127442",
+  "cycle_started_at": "2026-05-06T17:33:55.981359",
+  "event_resolver": {
+    "accepted_fuzzy_pair_count": 181,
+    "build_event_resolution_groups_ms": 195,
+    "candidate_count": 1529,
+    "exact_group_count": 471,
+    "extract_event_candidates_ms": 14008,
+    "football_raw_resolution_candidates_ms": 51,
+    "fuzzy_score_count": 5216,
+    "pair_check_count": 3170,
+    "persist_event_resolution_groups_ms": 236,
+    "persisted_member_count": 1529,
+    "persisted_resolved_event_count": 290,
+    "persisted_review_case_count": 1487,
+    "reused_football_event_resolution_count": 968,
+    "review_case_count": 1487
+  },
+  "metadata": {
+    "analysis_markets": [
+      "all"
+    ],
+    "bookmaker_rate_limits": {},
+    "detail_modes": {
+      "betole": "partial",
+      "merkurxtip": "partial",
+      "pinnbet": "partial",
+      "soccerbet": "partial"
+    },
+    "enabled_bookmakers": [
+      "mozzart",
+      "maxbet",
+      "oktagonbet",
+      "admiralbet",
+      "balkanbet",
+      "merkurxtip",
+      "pinnbet",
+      "soccerbet",
+      "superbet",
+      "betole",
+      "365",
+      "volcanobet"
+    ],
+    "enabled_sports": [
+      "basketball",
+      "football"
+    ],
+    "meridian_rate_limit_per_second": 2.0,
+    "proxies_configured": false,
+    "proxy_count": 0,
+    "rate_limit_per_second": 1.0,
+    "scrape_lookahead_hours": 24,
+    "scrape_market_scope": "all",
+    "scrape_type_rate_limits": {},
+    "scraper_mode": "real"
+  },
+  "outcome_normalization": {
+    "auto_create_football_teams_ms": 274,
+    "auto_created_football_team_count": 0,
+    "football_event_fuzzy_score_count": 0,
+    "football_event_pair_candidate_count": 0,
+    "football_event_pair_ranking_ms": 1010,
+    "football_event_resolution_ms": 2371,
+    "football_event_slot_lookup_ms": 1264,
+    "football_event_slot_mutation_ms": 3,
+    "football_unique_event_count": 1270,
+    "normalized_outcome_offer_count": 7092,
+    "raw_outcome_offer_count": 9591,
+    "row_normalization_ms": 4139,
+    "runs": 2,
+    "unresolved_outcome_offer_count": 1295
+  },
+  "phase_durations_ms": {
+    "analyze_opportunities": 1335,
+    "normalize_outcome_offers": 6786,
+    "normalize_threshold_odds": 4152,
+    "notify_opportunities": 1,
+    "persist_snapshot": 1015,
+    "publish_opportunities": 60,
+    "register_bookmakers": 27,
+    "resolve_events": 14442,
+    "scrape": 31706,
+    "team_auto_resolution": 4607
+  },
+  "scrape_duration_ms": 31706,
+  "scrapers": [
+    {
+      "bookmaker_id": "365",
+      "duration_ms": 3049,
+      "failure_rate": 0.0,
+      "http": {
+        "attempts": 3,
+        "avg_latency_ms": 1484.67,
+        "errors": 0,
+        "logical_requests": 3,
+        "max_latency_ms": 2447,
+        "min_latency_ms": 547,
+        "retries": 0,
+        "status_classes": {
+          "2xx": 3
+        },
+        "total_elapsed_ms": 4454,
+        "total_network_ms": 128,
+        "total_rate_limit_wait_ms": 4301
+      },
+      "leagues_attempted": 2,
+      "leagues_failed": 0,
+      "matches_after_normalization": 103,
+      "odds_count": 1122,
+      "raw_items": 1306,
+      "requests": [
+        {
+          "attempts": 1,
+          "avg_latency_ms": 547.0,
+          "errors": 0,
+          "lane": "outcome_offer",
+          "league_id": null,
+          "logical_requests": 1,
+          "max_latency_ms": 547,
+          "method": "GET",
+          "min_latency_ms": 547,
+          "retries": 0,
+          "sport": "football",
+          "status_classes": {
+            "2xx": 1
+          },
+          "total_elapsed_ms": 547,
+          "total_network_ms": 75,
+          "total_rate_limit_wait_ms": 451
+        },
+        {
+          "attempts": 2,
+          "avg_latency_ms": 1953.5,
+          "errors": 0,
+          "lane": "threshold_odds",
+          "league_id": "basketball",
+          "logical_requests": 2,
+          "max_latency_ms": 2447,
+          "method": "GET",
+          "min_latency_ms": 1460,
+          "retries": 0,
+          "sport": "basketball",
+          "status_classes": {
+            "2xx": 2
+          },
+          "total_elapsed_ms": 3907,
+          "total_network_ms": 53,
+          "total_rate_limit_wait_ms": 3850
+        }
+      ]
+    },
+    {
+      "bookmaker_id": "admiralbet",
+      "duration_ms": 3174,
+      "failure_rate": 0.0,
+      "http": {
+        "attempts": 3,
+        "avg_latency_ms": 1535.67,
+        "errors": 0,
+        "logical_requests": 3,
+        "max_latency_ms": 2500,
+        "min_latency_ms": 637,
+        "retries": 0,
+        "status_classes": {
+          "2xx": 3
+        },
+        "total_elapsed_ms": 4607,
+        "total_network_ms": 272,
+        "total_rate_limit_wait_ms": 4302
+      },
+      "leagues_attempted": 2,
+      "leagues_failed": 0,
+      "matches_after_normalization": 131,
+      "odds_count": 1153,
+      "raw_items": 1368,
+      "requests": [
+        {
+          "attempts": 1,
+          "avg_latency_ms": 637.0,
+          "errors": 0,
+          "lane": "outcome_offer",
+          "league_id": null,
+          "logical_requests": 1,
+          "max_latency_ms": 637,
+          "method": "GET",
+          "min_latency_ms": 637,
+          "retries": 0,
+          "sport": "football",
+          "status_classes": {
+            "2xx": 1
+          },
+          "total_elapsed_ms": 637,
+          "total_network_ms": 169,
+          "total_rate_limit_wait_ms": 449
+        },
+        {
+          "attempts": 2,
+          "avg_latency_ms": 1985.0,
+          "errors": 0,
+          "lane": "threshold_odds",
+          "league_id": "basketball",
+          "logical_requests": 2,
+          "max_latency_ms": 2500,
+          "method": "GET",
+          "min_latency_ms": 1470,
+          "retries": 0,
+          "sport": "basketball",
+          "status_classes": {
+            "2xx": 2
+          },
+          "total_elapsed_ms": 3970,
+          "total_network_ms": 103,
+          "total_rate_limit_wait_ms": 3853
+        }
+      ]
+    },
+    {
+      "bookmaker_id": "balkanbet",
+      "duration_ms": 3445,
+      "failure_rate": 0.0,
+      "http": {
+        "attempts": 3,
+        "avg_latency_ms": 1635.33,
+        "errors": 0,
+        "logical_requests": 3,
+        "max_latency_ms": 2547,
+        "min_latency_ms": 860,
+        "retries": 0,
+        "status_classes": {
+          "2xx": 3
+        },
+        "total_elapsed_ms": 4906,
+        "total_network_ms": 590,
+        "total_rate_limit_wait_ms": 4304
+      },
+      "leagues_attempted": 2,
+      "leagues_failed": 0,
+      "matches_after_normalization": 57,
+      "odds_count": 813,
+      "raw_items": 1538,
+      "requests": [
+        {
+          "attempts": 1,
+          "avg_latency_ms": 860.0,
+          "errors": 0,
+          "lane": "outcome_offer",
+          "league_id": null,
+          "logical_requests": 1,
+          "max_latency_ms": 860,
+          "method": "GET",
+          "min_latency_ms": 860,
+          "retries": 0,
+          "sport": "football",
+          "status_classes": {
+            "2xx": 1
+          },
+          "total_elapsed_ms": 860,
+          "total_network_ms": 405,
+          "total_rate_limit_wait_ms": 447
+        },
+        {
+          "attempts": 2,
+          "avg_latency_ms": 2023.0,
+          "errors": 0,
+          "lane": "threshold_odds",
+          "league_id": "basketball",
+          "logical_requests": 2,
+          "max_latency_ms": 2547,
+          "method": "GET",
+          "min_latency_ms": 1499,
+          "retries": 0,
+          "sport": "basketball",
+          "status_classes": {
+            "2xx": 2
+          },
+          "total_elapsed_ms": 4046,
+          "total_network_ms": 185,
+          "total_rate_limit_wait_ms": 3857
+        }
+      ]
+    },
+    {
+      "bookmaker_id": "betole",
+      "duration_ms": 3166,
+      "failure_rate": 0.0,
+      "http": {
+        "attempts": 3,
+        "avg_latency_ms": 1532.33,
+        "errors": 0,
+        "logical_requests": 3,
+        "max_latency_ms": 2544,
+        "min_latency_ms": 590,
+        "retries": 0,
+        "status_classes": {
+          "2xx": 3
+        },
+        "total_elapsed_ms": 4597,
+        "total_network_ms": 283,
+        "total_rate_limit_wait_ms": 4307
+      },
+      "leagues_attempted": 2,
+      "leagues_failed": 0,
+      "matches_after_normalization": 191,
+      "odds_count": 900,
+      "raw_items": 900,
+      "requests": [
+        {
+          "attempts": 1,
+          "avg_latency_ms": 590.0,
+          "errors": 0,
+          "lane": "outcome_offer",
+          "league_id": null,
+          "logical_requests": 1,
+          "max_latency_ms": 590,
+          "method": "GET",
+          "min_latency_ms": 590,
+          "retries": 0,
+          "sport": "football",
+          "status_classes": {
+            "2xx": 1
+          },
+          "total_elapsed_ms": 590,
+          "total_network_ms": 140,
+          "total_rate_limit_wait_ms": 446
+        },
+        {
+          "attempts": 2,
+          "avg_latency_ms": 2003.5,
+          "errors": 0,
+          "lane": "threshold_odds",
+          "league_id": "basketball",
+          "logical_requests": 2,
+          "max_latency_ms": 2544,
+          "method": "GET",
+          "min_latency_ms": 1463,
+          "retries": 0,
+          "sport": "basketball",
+          "status_classes": {
+            "2xx": 2
+          },
+          "total_elapsed_ms": 4007,
+          "total_network_ms": 143,
+          "total_rate_limit_wait_ms": 3861
+        }
+      ]
+    },
+    {
+      "bookmaker_id": "maxbet",
+      "duration_ms": 8554,
+      "failure_rate": 0.0,
+      "http": {
+        "attempts": 5,
+        "avg_latency_ms": 1996.6,
+        "errors": 0,
+        "logical_requests": 5,
+        "max_latency_ms": 3116,
+        "min_latency_ms": 802,
+        "retries": 0,
+        "status_classes": {
+          "2xx": 5
+        },
+        "total_elapsed_ms": 9983,
+        "total_network_ms": 1124,
+        "total_rate_limit_wait_ms": 8818
+      },
+      "leagues_attempted": 2,
+      "leagues_failed": 0,
+      "matches_after_normalization": 125,
+      "odds_count": 1698,
+      "raw_items": 1844,
+      "requests": [
+        {
+          "attempts": 2,
+          "avg_latency_ms": 1959.0,
+          "errors": 0,
+          "lane": "outcome_offer",
+          "league_id": null,
+          "logical_requests": 2,
+          "max_latency_ms": 3116,
+          "method": "GET",
+          "min_latency_ms": 802,
+          "retries": 0,
+          "sport": "football",
+          "status_classes": {
+            "2xx": 2
+          },
+          "total_elapsed_ms": 3918,
+          "total_network_ms": 824,
+          "total_rate_limit_wait_ms": 3058
+        },
+        {
+          "attempts": 3,
+          "avg_latency_ms": 2021.67,
+          "errors": 0,
+          "lane": "threshold_odds",
+          "league_id": "basketball",
+          "logical_requests": 3,
+          "max_latency_ms": 2478,
+          "method": "GET",
+          "min_latency_ms": 1461,
+          "retries": 0,
+          "sport": "basketball",
+          "status_classes": {
+            "2xx": 3
+          },
+          "total_elapsed_ms": 6065,
+          "total_network_ms": 300,
+          "total_rate_limit_wait_ms": 5760
+        }
+      ]
+    },
+    {
+      "bookmaker_id": "merkurxtip",
+      "duration_ms": 3961,
+      "failure_rate": 0.0,
+      "http": {
+        "attempts": 3,
+        "avg_latency_ms": 1318.0,
+        "errors": 0,
+        "logical_requests": 3,
+        "max_latency_ms": 1983,
+        "min_latency_ms": 507,
+        "retries": 0,
+        "status_classes": {
+          "2xx": 3
+        },
+        "total_elapsed_ms": 3954,
+        "total_network_ms": 147,
+        "total_rate_limit_wait_ms": 3799
+      },
+      "leagues_attempted": 2,
+      "leagues_failed": 0,
+      "matches_after_normalization": 106,
+      "odds_count": 784,
+      "raw_items": 913,
+      "requests": [
+        {
+          "attempts": 1,
+          "avg_latency_ms": 1464.0,
+          "errors": 0,
+          "lane": "outcome_offer",
+          "league_id": null,
+          "logical_requests": 1,
+          "max_latency_ms": 1464,
+          "method": "GET",
+          "min_latency_ms": 1464,
+          "retries": 0,
+          "sport": "football",
+          "status_classes": {
+            "2xx": 1
+          },
+          "total_elapsed_ms": 1464,
+          "total_network_ms": 26,
+          "total_rate_limit_wait_ms": 1435
+        },
+        {
+          "attempts": 2,
+          "avg_latency_ms": 1245.0,
+          "errors": 0,
+          "lane": "threshold_odds",
+          "league_id": "basketball",
+          "logical_requests": 2,
+          "max_latency_ms": 1983,
+          "method": "GET",
+          "min_latency_ms": 507,
+          "retries": 0,
+          "sport": "basketball",
+          "status_classes": {
+            "2xx": 2
+          },
+          "total_elapsed_ms": 2490,
+          "total_network_ms": 121,
+          "total_rate_limit_wait_ms": 2364
+        }
+      ]
+    },
+    {
+      "bookmaker_id": "mozzart",
+      "duration_ms": 19743,
+      "failure_rate": 0.0,
+      "http": {
+        "attempts": 15,
+        "avg_latency_ms": 1304.6,
+        "errors": 0,
+        "logical_requests": 15,
+        "max_latency_ms": 2077,
+        "min_latency_ms": 638,
+        "retries": 0,
+        "status_classes": {
+          "2xx": 15
+        },
+        "total_elapsed_ms": 19569,
+        "total_network_ms": 4665,
+        "total_rate_limit_wait_ms": 14827
+      },
+      "leagues_attempted": 2,
+      "leagues_failed": 0,
+      "matches_after_normalization": 87,
+      "odds_count": 567,
+      "raw_items": 927,
+      "requests": [
+        {
+          "attempts": 12,
+          "avg_latency_ms": 1248.58,
+          "errors": 0,
+          "lane": "outcome_offer",
+          "league_id": null,
+          "logical_requests": 12,
+          "max_latency_ms": 2077,
+          "method": "POST",
+          "min_latency_ms": 980,
+          "retries": 0,
+          "sport": "football",
+          "status_classes": {
+            "2xx": 12
+          },
+          "total_elapsed_ms": 14983,
+          "total_network_ms": 4185,
+          "total_rate_limit_wait_ms": 10730
+        },
+        {
+          "attempts": 3,
+          "avg_latency_ms": 1528.67,
+          "errors": 0,
+          "lane": "threshold_odds",
+          "league_id": "basketball",
+          "logical_requests": 3,
+          "max_latency_ms": 1989,
+          "method": "POST",
+          "min_latency_ms": 638,
+          "retries": 0,
+          "sport": "basketball",
+          "status_classes": {
+            "2xx": 3
+          },
+          "total_elapsed_ms": 4586,
+          "total_network_ms": 480,
+          "total_rate_limit_wait_ms": 4097
+        }
+      ]
+    },
+    {
+      "bookmaker_id": "oktagonbet",
+      "duration_ms": 10407,
+      "failure_rate": 0.0,
+      "http": {
+        "attempts": 5,
+        "avg_latency_ms": 2359.6,
+        "errors": 0,
+        "logical_requests": 5,
+        "max_latency_ms": 4739,
+        "min_latency_ms": 632,
+        "retries": 0,
+        "status_classes": {
+          "2xx": 5
+        },
+        "total_elapsed_ms": 11798,
+        "total_network_ms": 2359,
+        "total_rate_limit_wait_ms": 9070
+      },
+      "leagues_attempted": 2,
+      "leagues_failed": 0,
+      "matches_after_normalization": 191,
+      "odds_count": 1989,
+      "raw_items": 2078,
+      "requests": [
+        {
+          "attempts": 1,
+          "avg_latency_ms": 632.0,
+          "errors": 0,
+          "lane": "outcome_offer",
+          "league_id": null,
+          "logical_requests": 1,
+          "max_latency_ms": 632,
+          "method": "GET",
+          "min_latency_ms": 632,
+          "retries": 0,
+          "sport": "football",
+          "status_classes": {
+            "2xx": 1
+          },
+          "total_elapsed_ms": 632,
+          "total_network_ms": 189,
+          "total_rate_limit_wait_ms": 436
+        },
+        {
+          "attempts": 1,
+          "avg_latency_ms": 4739.0,
+          "errors": 0,
+          "lane": "outcome_offer",
+          "league_id": null,
+          "logical_requests": 1,
+          "max_latency_ms": 4739,
+          "method": "PUT",
+          "min_latency_ms": 4739,
+          "retries": 0,
+          "sport": "football",
+          "status_classes": {
+            "2xx": 1
+          },
+          "total_elapsed_ms": 4739,
+          "total_network_ms": 1637,
+          "total_rate_limit_wait_ms": 2809
+        },
+        {
+          "attempts": 2,
+          "avg_latency_ms": 1974.0,
+          "errors": 0,
+          "lane": "threshold_odds",
+          "league_id": "basketball",
+          "logical_requests": 2,
+          "max_latency_ms": 2476,
+          "method": "GET",
+          "min_latency_ms": 1472,
+          "retries": 0,
+          "sport": "basketball",
+          "status_classes": {
+            "2xx": 2
+          },
+          "total_elapsed_ms": 3948,
+          "total_network_ms": 79,
+          "total_rate_limit_wait_ms": 3868
+        },
+        {
+          "attempts": 1,
+          "avg_latency_ms": 2479.0,
+          "errors": 0,
+          "lane": "threshold_odds",
+          "league_id": "basketball",
+          "logical_requests": 1,
+          "max_latency_ms": 2479,
+          "method": "PUT",
+          "min_latency_ms": 2479,
+          "retries": 0,
+          "sport": "basketball",
+          "status_classes": {
+            "2xx": 1
+          },
+          "total_elapsed_ms": 2479,
+          "total_network_ms": 454,
+          "total_rate_limit_wait_ms": 1957
+        }
+      ]
+    },
+    {
+      "bookmaker_id": "pinnbet",
+      "duration_ms": 4435,
+      "failure_rate": 0.0,
+      "http": {
+        "attempts": 3,
+        "avg_latency_ms": 1470.67,
+        "errors": 0,
+        "logical_requests": 3,
+        "max_latency_ms": 2012,
+        "min_latency_ms": 520,
+        "retries": 0,
+        "status_classes": {
+          "2xx": 3
+        },
+        "total_elapsed_ms": 4412,
+        "total_network_ms": 549,
+        "total_rate_limit_wait_ms": 3786
+      },
+      "leagues_attempted": 2,
+      "leagues_failed": 0,
+      "matches_after_normalization": 139,
+      "odds_count": 1675,
+      "raw_items": 1700,
+      "requests": [
+        {
+          "attempts": 1,
+          "avg_latency_ms": 1880.0,
+          "errors": 0,
+          "lane": "outcome_offer",
+          "league_id": null,
+          "logical_requests": 1,
+          "max_latency_ms": 1880,
+          "method": "GET",
+          "min_latency_ms": 1880,
+          "retries": 0,
+          "sport": "football",
+          "status_classes": {
+            "2xx": 1
+          },
+          "total_elapsed_ms": 1880,
+          "total_network_ms": 401,
+          "total_rate_limit_wait_ms": 1440
+        },
+        {
+          "attempts": 2,
+          "avg_latency_ms": 1266.0,
+          "errors": 0,
+          "lane": "threshold_odds",
+          "league_id": "basketball",
+          "logical_requests": 2,
+          "max_latency_ms": 2012,
+          "method": "GET",
+          "min_latency_ms": 520,
+          "retries": 0,
+          "sport": "basketball",
+          "status_classes": {
+            "2xx": 2
+          },
+          "total_elapsed_ms": 2532,
+          "total_network_ms": 148,
+          "total_rate_limit_wait_ms": 2346
+        }
+      ]
+    },
+    {
+      "bookmaker_id": "soccerbet",
+      "duration_ms": 4230,
+      "failure_rate": 0.0,
+      "http": {
+        "attempts": 3,
+        "avg_latency_ms": 1933.0,
+        "errors": 0,
+        "logical_requests": 3,
+        "max_latency_ms": 2461,
+        "min_latency_ms": 1590,
+        "retries": 0,
+        "status_classes": {
+          "2xx": 3
+        },
+        "total_elapsed_ms": 5799,
+        "total_network_ms": 1496,
+        "total_rate_limit_wait_ms": 4270
+      },
+      "leagues_attempted": 2,
+      "leagues_failed": 0,
+      "matches_after_normalization": 139,
+      "odds_count": 1795,
+      "raw_items": 1811,
+      "requests": [
+        {
+          "attempts": 1,
+          "avg_latency_ms": 1748.0,
+          "errors": 0,
+          "lane": "outcome_offer",
+          "league_id": null,
+          "logical_requests": 1,
+          "max_latency_ms": 1748,
+          "method": "GET",
+          "min_latency_ms": 1748,
+          "retries": 0,
+          "sport": "football",
+          "status_classes": {
+            "2xx": 1
+          },
+          "total_elapsed_ms": 1748,
+          "total_network_ms": 1303,
+          "total_rate_limit_wait_ms": 423
+        },
+        {
+          "attempts": 2,
+          "avg_latency_ms": 2025.5,
+          "errors": 0,
+          "lane": "threshold_odds",
+          "league_id": "basketball",
+          "logical_requests": 2,
+          "max_latency_ms": 2461,
+          "method": "GET",
+          "min_latency_ms": 1590,
+          "retries": 0,
+          "sport": "basketball",
+          "status_classes": {
+            "2xx": 2
+          },
+          "total_elapsed_ms": 4051,
+          "total_network_ms": 193,
+          "total_rate_limit_wait_ms": 3847
+        }
+      ]
+    },
+    {
+      "bookmaker_id": "superbet",
+      "duration_ms": 48339,
+      "failure_rate": 0.0,
+      "http": {
+        "attempts": 32,
+        "avg_latency_ms": 5168.19,
+        "errors": 0,
+        "logical_requests": 32,
+        "max_latency_ms": 8119,
+        "min_latency_ms": 666,
+        "retries": 0,
+        "status_classes": {
+          "2xx": 32
+        },
+        "total_elapsed_ms": 165382,
+        "total_network_ms": 3823,
+        "total_rate_limit_wait_ms": 161434
+      },
+      "leagues_attempted": 2,
+      "leagues_failed": 0,
+      "matches_after_normalization": 140,
+      "odds_count": 2566,
+      "raw_items": 3114,
+      "requests": [
+        {
+          "attempts": 21,
+          "avg_latency_ms": 5260.29,
+          "errors": 0,
+          "lane": "outcome_offer",
+          "league_id": null,
+          "logical_requests": 21,
+          "max_latency_ms": 8067,
+          "method": "GET",
+          "min_latency_ms": 3529,
+          "retries": 0,
+          "sport": "football",
+          "status_classes": {
+            "2xx": 21
+          },
+          "total_elapsed_ms": 110466,
+          "total_network_ms": 2766,
+          "total_rate_limit_wait_ms": 107621
+        },
+        {
+          "attempts": 11,
+          "avg_latency_ms": 4992.36,
+          "errors": 0,
+          "lane": "threshold_odds",
+          "league_id": "basketball",
+          "logical_requests": 11,
+          "max_latency_ms": 8119,
+          "method": "GET",
+          "min_latency_ms": 666,
+          "retries": 0,
+          "sport": "basketball",
+          "status_classes": {
+            "2xx": 11
+          },
+          "total_elapsed_ms": 54916,
+          "total_network_ms": 1057,
+          "total_rate_limit_wait_ms": 53813
+        }
+      ]
+    },
+    {
+      "bookmaker_id": "volcanobet",
+      "duration_ms": 32050,
+      "failure_rate": 0.0,
+      "http": {
+        "attempts": 20,
+        "avg_latency_ms": 4275.4,
+        "errors": 0,
+        "logical_requests": 20,
+        "max_latency_ms": 8012,
+        "min_latency_ms": 684,
+        "retries": 0,
+        "status_classes": {
+          "2xx": 20
+        },
+        "total_elapsed_ms": 85508,
+        "total_network_ms": 1188,
+        "total_rate_limit_wait_ms": 84230
+      },
+      "leagues_attempted": 2,
+      "leagues_failed": 0,
+      "matches_after_normalization": 120,
+      "odds_count": 1342,
+      "raw_items": 1795,
+      "requests": [
+        {
+          "attempts": 13,
+          "avg_latency_ms": 4716.69,
+          "errors": 0,
+          "lane": "outcome_offer",
+          "league_id": null,
+          "logical_requests": 13,
+          "max_latency_ms": 7943,
+          "method": "GET",
+          "min_latency_ms": 1636,
+          "retries": 0,
+          "sport": "football",
+          "status_classes": {
+            "2xx": 13
+          },
+          "total_elapsed_ms": 61317,
+          "total_network_ms": 662,
+          "total_rate_limit_wait_ms": 60596
+        },
+        {
+          "attempts": 7,
+          "avg_latency_ms": 3455.86,
+          "errors": 0,
+          "lane": "threshold_odds",
+          "league_id": "basketball",
+          "logical_requests": 7,
+          "max_latency_ms": 8012,
+          "method": "GET",
+          "min_latency_ms": 684,
+          "retries": 0,
+          "sport": "basketball",
+          "status_classes": {
+            "2xx": 7
+          },
+          "total_elapsed_ms": 24191,
+          "total_network_ms": 526,
+          "total_rate_limit_wait_ms": 23634
+        }
+      ]
+    }
+  ],
+  "total_matches": 471,
+  "total_odds": 16404,
+  "total_raw_items": 19294
+}
