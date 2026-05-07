@@ -193,6 +193,12 @@ export interface UnresolvedOdds {
   candidate_matchups: string[];
   available_matchups_same_slot: string[];
   scraped_at: string | null;
+  team_review_case_id?: number | null;
+  team_review_suggested_team_id?: number | null;
+  team_review_suggested_team_name?: string | null;
+  team_review_confidence?: string | null;
+  team_review_status?: string | null;
+  team_review_similarity_score?: number | null;
 }
 
 export interface TeamReviewCase {

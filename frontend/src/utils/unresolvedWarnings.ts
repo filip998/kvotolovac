@@ -15,6 +15,16 @@ export interface UnresolvedWarningGroup {
   marketTypes: string[];
   playerNames: string[];
   latestScrapedAt: string | null;
+  teamReviewSuggestions: UnresolvedWarningReviewSuggestion[];
+}
+
+export interface UnresolvedWarningReviewSuggestion {
+  caseId: number;
+  suggestedTeamId: number | null;
+  suggestedTeamName: string | null;
+  confidence: string | null;
+  status: string | null;
+  similarityScore: number | null;
 }
 
 function pushUnique(values: string[], value: string | null | undefined) {
@@ -56,6 +66,32 @@ function latestTimestamp(current: string | null, candidate: string | null) {
   return candidateTime > currentTime ? candidate : current;
 }
 
+function reviewSuggestion(row: UnresolvedOdds): UnresolvedWarningReviewSuggestion | null {
+  if (row.team_review_case_id == null) {
+    return null;
+  }
+
+  return {
+    caseId: row.team_review_case_id,
+    suggestedTeamId: row.team_review_suggested_team_id ?? null,
+    suggestedTeamName: row.team_review_suggested_team_name ?? null,
+    confidence: row.team_review_confidence ?? null,
+    status: row.team_review_status ?? null,
+    similarityScore: row.team_review_similarity_score ?? null,
+  };
+}
+
+function pushReviewSuggestion(
+  values: UnresolvedWarningReviewSuggestion[],
+  suggestion: UnresolvedWarningReviewSuggestion | null
+) {
+  if (!suggestion || values.some((item) => item.caseId === suggestion.caseId)) {
+    return;
+  }
+
+  values.push(suggestion);
+}
+
 export function groupUnresolvedOdds(rows: readonly UnresolvedOdds[]): UnresolvedWarningGroup[] {
   const groups = new Map<string, UnresolvedWarningGroup>();
 
@@ -65,6 +101,7 @@ export function groupUnresolvedOdds(rows: readonly UnresolvedOdds[]): Unresolved
     const bookmakerName = row.bookmaker_name ?? row.bookmaker_id;
     const matchupContext =
       row.candidate_matchups.length > 0 ? row.candidate_matchups : row.available_matchups_same_slot;
+    const suggestion = reviewSuggestion(row);
     const group = groups.get(key);
 
     if (!group) {
@@ -83,6 +120,7 @@ export function groupUnresolvedOdds(rows: readonly UnresolvedOdds[]): Unresolved
         marketTypes: [row.market_type],
         playerNames: row.player_name ? [row.player_name] : [],
         latestScrapedAt: row.scraped_at,
+        teamReviewSuggestions: suggestion ? [suggestion] : [],
       });
       continue;
     }
@@ -96,6 +134,7 @@ export function groupUnresolvedOdds(rows: readonly UnresolvedOdds[]): Unresolved
     pushUnique(group.bookmakerNames, bookmakerName);
     pushUnique(group.marketTypes, row.market_type);
     pushUnique(group.playerNames, row.player_name);
+    pushReviewSuggestion(group.teamReviewSuggestions, suggestion);
   }
 
   return Array.from(groups.values());

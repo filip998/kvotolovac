@@ -24,6 +24,30 @@ def canonical_market_type(market_type: str) -> str:
     return _CANONICAL_MARKET_TYPES.get(normalized, normalized)
 
 
+def outcome_code_for_event_orientation(
+    *,
+    market_type: str,
+    outcome_code: str,
+    orientation: str | None,
+) -> str:
+    if orientation != "reversed":
+        return outcome_code
+
+    canonical_type = canonical_market_type(market_type)
+    if canonical_type in {"result", "match_winner"}:
+        return {
+            "home": "away",
+            "away": "home",
+        }.get(outcome_code, outcome_code)
+    if canonical_type == "double_chance":
+        return {
+            "home_or_draw": "draw_or_away",
+            "draw_or_away": "home_or_draw",
+            "home_or_away": "home_or_away",
+        }.get(outcome_code, outcome_code)
+    return outcome_code
+
+
 def build_market_key(
     *,
     match_id: str,
@@ -151,6 +175,7 @@ def canonical_offer_from_normalized_outcome_offer(
     offer: NormalizedOutcomeOffer,
     *,
     event_id: str | None = None,
+    event_orientation: str | None = None,
     bookmaker_match_id: str | None = None,
     scraped_at: str | None = None,
     period: str | None = None,
@@ -169,7 +194,11 @@ def canonical_offer_from_normalized_outcome_offer(
     return _offer(
         market=market,
         bookmaker_id=offer.bookmaker_id,
-        outcome_code=offer.outcome_code,
+        outcome_code=outcome_code_for_event_orientation(
+            market_type=offer.market_type,
+            outcome_code=offer.outcome_code,
+            orientation=event_orientation,
+        ),
         odds=offer.odds,
         source_url=offer.source_url,
         raw_label=offer.raw_label,

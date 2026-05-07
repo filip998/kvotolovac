@@ -20,6 +20,7 @@ from app.models.schemas import (
     UnresolvedOddsDiagnostic,
 )
 from app.services.opportunity_analyzer import Opportunity
+from app.services.team_registry import create_canonical_team
 from app.store import odds_store
 
 
@@ -679,6 +680,71 @@ async def test_insert_and_get_unresolved_odds():
     assert unresolved[0].bookmaker_name == "AdmiralBet"
     assert unresolved[0].league_name == "ABA Liga"
     assert unresolved[0].available_matchups_same_slot == ["Dubai vs Buducnost"]
+
+
+@pytest.mark.asyncio
+async def test_get_unresolved_odds_includes_matching_team_review_context(team_registry_file):
+    batch_scraped_at = "2026-05-07T18:23:08.139117"
+    await odds_store.upsert_bookmaker("365", "365")
+    await odds_store.upsert_league("liga_evrope", "Liga Evrope", "football")
+    target = create_canonical_team(
+        display_name="Nottingham Forest",
+        sport="football",
+    )
+    await odds_store.insert_unresolved_odds(
+        UnresolvedOddsDiagnostic(
+            bookmaker_id="365",
+            raw_league_id="liga_evrope_play_off",
+            league_id="liga_evrope",
+            sport="football",
+            market_type="football_result",
+            player_name=None,
+            raw_team_name="Nottm.Forest",
+            normalized_team_name="Nottm.Forest",
+            start_time="2026-05-07T19:00:00+00:00",
+            threshold=0.0,
+            over_odds=2.4,
+            under_odds=None,
+            reason_code="unresolved_away_team",
+            candidate_count=1,
+            candidate_matchups=["Aston Villa vs Nottingham Forest"],
+            available_matchups_same_slot=["Aston Villa vs Nottingham Forest"],
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic(
+            bookmaker_id="365",
+            raw_league_id="liga_evrope_play_off",
+            normalized_raw_league_id="liga evrope play off",
+            sport="football",
+            scope_league_id="liga_evrope",
+            raw_team_name="Nottm.Forest",
+            normalized_raw_team_name="Nottm.Forest",
+            suggested_team_id=target.team_id,
+            suggested_team_name=target.team_name,
+            start_time="2026-05-07T19:00:00+00:00",
+            review_kind="candidate_search",
+            reason_code="candidate_team_match_same_start_time",
+            confidence="medium",
+            similarity_score=82.7586206896552,
+            matched_counterpart_team="Aston Villa",
+            evidence=["Exact start time: 2026-05-07T19:00:00+00:00"],
+            status="pending",
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    unresolved = await odds_store.get_unresolved_odds()
+
+    assert len(unresolved) == 1
+    assert unresolved[0].team_review_case_id == case_id
+    assert unresolved[0].team_review_suggested_team_id == target.team_id
+    assert unresolved[0].team_review_suggested_team_name == "Nottingham Forest"
+    assert unresolved[0].team_review_confidence == "medium"
+    assert unresolved[0].team_review_status == "pending"
+    assert unresolved[0].team_review_similarity_score == pytest.approx(82.7586206896552)
 
 
 @pytest.mark.asyncio

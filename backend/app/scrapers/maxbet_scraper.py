@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from .base import BaseScraper
 from .http_client import HttpClient
+from .outcome_team_recovery import recover_matchup_from_payload
 from ..config import settings
 from ..models.schemas import RawOddsData, RawOutcomeOffer
 
@@ -547,10 +548,17 @@ def _football_total_raw_label(outcome_code: str, line: float) -> str:
 
 
 def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
-    home_team = (match.get("home") or "").strip()
-    away_team = (match.get("away") or "").strip()
+    matchup = recover_matchup_from_payload(match)
+    home_team = matchup.home_team
+    away_team = matchup.away_team
     if not home_team or not away_team:
         return []
+    if matchup.recovered:
+        logger.debug(
+            "MaxBet: recovered football matchup from %s for match %s",
+            matchup.source,
+            match.get("id") or match.get("matchCode"),
+        )
 
     odds = match.get("odds") or {}
     params = match.get("params") or {}

@@ -11,6 +11,7 @@ from app.models.schemas import (
     ResolvedEventMemberOut,
 )
 from app.services.analyzer import analyze
+from app.services.canonical_analyzer import analyze_canonical_offers
 from app.services.opportunity_analyzer import Opportunity, analyze_outcome_offers
 from app.store import odds_store
 
@@ -25,6 +26,7 @@ def _member(
     bookmaker_id: str,
     resolved_event_id: str = "evt-partizan-zvezda",
     status: str = "active",
+    orientation: str = "as_listed",
 ) -> ResolvedEventMemberOut:
     return ResolvedEventMemberOut(
         id=member_id,
@@ -32,6 +34,7 @@ def _member(
         match_id=match_id,
         bookmaker_id=bookmaker_id,
         status=status,
+        orientation=orientation,
     )
 
 
@@ -66,7 +69,8 @@ def _football_offer(
     bookmaker_id: str,
     outcome_code: str,
     odds: float,
-    line: float = 2.5,
+    market_type: str = "football_total_goals",
+    line: float | None = 2.5,
     source_url: str | None = None,
 ) -> NormalizedOutcomeOffer:
     return NormalizedOutcomeOffer(
@@ -79,7 +83,7 @@ def _football_offer(
         home_team="Arsenal",
         away_team="Chelsea",
         source_url=source_url,
-        market_type="football_total_goals",
+        market_type=market_type,
         outcome_code=outcome_code,
         odds=odds,
         line=line,
@@ -252,6 +256,50 @@ def test_football_opportunities_group_by_resolved_event_id():
         "match-maxbet",
         "match-balkanbet",
     }
+
+
+def test_football_result_complements_use_resolved_event_orientation():
+    offers = [
+        _football_offer(
+            match_id="match-balkanbet",
+            bookmaker_id="balkanbet",
+            market_type="football_result",
+            outcome_code="away",
+            odds=13.0,
+            line=None,
+        ),
+        _football_offer(
+            match_id="match-superbet",
+            bookmaker_id="superbet",
+            market_type="football_double_chance",
+            outcome_code="home_or_draw",
+            odds=4.40,
+            line=None,
+        ),
+    ]
+    members = [
+        _member(
+            1,
+            match_id="match-balkanbet",
+            bookmaker_id="balkanbet",
+            resolved_event_id="evt-al-kholood-al-hilal",
+            orientation="reversed",
+        ),
+        _member(
+            2,
+            match_id="match-superbet",
+            bookmaker_id="superbet",
+            resolved_event_id="evt-al-kholood-al-hilal",
+        ),
+    ]
+
+    opportunities = analyze_outcome_offers(
+        offers,
+        event_members=members,
+        event_primary_match_ids={"evt-al-kholood-al-hilal": "match-superbet"},
+    )
+
+    assert opportunities == []
 
 
 @pytest.mark.asyncio
@@ -492,3 +540,87 @@ async def test_opportunity_storage_keeps_representative_match_and_leg_sources():
         "maxbet": "https://maxbet.example/event",
         "balkanbet": "https://balkanbet.example/event",
     }
+
+
+@pytest.mark.asyncio
+async def test_current_canonical_offers_map_reversed_outcome_members():
+    await odds_store.upsert_league("saudi_cup", "Saudi Cup", "football")
+    await odds_store.upsert_bookmaker("balkanbet", "BalkanBet")
+    await odds_store.upsert_bookmaker("superbet", "Superbet")
+    await odds_store.upsert_match(
+        "match-superbet",
+        "saudi_cup",
+        "Al-Kholood",
+        "Al Hilal",
+        sport="football",
+        start_time=START_TIME,
+    )
+    await odds_store.upsert_match(
+        "match-balkanbet",
+        "saudi_cup",
+        "Al Hilal SFC",
+        "Al-Kholood",
+        sport="football",
+        start_time=START_TIME,
+    )
+    await odds_store.upsert_resolved_event(
+        ResolvedEventIn(
+            id="evt-al-kholood-al-hilal",
+            sport="football",
+            start_time=START_TIME,
+            primary_match_id="match-superbet",
+            method="auto_fuzzy_high",
+        )
+    )
+    await odds_store.link_resolved_event_member(
+        ResolvedEventMemberIn(
+            resolved_event_id="evt-al-kholood-al-hilal",
+            match_id="match-superbet",
+            bookmaker_id="superbet",
+        )
+    )
+    await odds_store.link_resolved_event_member(
+        ResolvedEventMemberIn(
+            resolved_event_id="evt-al-kholood-al-hilal",
+            match_id="match-balkanbet",
+            bookmaker_id="balkanbet",
+            orientation="reversed",
+        )
+    )
+    await odds_store.upsert_outcome_offer(
+        _football_offer(
+            match_id="match-balkanbet",
+            bookmaker_id="balkanbet",
+            market_type="football_result",
+            outcome_code="away",
+            odds=13.0,
+            line=None,
+        ),
+        scraped_at=START_TIME,
+    )
+    await odds_store.upsert_outcome_offer(
+        _football_offer(
+            match_id="match-superbet",
+            bookmaker_id="superbet",
+            market_type="football_double_chance",
+            outcome_code="home_or_draw",
+            odds=4.40,
+            line=None,
+        ),
+        scraped_at=START_TIME,
+    )
+
+    offers = await odds_store.get_current_canonical_offers_for_matches(
+        ["match-superbet", "match-balkanbet"],
+        snapshot_id=START_TIME,
+    )
+
+    result_offer = next(
+        offer for offer in offers if offer.market.source_market_type == "football_result"
+    )
+    assert result_offer.bookmaker_id == "balkanbet"
+    assert result_offer.outcome_code == "home"
+    assert analyze_canonical_offers(
+        offers,
+        event_primary_match_ids={"evt-al-kholood-al-hilal": "match-superbet"},
+    ) == []

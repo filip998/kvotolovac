@@ -1301,9 +1301,10 @@ async def test_list_bookmakers(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_list_unresolved_odds(client: AsyncClient):
+async def test_list_unresolved_odds(client: AsyncClient, team_registry_file):
     batch_scraped_at = "2026-04-13T16:36:09.440629"
     await odds_store.upsert_bookmaker("admiralbet", "AdmiralBet")
+    target = create_canonical_team(display_name="Borac Cacak")
     await odds_store.insert_unresolved_odds(
         UnresolvedOddsDiagnostic(
             bookmaker_id="admiralbet",
@@ -1323,6 +1324,28 @@ async def test_list_unresolved_odds(client: AsyncClient):
         ),
         scraped_at=batch_scraped_at,
     )
+    case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic(
+            bookmaker_id="admiralbet",
+            raw_league_id="AdmiralBet ABA Liga",
+            normalized_raw_league_id="admiralbet aba liga",
+            sport="basketball",
+            scope_league_id="aba_liga",
+            raw_team_name="Borac Cacak",
+            normalized_raw_team_name="Borac Cacak",
+            suggested_team_id=target.team_id,
+            suggested_team_name=target.team_name,
+            start_time="2026-04-13T16:00:00+00:00",
+            review_kind="candidate_search",
+            reason_code="candidate_team_match_same_start_time",
+            confidence="medium",
+            similarity_score=88.0,
+            matched_counterpart_team="Dubai",
+            evidence=["Exact start time: 2026-04-13T16:00:00+00:00"],
+            status="pending",
+        ),
+        scraped_at=batch_scraped_at,
+    )
     await odds_store.set_current_snapshot(batch_scraped_at)
 
     resp = await client.get("/api/v1/unresolved-odds?bookmaker_ids=admiralbet")
@@ -1332,6 +1355,10 @@ async def test_list_unresolved_odds(client: AsyncClient):
     assert len(data) == 1
     assert data[0]["bookmaker_name"] == "AdmiralBet"
     assert data[0]["reason_code"] == "no_canonical_matchup_for_team_at_slot"
+    assert data[0]["team_review_case_id"] == case_id
+    assert data[0]["team_review_suggested_team_name"] == "Borac Cacak"
+    assert data[0]["team_review_confidence"] == "medium"
+    assert data[0]["team_review_status"] == "pending"
 
 
 @pytest.mark.asyncio

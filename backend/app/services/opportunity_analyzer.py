@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from itertools import combinations
 
 from ..models.schemas import NormalizedOutcomeOffer, OpportunityLeg, ResolvedEventMemberOut
+from .canonical_offers import outcome_code_for_event_orientation
 from .middle_ev import MiddleMarketQuote, estimate_middle, fallback_rank
 
 
@@ -242,18 +243,32 @@ def _analyze_total_goals(
     )
 
 
-def _active_member_event_lookup(
+def _active_member_lookup(
     event_members: list[ResolvedEventMemberOut],
-) -> dict[tuple[str, str], str]:
-    lookup: dict[tuple[str, str], str] = {}
+) -> dict[tuple[str, str], ResolvedEventMemberOut]:
+    lookup: dict[tuple[str, str], ResolvedEventMemberOut] = {}
     for member in sorted(
         event_members,
         key=lambda item: (item.resolved_event_id, item.id, item.match_id, item.bookmaker_id),
     ):
         if member.status != "active":
             continue
-        lookup.setdefault((member.match_id, member.bookmaker_id), member.resolved_event_id)
+        lookup.setdefault((member.match_id, member.bookmaker_id), member)
     return lookup
+
+
+def _offer_for_event_orientation(
+    offer: NormalizedOutcomeOffer,
+    orientation: str | None,
+) -> NormalizedOutcomeOffer:
+    outcome_code = outcome_code_for_event_orientation(
+        market_type=offer.market_type,
+        outcome_code=offer.outcome_code,
+        orientation=orientation,
+    )
+    if outcome_code == offer.outcome_code:
+        return offer
+    return offer.model_copy(update={"outcome_code": outcome_code})
 
 
 def _group_match_id(
@@ -275,19 +290,23 @@ def analyze_outcome_offers(
     event_members: list[ResolvedEventMemberOut] | None = None,
     event_primary_match_ids: Mapping[str, str] | None = None,
 ) -> list[Opportunity]:
-    event_by_member = (
-        _active_member_event_lookup(event_members)
+    member_by_offer = (
+        _active_member_lookup(event_members)
         if event_members
         else {}
     )
 
     groups: dict[tuple[str, str], list[_OfferAnalysisItem]] = {}
     for offer in offers:
-        resolved_event_id = event_by_member.get((offer.match_id, offer.bookmaker_id))
+        member = member_by_offer.get((offer.match_id, offer.bookmaker_id))
+        resolved_event_id = member.resolved_event_id if member else None
         group_id = resolved_event_id or offer.match_id
         groups.setdefault((offer.sport, group_id), []).append(
             _OfferAnalysisItem(
-                offer=offer,
+                offer=_offer_for_event_orientation(
+                    offer,
+                    member.orientation if member else None,
+                ),
                 resolved_event_id=resolved_event_id,
             )
         )

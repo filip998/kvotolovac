@@ -156,6 +156,82 @@ def test_weak_football_event_pair_remains_unmatched(team_registry_file):
     assert _auto_review_alias_count() == 0
 
 
+def test_unresolved_football_outcome_includes_same_slot_context(team_registry_file):
+    create_canonical_team(display_name="Aston Villa", sport="football")
+    create_canonical_team(display_name="Nottingham Forest", sport="football")
+    create_canonical_team(display_name="Nottingham Forrest", sport="football")
+    raw = [
+        _offer(
+            "superbet",
+            "Aston Villa",
+            "Nottingham Forest",
+            market_type="football_result",
+            outcome_code="home",
+        ),
+        _offer(
+            "maxbet",
+            "Aston Villa",
+            "Nottingham Forrest",
+            market_type="football_result",
+            outcome_code="away",
+        ),
+        _offer(
+            "365",
+            "Aston Villa",
+            "Nottm.Forest",
+            market_type="football_result",
+            outcome_code="away",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    warning = next(row for row in unresolved if row.bookmaker_id == "365")
+    assert {offer.bookmaker_id for offer in normalized} == {"superbet", "maxbet"}
+    assert warning.raw_team_name == "Nottm.Forest"
+    assert warning.reason_code == "unresolved_away_team"
+    assert warning.candidate_count == 2
+    assert warning.candidate_matchups == [
+        "Aston Villa vs Nottingham Forest",
+        "Aston Villa vs Nottingham Forrest",
+    ]
+    assert warning.available_matchups_same_slot == [
+        "Aston Villa vs Nottingham Forest",
+        "Aston Villa vs Nottingham Forrest",
+    ]
+    assert any(case.raw_team_name == "Nottm.Forest" for case in review_cases)
+    assert _auto_review_alias_count() == 0
+
+
+def test_empty_football_outcome_side_remains_unresolved(team_registry_file):
+    create_canonical_team(display_name="Aston Villa", sport="football")
+    create_canonical_team(display_name="Nottingham Forest", sport="football")
+    raw = [
+        _offer(
+            "superbet",
+            "Aston Villa",
+            "Nottingham Forest",
+            market_type="football_result",
+            outcome_code="home",
+        ),
+        _offer(
+            "365",
+            "Aston Villa",
+            "",
+            market_type="football_result",
+            outcome_code="away",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert {offer.bookmaker_id for offer in normalized} == {"superbet"}
+    warning = next(row for row in unresolved if row.bookmaker_id == "365")
+    assert warning.raw_team_name == ""
+    assert warning.reason_code == "unresolved_away_team"
+    assert review_cases == []
+
+
 def test_football_unresolved_team_dedupes_across_outcome_markets(team_registry_file):
     create_canonical_team(display_name="Known Away", sport="football")
     raw = [

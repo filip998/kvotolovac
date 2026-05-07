@@ -241,6 +241,27 @@ def test_parse_football_outcome_match_skips_invalid_shape():
     assert _parse_football_outcome_match({"home": "Team A", "away": "Team B", "betMap": []}) == []
 
 
+def test_parse_football_outcome_match_recovers_missing_home_from_match_label():
+    match = {
+        "home": "",
+        "away": "Ethio Electric",
+        "matchName": "Shire Endaselassie - Ethio Electric",
+        "leagueName": "Etiopija 1",
+        "kickOffTime": 1777993200000,
+        "betMap": {
+            "1": _group_with_status(1, ("NULL", 2.1, "U")),
+            "3": _group_with_status(3, ("NULL", 3.2, "U")),
+        },
+    }
+
+    results = _parse_football_outcome_match(match)
+
+    assert {(row.home_team, row.away_team) for row in results} == {
+        ("Shire Endaselassie", "Ethio Electric")
+    }
+    assert {row.outcome_code for row in results} == {"home", "away"}
+
+
 # ── Handicap (+OT) parsing ──────────────────────────────────────────────
 
 

@@ -482,6 +482,23 @@ def test_parse_football_outcome_match_returns_empty_without_teams():
     assert _parse_football_outcome_match(match) == []
 
 
+def test_parse_football_outcome_match_recovers_missing_away_from_match_label():
+    match = {
+        "home": "Liverpool",
+        "away": "",
+        "name": "Liverpool - Chelsea",
+        "leagueName": "Engleska 1",
+        "kickOffTime": 1778326200000,
+        "odds": {"1": 1.5, "2": 3.0, "3": 2.0},
+    }
+
+    results = _parse_football_outcome_match(match)
+
+    assert results
+    assert {row.home_team for row in results} == {"Liverpool"}
+    assert {row.away_team for row in results} == {"Chelsea"}
+
+
 def test_parse_football_outcome_match_falls_back_to_default_league():
     # When the league name is missing the parser must fall back to the
     # generic ``football`` league id, NOT 365's basketball default.

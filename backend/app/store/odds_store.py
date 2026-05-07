@@ -2934,6 +2934,10 @@ async def get_current_canonical_offers_for_matches(
         [*odds_rows, *outcome_offer_rows],
         resolved_event_members,
     )
+    resolved_event_orientations = _resolved_event_orientations_for_offer_rows(
+        [*odds_rows, *outcome_offer_rows],
+        resolved_event_members,
+    )
     event_scoped_player_odds = {
         id(item.odds): item
         for item in build_event_scoped_player_odds(odds_rows, resolved_event_members)
@@ -2962,6 +2966,9 @@ async def get_current_canonical_offers_for_matches(
             canonical_offer_from_normalized_outcome_offer(
                 offer,
                 event_id=resolved_event_ids.get((offer.match_id, offer.bookmaker_id)),
+                event_orientation=resolved_event_orientations.get(
+                    (offer.match_id, offer.bookmaker_id)
+                ),
             )
         )
     return canonical_offers
@@ -2994,6 +3001,19 @@ def _resolved_event_ids_for_offer_rows(
         if key in row_keys and key not in event_ids:
             event_ids[key] = member.resolved_event_id
     return event_ids
+
+
+def _resolved_event_orientations_for_offer_rows(
+    rows: list[NormalizedOdds | NormalizedOutcomeOffer],
+    members: list[ResolvedEventMemberOut],
+) -> dict[tuple[str, str], str]:
+    row_keys = {(row.match_id, row.bookmaker_id) for row in rows}
+    orientations: dict[tuple[str, str], str] = {}
+    for member in members:
+        key = (member.match_id, member.bookmaker_id)
+        if key in row_keys and key not in orientations:
+            orientations[key] = member.orientation
+    return orientations
 
 
 # ── Odds ───────────────────────────────────────────────────
@@ -3821,10 +3841,33 @@ async def get_unresolved_odds(
     if snapshot_at is None:
         return []
 
-    q = """SELECT u.*, b.name as bookmaker_name, l.name as league_name
+    q = """SELECT u.*,
+                  b.name as bookmaker_name,
+                  l.name as league_name,
+                  tr.id AS team_review_case_id,
+                  tr.suggested_team_id AS team_review_suggested_team_id,
+                  tr.suggested_team_name AS team_review_suggested_team_name,
+                  tr.confidence AS team_review_confidence,
+                  tr.status AS team_review_status,
+                  tr.similarity_score AS team_review_similarity_score
            FROM unresolved_odds u
            LEFT JOIN bookmakers b ON u.bookmaker_id = b.id
-           LEFT JOIN leagues l ON u.league_id = l.id"""
+           LEFT JOIN leagues l ON u.league_id = l.id
+           LEFT JOIN team_review_cases tr ON tr.id = (
+                SELECT tr2.id
+                FROM team_review_cases tr2
+                WHERE tr2.snapshot_id = u.snapshot_id
+                  AND tr2.bookmaker_id = u.bookmaker_id
+                  AND tr2.sport = u.sport
+                  AND tr2.raw_team_name = u.raw_team_name
+                  AND (
+                      tr2.start_time = u.start_time
+                      OR (tr2.start_time IS NULL AND u.start_time IS NULL)
+                  )
+                ORDER BY CASE tr2.status WHEN 'pending' THEN 0 ELSE 1 END,
+                         tr2.id DESC
+                LIMIT 1
+           )"""
     conditions = ["u.snapshot_id = ?" if snapshot_id else "u.scraped_at = ?"]
     params: list = [snapshot_id or snapshot_at]
 

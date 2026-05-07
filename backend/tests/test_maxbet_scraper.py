@@ -384,6 +384,28 @@ def test_parse_football_outcome_match_emits_bookmaker_provided_total_line():
     }
 
 
+def test_parse_football_outcome_match_recovers_missing_away_from_match_label():
+    match = {
+        "id": 23337790,
+        "leagueName": "England Premier League",
+        "home": "Arsenal",
+        "away": "",
+        "matchName": "Arsenal - Chelsea",
+        "params": {"overUnder": "3.5"},
+        "odds": {
+            "227": 2.25,
+            "228": 1.70,
+        },
+    }
+
+    results = _parse_football_outcome_match(match)
+
+    assert {(row.home_team, row.away_team) for row in results} == {
+        ("Arsenal", "Chelsea")
+    }
+    assert {row.outcome_code for row in results} == {"over", "under"}
+
+
 @pytest.mark.parametrize("line", ["0", "2", "not-a-number", None])
 def test_parse_football_outcome_match_ignores_unsupported_total_lines(line):
     match = {

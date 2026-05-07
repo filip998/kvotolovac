@@ -9,6 +9,7 @@ from typing import Iterable, Literal
 
 from .base import BaseScraper
 from .http_client import HttpClient
+from .outcome_team_recovery import recover_matchup_from_payload
 from ..config import settings
 from ..models.schemas import RawOddsData, RawOutcomeOffer
 from ..services.market_allowlist import analysis_market_allowlist
@@ -416,10 +417,17 @@ def _parse_player_match(match: dict, matchup_index: MatchupIndex) -> list[RawOdd
 def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
     """Emit list-derived football offers (result + 2.5 totals)."""
 
-    home_team = (match.get("home") or "").strip()
-    away_team = (match.get("away") or "").strip()
+    matchup = recover_matchup_from_payload(match)
+    home_team = matchup.home_team
+    away_team = matchup.away_team
     if not home_team or not away_team:
         return []
+    if matchup.recovered:
+        logger.debug(
+            "BetOle: recovered football matchup from %s for match %s",
+            matchup.source,
+            match.get("id") or match.get("matchCode"),
+        )
 
     odds_map = match.get("odds") or {}
     if not isinstance(odds_map, dict):
@@ -459,10 +467,17 @@ def _parse_football_double_chance_detail_match(match: dict) -> list[RawOutcomeOf
     rows per (match, market, outcome) tuple.
     """
 
-    home_team = (match.get("home") or "").strip()
-    away_team = (match.get("away") or "").strip()
+    matchup = recover_matchup_from_payload(match)
+    home_team = matchup.home_team
+    away_team = matchup.away_team
     if not home_team or not away_team:
         return []
+    if matchup.recovered:
+        logger.debug(
+            "BetOle: recovered football detail matchup from %s for match %s",
+            matchup.source,
+            match.get("id") or match.get("matchCode"),
+        )
 
     odds_map = match.get("odds") or {}
     if not isinstance(odds_map, dict):

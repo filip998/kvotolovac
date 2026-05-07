@@ -16,6 +16,9 @@ const REASON_LABELS: Record<string, string> = {
   no_canonical_matchup_for_team_at_slot: 'No canonical matchup at this league/time slot',
   ambiguous_multiple_matchups_for_team_at_slot:
     'Multiple canonical matchups matched the same team at this slot',
+  unresolved_home_team: 'Home team still needs review',
+  unresolved_away_team: 'Away team still needs review',
+  missing_start_time: 'Missing kickoff time',
 };
 
 function reasonLabel(reasonCode: string) {
@@ -61,6 +64,11 @@ export default function UnresolvedOddsPanel({
         ...group.matchupContext,
         ...group.playerNames,
         ...group.bookmakerNames,
+        ...group.teamReviewSuggestions.flatMap((suggestion) => [
+          suggestion.suggestedTeamName ?? '',
+          suggestion.confidence ?? '',
+          suggestion.status ?? '',
+        ]),
         ...group.marketTypes.map(
           (marketType) =>
             MARKET_TYPE_LABELS[marketType as keyof typeof MARKET_TYPE_LABELS] ?? marketType
@@ -133,7 +141,7 @@ export default function UnresolvedOddsPanel({
         {searchStrip}
         <EmptyState
           title="No unresolved odds in the current snapshot"
-          message="All shared-platform player props were assigned to tracked matches in this scrape."
+          message="All warning-eligible offers were assigned to tracked matches in this scrape."
         />
       </div>
     );
@@ -217,6 +225,21 @@ export default function UnresolvedOddsPanel({
                             ? countLabel(group.matchupContext.length, 'same-slot matchup')
                             : 'No same-slot matchups'}
                       </div>
+                      {group.teamReviewSuggestions.length > 0 && (
+                        <div className="mt-2 space-y-1">
+                          {group.teamReviewSuggestions.map((suggestion) => (
+                            <div
+                              key={`${group.id}-${suggestion.caseId}`}
+                              className="rounded-md border border-warning/20 bg-warning/10 px-2 py-1 text-[11px] text-text-secondary"
+                            >
+                              <span className="font-medium text-text">Team review:</span>{' '}
+                              {suggestion.suggestedTeamName ?? 'No suggested team'}
+                              {suggestion.confidence ? ` · ${suggestion.confidence}` : ''}
+                              {suggestion.status ? ` · ${suggestion.status}` : ''}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </td>
                     <td className="hidden px-4 py-3 lg:table-cell">
                       {group.matchupContext.length > 0 ? (

@@ -14,6 +14,7 @@ from ..services.scrape_window import (
     lookahead_cutoff,
 )
 from ..services.text_normalizer import normalize_identity_text
+from .outcome_team_recovery import recover_matchup_from_payload
 
 logger = logging.getLogger(__name__)
 
@@ -419,10 +420,17 @@ def _coerce_positive_odds(value: object) -> float | None:
 
 
 def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
-    home_team = (match.get("home") or "").strip()
-    away_team = (match.get("away") or "").strip()
+    matchup = recover_matchup_from_payload(match)
+    home_team = matchup.home_team
+    away_team = matchup.away_team
     if not home_team or not away_team:
         return []
+    if matchup.recovered:
+        logger.debug(
+            "365: recovered football matchup from %s for match %s",
+            matchup.source,
+            match.get("id") or match.get("matchCode"),
+        )
 
     odds_map = match.get("odds") or {}
     if not isinstance(odds_map, dict):

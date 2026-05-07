@@ -203,6 +203,12 @@ class UnresolvedOddsOut(UnresolvedOddsDiagnostic):
     bookmaker_name: Optional[str] = None
     league_name: Optional[str] = None
     scraped_at: Optional[str] = None
+    team_review_case_id: Optional[int] = None
+    team_review_suggested_team_id: Optional[int] = None
+    team_review_suggested_team_name: Optional[str] = None
+    team_review_confidence: Optional[str] = None
+    team_review_status: Optional[str] = None
+    team_review_similarity_score: Optional[float] = None
 
 
 class TeamReviewDiagnostic(BaseModel):

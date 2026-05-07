@@ -81,6 +81,7 @@ def _outcome_offer(
     match_id: str = "football-match-1",
     sport: str = "football",
     event_id: str | None = None,
+    event_orientation: str | None = None,
 ):
     offer = NormalizedOutcomeOffer(
         match_id=match_id,
@@ -98,7 +99,11 @@ def _outcome_offer(
         raw_label=outcome_code,
         start_time="2030-01-01T20:00:00+00:00",
     )
-    return canonical_offer_from_normalized_outcome_offer(offer, event_id=event_id)
+    return canonical_offer_from_normalized_outcome_offer(
+        offer,
+        event_id=event_id,
+        event_orientation=event_orientation,
+    )
 
 
 def _legacy_outcome_offer(
@@ -438,6 +443,78 @@ def test_canonical_result_double_chance_complement_matches_legacy():
     assert {leg.market_type for leg in opportunities[0].legs} == {
         "football_result",
         "football_double_chance",
+    }
+
+
+def test_canonical_result_double_chance_uses_event_orientation():
+    overlapping = analyze_canonical_offers(
+        [
+            _outcome_offer(
+                "balkanbet",
+                "football_result",
+                "away",
+                13.0,
+                event_id="evt-al-kholood-al-hilal",
+                event_orientation="reversed",
+            ),
+            _outcome_offer(
+                "superbet",
+                "football_double_chance",
+                "home_or_draw",
+                4.40,
+                event_id="evt-al-kholood-al-hilal",
+            ),
+        ]
+    )
+    complementary = analyze_canonical_offers(
+        [
+            _outcome_offer(
+                "balkanbet",
+                "football_result",
+                "away",
+                2.50,
+                event_id="evt-al-kholood-al-hilal",
+                event_orientation="reversed",
+            ),
+            _outcome_offer(
+                "superbet",
+                "football_double_chance",
+                "draw_or_away",
+                1.75,
+                event_id="evt-al-kholood-al-hilal",
+            ),
+        ]
+    )
+    reversed_double_chance = analyze_canonical_offers(
+        [
+            _outcome_offer(
+                "superbet",
+                "football_result",
+                "home",
+                2.50,
+                event_id="evt-al-kholood-al-hilal",
+            ),
+            _outcome_offer(
+                "balkanbet",
+                "football_double_chance",
+                "home_or_draw",
+                1.75,
+                event_id="evt-al-kholood-al-hilal",
+                event_orientation="reversed",
+            ),
+        ]
+    )
+
+    assert overlapping == []
+    assert len(complementary) == 1
+    assert {leg.outcome_code for leg in complementary[0].legs} == {
+        "home",
+        "draw_or_away",
+    }
+    assert len(reversed_double_chance) == 1
+    assert {leg.outcome_code for leg in reversed_double_chance[0].legs} == {
+        "home",
+        "draw_or_away",
     }
 
 

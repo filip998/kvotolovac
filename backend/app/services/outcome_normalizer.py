@@ -17,7 +17,12 @@ from ..models.schemas import (
     UnresolvedOddsDiagnostic,
 )
 from .league_registry import resolve_league
-from .normalizer import generate_match_id, normalize_odds_with_diagnostics, resolve_team_name
+from .normalizer import (
+    TEAM_REVIEW_CANDIDATE_THRESHOLD,
+    generate_match_id,
+    normalize_odds_with_diagnostics,
+    resolve_team_name,
+)
 from .team_registry import create_canonical_team, create_canonical_teams_batch
 from .text_normalizer import normalize_identity_text
 
@@ -975,6 +980,8 @@ def _team_review_proxy_rows(raw_list: list[RawOutcomeOffer]) -> list[RawOddsData
     rows: list[RawOddsData] = []
     seen: set[tuple[str, str, str | None, str, str]] = set()
     for raw in raw_list:
+        if not raw.home_team.strip() or not raw.away_team.strip():
+            continue
         key = (
             raw.bookmaker_id,
             raw.sport,
@@ -1004,11 +1011,95 @@ def _team_review_proxy_rows(raw_list: list[RawOutcomeOffer]) -> list[RawOddsData
     return rows
 
 
+def _format_outcome_event_slot(slot: _OutcomeEventSlot) -> str:
+    return f"{slot.home_team} vs {slot.away_team}"
+
+
+def _build_event_slots_by_time(
+    event_resolutions: FootballEventResolutionMap,
+) -> dict[tuple[str, str], list[_OutcomeEventSlot]]:
+    slots_by_time: dict[
+        tuple[str, str],
+        dict[tuple[str, str, int, int], _OutcomeEventSlot],
+    ] = defaultdict(dict)
+    for resolution in event_resolutions.values():
+        slot = resolution.slot
+        slots_by_time[(slot.sport, slot.start_time)][slot.key] = slot
+    return {
+        time_key: sorted(
+            slots.values(),
+            key=lambda slot: (
+                slot.home_team.lower(),
+                slot.away_team.lower(),
+                slot.home_team_id,
+                slot.away_team_id,
+            ),
+        )
+        for time_key, slots in slots_by_time.items()
+    }
+
+
+def _unresolved_outcome_matchup_context(
+    raw: RawOutcomeOffer,
+    *,
+    raw_team_name: str,
+    reason_code: str,
+    home_resolution,
+    away_resolution,
+    event_slots_by_time: dict[tuple[str, str], list[_OutcomeEventSlot]],
+) -> tuple[int, list[str], list[str]]:
+    if raw.start_time is None:
+        return 0, [], []
+
+    slots = event_slots_by_time.get((raw.sport, raw.start_time), [])
+    available_matchups = [_format_outcome_event_slot(slot) for slot in slots[:12]]
+
+    known_team_id: int | None = None
+    if reason_code == "unresolved_home_team":
+        known_team_id = away_resolution.team_id
+    elif reason_code == "unresolved_away_team":
+        known_team_id = home_resolution.team_id
+
+    if known_team_id is None:
+        return 0, [], available_matchups
+
+    scored_candidates: dict[str, float] = {}
+    for slot in slots:
+        if known_team_id == slot.home_team_id:
+            candidate_team = slot.away_team
+        elif known_team_id == slot.away_team_id:
+            candidate_team = slot.home_team
+        else:
+            continue
+        if not _same_team_context(raw_team_name, candidate_team, sport=raw.sport):
+            continue
+        score = _team_similarity(raw_team_name, candidate_team, sport=raw.sport)
+        if score < TEAM_REVIEW_CANDIDATE_THRESHOLD:
+            continue
+        matchup_label = _format_outcome_event_slot(slot)
+        scored_candidates[matchup_label] = max(
+            scored_candidates.get(matchup_label, 0.0),
+            score,
+        )
+
+    candidate_matchups = [
+        matchup
+        for matchup, _score in sorted(
+            scored_candidates.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:8]
+    ]
+    return len(scored_candidates), candidate_matchups, available_matchups
+
+
 def _unresolved_team_diagnostic(
     raw: RawOutcomeOffer,
     *,
     raw_team_name: str,
     reason_code: str,
+    candidate_count: int = 0,
+    candidate_matchups: list[str] | None = None,
+    available_matchups_same_slot: list[str] | None = None,
 ) -> UnresolvedOddsDiagnostic:
     direct_league = resolve_league(raw.league_id, raw.bookmaker_id)
     return UnresolvedOddsDiagnostic(
@@ -1029,6 +1120,9 @@ def _unresolved_team_diagnostic(
         over_odds=raw.odds,
         under_odds=None,
         reason_code=reason_code,
+        candidate_count=candidate_count,
+        candidate_matchups=candidate_matchups or [],
+        available_matchups_same_slot=available_matchups_same_slot or [],
     )
 
 
@@ -1105,6 +1199,7 @@ def normalize_outcome_offers_with_context(
         raw_list,
         stats=football_resolution_stats,
     )
+    event_slots_by_time = _build_event_slots_by_time(event_resolutions)
     football_event_resolution_ms = _elapsed_ms(event_resolution_started_at)
 
     row_normalization_started_at = time.perf_counter()
@@ -1150,11 +1245,31 @@ def normalize_outcome_offers_with_context(
                 normalized.append(normalized_offer)
             continue
 
-        home_resolution = resolve_team_name(raw.home_team, bookmaker_id=raw.bookmaker_id, sport=raw.sport)
-        away_resolution = resolve_team_name(raw.away_team, bookmaker_id=raw.bookmaker_id, sport=raw.sport)
+        home_resolution = resolve_team_name(
+            raw.home_team,
+            bookmaker_id=raw.bookmaker_id,
+            sport=raw.sport,
+        )
+        away_resolution = resolve_team_name(
+            raw.away_team,
+            bookmaker_id=raw.bookmaker_id,
+            sport=raw.sport,
+        )
 
         if home_resolution.team_id is None or away_resolution.team_id is None:
             if home_resolution.team_id is None:
+                (
+                    candidate_count,
+                    candidate_matchups,
+                    available_matchups,
+                ) = _unresolved_outcome_matchup_context(
+                    raw,
+                    raw_team_name=raw.home_team,
+                    reason_code="unresolved_home_team",
+                    home_resolution=home_resolution,
+                    away_resolution=away_resolution,
+                    event_slots_by_time=event_slots_by_time,
+                )
                 key = _unresolved_outcome_key(
                     raw,
                     raw_team_name=raw.home_team,
@@ -1167,9 +1282,24 @@ def normalize_outcome_offers_with_context(
                             raw,
                             raw_team_name=raw.home_team,
                             reason_code="unresolved_home_team",
+                            candidate_count=candidate_count,
+                            candidate_matchups=candidate_matchups,
+                            available_matchups_same_slot=available_matchups,
                         )
                     )
             if away_resolution.team_id is None:
+                (
+                    candidate_count,
+                    candidate_matchups,
+                    available_matchups,
+                ) = _unresolved_outcome_matchup_context(
+                    raw,
+                    raw_team_name=raw.away_team,
+                    reason_code="unresolved_away_team",
+                    home_resolution=home_resolution,
+                    away_resolution=away_resolution,
+                    event_slots_by_time=event_slots_by_time,
+                )
                 key = _unresolved_outcome_key(
                     raw,
                     raw_team_name=raw.away_team,
@@ -1182,6 +1312,9 @@ def normalize_outcome_offers_with_context(
                             raw,
                             raw_team_name=raw.away_team,
                             reason_code="unresolved_away_team",
+                            candidate_count=candidate_count,
+                            candidate_matchups=candidate_matchups,
+                            available_matchups_same_slot=available_matchups,
                         )
                     )
             continue

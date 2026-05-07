@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from .base import BaseScraper
 from .http_client import HttpClient
+from .outcome_team_recovery import recover_matchup_from_payload
 from ..config import settings
 from ..models.schemas import RawOddsData, RawOutcomeOffer
 
@@ -467,10 +468,17 @@ def _parse_handicap_ot_match(match: dict) -> list[RawOddsData]:
 
 
 def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
-    home_team = (match.get("home") or "").strip()
-    away_team = (match.get("away") or "").strip()
+    matchup = recover_matchup_from_payload(match)
+    home_team = matchup.home_team
+    away_team = matchup.away_team
     if not home_team or not away_team:
         return []
+    if matchup.recovered:
+        logger.debug(
+            "OktagonBet: recovered football matchup from %s for match %s",
+            matchup.source,
+            match.get("id") or match.get("matchCode"),
+        )
 
     odds_map = match.get("odds") or {}
     if not isinstance(odds_map, dict):
@@ -655,10 +663,17 @@ def _parse_bulk_match(match: dict, spec: SportSpec) -> list[RawOddsData]:
 
 
 def _parse_football_double_chance_bulk_match(match: dict) -> list[RawOutcomeOffer]:
-    home_team = (match.get("home") or "").strip()
-    away_team = (match.get("away") or "").strip()
+    matchup = recover_matchup_from_payload(match)
+    home_team = matchup.home_team
+    away_team = matchup.away_team
     if not home_team or not away_team:
         return []
+    if matchup.recovered:
+        logger.debug(
+            "OktagonBet: recovered football bulk matchup from %s for match %s",
+            matchup.source,
+            match.get("id") or match.get("matchCode"),
+        )
 
     league_id = _extract_league_id(match.get("leagueName", ""), default="football")
     start_time = _parse_start_time(match.get("kickOffTime"))
