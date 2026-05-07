@@ -1919,6 +1919,54 @@ def test_resolve_contextual_player_name_variants_keeps_ambiguous_prefix_distinct
     assert _resolve_contextual_player_name_replacements(counts_steve) == {}
 
 
+def test_resolve_contextual_player_name_variants_merges_terminal_s_typo_majority():
+    counts = Counter(["Andre Feliz", "Andres Feliz", "Andres Feliz", "Andres Feliz"])
+
+    assert _resolve_contextual_player_name_replacements(counts) == {
+        "Andre Feliz": "Andres Feliz",
+    }
+
+
+def test_resolve_contextual_player_name_variants_expands_initial_when_terminal_s_variants_compete():
+    counts = Counter(
+        [
+            "A.Feliz",
+            "A.Feliz",
+            "Andre Feliz",
+            "Andres Feliz",
+            "Andres Feliz",
+            "Andres Feliz",
+        ]
+    )
+
+    assert _resolve_contextual_player_name_replacements(counts) == {
+        "A.Feliz": "Andres Feliz",
+        "Andre Feliz": "Andres Feliz",
+    }
+
+
+def test_resolve_contextual_player_name_variants_keeps_initial_terminal_s_candidates_ambiguous_without_majority():
+    counts = Counter(["A.Feliz", "Andre Feliz", "Andres Feliz"])
+
+    assert _resolve_contextual_player_name_replacements(counts) == {}
+
+
+def test_resolve_contextual_player_name_variants_uses_terminal_s_sequence_majority_for_split_surfaces():
+    counts = Counter(
+        {
+            "A.Feliz": 1,
+            "Andre Feliz": 5,
+            "Andres Feliz": 3,
+            "Andres Feliz Jr": 3,
+        }
+    )
+
+    replacements = _resolve_contextual_player_name_replacements(counts)
+
+    assert replacements["A.Feliz"].startswith("Andres Feliz")
+    assert replacements["Andre Feliz"].startswith("Andres Feliz")
+
+
 def test_resolve_contextual_player_name_variants_hyphenated_first_with_suffix():
     """Hyphenated first name with vs. without a Jr suffix must still merge.
 

@@ -378,6 +378,11 @@ def _given_name_part_compatible(a: str, b: str) -> bool:
     return False
 
 
+def _is_terminal_s_name_variant(a: str, b: str) -> bool:
+    shorter, longer = (a, b) if len(a) < len(b) else (b, a)
+    return len(shorter) >= 3 and longer == f"{shorter}s"
+
+
 def _letter_seq_compatible(a: list[str], b: list[str]) -> bool:
     """True iff two letter-sequences plausibly describe the same given-name set.
 
@@ -511,6 +516,27 @@ def _collapse_first_name_sequences(
             continue
         kept.append((seq, is_abbrev))
     return {seq for seq, _ in kept}
+
+
+def _collapse_majority_terminal_s_sequences(
+    sequences: set[tuple[str, ...]],
+    sequence_counts: Counter[tuple[str, ...]],
+) -> tuple[set[tuple[str, ...]], tuple[str, ...] | None]:
+    if len(sequences) != 2:
+        return sequences, None
+    first, second = sorted(sequences)
+    if (
+        len(first) != 1
+        or len(second) != 1
+        or not _is_terminal_s_name_variant(first[0], second[0])
+    ):
+        return sequences, None
+    first_count = sequence_counts[first]
+    second_count = sequence_counts[second]
+    if first_count == second_count:
+        return sequences, None
+    winner = first if first_count > second_count else second
+    return {winner}, winner
 
 
 def _name_surface_richness(name: str) -> tuple[int, int, int]:
@@ -839,10 +865,12 @@ def _resolve_contextual_player_name_replacements(
         # ``Jar.``/``Jared`` (one side abbreviated → same player) while keeping
         # ``Jo``/``John`` distinct (neither abbreviated → coincidental prefix).
         seq_abbrev: dict[tuple[str, ...], bool] = {}
+        seq_counts: Counter[tuple[str, ...]] = Counter()
         for candidate, match in candidate_matches:
             seq = match.candidate_effective_first_seq
             if not seq:
                 continue
+            seq_counts[seq] += name_counts[candidate]
             is_abbrev = (
                 match.candidate_swapped
                 or all(len(part) == 1 for part in seq)
@@ -851,6 +879,13 @@ def _resolve_contextual_player_name_replacements(
             seq_abbrev[seq] = seq_abbrev.get(seq, False) or is_abbrev
         candidate_first_seqs = _collapse_first_name_sequences(
             {(seq, abbrev) for seq, abbrev in seq_abbrev.items()}
+        )
+        (
+            candidate_first_seqs,
+            terminal_s_winner_seq,
+        ) = _collapse_majority_terminal_s_sequences(
+            candidate_first_seqs,
+            seq_counts,
         )
         if len(candidate_first_seqs) > 1:
             continue
@@ -872,7 +907,16 @@ def _resolve_contextual_player_name_replacements(
                 candidate,
             )
 
-        ranked = sorted(candidate_matches, key=_rank_key, reverse=True)
+        ranking_candidates = (
+            [
+                (candidate, match)
+                for candidate, match in candidate_matches
+                if match.candidate_effective_first_seq == terminal_s_winner_seq
+            ]
+            if terminal_s_winner_seq is not None
+            else candidate_matches
+        )
+        ranked = sorted(ranking_candidates, key=_rank_key, reverse=True)
         chosen_replacement: str | None = None
         for best_candidate, best_match in ranked:
             best_parts = _resolver_player_parts(
@@ -923,10 +967,19 @@ def _resolve_contextual_player_name_replacements(
                     or _candidate_first_name_has_abbreviation_dot(raw_name)
                 )
                 if not raw_is_abbreviated:
-                    if name_counts[best_candidate] <= name_counts[raw_name]:
-                        continue
                     first_raw = raw_seq[0] if raw_seq else ""
                     first_best = best_seq[0] if best_seq else ""
+                    is_terminal_s_variant = _is_terminal_s_name_variant(
+                        first_raw,
+                        first_best,
+                    )
+                    candidate_support = (
+                        seq_counts.get(best_seq, name_counts[best_candidate])
+                        if is_terminal_s_variant
+                        else name_counts[best_candidate]
+                    )
+                    if candidate_support <= name_counts[raw_name]:
+                        continue
                     # Identical first-name tokens are NOT an ambiguous prefix
                     # relation — they're the strongest possible signal that
                     # the two surface forms refer to the same person (the
@@ -939,6 +992,7 @@ def _resolve_contextual_player_name_replacements(
                         first_raw
                         and first_best
                         and first_raw != first_best
+                        and not is_terminal_s_variant
                         and (
                             first_raw.startswith(first_best)
                             or first_best.startswith(first_raw)
