@@ -7,6 +7,7 @@ from itertools import combinations
 from ..models.schemas import CanonicalMarket, CanonicalOffer, OpportunityLeg
 from .canonical_offers import _clean_part
 from .opportunity_analyzer import Opportunity, _middle_profit_margin, _profit_margin
+from .middle_ev import MiddleEstimate, MiddleMarketQuote, estimate_middle, fallback_rank
 
 
 _COMPLEMENTARY_OUTCOME_PAIRS = {
@@ -35,6 +36,7 @@ class _LineMiddleCandidate:
     high: CanonicalOffer
     margin: float
     middle_margin: float
+    estimate: MiddleEstimate
 
 
 def analyze_canonical_offers(
@@ -69,12 +71,7 @@ def analyze_canonical_offers(
 
     return sorted(
         deduped.values(),
-        key=lambda item: (
-            -(item.profit_margin or -999),
-            item.match_id,
-            item.opportunity_type,
-            item.market_type,
-        ),
+        key=_opportunity_sort_key,
     )
 
 
@@ -125,6 +122,16 @@ def _analyze_line_middle(
         return []
 
     candidates: list[_LineMiddleCandidate] = []
+    market_quotes = [
+        MiddleMarketQuote(
+            bookmaker_id=offer.bookmaker_id,
+            line=offer.market.line,
+            outcome_code=offer.outcome_code,
+            odds=offer.odds,
+        )
+        for offer in group
+        if offer.market.line is not None
+    ]
     for first, second in combinations(group, 2):
         if first.bookmaker_id == second.bookmaker_id:
             continue
@@ -139,10 +146,6 @@ def _analyze_line_middle(
         if not _has_positive_odds(low, high):
             continue
 
-        gap = high.market.line - low.market.line
-        if gap < min_gap:
-            continue
-
         margin = _profit_margin(low.odds, high.odds)
         middle_margin = _middle_profit_margin(low.odds, high.odds)
         if not _passes_line_middle_margin_filter(
@@ -154,12 +157,30 @@ def _analyze_line_middle(
 
         if margin is None or middle_margin is None:
             continue
+        estimate = estimate_middle(
+            sport=low.market.sport,
+            market_type=low.market.market_type,
+            low_line=low.market.line,
+            high_line=high.market.line,
+            low_odds=low.odds,
+            high_odds=high.odds,
+            market_quotes=market_quotes,
+            outside_margin=margin,
+            middle_margin=middle_margin,
+            min_gap=min_gap,
+            outside_margin_floor=_LINE_MIDDLE_OUTSIDE_MARGIN_FLOORS.get(
+                low.market.market_type
+            ),
+        )
+        if not estimate.should_publish:
+            continue
         candidates.append(
             _LineMiddleCandidate(
                 low=low,
                 high=high,
                 margin=margin,
                 middle_margin=middle_margin,
+                estimate=estimate,
             )
         )
 
@@ -194,6 +215,11 @@ def _analyze_line_middle(
                 subject_key=subject_key,
                 subject_name=subject_name,
                 market_keys=tuple(sorted({low.market_key, high.market_key})),
+                middle_hit_probability=candidate.estimate.hit_probability,
+                middle_ev=candidate.estimate.expected_roi,
+                middle_model_confidence=candidate.estimate.confidence,
+                middle_model_diagnostics=candidate.estimate.diagnostics,
+                middle_ev_rank=candidate.estimate.rank_score,
             )
         )
     return opportunities
@@ -203,18 +229,35 @@ def _line_middle_candidate_rank(candidate: _LineMiddleCandidate) -> tuple[float,
     low_line = candidate.low.market.line
     high_line = candidate.high.market.line
     if low_line is None or high_line is None:
-        relative_width = 0.0
-        gap = 0.0
+        fallback = (0.0, 0.0, 0.0, 0.0, 0.0)
     else:
-        gap = high_line - low_line
-        line_scale = max((abs(low_line) + abs(high_line)) / 2.0, 1.0)
-        relative_width = gap / line_scale
+        fallback = fallback_rank(
+            low_line=low_line,
+            high_line=high_line,
+            middle_margin=candidate.middle_margin,
+            outside_margin=candidate.margin,
+            low_odds=candidate.low.odds,
+            high_odds=candidate.high.odds,
+        )
     return (
-        relative_width,
-        candidate.middle_margin,
-        candidate.margin,
-        gap,
-        min(candidate.low.odds, candidate.high.odds),
+        1.0 if candidate.estimate.rank_score is not None else 0.0,
+        candidate.estimate.rank_score or 0.0,
+        *fallback,
+    )
+
+
+def _opportunity_sort_key(item: Opportunity) -> tuple[float, str, str, str]:
+    if item.opportunity_type == "middle":
+        value = item.middle_ev_rank
+        if value is None:
+            value = item.profit_margin
+    else:
+        value = item.profit_margin
+    return (
+        -(value if value is not None else -999.0),
+        item.match_id,
+        item.opportunity_type,
+        item.market_type,
     )
 
 

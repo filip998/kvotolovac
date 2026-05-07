@@ -122,6 +122,11 @@ export interface Opportunity {
   line: number | null;
   profit_margin: number | null;
   middle_profit_margin: number | null;
+  middle_hit_probability: number | null;
+  middle_ev: number | null;
+  middle_model_confidence: string | null;
+  middle_model_diagnostics: Record<string, unknown>;
+  middle_ev_rank: number | null;
   market_keys: string[];
   legs: OpportunityLeg[];
   detected_at: string | null;
@@ -155,6 +160,11 @@ export interface Edge {
   player_name: string | null;
   profit_margin: number | null;
   middle_profit_margin: number | null;
+  middle_hit_probability: number | null;
+  middle_ev: number | null;
+  middle_model_confidence: string | null;
+  middle_model_diagnostics: Record<string, unknown>;
+  middle_ev_rank: number | null;
   gap: number | null;
   detected_at: string | null;
   leg_a: EdgeLeg;
@@ -383,6 +393,45 @@ export interface ScrapeSettingsResponse {
   pending_at: string | null;
   applied_immediately: boolean;
   options: ScrapeSettingsOptions;
+}
+
+export interface TelegramNotificationProfile {
+  id: number;
+  label: string;
+  chat_id: string;
+  enabled: boolean;
+  min_gap: number;
+  min_roi_percent: number;
+  min_middle_ev_percent: number;
+  bookmaker_ids: string[];
+  rate_limited_until: string | null;
+  last_delivery_error: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface TelegramNotificationProfileInput {
+  label: string;
+  chat_id: string;
+  enabled: boolean;
+  min_gap: number;
+  min_roi_percent: number;
+  min_middle_ev_percent: number;
+  bookmaker_ids: string[];
+}
+
+export type TelegramNotificationProfileUpdate = Partial<TelegramNotificationProfileInput>;
+
+export interface TelegramSettingsResponse {
+  token_configured: boolean;
+  api_base_url: string;
+  profiles: TelegramNotificationProfile[];
+}
+
+export interface TelegramTestMessageResponse {
+  profile_id: number;
+  ok: boolean;
+  message_id: number | null;
 }
 
 export interface OpportunityBoardFilters {

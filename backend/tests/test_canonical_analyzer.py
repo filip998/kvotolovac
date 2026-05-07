@@ -131,13 +131,13 @@ def _legacy_outcome_offer(
 def test_canonical_line_middle_matches_basketball_threshold_gap():
     legacy_odds = [
         _legacy_odds("mozzart", "Lundberg", 16.5, over=1.85, under=1.95),
-        _legacy_odds("meridian", "Lundberg", 18.5, over=1.80, under=2.00),
+        _legacy_odds("meridian", "Lundberg", 19.5, over=1.80, under=2.00),
     ]
     legacy = find_threshold_gaps(legacy_odds)
     opportunities = analyze_canonical_offers(
         [
             *_odds("mozzart", "Lundberg", 16.5, over=1.85, under=1.95),
-            *_odds("meridian", "Lundberg", 18.5, over=1.80, under=2.00),
+            *_odds("meridian", "Lundberg", 19.5, over=1.80, under=2.00),
         ]
     )
 
@@ -151,17 +151,17 @@ def test_canonical_line_middle_matches_basketball_threshold_gap():
     assert opportunity.middle_profit_margin == legacy[0].middle_profit_margin
     assert {(leg.bookmaker_id, leg.outcome_code, leg.line) for leg in opportunity.legs} == {
         ("mozzart", "over", 16.5),
-        ("meridian", "under", 18.5),
+        ("meridian", "under", 19.5),
     }
 
 
 def test_canonical_line_middle_honors_min_gap():
     offers = [
         *_odds("mozzart", "Lundberg", 16.5),
-        *_odds("meridian", "Lundberg", 17.5),
+        *_odds("meridian", "Lundberg", 19.5),
     ]
 
-    assert analyze_canonical_offers(offers, min_gap=2.0) == []
+    assert analyze_canonical_offers(offers, min_gap=4.0) == []
     assert len(analyze_canonical_offers(offers, min_gap=0.5)) == 1
 
 
@@ -211,9 +211,9 @@ def test_canonical_line_middle_uses_odds_when_relative_width_ties():
     opportunities = analyze_canonical_offers(
         [
             *_odds("cheap-over", "Lundberg", 7.5, over=1.50, under=None),
-            *_odds("cheap-under", "Lundberg", 8.5, over=None, under=1.50),
+            *_odds("cheap-under", "Lundberg", 10.5, over=None, under=1.50),
             *_odds("better-over", "Lundberg", 7.5, over=2.00, under=None),
-            *_odds("better-under", "Lundberg", 8.5, over=None, under=2.00),
+            *_odds("better-under", "Lundberg", 10.5, over=None, under=2.00),
         ],
         max_middle_opportunities_per_market=1,
     )
@@ -221,8 +221,28 @@ def test_canonical_line_middle_uses_odds_when_relative_width_ties():
     assert len(opportunities) == 1
     assert {(leg.bookmaker_id, leg.line) for leg in opportunities[0].legs} == {
         ("better-over", 7.5),
-        ("better-under", 8.5),
+        ("better-under", 10.5),
     }
+
+
+def test_canonical_line_middle_populates_market_implied_ev_fields():
+    opportunities = analyze_canonical_offers(
+        [
+            *_odds("value-over", "Lundberg", 8.5, over=2.10, under=4.00),
+            *_odds("fair-mid", "Lundberg", 12.5, over=2.00, under=2.00),
+            *_odds("value-under", "Lundberg", 15.5, over=4.00, under=2.10),
+        ],
+        max_middle_opportunities_per_market=1,
+    )
+
+    assert len(opportunities) == 1
+    opportunity = opportunities[0]
+    assert opportunity.middle_hit_probability is not None
+    assert opportunity.middle_ev is not None
+    assert opportunity.middle_ev > 0
+    assert opportunity.middle_model_confidence in {"low", "medium", "high"}
+    assert opportunity.middle_model_diagnostics["mode"] == "fitted"
+    assert opportunity.middle_ev_rank is not None
 
 
 def test_canonical_line_middle_uses_subject_key_before_display_name():
@@ -240,7 +260,7 @@ def test_canonical_line_middle_uses_subject_key_before_display_name():
             *_odds(
                 "meridian",
                 "N. Jokic",
-                18.5,
+                19.5,
                 over=1.80,
                 under=1.95,
                 subject_key="ply_lundberg",
@@ -255,7 +275,7 @@ def test_canonical_line_middle_uses_subject_key_before_display_name():
     assert opportunities[0].subject_name == "Nikola Jokić"
     assert {(leg.bookmaker_id, leg.outcome_code, leg.line) for leg in opportunities[0].legs} == {
         ("mozzart", "over", 16.5),
-        ("meridian", "under", 18.5),
+        ("meridian", "under", 19.5),
     }
 
 
@@ -263,13 +283,13 @@ def test_canonical_line_middle_does_not_cross_resolved_events_for_same_player():
     same_event = analyze_canonical_offers(
         [
             *_odds("mozzart", "Lundberg", 16.5, over=1.85, under=None, event_id="event-a"),
-            *_odds("meridian", "Lundberg", 18.5, over=None, under=2.00, event_id="event-a"),
+            *_odds("meridian", "Lundberg", 19.5, over=None, under=2.00, event_id="event-a"),
         ]
     )
     split_events = analyze_canonical_offers(
         [
             *_odds("mozzart", "Lundberg", 16.5, over=1.85, under=None, event_id="event-a"),
-            *_odds("meridian", "Lundberg", 18.5, over=None, under=2.00, event_id="event-b"),
+            *_odds("meridian", "Lundberg", 19.5, over=None, under=2.00, event_id="event-b"),
         ]
     )
 
@@ -425,13 +445,13 @@ def test_canonical_total_goals_middle_matches_legacy_floor():
     legacy = analyze_outcome_offers(
         [
             _legacy_outcome_offer("balkanbet", "football_total_goals", "over", 2.0, line=1.5),
-            _legacy_outcome_offer("maxbet", "football_total_goals", "under", 2.0, line=2.5),
+            _legacy_outcome_offer("maxbet", "football_total_goals", "under", 2.0, line=4.5),
         ]
     )
     opportunities = analyze_canonical_offers(
         [
             _outcome_offer("balkanbet", "football_total_goals", "over", 2.0, line=1.5),
-            _outcome_offer("maxbet", "football_total_goals", "under", 2.0, line=2.5),
+            _outcome_offer("maxbet", "football_total_goals", "under", 2.0, line=4.5),
         ]
     )
 
@@ -446,7 +466,7 @@ def test_canonical_total_goals_middle_filters_large_outside_loss():
     opportunities = analyze_canonical_offers(
         [
             _outcome_offer("balkanbet", "football_total_goals", "over", 1.65, line=1.5),
-            _outcome_offer("maxbet", "football_total_goals", "under", 1.65, line=2.5),
+            _outcome_offer("maxbet", "football_total_goals", "under", 1.65, line=4.5),
         ]
     )
 
@@ -495,7 +515,7 @@ def test_canonical_resolved_event_uses_primary_match_and_source_leg_matches():
             *_odds(
                 "meridian",
                 "Lundberg",
-                18.5,
+                19.5,
                 match_id="match-meridian",
                 event_id="evt-partizan-zvezda",
             ),

@@ -9,6 +9,7 @@ import type {
   EventReviewCase,
   SystemStatus,
   ScrapeSettingsResponse,
+  TelegramSettingsResponse,
   TeamReviewCase,
   UnresolvedOdds,
 } from './types';
@@ -365,6 +366,11 @@ export const mockOpportunities: Opportunity[] = [
     line: null,
     profit_margin: -0.0125,
     middle_profit_margin: 0.8421,
+    middle_hit_probability: 0.312,
+    middle_ev: 0.254,
+    middle_model_confidence: 'medium',
+    middle_model_diagnostics: { mode: 'fitted', model_family: 'normal', consensus_points: 4 },
+    middle_ev_rank: 0.2159,
     market_keys: ['mock-player-points-sasha-18.5', 'mock-player-points-sasha-20.5'],
     legs: [
       { bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'player_points', outcome_code: 'over', odds: 1.85, line: 18.5, raw_label: '18.5+' },
@@ -389,6 +395,11 @@ export const mockOpportunities: Opportunity[] = [
     line: 16.5,
     profit_margin: 0.0351,
     middle_profit_margin: null,
+    middle_hit_probability: null,
+    middle_ev: null,
+    middle_model_confidence: null,
+    middle_model_diagnostics: {},
+    middle_ev_rank: null,
     market_keys: ['mock-player-points-nigel-16.5'],
     legs: [
       { bookmaker_id: 'betole', bookmaker_name: 'BetOle', market_type: 'player_points', outcome_code: 'over', odds: 2.08, line: 16.5, raw_label: '16.5+' },
@@ -413,6 +424,11 @@ export const mockOpportunities: Opportunity[] = [
     line: null,
     profit_margin: -0.021,
     middle_profit_margin: 0.7667,
+    middle_hit_probability: 0.118,
+    middle_ev: 0.0719,
+    middle_model_confidence: 'low',
+    middle_model_diagnostics: { mode: 'fitted', model_family: 'normal', consensus_points: 2 },
+    middle_ev_rank: 0.0467,
     market_keys: ['mock-game-total-fmp-158.5', 'mock-game-total-fmp-161.5'],
     legs: [
       { bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'game_total_ot', outcome_code: 'over', odds: 1.88, line: 158.5, raw_label: '158.5+' },
@@ -435,6 +451,11 @@ export const mockOpportunities: Opportunity[] = [
     line: 2.5,
     profit_margin: 0.1277,
     middle_profit_margin: null,
+    middle_hit_probability: null,
+    middle_ev: null,
+    middle_model_confidence: null,
+    middle_model_diagnostics: {},
+    middle_ev_rank: null,
     market_keys: ['mock-football-total-2.5'],
     legs: [
       { bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'football_total_goals', outcome_code: 'under', odds: 2.15, line: 2.5, raw_label: '0-2' },
@@ -457,6 +478,11 @@ export const mockOpportunities: Opportunity[] = [
     line: null,
     profit_margin: 0.0253,
     middle_profit_margin: null,
+    middle_hit_probability: null,
+    middle_ev: null,
+    middle_model_confidence: null,
+    middle_model_diagnostics: {},
+    middle_ev_rank: null,
     market_keys: ['mock-football-result-home', 'mock-football-double-chance-draw-away'],
     legs: [
       { bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'football_result', outcome_code: 'home', odds: 2.5, line: null, raw_label: '1' },
@@ -481,6 +507,11 @@ export const mockOpportunities: Opportunity[] = [
     line: null,
     profit_margin: 0.0317,
     middle_profit_margin: null,
+    middle_hit_probability: null,
+    middle_ev: null,
+    middle_model_confidence: null,
+    middle_model_diagnostics: {},
+    middle_ev_rank: null,
     market_keys: ['mock-tennis-match-winner'],
     legs: [
       { bookmaker_id: 'maxbet', bookmaker_name: 'MaxBet', market_type: 'match_winner', outcome_code: 'home', odds: 2.15, line: null, raw_label: '1' },
@@ -1406,4 +1437,25 @@ export const mockScrapeSettings: ScrapeSettingsResponse = {
     rate_limit_per_second_min: 0,
     rate_limit_per_second_max: 20,
   },
+};
+
+export const mockTelegramSettings: TelegramSettingsResponse = {
+  token_configured: false,
+  api_base_url: 'https://api.telegram.org',
+  profiles: [
+    {
+      id: 1,
+      label: 'Main chat',
+      chat_id: '123456789',
+      enabled: true,
+      min_gap: 1.5,
+      min_roi_percent: 5,
+      min_middle_ev_percent: 1,
+      bookmaker_ids: ['mozzart', 'meridian', 'maxbet'],
+      rate_limited_until: null,
+      last_delivery_error: null,
+      created_at: ago(30),
+      updated_at: ago(12),
+    },
+  ],
 };

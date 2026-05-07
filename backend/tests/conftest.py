@@ -55,6 +55,13 @@ def all_market_scrape_scope(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def clear_telegram_token(monkeypatch):
+    """Keep Telegram settings tests independent from local .env secrets."""
+    monkeypatch.setattr(settings, "telegram_bot_token", "")
+    yield
+
+
 @pytest.fixture
 def league_registry_file(tmp_path, monkeypatch):
     source_path = Path(settings.league_registry_path)

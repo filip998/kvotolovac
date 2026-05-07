@@ -81,7 +81,7 @@ def test_analyze_total_goals_middle_respects_outside_margin_floor():
     opportunities = analyze_outcome_offers(
         [
             _offer("balkanbet", "football_total_goals", "over", 2.0, line=1.5),
-            _offer("maxbet", "football_total_goals", "under", 2.0, line=2.5),
+            _offer("maxbet", "football_total_goals", "under", 2.0, line=4.5),
         ]
     )
 
@@ -92,15 +92,37 @@ def test_analyze_total_goals_middle_respects_outside_margin_floor():
     assert opportunity.middle_profit_margin == 1.0
     assert {(leg.outcome_code, leg.line) for leg in opportunity.legs} == {
         ("over", 1.5),
-        ("under", 2.5),
+        ("under", 4.5),
     }
+
+
+def test_analyze_total_goals_middle_rejects_one_point_gap():
+    opportunities = analyze_outcome_offers(
+        [
+            _offer("balkanbet", "football_total_goals", "over", 2.0, line=1.5),
+            _offer("maxbet", "football_total_goals", "under", 2.0, line=2.5),
+        ]
+    )
+
+    assert opportunities == []
+
+
+def test_analyze_total_goals_middle_rejects_low_leg_odds():
+    opportunities = analyze_outcome_offers(
+        [
+            _offer("balkanbet", "football_total_goals", "over", 1.70, line=1.5),
+            _offer("maxbet", "football_total_goals", "under", 2.10, line=4.5),
+        ]
+    )
+
+    assert opportunities == []
 
 
 def test_analyze_total_goals_middle_filters_large_outside_loss():
     opportunities = analyze_outcome_offers(
         [
             _offer("balkanbet", "football_total_goals", "over", 1.65, line=1.5),
-            _offer("maxbet", "football_total_goals", "under", 1.65, line=2.5),
+            _offer("maxbet", "football_total_goals", "under", 1.65, line=4.5),
         ]
     )
 

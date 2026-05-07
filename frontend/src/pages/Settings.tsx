@@ -1,8 +1,13 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import {
+  useCreateTelegramProfile,
+  useDeleteTelegramProfile,
   useScrapeSettings,
   useSystemStatus,
+  useTelegramSettings,
+  useTestTelegramProfile,
   useTriggerScrape,
+  useUpdateTelegramProfile,
   useUpdateScrapeSettings,
 } from '../api/hooks';
 import type {
@@ -10,6 +15,8 @@ import type {
   ScrapeSettingsMarketOption,
   ScraperDetailMode,
   ScrapeSettingsOptions,
+  TelegramNotificationProfile,
+  TelegramNotificationProfileInput,
 } from '../api/types';
 import PageShell from '../components/PageShell';
 
@@ -28,6 +35,16 @@ const detailModeLabels: Record<ScraperDetailMode, string> = {
 
 const ALL_MARKETS_TOKEN = 'all';
 
+const EMPTY_TELEGRAM_PROFILE: TelegramNotificationProfileInput = {
+  label: '',
+  chat_id: '',
+  enabled: true,
+  min_gap: 2,
+  min_roi_percent: 0,
+  min_middle_ev_percent: 0,
+  bookmaker_ids: [],
+};
+
 function toggleValue(values: string[], value: string): string[] {
   return values.includes(value)
     ? values.filter((item) => item !== value)
@@ -36,6 +53,13 @@ function toggleValue(values: string[], value: string): string[] {
 
 function settingsKey(values: ScrapeRuntimeSettings): string {
   return JSON.stringify(values);
+}
+
+function telegramProfileKey(values: TelegramNotificationProfileInput): string {
+  return JSON.stringify({
+    ...values,
+    bookmaker_ids: [...values.bookmaker_ids].sort(),
+  });
 }
 
 function titleCase(value: string): string {
@@ -266,6 +290,26 @@ function NumberControl({
   );
 }
 
+function TextControl({
+  value,
+  placeholder,
+  onChange,
+}: {
+  value: string;
+  placeholder?: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <input
+      type="text"
+      value={value}
+      placeholder={placeholder}
+      onChange={(event) => onChange(event.target.value)}
+      className="w-full rounded-xl border border-border bg-bg px-3 py-2 text-sm font-semibold text-text outline-none transition placeholder:text-text-muted focus:border-accent sm:w-64"
+    />
+  );
+}
+
 function SelectControl<TValue extends string>({
   value,
   options,
@@ -321,6 +365,476 @@ function SwitchControl({
         }`}
       />
     </button>
+  );
+}
+
+function profileToInput(profile: TelegramNotificationProfile): TelegramNotificationProfileInput {
+  return {
+    label: profile.label,
+    chat_id: profile.chat_id,
+    enabled: profile.enabled,
+    min_gap: profile.min_gap,
+    min_roi_percent: profile.min_roi_percent,
+    min_middle_ev_percent: profile.min_middle_ev_percent,
+    bookmaker_ids: profile.bookmaker_ids,
+  };
+}
+
+function summarizeTelegramBookmakers(
+  bookmakerIds: string[],
+  options: ScrapeSettingsOptions
+): string {
+  return bookmakerIds.length === 0 ? 'All bookmakers' : summarizeBookmakers(bookmakerIds, options);
+}
+
+function telegramProfileStatus(profile: TelegramNotificationProfile): string | null {
+  if (profile.rate_limited_until) {
+    const until = new Date(profile.rate_limited_until);
+    if (!Number.isNaN(until.getTime()) && until.getTime() > Date.now()) {
+      return `Rate-limited until ${until.toLocaleString()}`;
+    }
+  }
+  if (profile.last_delivery_error) {
+    return `Last delivery error: ${profile.last_delivery_error}`;
+  }
+  return null;
+}
+
+function TelegramBookmakerSelector({
+  selectedIds,
+  options,
+  onChange,
+}: {
+  selectedIds: string[];
+  options: ScrapeSettingsOptions;
+  onChange: (ids: string[]) => void;
+}) {
+  return (
+    <div className="space-y-3 rounded-2xl border border-border bg-surface/80 px-4 py-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="text-sm font-semibold text-text">Bookmakers</div>
+          <div className="mt-0.5 text-sm text-text-secondary">
+            {summarizeTelegramBookmakers(selectedIds, options)}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-3 text-sm">
+          <button
+            type="button"
+            onClick={() => onChange([])}
+            className="font-medium text-accent hover:text-accent-dim"
+          >
+            All
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange(options.bookmakers.map((bookmaker) => bookmaker.id))}
+            className="font-medium text-text-secondary hover:text-text"
+          >
+            Mirror scrape
+          </button>
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {options.bookmakers.map((bookmaker) => (
+          <ChoiceChip
+            key={bookmaker.id}
+            selected={selectedIds.includes(bookmaker.id)}
+            onClick={() => onChange(toggleValue(selectedIds, bookmaker.id))}
+          >
+            {bookmaker.name}
+          </ChoiceChip>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TelegramProfileEditor({
+  profile,
+  options,
+}: {
+  profile: TelegramNotificationProfile;
+  options: ScrapeSettingsOptions;
+}) {
+  const [draft, setDraft] = useState<TelegramNotificationProfileInput>(() => profileToInput(profile));
+  const [message, setMessage] = useState<string | null>(null);
+  const updateProfile = useUpdateTelegramProfile();
+  const deleteProfile = useDeleteTelegramProfile();
+  const testProfile = useTestTelegramProfile();
+  const hasChanges = telegramProfileKey(draft) !== telegramProfileKey(profileToInput(profile));
+  const status = telegramProfileStatus(profile);
+
+  const save = () => {
+    setMessage(null);
+    updateProfile.mutate(
+      { profileId: profile.id, payload: draft },
+      {
+        onSuccess: () => setMessage('Saved.'),
+        onError: (error) => setMessage(`Failed to save: ${error.message}`),
+      }
+    );
+  };
+
+  const sendTest = () => {
+    setMessage(null);
+    testProfile.mutate(
+      { profileId: profile.id },
+      {
+        onSuccess: () => setMessage('Test sent.'),
+        onError: (error) => setMessage(`Test failed: ${error.message}`),
+      }
+    );
+  };
+
+  const remove = () => {
+    if (!window.confirm(`Delete Telegram profile "${profile.label}"?`)) {
+      return;
+    }
+    deleteProfile.mutate(
+      { profileId: profile.id },
+      {
+        onError: (error) => setMessage(`Delete failed: ${error.message}`),
+      }
+    );
+  };
+
+  return (
+    <DisclosureRow
+      title={profile.label}
+      summary={`${draft.enabled ? 'Enabled' : 'Paused'} · ${summarizeTelegramBookmakers(
+        draft.bookmaker_ids,
+        options
+      )}`}
+    >
+      <div className="space-y-3">
+        {status && (
+          <div className="rounded-lg border border-warning/60 bg-warning/10 px-4 py-3 text-sm text-warning">
+            {status}
+          </div>
+        )}
+
+        <SettingRow label="Enabled" description="Pause this chat without deleting its thresholds." as="div">
+          <SwitchControl
+            checked={draft.enabled}
+            ariaLabel={`Enable ${profile.label}`}
+            onChange={(checked) =>
+              setDraft((current) => ({
+                ...current,
+                enabled: checked,
+              }))
+            }
+          />
+        </SettingRow>
+
+        <div className="grid gap-2 lg:grid-cols-2">
+          <SettingRow label="Label">
+            <TextControl
+              value={draft.label}
+              onChange={(value) =>
+                setDraft((current) => ({
+                  ...current,
+                  label: value,
+                }))
+              }
+            />
+          </SettingRow>
+
+          <SettingRow label="Chat ID">
+            <TextControl
+              value={draft.chat_id}
+              onChange={(value) =>
+                setDraft((current) => ({
+                  ...current,
+                  chat_id: value,
+                }))
+              }
+            />
+          </SettingRow>
+
+          <SettingRow
+            label="Fallback min gap"
+            description="Used only when fitted middle EV is unavailable."
+          >
+            <NumberControl
+              value={draft.min_gap}
+              min={0}
+              step={0.1}
+              unit="pts"
+              onChange={(value) =>
+                setDraft((current) => ({
+                  ...current,
+                  min_gap: Number(value),
+                }))
+              }
+            />
+          </SettingRow>
+
+          <SettingRow
+            label="Min fitted middle EV"
+            description="Expected ROI threshold for model-fitted middles."
+          >
+            <NumberControl
+              value={draft.min_middle_ev_percent}
+              min={0}
+              step={0.1}
+              unit="%"
+              onChange={(value) =>
+                setDraft((current) => ({
+                  ...current,
+                  min_middle_ev_percent: Number(value),
+                }))
+              }
+            />
+          </SettingRow>
+
+          <SettingRow
+            label="Min fallback payout"
+            description="Used for fallback middles and non-middle ROI filters."
+          >
+            <NumberControl
+              value={draft.min_roi_percent}
+              min={0}
+              step={0.1}
+              unit="%"
+              onChange={(value) =>
+                setDraft((current) => ({
+                  ...current,
+                  min_roi_percent: Number(value),
+                }))
+              }
+            />
+          </SettingRow>
+        </div>
+
+        <TelegramBookmakerSelector
+          selectedIds={draft.bookmaker_ids}
+          options={options}
+          onChange={(bookmakerIds) =>
+            setDraft((current) => ({
+              ...current,
+              bookmaker_ids: bookmakerIds,
+            }))
+          }
+        />
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm text-text-secondary" aria-live="polite">
+            {message ?? (hasChanges ? 'Unsaved Telegram profile changes.' : 'Profile is current.')}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={sendTest}
+              disabled={testProfile.isPending}
+              className="rounded-full border border-border px-4 py-2 text-sm font-semibold text-text transition hover:border-border-hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {testProfile.isPending ? 'Sending...' : 'Send test'}
+            </button>
+            <button
+              type="button"
+              onClick={remove}
+              disabled={deleteProfile.isPending}
+              className="rounded-full border border-danger/40 px-4 py-2 text-sm font-semibold text-danger transition hover:border-danger disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Delete
+            </button>
+            <button
+              type="button"
+              onClick={save}
+              disabled={!hasChanges || updateProfile.isPending}
+              className="rounded-full bg-accent px-5 py-2 text-sm font-semibold text-bg transition hover:bg-accent-dim disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {updateProfile.isPending ? 'Saving...' : 'Save profile'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </DisclosureRow>
+  );
+}
+
+function TelegramSection({ options }: { options: ScrapeSettingsOptions }) {
+  const { data, isLoading, isError, error } = useTelegramSettings();
+  const createProfile = useCreateTelegramProfile();
+  const [draft, setDraft] = useState<TelegramNotificationProfileInput>(
+    () => EMPTY_TELEGRAM_PROFILE
+  );
+  const [message, setMessage] = useState<string | null>(null);
+  const canCreate = draft.label.trim().length > 0 && draft.chat_id.trim().length > 0;
+
+  const create = () => {
+    setMessage(null);
+    createProfile.mutate(draft, {
+      onSuccess: () => {
+        setDraft(EMPTY_TELEGRAM_PROFILE);
+        setMessage('Profile created.');
+      },
+      onError: (error) => setMessage(`Create failed: ${error.message}`),
+    });
+  };
+
+  return (
+    <section className="space-y-3">
+      <SectionTitle description="Each Telegram chat can keep its own bookmaker and threshold filters.">
+        Telegram
+      </SectionTitle>
+
+      <div className="rounded-3xl border border-border bg-surface/70 p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span
+              className={`inline-flex items-center rounded-full border px-3 py-1 font-medium ${
+                data?.token_configured
+                  ? 'border-accent text-accent'
+                  : 'border-warning text-warning'
+              }`}
+            >
+              {data?.token_configured ? 'Bot token configured' : 'Bot token missing'}
+            </span>
+            {data?.api_base_url && (
+              <span className="rounded-full border border-border px-3 py-1 text-text-secondary">
+                {data.api_base_url}
+              </span>
+            )}
+          </div>
+          <span className="text-sm text-text-secondary">
+            {data?.profiles.length ?? 0} profiles
+          </span>
+        </div>
+      </div>
+
+      {isLoading && <div className="h-20 animate-pulse rounded-2xl border border-border bg-surface" />}
+      {isError && (
+        <div className="rounded-lg border border-danger bg-surface p-4 text-sm text-danger">
+          Failed to load Telegram settings: {(error as Error)?.message ?? 'Unknown error'}
+        </div>
+      )}
+
+      {data && (
+        <div className="space-y-3">
+          {data.profiles.map((profile) => (
+            <TelegramProfileEditor key={profile.id} profile={profile} options={options} />
+          ))}
+
+          <div className="space-y-3 rounded-3xl border border-border bg-surface/70 p-4">
+            <div>
+              <h3 className="font-display text-lg font-semibold text-text">New Profile</h3>
+              <p className="mt-1 text-sm text-text-secondary">
+                Empty bookmaker filters allow every bookmaker in a qualifying opportunity.
+              </p>
+            </div>
+
+            <div className="grid gap-2 lg:grid-cols-2">
+              <SettingRow label="Label">
+                <TextControl
+                  value={draft.label}
+                  placeholder="VIP group"
+                  onChange={(value) =>
+                    setDraft((current) => ({
+                      ...current,
+                      label: value,
+                    }))
+                  }
+                />
+              </SettingRow>
+
+              <SettingRow label="Chat ID">
+                <TextControl
+                  value={draft.chat_id}
+                  placeholder="123456789"
+                  onChange={(value) =>
+                    setDraft((current) => ({
+                      ...current,
+                      chat_id: value,
+                    }))
+                  }
+                />
+              </SettingRow>
+
+              <SettingRow
+                label="Fallback min gap"
+                description="Used only when fitted middle EV is unavailable."
+              >
+                <NumberControl
+                  value={draft.min_gap}
+                  min={0}
+                  step={0.1}
+                  unit="pts"
+                  onChange={(value) =>
+                    setDraft((current) => ({
+                      ...current,
+                      min_gap: Number(value),
+                    }))
+                  }
+                />
+              </SettingRow>
+
+              <SettingRow
+                label="Min fitted middle EV"
+                description="Expected ROI threshold for model-fitted middles."
+              >
+                <NumberControl
+                  value={draft.min_middle_ev_percent}
+                  min={0}
+                  step={0.1}
+                  unit="%"
+                  onChange={(value) =>
+                    setDraft((current) => ({
+                      ...current,
+                      min_middle_ev_percent: Number(value),
+                    }))
+                  }
+                />
+              </SettingRow>
+
+              <SettingRow
+                label="Min fallback payout"
+                description="Used for fallback middles and non-middle ROI filters."
+              >
+                <NumberControl
+                  value={draft.min_roi_percent}
+                  min={0}
+                  step={0.1}
+                  unit="%"
+                  onChange={(value) =>
+                    setDraft((current) => ({
+                      ...current,
+                      min_roi_percent: Number(value),
+                    }))
+                  }
+                />
+              </SettingRow>
+            </div>
+
+            <TelegramBookmakerSelector
+              selectedIds={draft.bookmaker_ids}
+              options={options}
+              onChange={(bookmakerIds) =>
+                setDraft((current) => ({
+                  ...current,
+                  bookmaker_ids: bookmakerIds,
+                }))
+              }
+            />
+
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-sm text-text-secondary" aria-live="polite">
+                {message ?? 'Create a profile to start sending matching opportunities.'}
+              </div>
+              <button
+                type="button"
+                onClick={create}
+                disabled={!canCreate || createProfile.isPending}
+                className="rounded-full bg-accent px-5 py-2 text-sm font-semibold text-bg transition hover:bg-accent-dim disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {createProfile.isPending ? 'Creating...' : 'Create profile'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -740,6 +1254,8 @@ function SettingsForm({
           </div>
         </details>
       </section>
+
+      <TelegramSection options={options} />
 
       {(hasLocalChanges || message || !draftMatchesDefaults) && (
         <div className="sticky bottom-4 z-20 rounded-3xl border border-border bg-bg/90 p-3 shadow-xl shadow-black/10 backdrop-blur">

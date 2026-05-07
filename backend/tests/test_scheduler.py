@@ -8,6 +8,7 @@ import pytest
 
 import app.services.runtime_settings as runtime_settings_service
 import app.services.scheduler as scheduler_service
+from app.database import get_db
 from app.config import settings
 from app.models.schemas import (
     NormalizedOdds,
@@ -17,12 +18,17 @@ from app.models.schemas import (
     RawOutcomeOffer,
     ScrapeRuntimeSettingsUpdate,
     TeamReviewDiagnostic,
+    TelegramNotificationProfileCreate,
 )
 from app.scrapers.base import BaseScraper, ScraperCapability
 from app.services.opportunity_analyzer import Opportunity
 from app.services.scheduler import Scheduler, _normalize_merge_pairings
 from app.services.normalizer import normalize_team_name
-from app.services.notifications import InAppNotificationProvider
+from app.services.notifications import (
+    InAppNotificationProvider,
+    TelegramBotClient,
+    TelegramSendMessageResult,
+)
 from app.services.runtime_settings import update_scrape_settings
 from app.services.team_registry import (
     create_canonical_team,
@@ -357,7 +363,7 @@ async def test_scheduler_runs_canonical_analysis_for_current_snapshot():
         ),
         StubScraper(
             "beta",
-            payload_by_league={"euroleague": [_raw_odds("beta", 20.5)]},
+            payload_by_league={"euroleague": [_raw_odds("beta", 21.5)]},
         ),
     )
 
@@ -376,6 +382,72 @@ async def test_scheduler_runs_canonical_analysis_for_current_snapshot():
     assert opportunities[0].subject_key.startswith("ply_")
     assert opportunities[0].subject_name == "Sasha Vezenkov"
     assert len(opportunities[0].market_keys) == 2
+
+
+@pytest.mark.asyncio
+async def test_scheduler_sends_telegram_opportunity_once_per_profile(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={"euroleague": [_raw_odds("alpha", 18.5)]},
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={"euroleague": [_raw_odds("beta", 21.5)]},
+        ),
+    )
+    await odds_store.create_telegram_notification_profile(
+        TelegramNotificationProfileCreate(
+            label="Main",
+            chat_id="111",
+            min_gap=1,
+            min_roi_percent=1,
+            bookmaker_ids=["alpha", "beta"],
+        )
+    )
+    await odds_store.create_telegram_notification_profile(
+        TelegramNotificationProfileCreate(
+            label="Second",
+            chat_id="222",
+            min_gap=1,
+            min_roi_percent=1,
+            bookmaker_ids=["alpha", "beta"],
+        )
+    )
+    monkeypatch.setattr(settings, "telegram_bot_token", "test-token")
+    sent_chats: list[str] = []
+
+    async def fake_send_message(
+        self: TelegramBotClient,
+        *,
+        chat_id: str,
+        text: str,
+    ) -> TelegramSendMessageResult:
+        sent_chats.append(chat_id)
+        return TelegramSendMessageResult(message_id=len(sent_chats))
+
+    monkeypatch.setattr(TelegramBotClient, "send_message", fake_send_message)
+
+    scheduler = Scheduler(interval_minutes=1)
+    first_result = await scheduler.run_cycle()
+    second_result = await scheduler.run_cycle()
+
+    assert first_result["opportunities_found"] == 1
+    assert first_result["notifications_sent"] == 1
+    assert second_result["opportunities_found"] == 1
+    assert sent_chats == ["111", "222"]
+
+    rows = await (await get_db()).execute_fetchall(
+        """SELECT profile_id, status, attempt_count
+           FROM telegram_notification_deliveries
+           ORDER BY profile_id"""
+    )
+    assert [(row["profile_id"], row["status"], row["attempt_count"]) for row in rows] == [
+        (1, "sent", 1),
+        (2, "sent", 1),
+    ]
 
 
 @pytest.mark.asyncio
@@ -406,7 +478,7 @@ async def test_scheduler_player_props_scope_filters_non_player_threshold_markets
             "beta",
             payload_by_league={
                 "euroleague": [
-                    _raw_odds("beta", 20.5),
+                    _raw_odds("beta", 21.5),
                     _raw_odds(
                         "beta",
                         158.5,
@@ -663,14 +735,14 @@ async def test_scheduler_analysis_markets_filter_football_totals(
             outcome_sports=("football",),
             outcome_payload_by_sport={
                 "football": [
-                    _raw_outcome_offer(
-                        "beta",
-                        "under",
-                        sport="football",
-                        market_type="football_total_goals",
-                        odds=2.10,
-                        line=3.5,
-                    ),
+                        _raw_outcome_offer(
+                            "beta",
+                            "under",
+                            sport="football",
+                            market_type="football_total_goals",
+                            odds=2.10,
+                            line=5.5,
+                        ),
                     _raw_outcome_offer(
                         "beta",
                         "draw_or_away",
@@ -773,9 +845,9 @@ async def test_scheduler_persists_canonical_basketball_total_opportunity():
             "beta",
             payload_by_league={
                 "euroleague": [
-                    _raw_odds(
-                        "beta",
-                        162.5,
+                        _raw_odds(
+                            "beta",
+                            163.5,
                         over_odds=1.70,
                         under_odds=2.10,
                         player_name=None,
@@ -798,7 +870,7 @@ async def test_scheduler_persists_canonical_basketball_total_opportunity():
     assert opportunities[0].subject_name is None
     assert [(leg.bookmaker_id, leg.outcome_code, leg.line) for leg in opportunities[0].legs] == [
         ("alpha", "over", 160.5),
-        ("beta", "under", 162.5),
+        ("beta", "under", 163.5),
     ]
 
 
@@ -991,14 +1063,14 @@ async def test_scheduler_persists_canonical_football_total_opportunity(
             outcome_sports=("football",),
             outcome_payload_by_sport={
                 "football": [
-                    _raw_outcome_offer(
-                        "beta",
-                        "under",
-                        sport="football",
-                        market_type="football_total_goals",
-                        odds=2.10,
-                        line=3.5,
-                    )
+                        _raw_outcome_offer(
+                            "beta",
+                            "under",
+                            sport="football",
+                            market_type="football_total_goals",
+                            odds=2.10,
+                            line=5.5,
+                        )
                 ],
             },
         ),
@@ -1016,7 +1088,7 @@ async def test_scheduler_persists_canonical_football_total_opportunity(
     assert opportunities[0].market_keys
     assert [(leg.bookmaker_id, leg.outcome_code, leg.line) for leg in opportunities[0].legs] == [
         ("alpha", "over", 2.5),
-        ("beta", "under", 3.5),
+        ("beta", "under", 5.5),
     ]
 
 
@@ -1541,7 +1613,7 @@ async def test_scheduler_run_cycle_isolates_scraper_failures():
             "beta",
             delay=0.01,
             payload_by_league={
-                "euroleague": [_raw_odds("beta", 20.5, under_odds=1.96)]
+                "euroleague": [_raw_odds("beta", 21.5, under_odds=1.96)]
             },
         ),
     )
@@ -1565,7 +1637,7 @@ async def test_scheduler_run_cycle_isolates_malformed_scraper_returns():
         StubScraper(
             "beta",
             payload_by_league={
-                "euroleague": [_raw_odds("beta", 20.5, under_odds=1.96)]
+                "euroleague": [_raw_odds("beta", 21.5, under_odds=1.96)]
             },
         ),
     )
@@ -1589,7 +1661,7 @@ async def test_scheduler_run_cycle_isolates_malformed_scraper_items():
         StubScraper(
             "beta",
             payload_by_league={
-                "euroleague": [_raw_odds("beta", 20.5, under_odds=1.96)]
+                "euroleague": [_raw_odds("beta", 21.5, under_odds=1.96)]
             },
         ),
     )

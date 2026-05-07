@@ -100,7 +100,7 @@ def test_basketball_player_props_compare_by_resolved_event_and_player_key():
             match_id="match-meridian",
             bookmaker_id="meridian",
             player_name="N. Jokic",
-            threshold=14.5,
+            threshold=15.5,
         ),
     ]
     members = [
@@ -123,7 +123,7 @@ def test_basketball_player_props_compare_by_resolved_event_and_player_key():
     assert discrepancy.bookmaker_b_id == "meridian"
     assert discrepancy.bookmaker_a_match_id == "match-mozzart"
     assert discrepancy.bookmaker_b_match_id == "match-meridian"
-    assert discrepancy.gap == 2.0
+    assert discrepancy.gap == 3.0
 
 
 def test_basketball_non_player_markets_use_resolved_event_identity():
@@ -138,7 +138,7 @@ def test_basketball_non_player_markets_use_resolved_event_identity():
             match_id="match-meridian",
             bookmaker_id="meridian",
             player_name="",
-            threshold=158.5,
+            threshold=159.5,
         ).model_copy(update={"market_type": "game_total", "player_name": None}),
     ]
     members = [

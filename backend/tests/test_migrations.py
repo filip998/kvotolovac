@@ -41,6 +41,8 @@ async def test_upgrade_database_creates_current_schema(tmp_path):
         "scrape_snapshots",
         "canonical_teams",
         "team_aliases",
+        "telegram_notification_profiles",
+        "telegram_notification_deliveries",
     }.issubset(table_names)
     assert ("resolved_event_id", "resolved_events") in {
         (row[3], row[2]) for row in opportunity_fks

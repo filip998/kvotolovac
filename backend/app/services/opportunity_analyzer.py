@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import combinations
 
 from ..models.schemas import NormalizedOutcomeOffer, OpportunityLeg, ResolvedEventMemberOut
+from .middle_ev import MiddleMarketQuote, estimate_middle, fallback_rank
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,11 @@ class Opportunity:
     subject_key: str | None = None
     subject_name: str | None = None
     market_keys: tuple[str, ...] = ()
+    middle_hit_probability: float | None = None
+    middle_ev: float | None = None
+    middle_model_confidence: str | None = None
+    middle_model_diagnostics: dict[str, object] = field(default_factory=dict)
+    middle_ev_rank: float | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +153,16 @@ def _analyze_total_goals(
         if item.offer.market_type == "football_total_goals"
     ]
     opportunities: list[Opportunity] = []
+    market_quotes = [
+        MiddleMarketQuote(
+            bookmaker_id=offer.bookmaker_id,
+            line=offer.line,
+            outcome_code=offer.outcome_code,
+            odds=offer.odds,
+        )
+        for offer in totals
+        if offer.line is not None
+    ]
 
     for a, b in combinations(totals, 2):
         if a.bookmaker_id == b.bookmaker_id or a.line is None or b.line is None:
@@ -175,9 +191,19 @@ def _analyze_total_goals(
             continue
         margin = _profit_margin(low.odds, high.odds)
         middle_margin = _middle_profit_margin(low.odds, high.odds)
-        if middle_margin is None or middle_margin <= 0:
-            continue
-        if margin is None or margin < _FOOTBALL_MIDDLE_OUTSIDE_MARGIN_FLOOR:
+        estimate = estimate_middle(
+            sport=low.sport,
+            market_type=low.market_type,
+            low_line=low.line,
+            high_line=high.line,
+            low_odds=low.odds,
+            high_odds=high.odds,
+            market_quotes=market_quotes,
+            outside_margin=margin,
+            middle_margin=middle_margin,
+            outside_margin_floor=_FOOTBALL_MIDDLE_OUTSIDE_MARGIN_FLOOR,
+        )
+        if not estimate.should_publish:
             continue
         opportunities.append(
             Opportunity(
@@ -190,10 +216,30 @@ def _analyze_total_goals(
                 middle_profit_margin=middle_margin,
                 legs=[_leg(low), _leg(high)],
                 resolved_event_id=resolved_event_id,
+                middle_hit_probability=estimate.hit_probability,
+                middle_ev=estimate.expected_roi,
+                middle_model_confidence=estimate.confidence,
+                middle_model_diagnostics=estimate.diagnostics,
+                middle_ev_rank=estimate.rank_score,
             )
         )
 
-    return opportunities
+    return sorted(
+        opportunities,
+        key=lambda opportunity: (
+            opportunity.middle_ev_rank is not None,
+            opportunity.middle_ev_rank or 0.0,
+            fallback_rank(
+                low_line=opportunity.legs[0].line or 0.0,
+                high_line=opportunity.legs[1].line or 0.0,
+                middle_margin=opportunity.middle_profit_margin,
+                outside_margin=opportunity.profit_margin,
+                low_odds=opportunity.legs[0].odds,
+                high_odds=opportunity.legs[1].odds,
+            ),
+        ),
+        reverse=True,
+    )
 
 
 def _active_member_event_lookup(
@@ -270,10 +316,20 @@ def analyze_outcome_offers(
 
     return sorted(
         deduped.values(),
-        key=lambda item: (
-            -(item.profit_margin or -999),
-            item.match_id,
-            item.opportunity_type,
-            item.market_type,
-        ),
+        key=_opportunity_sort_key,
+    )
+
+
+def _opportunity_sort_key(item: Opportunity) -> tuple[float, str, str, str]:
+    if item.opportunity_type == "middle":
+        value = item.middle_ev_rank
+        if value is None:
+            value = item.profit_margin
+    else:
+        value = item.profit_margin
+    return (
+        -(value if value is not None else -999.0),
+        item.match_id,
+        item.opportunity_type,
+        item.market_type,
     )

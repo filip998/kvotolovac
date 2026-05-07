@@ -36,6 +36,9 @@ from ..models.schemas import (
     TeamReviewCandidate,
     TeamReviewDiagnostic,
     TeamReviewOut,
+    TelegramNotificationProfileCreate,
+    TelegramNotificationProfileOut,
+    TelegramNotificationProfileUpdate,
     UnresolvedOddsDiagnostic,
     UnresolvedOddsOut,
 )
@@ -3102,9 +3105,11 @@ async def insert_opportunity(opportunity, *, detected_at: str) -> int:
     cursor = await db.execute(
         """INSERT INTO opportunities
            (sport, match_id, resolved_event_id, opportunity_type, market_type, subject_type,
-            subject_key, subject_name, line, profit_margin, middle_profit_margin, market_keys,
-            legs, detected_at, is_active)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)""",
+            subject_key, subject_name, line, profit_margin, middle_profit_margin,
+            middle_hit_probability, middle_ev, middle_model_confidence,
+            middle_model_diagnostics, middle_ev_rank, market_keys, legs, detected_at,
+            is_active)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)""",
         (
             opportunity.sport,
             opportunity.match_id,
@@ -3117,6 +3122,11 @@ async def insert_opportunity(opportunity, *, detected_at: str) -> int:
             opportunity.line,
             opportunity.profit_margin,
             opportunity.middle_profit_margin,
+            getattr(opportunity, "middle_hit_probability", None),
+            getattr(opportunity, "middle_ev", None),
+            getattr(opportunity, "middle_model_confidence", None),
+            json.dumps(getattr(opportunity, "middle_model_diagnostics", {}) or {}),
+            getattr(opportunity, "middle_ev_rank", None),
             json.dumps(list(opportunity.market_keys)),
             json.dumps([leg.model_dump() for leg in opportunity.legs]),
             detected_at,
@@ -3150,11 +3160,12 @@ async def publish_opportunities(
         )
         await db.executemany(
             """INSERT INTO opportunities
-               (publish_id, sport, match_id, resolved_event_id, opportunity_type,
-                market_type, subject_type, subject_key, subject_name, line,
-                profit_margin, middle_profit_margin, market_keys, legs,
-                detected_at, is_active)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)""",
+                (publish_id, sport, match_id, resolved_event_id, opportunity_type,
+                 market_type, subject_type, subject_key, subject_name, line,
+                 profit_margin, middle_profit_margin, middle_hit_probability,
+                 middle_ev, middle_model_confidence, middle_model_diagnostics,
+                 middle_ev_rank, market_keys, legs, detected_at, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)""",
             [
                 (
                     publish_id,
@@ -3169,6 +3180,11 @@ async def publish_opportunities(
                     opportunity.line,
                     opportunity.profit_margin,
                     opportunity.middle_profit_margin,
+                    getattr(opportunity, "middle_hit_probability", None),
+                    getattr(opportunity, "middle_ev", None),
+                    getattr(opportunity, "middle_model_confidence", None),
+                    json.dumps(getattr(opportunity, "middle_model_diagnostics", {}) or {}),
+                    getattr(opportunity, "middle_ev_rank", None),
                     json.dumps(list(opportunity.market_keys)),
                     json.dumps([leg.model_dump() for leg in opportunity.legs]),
                     detected_at,
@@ -3238,6 +3254,12 @@ def _row_to_opportunity(row: aiosqlite.Row) -> OpportunityOut:
         json.loads(raw_market_keys)
         if isinstance(raw_market_keys, str) and raw_market_keys
         else []
+    )
+    raw_middle_diagnostics = data.get("middle_model_diagnostics")
+    data["middle_model_diagnostics"] = (
+        json.loads(raw_middle_diagnostics)
+        if isinstance(raw_middle_diagnostics, str) and raw_middle_diagnostics
+        else {}
     )
     return OpportunityOut(**data)
 
@@ -3724,6 +3746,300 @@ async def get_notifications(unread_only: bool = False, limit: int = 50) -> list[
     q += " ORDER BY created_at DESC LIMIT ?"
     rows = await db.execute_fetchall(q, (limit,))
     return [NotificationOut(**_row_to_dict(r)) for r in rows]
+
+
+# ── Telegram notification settings ─────────────────────────
+
+def _normalize_telegram_bookmaker_ids(bookmaker_ids: list[str] | None) -> list[str]:
+    if not bookmaker_ids:
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for bookmaker_id in bookmaker_ids:
+        item = str(bookmaker_id).strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+    return normalized
+
+
+def _row_to_telegram_profile(row: aiosqlite.Row) -> TelegramNotificationProfileOut:
+    data = _row_to_dict(row)
+    data["bookmaker_ids"] = _json_list(data.get("bookmaker_ids"))
+    data["enabled"] = bool(data.get("enabled"))
+    return TelegramNotificationProfileOut(**data)
+
+
+async def list_telegram_notification_profiles(
+    *,
+    enabled_only: bool = False,
+) -> list[TelegramNotificationProfileOut]:
+    db = await get_db()
+    q = "SELECT * FROM telegram_notification_profiles"
+    params: list[object] = []
+    if enabled_only:
+        q += " WHERE enabled = TRUE"
+    q += " ORDER BY id ASC"
+    rows = await db.execute_fetchall(q, params)
+    return [_row_to_telegram_profile(row) for row in rows]
+
+
+async def get_telegram_notification_profile(
+    profile_id: int,
+) -> TelegramNotificationProfileOut | None:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT * FROM telegram_notification_profiles WHERE id = ?",
+        (profile_id,),
+    )
+    if not rows:
+        return None
+    return _row_to_telegram_profile(rows[0])
+
+
+async def create_telegram_notification_profile(
+    profile: TelegramNotificationProfileCreate,
+) -> TelegramNotificationProfileOut:
+    db = await get_db()
+    bookmaker_ids = _normalize_telegram_bookmaker_ids(profile.bookmaker_ids)
+    cursor = await db.execute(
+        """INSERT INTO telegram_notification_profiles (
+               label,
+               chat_id,
+               enabled,
+               min_gap,
+               min_roi_percent,
+               min_middle_ev_percent,
+               bookmaker_ids
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            profile.label.strip(),
+            profile.chat_id.strip(),
+            profile.enabled,
+            profile.min_gap,
+            profile.min_roi_percent,
+            profile.min_middle_ev_percent,
+            json.dumps(bookmaker_ids),
+        ),
+    )
+    await db.commit()
+    created = await get_telegram_notification_profile(cursor.lastrowid or 0)
+    if created is None:
+        raise RuntimeError("Created Telegram notification profile could not be loaded")
+    return created
+
+
+async def update_telegram_notification_profile(
+    profile_id: int,
+    patch: TelegramNotificationProfileUpdate,
+) -> TelegramNotificationProfileOut | None:
+    current = await get_telegram_notification_profile(profile_id)
+    if current is None:
+        return None
+
+    values = current.model_dump()
+    updates = patch.model_dump(exclude_unset=True)
+    values.update(updates)
+    bookmaker_ids = _normalize_telegram_bookmaker_ids(values.get("bookmaker_ids"))
+
+    db = await get_db()
+    await db.execute(
+        """UPDATE telegram_notification_profiles
+           SET label = ?,
+               chat_id = ?,
+               enabled = ?,
+               min_gap = ?,
+               min_roi_percent = ?,
+               min_middle_ev_percent = ?,
+               bookmaker_ids = ?,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?""",
+        (
+            str(values["label"]).strip(),
+            str(values["chat_id"]).strip(),
+            bool(values["enabled"]),
+            values["min_gap"],
+            values["min_roi_percent"],
+            values["min_middle_ev_percent"],
+            json.dumps(bookmaker_ids),
+            profile_id,
+        ),
+    )
+    await db.commit()
+    return await get_telegram_notification_profile(profile_id)
+
+
+async def delete_telegram_notification_profile(profile_id: int) -> bool:
+    db = await get_db()
+    cursor = await db.execute(
+        "DELETE FROM telegram_notification_profiles WHERE id = ?",
+        (profile_id,),
+    )
+    await db.commit()
+    return (cursor.rowcount or 0) > 0
+
+
+async def get_telegram_delivery_status(
+    *,
+    profile_id: int,
+    opportunity_fingerprint: str,
+) -> str | None:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT status
+           FROM telegram_notification_deliveries
+           WHERE profile_id = ?
+             AND opportunity_fingerprint = ?""",
+        (profile_id, opportunity_fingerprint),
+    )
+    if not rows:
+        return None
+    return str(rows[0]["status"])
+
+
+async def begin_telegram_delivery_attempt(
+    *,
+    profile_id: int,
+    opportunity_fingerprint: str,
+    publish_id: str | None,
+) -> bool:
+    db = await get_db()
+    await db.execute(
+        """INSERT OR IGNORE INTO telegram_notification_deliveries (
+               profile_id,
+               opportunity_fingerprint,
+               publish_id,
+               status
+           )
+           VALUES (?, ?, ?, 'pending')""",
+        (profile_id, opportunity_fingerprint, publish_id),
+    )
+    status = await get_telegram_delivery_status(
+        profile_id=profile_id,
+        opportunity_fingerprint=opportunity_fingerprint,
+    )
+    if status == "sent":
+        await db.commit()
+        return False
+    await db.execute(
+        """UPDATE telegram_notification_deliveries
+           SET publish_id = COALESCE(?, publish_id),
+               status = 'pending',
+               attempt_count = attempt_count + 1,
+               error = NULL,
+               last_attempt_at = CURRENT_TIMESTAMP,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE profile_id = ?
+             AND opportunity_fingerprint = ?
+             AND status != 'sent'""",
+        (publish_id, profile_id, opportunity_fingerprint),
+    )
+    await db.commit()
+    return True
+
+
+async def mark_telegram_delivery_sent(
+    *,
+    profile_id: int,
+    opportunity_fingerprint: str,
+    telegram_message_id: int | None,
+) -> None:
+    db = await get_db()
+    await db.execute(
+        """UPDATE telegram_notification_deliveries
+           SET status = 'sent',
+               telegram_message_id = ?,
+               error = NULL,
+               sent_at = CURRENT_TIMESTAMP,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE profile_id = ?
+             AND opportunity_fingerprint = ?""",
+        (telegram_message_id, profile_id, opportunity_fingerprint),
+    )
+    await db.commit()
+
+
+async def mark_telegram_delivery_failed(
+    *,
+    profile_id: int,
+    opportunity_fingerprint: str,
+    error: str,
+) -> None:
+    db = await get_db()
+    await db.execute(
+        """UPDATE telegram_notification_deliveries
+           SET status = 'failed',
+               error = ?,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE profile_id = ?
+             AND opportunity_fingerprint = ?""",
+        (error[:1000], profile_id, opportunity_fingerprint),
+    )
+    await db.commit()
+
+
+async def mark_telegram_profile_delivery_error(
+    *,
+    profile_id: int,
+    error: str,
+) -> None:
+    db = await get_db()
+    await db.execute(
+        """UPDATE telegram_notification_profiles
+           SET last_delivery_error = ?,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?""",
+        (error[:1000], profile_id),
+    )
+    await db.commit()
+
+
+async def mark_telegram_profile_rate_limited(
+    *,
+    profile_id: int,
+    retry_after_seconds: int,
+    error: str,
+) -> None:
+    until = (datetime.utcnow() + timedelta(seconds=retry_after_seconds)).isoformat(
+        timespec="seconds"
+    )
+    db = await get_db()
+    await db.execute(
+        """UPDATE telegram_notification_profiles
+           SET rate_limited_until = ?,
+               last_delivery_error = ?,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?""",
+        (until, error[:1000], profile_id),
+    )
+    await db.commit()
+
+
+async def clear_telegram_profile_rate_limit(profile_id: int) -> None:
+    db = await get_db()
+    await db.execute(
+        """UPDATE telegram_notification_profiles
+           SET rate_limited_until = NULL,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?""",
+        (profile_id,),
+    )
+    await db.commit()
+
+
+async def clear_telegram_profile_delivery_error(profile_id: int) -> None:
+    db = await get_db()
+    await db.execute(
+        """UPDATE telegram_notification_profiles
+           SET rate_limited_until = NULL,
+               last_delivery_error = NULL,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?""",
+        (profile_id,),
+    )
+    await db.commit()
 
 
 def _retention_cutoff(snapshot_at: str, days: int) -> str:

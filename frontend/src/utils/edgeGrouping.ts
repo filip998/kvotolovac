@@ -24,9 +24,9 @@ export interface EdgeGroup {
   homeTeam: string | null;
   awayTeam: string | null;
   leagueName: string | null;
-  /** All edges in the group, sorted by profit_margin descending. */
+  /** All edges in the group, sorted by the market-appropriate value descending. */
   lines: Edge[];
-  /** Best (highest profit_margin) edge — the summary row. */
+  /** Best edge for the summary row. Middies prefer EV; non-middles prefer profit margin. */
   best: Edge;
 }
 
@@ -49,7 +49,7 @@ export function buildEdgeGroupKey(
 /**
  * Group edges by (match_id, market_type, player_name).
  *
- * Within each group, lines are sorted by profit_margin descending so the
+ * Within each group, lines are sorted by the market-appropriate value so the
  * first entry is always the most attractive offer (the "best line").
  *
  * Group iteration order preserves the order in which each group was first
@@ -74,11 +74,7 @@ export function groupEdgesByMarket(edges: readonly Edge[]): EdgeGroup[] {
   const groups: EdgeGroup[] = [];
   for (const key of order) {
     const lines = byKey.get(key)!;
-    lines.sort(
-      (a, b) =>
-        (b.profit_margin ?? Number.NEGATIVE_INFINITY) -
-        (a.profit_margin ?? Number.NEGATIVE_INFINITY)
-    );
+    lines.sort((a, b) => edgeRankValue(b) - edgeRankValue(a));
     const best = lines[0];
     groups.push({
       key,
@@ -95,4 +91,11 @@ export function groupEdgesByMarket(edges: readonly Edge[]): EdgeGroup[] {
     });
   }
   return groups;
+}
+
+function edgeRankValue(edge: Edge): number {
+  if (edge.opportunity_type === 'middle') {
+    return edge.middle_ev_rank ?? edge.middle_ev ?? edge.profit_margin ?? Number.NEGATIVE_INFINITY;
+  }
+  return edge.profit_margin ?? Number.NEGATIVE_INFINITY;
 }

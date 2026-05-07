@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from collections import defaultdict
@@ -48,7 +49,12 @@ from ..services.event_resolver import (
     resolve_and_persist_events,
 )
 from ..services.outcome_normalizer import normalize_outcome_offers_with_diagnostics
-from ..services.notifications import NotificationService, InAppNotificationProvider
+from ..services.notifications import (
+    InAppNotificationProvider,
+    NotificationService,
+    TelegramBotClient,
+    TelegramNotificationProvider,
+)
 from ..services.scrape_window import (
     configured_lookahead_hours,
     filter_raw_odds_by_lookahead,
@@ -1275,6 +1281,14 @@ class Scheduler:
         self._notification_service.clear_providers()
         if runtime_settings.persist_inapp_notifications:
             self._notification_service.register_provider(InAppNotificationProvider())
+        self._notification_service.register_opportunity_provider(
+            TelegramNotificationProvider(
+                bot_client=TelegramBotClient(
+                    token=settings.telegram_bot_token,
+                    api_base_url=settings.telegram_api_base_url,
+                )
+            )
+        )
 
     async def update_scrape_settings(
         self,
@@ -1378,6 +1392,7 @@ class Scheduler:
             opportunities = []
             canonical_shadow = _CanonicalShadowResult()
             notified = 0
+            opportunity_publish_id: str | None = None
             pending_auto_merges: list[tuple[int, int]] = []
             full_normalized_batch = _normalize_pipeline_batch(
                 all_raw,
@@ -1543,7 +1558,7 @@ class Scheduler:
 
                 opportunity_publish_started_at = time.perf_counter()
                 if not canonical_analysis_failed:
-                    await odds_store.publish_opportunities(
+                    opportunity_publish_id = await odds_store.publish_opportunities(
                         snapshot_id=snapshot_id,
                         snapshot_at=cycle_scraped_at,
                         opportunities=opportunities,
@@ -1581,7 +1596,14 @@ class Scheduler:
                 self._configure_notification_service_for_runtime_settings(
                     runtime_settings
                 )
-                notified = await self._notification_service.notify_opportunities(opportunities)
+                notify_opportunities = self._notification_service.notify_opportunities
+                if "publish_id" in inspect.signature(notify_opportunities).parameters:
+                    notified = await notify_opportunities(
+                        opportunities,
+                        publish_id=opportunity_publish_id,
+                    )
+                else:
+                    notified = await notify_opportunities(opportunities)
                 _record_phase_duration(phase_durations_ms, "notify", notify_started_at)
             except Exception:
                 await odds_store.rollback_pending_transaction()

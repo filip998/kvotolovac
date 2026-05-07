@@ -49,6 +49,36 @@ function SportPill({ sport }: { sport: Edge['sport'] }) {
   );
 }
 
+function edgePrimaryValue(edge: Edge): number | null {
+  if (edge.opportunity_type === 'middle' && edge.middle_ev != null) {
+    return edge.middle_ev;
+  }
+  return edge.profit_margin;
+}
+
+function edgePrimaryLabel(edge: Edge): string {
+  return edge.opportunity_type === 'middle' && edge.middle_ev != null ? 'EV' : 'ROI';
+}
+
+function confidenceLabel(edge: Edge): string | null {
+  if (edge.opportunity_type !== 'middle' || !edge.middle_model_confidence) {
+    return null;
+  }
+  return edge.middle_model_confidence === 'fallback'
+    ? 'fallback'
+    : `${edge.middle_model_confidence} confidence`;
+}
+
+function confidenceTitle(edge: Edge): string | undefined {
+  if (edge.opportunity_type !== 'middle') return undefined;
+  const diagnostics = edge.middle_model_diagnostics;
+  const model = typeof diagnostics.model_family === 'string' ? diagnostics.model_family : null;
+  const reason = typeof diagnostics.reason === 'string' ? diagnostics.reason : null;
+  if (model && reason) return `${model}: ${reason}`;
+  if (model) return model;
+  return reason ?? undefined;
+}
+
 function LineRow({
   edge,
   selected,
@@ -62,6 +92,7 @@ function LineRow({
   const lineBLabel = formatLegLineLabel(edge.leg_b, edge.market_type);
   const outcomeALabel = formatOutcomeLabel(edge.leg_a.outcome_code, edge.market_type, edge.leg_a.line);
   const outcomeBLabel = formatOutcomeLabel(edge.leg_b.outcome_code, edge.market_type, edge.leg_b.line);
+  const primaryValue = edgePrimaryValue(edge);
   return (
     <button
       type="button"
@@ -74,9 +105,14 @@ function LineRow({
       }`}
     >
       <div className="flex flex-1 flex-wrap items-center gap-3">
-        <span className={`font-mono font-semibold ${edge.profit_margin != null ? profitColor(edge.profit_margin) : 'text-text-muted'}`}>
-          {edge.profit_margin != null ? formatPercentage(edge.profit_margin) : '—'}
+        <span className={`font-mono font-semibold ${primaryValue != null ? profitColor(primaryValue) : 'text-text-muted'}`}>
+          {primaryValue != null ? `${edgePrimaryLabel(edge)} ${formatPercentage(primaryValue)}` : '—'}
         </span>
+        {edge.opportunity_type === 'middle' && edge.middle_hit_probability != null && (
+          <span className="font-mono text-text-muted">
+            hit {formatPercentage(edge.middle_hit_probability)}
+          </span>
+        )}
         <div className="flex items-center gap-1.5">
           <BookmakerBadge name={edge.leg_a.bookmaker_name} compact />
           <span className="font-mono text-text-secondary">
@@ -117,6 +153,8 @@ export default function EdgeGroupRow({
   }, [group.best, group.lines, selectedId]);
 
   const headline = edgeMarketHeadline(selected);
+  const primaryValue = edgePrimaryValue(selected);
+  const confidence = confidenceLabel(selected);
   const calculatorPanelId = `flat-calculator-${group.key}`;
   const lineCount = group.lines.length;
   const hasLadder = lineCount > 1;
@@ -139,6 +177,14 @@ export default function EdgeGroupRow({
                 {lineCount} lines
               </span>
             )}
+            {confidence && (
+              <span
+                title={confidenceTitle(selected)}
+                className="rounded-full border border-border/70 bg-bg/60 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-text-secondary"
+              >
+                {confidence}
+              </span>
+            )}
           </div>
           {selected.player_name && (
             <div className="text-[11px] text-text-muted">{headline}</div>
@@ -152,16 +198,28 @@ export default function EdgeGroupRow({
         </td>
         <td
           className={`px-4 py-2.5 text-right font-mono font-bold ${
-            selected.profit_margin != null ? profitColor(selected.profit_margin) : 'text-text-muted'
+            primaryValue != null ? profitColor(primaryValue) : 'text-text-muted'
           }`}
         >
-          {selected.profit_margin != null ? formatPercentage(selected.profit_margin) : '—'}
+          <div>{primaryValue != null ? formatPercentage(primaryValue) : '—'}</div>
+          {selected.opportunity_type === 'middle' && selected.middle_ev != null && (
+            <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-text-muted">
+              EV
+            </div>
+          )}
         </td>
         <td className="hidden px-4 py-2.5 text-right md:table-cell">
           {selected.middle_profit_margin != null && (selected.gap ?? 0) > 0 ? (
-            <span className={`font-mono font-bold ${profitColor(selected.middle_profit_margin)}`}>
-              {formatPercentage(selected.middle_profit_margin)}
-            </span>
+            <div>
+              <div className={`font-mono font-bold ${profitColor(selected.middle_profit_margin)}`}>
+                {formatPercentage(selected.middle_profit_margin)}
+              </div>
+              {selected.middle_hit_probability != null && (
+                <div className="font-mono text-[11px] text-text-muted">
+                  hit {formatPercentage(selected.middle_hit_probability)}
+                </div>
+              )}
+            </div>
           ) : (
             <span className="text-text-muted">—</span>
           )}

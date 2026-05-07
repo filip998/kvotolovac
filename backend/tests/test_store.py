@@ -83,6 +83,66 @@ async def test_get_nonexistent_match():
 
 
 @pytest.mark.asyncio
+async def test_insert_opportunity_round_trips_middle_ev_fields():
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match(
+        "match-1",
+        "euroleague",
+        "Home",
+        "Away",
+        sport="basketball",
+    )
+
+    await odds_store.insert_opportunity(
+        Opportunity(
+            sport="basketball",
+            match_id="match-1",
+            opportunity_type="middle",
+            market_type="player_points",
+            line=18.5,
+            profit_margin=-0.02,
+            middle_profit_margin=0.80,
+            middle_hit_probability=0.25,
+            middle_ev=0.185,
+            middle_model_confidence="medium",
+            middle_model_diagnostics={"mode": "fitted", "model_family": "normal"},
+            middle_ev_rank=0.15725,
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id="mozzart",
+                    market_type="player_points",
+                    outcome_code="over",
+                    odds=1.9,
+                    line=18.5,
+                ),
+                OpportunityLeg(
+                    bookmaker_id="meridian",
+                    market_type="player_points",
+                    outcome_code="under",
+                    odds=2.0,
+                    line=21.5,
+                ),
+            ],
+        ),
+        detected_at="2030-01-01T12:00:00",
+    )
+
+    opportunities = await odds_store.get_opportunities()
+
+    assert len(opportunities) == 1
+    assert opportunities[0].middle_hit_probability == 0.25
+    assert opportunities[0].middle_ev == 0.185
+    assert opportunities[0].middle_model_confidence == "medium"
+    assert opportunities[0].middle_model_diagnostics == {
+        "mode": "fitted",
+        "model_family": "normal",
+    }
+    assert opportunities[0].middle_ev_rank == 0.15725
+
+
+@pytest.mark.asyncio
 async def test_upsert_odds_and_history():
     await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
     await odds_store.upsert_match("m1", "euroleague", "Partizan", "Crvena Zvezda")

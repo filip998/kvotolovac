@@ -28,6 +28,11 @@ import type {
   TeamReviewApprovalInput,
   TeamReviewCase,
   TeamReviewFilters,
+  TelegramNotificationProfile,
+  TelegramNotificationProfileInput,
+  TelegramNotificationProfileUpdate,
+  TelegramSettingsResponse,
+  TelegramTestMessageResponse,
   UnresolvedOdds,
   UnresolvedOddsFilters,
 } from './types';
@@ -43,6 +48,7 @@ import {
   mockCanonicalTeams,
   mockEventReviewCases,
   mockScrapeSettings,
+  mockTelegramSettings,
   mockTeamReviewCases,
 } from './mockData';
 
@@ -54,6 +60,10 @@ function delay(ms = 300): Promise<void> {
 
 function cloneMockScrapeSettings(): ScrapeSettingsResponse {
   return JSON.parse(JSON.stringify(mockScrapeSettings)) as ScrapeSettingsResponse;
+}
+
+function cloneMockTelegramSettings(): TelegramSettingsResponse {
+  return JSON.parse(JSON.stringify(mockTelegramSettings)) as TelegramSettingsResponse;
 }
 
 function updateMockScrapeSettings(payload: ScrapeRuntimeSettingsUpdate): ScrapeSettingsResponse {
@@ -83,6 +93,38 @@ function updateMockScrapeSettings(payload: ScrapeRuntimeSettingsUpdate): ScrapeS
     enabled: selected.has(bookmaker.id),
   }));
   return cloneMockScrapeSettings();
+}
+
+function nextMockTelegramProfileId(): number {
+  return Math.max(0, ...mockTelegramSettings.profiles.map((profile) => profile.id)) + 1;
+}
+
+function createMockTelegramProfile(
+  payload: TelegramNotificationProfileInput
+): TelegramNotificationProfile {
+  const now = new Date().toISOString();
+  const profile: TelegramNotificationProfile = {
+    ...payload,
+    id: nextMockTelegramProfileId(),
+    rate_limited_until: null,
+    last_delivery_error: null,
+    created_at: now,
+    updated_at: now,
+  };
+  mockTelegramSettings.profiles.push(profile);
+  return JSON.parse(JSON.stringify(profile)) as TelegramNotificationProfile;
+}
+
+function updateMockTelegramProfile(
+  profileId: number,
+  payload: TelegramNotificationProfileUpdate
+): TelegramNotificationProfile {
+  const profile = mockTelegramSettings.profiles.find((item) => item.id === profileId);
+  if (!profile) {
+    throw new Error('Telegram profile not found');
+  }
+  Object.assign(profile, payload, { updated_at: new Date().toISOString() });
+  return JSON.parse(JSON.stringify(profile)) as TelegramNotificationProfile;
 }
 
 function serializeArrayParam(values?: string[]): string | undefined {
@@ -1084,6 +1126,114 @@ export function useUpdateScrapeSettings() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['settings', 'scrape'] });
       void queryClient.invalidateQueries({ queryKey: ['status'] });
+    },
+  });
+}
+
+// --- Telegram Settings ---
+
+export function useTelegramSettings() {
+  return useQuery<TelegramSettingsResponse>({
+    queryKey: ['settings', 'telegram'],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        return cloneMockTelegramSettings();
+      }
+      const { data } = await client.get<TelegramSettingsResponse>('/settings/telegram');
+      return data;
+    },
+    staleTime: 30 * 1000,
+  });
+}
+
+export function useCreateTelegramProfile() {
+  const queryClient = useQueryClient();
+  return useMutation<TelegramNotificationProfile, Error, TelegramNotificationProfileInput>({
+    mutationFn: async (payload) => {
+      if (USE_MOCK) {
+        await delay();
+        return createMockTelegramProfile(payload);
+      }
+      const { data } = await client.post<TelegramNotificationProfile>(
+        '/settings/telegram/profiles',
+        payload
+      );
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'telegram'] });
+    },
+  });
+}
+
+export function useUpdateTelegramProfile() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    TelegramNotificationProfile,
+    Error,
+    { profileId: number; payload: TelegramNotificationProfileUpdate }
+  >({
+    mutationFn: async ({ profileId, payload }) => {
+      if (USE_MOCK) {
+        await delay();
+        return updateMockTelegramProfile(profileId, payload);
+      }
+      const { data } = await client.patch<TelegramNotificationProfile>(
+        `/settings/telegram/profiles/${profileId}`,
+        payload
+      );
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'telegram'] });
+    },
+  });
+}
+
+export function useDeleteTelegramProfile() {
+  const queryClient = useQueryClient();
+  return useMutation<{ profile_id: number; deleted: boolean }, Error, { profileId: number }>({
+    mutationFn: async ({ profileId }) => {
+      if (USE_MOCK) {
+        await delay();
+        const index = mockTelegramSettings.profiles.findIndex((item) => item.id === profileId);
+        if (index === -1) {
+          throw new Error('Telegram profile not found');
+        }
+        mockTelegramSettings.profiles.splice(index, 1);
+        return { profile_id: profileId, deleted: true };
+      }
+      const { data } = await client.delete<{ profile_id: number; deleted: boolean }>(
+        `/settings/telegram/profiles/${profileId}`
+      );
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'telegram'] });
+    },
+  });
+}
+
+export function useTestTelegramProfile() {
+  return useMutation<TelegramTestMessageResponse, Error, { profileId: number }>({
+    mutationFn: async ({ profileId }) => {
+      if (USE_MOCK) {
+        await delay();
+        const profile = mockTelegramSettings.profiles.find((item) => item.id === profileId);
+        if (!profile) {
+          throw new Error('Telegram profile not found');
+        }
+        return {
+          profile_id: profileId,
+          ok: true,
+          message_id: Math.floor(Math.random() * 100000),
+        };
+      }
+      const { data } = await client.post<TelegramTestMessageResponse>(
+        `/settings/telegram/profiles/${profileId}/test`
+      );
+      return data;
     },
   });
 }

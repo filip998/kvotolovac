@@ -64,14 +64,14 @@ _PLAYER_MARKETS: dict[str, list[dict]] = {
     ],
     # ── Meridian — DIFFERENT thresholds (creates gaps!) ────
     "meridian": [
-        {"game": 0, "player": "S. Vezenkov", "threshold": 20.5, "over": 1.90, "under": 1.90},
+        {"game": 0, "player": "S. Vezenkov", "threshold": 21.5, "over": 1.90, "under": 1.90},
         {"game": 0, "player": "F. Campazzo", "threshold": 14.5, "over": 1.85, "under": 1.95},
         {"game": 0, "player": "K. Sloukas", "threshold": 14.5, "over": 1.75, "under": 2.05},
         {"game": 0, "player": "W. Tavares", "threshold": 12.5, "over": 1.80, "under": 2.00},
         {"game": 1, "player": "N. Hayes-Davis", "threshold": 17.5, "over": 1.90, "under": 1.90},
         {"game": 1, "player": "Nikolas Calathes", "threshold": 13.5, "over": 1.85, "under": 1.95},
         {"game": 1, "player": "N. Mirotic", "threshold": 19.5, "over": 1.90, "under": 1.90},
-        {"game": 2, "player": "I. Lundberg", "threshold": 18.5, "over": 1.80, "under": 2.00},
+        {"game": 2, "player": "I. Lundberg", "threshold": 19.5, "over": 1.80, "under": 2.00},
         {"game": 2, "player": "N. Jovic", "threshold": 15.5, "over": 1.85, "under": 1.95},
         {"game": 2, "player": "F. Petrusev", "threshold": 16.5, "over": 1.80, "under": 2.00},
         {"game": 3, "player": "M. Lessort", "threshold": 15.5, "over": 1.80, "under": 2.00},

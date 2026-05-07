@@ -477,7 +477,7 @@ export default function Dashboard() {
               <tr className="border-b border-border text-[11px] font-medium uppercase tracking-wider text-text-muted">
                 <th className="px-4 py-2.5 text-left">Player / Market</th>
                 <th className="px-4 py-2.5 text-left">Match</th>
-                <th className="px-4 py-2.5 text-right">Best edge</th>
+                <th className="px-4 py-2.5 text-right">EV / Edge</th>
                 <th className="hidden px-4 py-2.5 text-right md:table-cell">Middle</th>
                 <th className="hidden px-4 py-2.5 text-left sm:table-cell">Best side A</th>
                 <th className="hidden px-4 py-2.5 text-left sm:table-cell">Best side B</th>
@@ -536,7 +536,7 @@ export default function Dashboard() {
         }
         description={
           activeTab === 'opportunities'
-            ? 'Every detected edge across basketball, football, and tennis, ranked by margin. Filter by sport to narrow the board.'
+            ? 'Every detected edge across basketball, football, and tennis, with middles ranked by EV and arbitrage by margin. Filter by sport to narrow the board.'
             : activeTab === 'tracked'
               ? 'Open tracked matches to review player markets, bookmaker prices, and fetched lines.'
               : activeTab === 'teams'

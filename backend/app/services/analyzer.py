@@ -9,6 +9,7 @@ from .event_player_resolver import (
     build_event_scoped_player_odds,
     is_basketball_player_prop,
 )
+from .middle_ev import MiddleMarketQuote, estimate_middle
 
 
 @dataclass
@@ -28,6 +29,11 @@ class Discrepancy:
     resolved_event_id: str | None = None
     bookmaker_a_match_id: str | None = None
     bookmaker_b_match_id: str | None = None
+    middle_hit_probability: float | None = None
+    middle_ev: float | None = None
+    middle_model_confidence: str | None = None
+    middle_model_diagnostics: dict[str, object] | None = None
+    middle_ev_rank: float | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +83,30 @@ def _middle_profit_margin(odds_a: float | None, odds_b: float | None) -> float |
     if total_implied <= 0:
         return None
     return round((2.0 / total_implied) - 1.0, 4)
+
+
+def _middle_market_quotes(odds_list: list[NormalizedOdds]) -> list[MiddleMarketQuote]:
+    quotes: list[MiddleMarketQuote] = []
+    for odds in odds_list:
+        if odds.over_odds is not None:
+            quotes.append(
+                MiddleMarketQuote(
+                    bookmaker_id=odds.bookmaker_id,
+                    line=odds.threshold,
+                    outcome_code="over",
+                    odds=odds.over_odds,
+                )
+            )
+        if odds.under_odds is not None:
+            quotes.append(
+                MiddleMarketQuote(
+                    bookmaker_id=odds.bookmaker_id,
+                    line=odds.threshold,
+                    outcome_code="under",
+                    odds=odds.under_odds,
+                )
+            )
+    return quotes
 
 
 def _representative_match_id(
@@ -224,6 +254,7 @@ def find_threshold_gaps(
     ):
         if len(group.odds) < 2:
             continue
+        market_quotes = _middle_market_quotes(group.odds)
 
         # Compare every pair of bookmakers
         for a, b in combinations(group.odds, 2):
@@ -292,14 +323,25 @@ def find_threshold_gaps(
                 continue
 
             gap = b.threshold - a.threshold
-            if gap < min_gap:
-                continue
-
             # Bookmaker A over (lower threshold) + Bookmaker B under (higher threshold)
             if a.over_odds is None or b.under_odds is None:
                 continue
             margin = _profit_margin(a.over_odds, b.under_odds)
             middle_margin = _middle_profit_margin(a.over_odds, b.under_odds)
+            estimate = estimate_middle(
+                sport=a.sport,
+                market_type=group.market_type,
+                low_line=a.threshold,
+                high_line=b.threshold,
+                low_odds=a.over_odds,
+                high_odds=b.under_odds,
+                market_quotes=market_quotes,
+                outside_margin=margin,
+                middle_margin=middle_margin,
+                min_gap=min_gap,
+            )
+            if not estimate.should_publish:
+                continue
 
             discrepancies.append(
                 Discrepancy(
@@ -318,6 +360,11 @@ def find_threshold_gaps(
                     resolved_event_id=group.resolved_event_id,
                     bookmaker_a_match_id=a.match_id,
                     bookmaker_b_match_id=b.match_id,
+                    middle_hit_probability=estimate.hit_probability,
+                    middle_ev=estimate.expected_roi,
+                    middle_model_confidence=estimate.confidence,
+                    middle_model_diagnostics=estimate.diagnostics,
+                    middle_ev_rank=estimate.rank_score,
                 )
             )
 

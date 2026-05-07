@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     max_middle_opportunities_per_market: int = Field(default=10, ge=1)
     notification_gap_threshold: float = 1.5
     persist_inapp_notifications: bool = False
+    telegram_bot_token: str = ""
+    telegram_api_base_url: str = "https://api.telegram.org"
     notification_retention_days: int = 3
     odds_history_retention_days: int = 7
     team_review_retention_days: int = 90

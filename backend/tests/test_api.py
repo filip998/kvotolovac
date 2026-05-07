@@ -24,6 +24,7 @@ from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
 import app.services.scheduler as scheduler_service
 from app.services.scheduler import scheduler
+from app.services.notifications import TelegramBotClient, TelegramSendMessageResult
 from app.services.normalizer import normalize_team_name
 from app.services.opportunity_analyzer import Opportunity, analyze_outcome_offers
 from app.services.team_registry import create_canonical_team, remember_team_alias
@@ -252,6 +253,113 @@ async def test_patch_scrape_settings_accepts_advertised_tennis_analysis_market(
     data = resp.json()
     assert data["applied"]["enabled_sports"] == ["tennis"]
     assert data["applied"]["analysis_markets"] == ["tennis:tennis_match_winner"]
+
+
+@pytest.mark.asyncio
+async def test_telegram_settings_crud_redacts_token(client: AsyncClient):
+    resp = await client.get("/api/v1/settings/telegram")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["token_configured"] is False
+    assert data["profiles"] == []
+    assert "telegram_bot_token" not in json.dumps(data)
+
+    create_resp = await client.post(
+        "/api/v1/settings/telegram/profiles",
+        json={
+            "label": "Main",
+            "chat_id": "12345",
+            "enabled": True,
+            "min_gap": 1.5,
+            "min_roi_percent": 5,
+            "min_middle_ev_percent": 1.25,
+            "bookmaker_ids": ["mozzart", "meridian"],
+        },
+    )
+    assert create_resp.status_code == 201
+    profile = create_resp.json()
+    assert profile["id"] == 1
+    assert profile["bookmaker_ids"] == ["mozzart", "meridian"]
+    assert profile["min_middle_ev_percent"] == 1.25
+    assert "token" not in json.dumps(profile).lower()
+
+    patch_resp = await client.patch(
+        "/api/v1/settings/telegram/profiles/1",
+        json={"enabled": False, "bookmaker_ids": []},
+    )
+    assert patch_resp.status_code == 200
+    assert patch_resp.json()["enabled"] is False
+    assert patch_resp.json()["bookmaker_ids"] == []
+
+    list_resp = await client.get("/api/v1/settings/telegram")
+    assert [item["label"] for item in list_resp.json()["profiles"]] == ["Main"]
+
+    delete_resp = await client.delete("/api/v1/settings/telegram/profiles/1")
+    assert delete_resp.status_code == 200
+    assert delete_resp.json() == {"profile_id": 1, "deleted": True}
+
+
+@pytest.mark.asyncio
+async def test_telegram_settings_rejects_invalid_profile(client: AsyncClient):
+    resp = await client.post(
+        "/api/v1/settings/telegram/profiles",
+        json={
+            "label": "Main",
+            "chat_id": "12345",
+            "bookmaker_ids": ["not-a-bookmaker"],
+        },
+    )
+
+    assert resp.status_code == 422
+    assert "Unknown bookmaker ids" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_telegram_test_message_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    client: AsyncClient,
+):
+    await client.post(
+        "/api/v1/settings/telegram/profiles",
+        json={"label": "Main", "chat_id": "12345"},
+    )
+    monkeypatch.setattr(settings, "telegram_bot_token", "test-token")
+    calls: list[tuple[str, str]] = []
+
+    async def fake_send_message(
+        self: TelegramBotClient,
+        *,
+        chat_id: str,
+        text: str,
+    ) -> TelegramSendMessageResult:
+        calls.append((chat_id, text))
+        return TelegramSendMessageResult(message_id=77)
+
+    monkeypatch.setattr(TelegramBotClient, "send_message", fake_send_message)
+
+    resp = await client.post("/api/v1/settings/telegram/profiles/1/test")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"profile_id": 1, "ok": True, "message_id": 77}
+    assert calls == [("12345", "<b>KvotoLovac test</b>\nProfile: Main")]
+
+
+@pytest.mark.asyncio
+async def test_telegram_test_message_requires_token(
+    monkeypatch: pytest.MonkeyPatch,
+    client: AsyncClient,
+):
+    monkeypatch.setattr(settings, "telegram_bot_token", "")
+    await client.post(
+        "/api/v1/settings/telegram/profiles",
+        json={"label": "Main", "chat_id": "12345"},
+    )
+
+    resp = await client.post("/api/v1/settings/telegram/profiles/1/test")
+
+    assert resp.status_code == 400
+    assert "token is not configured" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio

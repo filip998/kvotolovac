@@ -394,6 +394,11 @@ class OpportunityOut(BaseModel):
     line: Optional[float] = None
     profit_margin: Optional[float] = None
     middle_profit_margin: Optional[float] = None
+    middle_hit_probability: Optional[float] = None
+    middle_ev: Optional[float] = None
+    middle_model_confidence: Optional[str] = None
+    middle_model_diagnostics: dict[str, object] = Field(default_factory=dict)
+    middle_ev_rank: Optional[float] = None
     market_keys: list[str] = Field(default_factory=list)
     legs: list[OpportunityLeg] = Field(default_factory=list)
     detected_at: Optional[str] = None
@@ -409,6 +414,55 @@ class NotificationOut(BaseModel):
     data: Optional[str] = None
     is_read: bool = False
     created_at: Optional[str] = None
+
+
+class TelegramNotificationProfileBase(BaseModel):
+    label: str = Field(..., min_length=1, max_length=120)
+    chat_id: str = Field(..., min_length=1, max_length=120)
+    enabled: bool = True
+    min_gap: float = Field(default=0.0, ge=0)
+    min_roi_percent: float = Field(default=0.0, ge=0)
+    min_middle_ev_percent: float = Field(default=0.0, ge=0)
+    bookmaker_ids: list[str] = Field(default_factory=list)
+
+
+class TelegramNotificationProfileCreate(TelegramNotificationProfileBase):
+    pass
+
+
+class TelegramNotificationProfileUpdate(BaseModel):
+    label: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    chat_id: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    enabled: Optional[bool] = None
+    min_gap: Optional[float] = Field(default=None, ge=0)
+    min_roi_percent: Optional[float] = Field(default=None, ge=0)
+    min_middle_ev_percent: Optional[float] = Field(default=None, ge=0)
+    bookmaker_ids: Optional[list[str]] = None
+
+
+class TelegramNotificationProfileOut(TelegramNotificationProfileBase):
+    id: int
+    rate_limited_until: Optional[str] = None
+    last_delivery_error: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class TelegramSettingsResponse(BaseModel):
+    token_configured: bool = False
+    api_base_url: str
+    profiles: list[TelegramNotificationProfileOut] = Field(default_factory=list)
+
+
+class TelegramNotificationProfileDeleteResponse(BaseModel):
+    profile_id: int
+    deleted: bool
+
+
+class TelegramTestMessageResponse(BaseModel):
+    profile_id: int
+    ok: bool
+    message_id: Optional[int] = None
 
 
 # ── System Status ──────────────────────────────────────────
