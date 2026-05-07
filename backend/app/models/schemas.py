@@ -754,6 +754,41 @@ class EventResolverBenchmarkOut(BaseModel):
     persisted_review_case_count: int = 0
 
 
+class OpportunityAnalysisRuleBenchmarkOut(BaseModel):
+    """Per-rule opportunity-analysis counters for one sport/market bucket."""
+
+    sport: str
+    market_type: str
+    rule: str
+    duration_ms: int = 0
+    group_count: int = 0
+    offer_count: int = 0
+    candidate_pair_count: int = 0
+    publishable_candidate_count: int = 0
+    opportunity_count: int = 0
+
+
+class OpportunityAnalysisBenchmarkOut(BaseModel):
+    """Subphase metrics for canonical opportunity analysis."""
+
+    canonical_offer_load_ms: int = 0
+    primary_match_lookup_ms: int = 0
+    grouping_ms: int = 0
+    two_way_arbitrage_ms: int = 0
+    line_middle_ms: int = 0
+    complementary_outcomes_ms: int = 0
+    dedupe_sort_ms: int = 0
+    output_build_ms: int = 0
+    loaded_offer_count: int = 0
+    same_market_group_count: int = 0
+    line_market_group_count: int = 0
+    event_market_family_group_count: int = 0
+    candidate_pair_count: int = 0
+    publishable_candidate_count: int = 0
+    opportunity_count: int = 0
+    rules: list[OpportunityAnalysisRuleBenchmarkOut] = Field(default_factory=list)
+
+
 class ScraperBenchmarkOut(BaseModel):
     """Per-scraper aggregates for the most recent scrape cycle."""
 
@@ -787,6 +822,9 @@ class CycleBenchmarkOut(BaseModel):
     )
     event_resolver: EventResolverBenchmarkOut = Field(
         default_factory=EventResolverBenchmarkOut
+    )
+    opportunity_analysis: OpportunityAnalysisBenchmarkOut = Field(
+        default_factory=OpportunityAnalysisBenchmarkOut
     )
     event_coverage: list[BenchmarkEventCoverageOut] = Field(default_factory=list)
     event_split_diagnostics: BenchmarkSplitDiagnosticsOut = Field(

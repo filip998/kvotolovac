@@ -13,6 +13,7 @@ from ..models.schemas import (
     BenchmarkEventCoverageOut,
     NormalizedOdds,
     NormalizedOutcomeOffer,
+    OpportunityAnalysisBenchmarkOut,
     RawOddsData,
     RawOutcomeOffer,
     ScrapeRuntimeSettings,
@@ -37,7 +38,7 @@ from ..services.normalizer import (
     normalize_odds_with_diagnostics,
     resolve_team_name,
 )
-from ..services.canonical_analyzer import analyze_canonical_offers
+from ..services.canonical_analyzer import analyze_canonical_offers_with_benchmark
 from ..services.canonical_offers import canonical_market_type
 from ..services.event_resolver import (
     CANONICAL_TEAM_AUTO_MERGE_THRESHOLD,
@@ -99,6 +100,9 @@ class _CanonicalShadowResult:
 class _CanonicalAnalysisResult:
     offers: tuple = ()
     opportunities: tuple = ()
+    benchmark: OpportunityAnalysisBenchmarkOut = field(
+        default_factory=OpportunityAnalysisBenchmarkOut
+    )
 
 
 @dataclass(frozen=True)
@@ -373,9 +377,13 @@ async def _load_current_canonical_analysis(
     snapshot_id: str | None = None,
     max_middle_opportunities_per_market: int | None = 10,
 ) -> _CanonicalAnalysisResult:
+    canonical_offer_load_started_at = time.perf_counter()
     canonical_offers = await odds_store.get_current_canonical_offers_for_matches(
         sorted(match_ids),
         snapshot_id=snapshot_id,
+    )
+    canonical_offer_load_ms = int(
+        (time.perf_counter() - canonical_offer_load_started_at) * 1000
     )
     event_ids = sorted(
         {
@@ -384,19 +392,26 @@ async def _load_current_canonical_analysis(
             if offer.market.event_id
         }
     )
+    primary_match_lookup_started_at = time.perf_counter()
     event_primary_match_ids = (
         await odds_store.get_resolved_event_primary_match_ids(event_ids)
         if event_ids
         else {}
     )
-    canonical_opportunities = analyze_canonical_offers(
+    primary_match_lookup_ms = int(
+        (time.perf_counter() - primary_match_lookup_started_at) * 1000
+    )
+    canonical_analysis = analyze_canonical_offers_with_benchmark(
         canonical_offers,
         event_primary_match_ids=event_primary_match_ids,
         max_middle_opportunities_per_market=max_middle_opportunities_per_market,
+        canonical_offer_load_ms=canonical_offer_load_ms,
+        primary_match_lookup_ms=primary_match_lookup_ms,
     )
     return _CanonicalAnalysisResult(
         offers=tuple(canonical_offers),
-        opportunities=tuple(canonical_opportunities),
+        opportunities=canonical_analysis.opportunities,
+        benchmark=canonical_analysis.benchmark,
     )
 
 
@@ -1509,6 +1524,9 @@ class Scheduler:
                 benchmark_recorder.record_phase_duration(
                     "analyze_opportunities",
                     int((time.perf_counter() - analyze_started_at) * 1000),
+                )
+                benchmark_recorder.record_opportunity_analysis(
+                    canonical_analysis.benchmark
                 )
                 opportunities = list(canonical_analysis.opportunities)
 

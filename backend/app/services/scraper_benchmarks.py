@@ -30,6 +30,7 @@ from ..models.schemas import (
     CycleBenchmarkOut,
     EventResolverBenchmarkOut,
     HttpTimingBenchmarkOut,
+    OpportunityAnalysisBenchmarkOut,
     OutcomeNormalizationBenchmarkOut,
     ScrapeRuntimeSettings,
     ScraperBenchmarkOut,
@@ -283,6 +284,7 @@ class CycleBenchmarkRecorder:
         self._phase_durations_ms: dict[str, int] = {}
         self._outcome_normalization = OutcomeNormalizationBenchmarkOut()
         self._event_resolver = EventResolverBenchmarkOut()
+        self._opportunity_analysis = OpportunityAnalysisBenchmarkOut()
         self._event_split_diagnostics = BenchmarkSplitDiagnosticsOut()
 
     # ---- accumulation ---------------------------------------------------
@@ -351,6 +353,12 @@ class CycleBenchmarkRecorder:
     def record_event_resolver(self, metrics: EventResolverBenchmarkOut) -> None:
         with self._lock:
             self._event_resolver = metrics
+
+    def record_opportunity_analysis(
+        self, metrics: OpportunityAnalysisBenchmarkOut
+    ) -> None:
+        with self._lock:
+            self._opportunity_analysis = metrics
 
     def record_event_split_diagnostics(
         self,
@@ -571,6 +579,7 @@ class CycleBenchmarkRecorder:
                 phase_durations_ms=dict(sorted(self._phase_durations_ms.items())),
                 outcome_normalization=self._outcome_normalization,
                 event_resolver=self._event_resolver,
+                opportunity_analysis=self._opportunity_analysis,
                 event_coverage=sorted(
                     coverage_rows,
                     key=lambda row: (row.sport, row.bookmaker_id),

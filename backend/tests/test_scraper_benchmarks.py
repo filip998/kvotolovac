@@ -15,6 +15,8 @@ from app.models.schemas import (
     BenchmarkSplitDiagnosticsOut,
     BenchmarkSplitEventFragmentOut,
     BenchmarkSplitSportDiagnosticsOut,
+    OpportunityAnalysisBenchmarkOut,
+    OpportunityAnalysisRuleBenchmarkOut,
     ScrapeRuntimeSettings,
 )
 from app.scrapers.mock_scraper import MockScraper
@@ -83,6 +85,9 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert body["outcome_normalization"]["runs"] >= 1
     assert body["outcome_normalization"]["raw_outcome_offer_count"] >= 0
     assert body["event_resolver"]["candidate_count"] >= 0
+    assert body["opportunity_analysis"]["loaded_offer_count"] >= 0
+    assert body["opportunity_analysis"]["opportunity_count"] >= 0
+    assert isinstance(body["opportunity_analysis"]["rules"], list)
     assert isinstance(body["event_coverage"], list)
     assert body["event_split_diagnostics"]["split_candidate_count"] >= 0
     assert body["event_split_diagnostics"]["overmerge_candidate_count"] >= 0
@@ -127,6 +132,7 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert parsed["phase_durations_ms"]
     assert "outcome_normalization" in parsed
     assert "event_resolver" in parsed
+    assert "opportunity_analysis" in parsed
     assert "event_coverage" in parsed
     assert "event_split_diagnostics" in parsed
     assert "sports" in parsed
@@ -229,6 +235,31 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
     scraper_benchmarks.recorder.record_phase_durations(
         scrape_duration_ms=50,
         cycle_duration_ms=80,
+    )
+    scraper_benchmarks.recorder.record_opportunity_analysis(
+        OpportunityAnalysisBenchmarkOut(
+            canonical_offer_load_ms=7,
+            primary_match_lookup_ms=2,
+            grouping_ms=1,
+            two_way_arbitrage_ms=3,
+            loaded_offer_count=5,
+            same_market_group_count=2,
+            candidate_pair_count=4,
+            publishable_candidate_count=1,
+            opportunity_count=1,
+            rules=[
+                OpportunityAnalysisRuleBenchmarkOut(
+                    sport="football",
+                    market_type="football_total_goals",
+                    rule="same_line_arbitrage",
+                    group_count=1,
+                    offer_count=2,
+                    candidate_pair_count=1,
+                    publishable_candidate_count=1,
+                    opportunity_count=1,
+                )
+            ],
+        )
     )
     scraper_benchmarks.recorder.record_event_split_diagnostics(
         BenchmarkSplitDiagnosticsOut(
@@ -333,6 +364,9 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
     assert sport_row.unmatched_events == 1
     assert sport_row.not_matched_events == 1
     assert snapshot.event_coverage[0].bookmaker_id == "betole"
+    assert snapshot.opportunity_analysis.loaded_offer_count == 5
+    assert snapshot.opportunity_analysis.candidate_pair_count == 4
+    assert snapshot.opportunity_analysis.rules[0].rule == "same_line_arbitrage"
     assert snapshot.event_split_diagnostics.split_candidate_count == 1
     assert snapshot.event_split_diagnostics.sports[0].sport == "football"
     assert (
@@ -348,3 +382,14 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
     persisted = "\n".join(path.read_text() for path in out_dir.glob("*"))
     assert "secret-password" not in persisted
     assert secret_proxy not in persisted
+    assert '"opportunity_analysis"' in persisted
+
+
+def test_opportunity_analysis_benchmark_defaults_and_serialization():
+    metrics = OpportunityAnalysisBenchmarkOut()
+
+    payload = metrics.model_dump()
+
+    assert payload["loaded_offer_count"] == 0
+    assert payload["candidate_pair_count"] == 0
+    assert payload["rules"] == []

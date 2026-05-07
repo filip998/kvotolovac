@@ -4,7 +4,10 @@ import pytest
 
 from app.models.schemas import NormalizedOdds, NormalizedOutcomeOffer
 from app.services.analyzer import find_threshold_gaps
-from app.services.canonical_analyzer import analyze_canonical_offers
+from app.services.canonical_analyzer import (
+    analyze_canonical_offers,
+    analyze_canonical_offers_with_benchmark,
+)
 from app.services.canonical_offers import (
     canonical_offer_from_normalized_outcome_offer,
     canonical_offers_from_normalized_odds,
@@ -385,6 +388,102 @@ def test_canonical_same_line_arbitrage_matches_basketball_positive_margin():
         ("a", "over", 2.05),
         ("b", "under", 2.00),
     }
+
+
+def test_canonical_analysis_benchmark_counts_rule_paths_without_changing_output():
+    offers = [
+        *_odds(
+            "same-line-a",
+            "Lundberg",
+            -4.5,
+            over=2.05,
+            under=1.85,
+            market_type="home_handicap_ot",
+        ),
+        *_odds(
+            "same-line-b",
+            "Lundberg",
+            -4.5,
+            over=1.85,
+            under=2.00,
+            market_type="home_handicap_ot",
+        ),
+        *_odds(
+            "middle-over",
+            "Lundberg",
+            16.5,
+            over=1.90,
+            under=None,
+            market_type="player_points",
+        ),
+        *_odds(
+            "middle-under",
+            "Lundberg",
+            19.5,
+            over=None,
+            under=1.95,
+            market_type="player_points",
+        ),
+        _outcome_offer("result-book", "football_result", "home", 2.50),
+        _outcome_offer(
+            "double-chance-book",
+            "football_double_chance",
+            "draw_or_away",
+            1.75,
+        ),
+    ]
+
+    baseline = analyze_canonical_offers(offers)
+    result = analyze_canonical_offers_with_benchmark(
+        offers,
+        canonical_offer_load_ms=12,
+        primary_match_lookup_ms=3,
+    )
+
+    assert [
+        (item.opportunity_type, item.market_type, item.line) for item in result.opportunities
+    ] == [(item.opportunity_type, item.market_type, item.line) for item in baseline]
+
+    benchmark = result.benchmark
+    assert benchmark.canonical_offer_load_ms == 12
+    assert benchmark.primary_match_lookup_ms == 3
+    assert benchmark.loaded_offer_count == len(offers)
+    assert benchmark.opportunity_count == len(result.opportunities)
+    assert benchmark.same_market_group_count >= 3
+    assert benchmark.line_market_group_count >= 2
+    assert benchmark.event_market_family_group_count >= 2
+
+    rules = {
+        (row.rule, row.market_type): row
+        for row in benchmark.rules
+    }
+    same_line = rules[("same_line_arbitrage", "home_handicap_ot")]
+    assert same_line.group_count == 1
+    assert same_line.offer_count == 4
+    assert same_line.candidate_pair_count == 6
+    assert same_line.publishable_candidate_count == 1
+    assert same_line.opportunity_count == 1
+
+    middle = rules[("line_middle", "player_points")]
+    assert middle.group_count == 1
+    assert middle.candidate_pair_count == 1
+    assert middle.publishable_candidate_count == 1
+    assert middle.opportunity_count == 1
+
+    complementary = rules[
+        ("complementary_outcomes", "football_result_double_chance")
+    ]
+    assert complementary.group_count == 1
+    assert complementary.candidate_pair_count == 1
+    assert complementary.publishable_candidate_count == 1
+    assert complementary.opportunity_count == 1
+
+    assert benchmark.candidate_pair_count == sum(
+        row.candidate_pair_count for row in benchmark.rules
+    )
+    assert benchmark.publishable_candidate_count == sum(
+        row.publishable_candidate_count for row in benchmark.rules
+    )
 
 
 def test_canonical_same_bookmaker_alternate_lines_are_ignored():
