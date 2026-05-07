@@ -1484,6 +1484,9 @@ class Scheduler:
                     benchmark_recorder.record_event_resolver(
                         event_resolver_result.benchmark
                     )
+                benchmark_recorder.record_event_split_diagnostics(
+                    event_resolver_result.split_diagnostics
+                )
                 event_coverage = event_resolver_result.coverage
 
                 self._scan_phase = "analyzing"

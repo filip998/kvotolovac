@@ -9,7 +9,14 @@ from httpx import ASGITransport, AsyncClient
 from app.config import settings
 from app.database import close_db, init_db
 from app.main import app
-from app.models.schemas import BenchmarkEventCoverageOut, ScrapeRuntimeSettings
+from app.models.schemas import (
+    BenchmarkEventCoverageOut,
+    BenchmarkSplitClusterOut,
+    BenchmarkSplitDiagnosticsOut,
+    BenchmarkSplitEventFragmentOut,
+    BenchmarkSplitSportDiagnosticsOut,
+    ScrapeRuntimeSettings,
+)
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
 from app.services import scraper_benchmarks
@@ -77,6 +84,9 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert body["outcome_normalization"]["raw_outcome_offer_count"] >= 0
     assert body["event_resolver"]["candidate_count"] >= 0
     assert isinstance(body["event_coverage"], list)
+    assert body["event_split_diagnostics"]["split_candidate_count"] >= 0
+    assert body["event_split_diagnostics"]["overmerge_candidate_count"] >= 0
+    assert isinstance(body["event_split_diagnostics"]["sports"], list)
     assert isinstance(body["sports"], list)
     if body["event_coverage"]:
         coverage_row = body["event_coverage"][0]
@@ -118,6 +128,7 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert "outcome_normalization" in parsed
     assert "event_resolver" in parsed
     assert "event_coverage" in parsed
+    assert "event_split_diagnostics" in parsed
     assert "sports" in parsed
 
 
@@ -219,6 +230,59 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
         scrape_duration_ms=50,
         cycle_duration_ms=80,
     )
+    scraper_benchmarks.recorder.record_event_split_diagnostics(
+        BenchmarkSplitDiagnosticsOut(
+            split_candidate_count=1,
+            events_in_split_candidates=2,
+            members_in_split_candidates=5,
+            sports=[
+                BenchmarkSplitSportDiagnosticsOut(
+                    sport="football",
+                    split_candidate_count=1,
+                    events_in_split_candidates=2,
+                    members_in_split_candidates=5,
+                )
+            ],
+            top_split_candidates=[
+                BenchmarkSplitClusterOut(
+                    sport="football",
+                    reason_code="same_side_conflicting_opponent",
+                    shared_side="home",
+                    start_time="2026-05-06T12:00:00",
+                    max_start_delta_minutes=0.0,
+                    score=76.0,
+                    events=[
+                        BenchmarkSplitEventFragmentOut(
+                            resolved_event_id="evt-left",
+                            primary_match_id="match-a",
+                            start_time="2026-05-06T12:00:00",
+                            display_home_team="Team Alpha",
+                            display_away_team="Team Beta",
+                            display_league_name="League",
+                            method="exact",
+                            confidence=1.0,
+                            member_count=2,
+                            bookmaker_ids=["book-a", "book-b"],
+                            match_ids=["match-a", "match-b"],
+                        ),
+                        BenchmarkSplitEventFragmentOut(
+                            resolved_event_id="evt-right",
+                            primary_match_id="match-c",
+                            start_time="2026-05-06T12:00:00",
+                            display_home_team="Team Alpha",
+                            display_away_team="Team Gamma",
+                            display_league_name="League",
+                            method="exact",
+                            confidence=1.0,
+                            member_count=3,
+                            bookmaker_ids=["book-c"],
+                            match_ids=["match-c"],
+                        ),
+                    ],
+                )
+            ],
+        )
+    )
 
     snapshot = scraper_benchmarks.recorder.publish(
         matches_per_bookmaker={"betole": 3},
@@ -269,6 +333,14 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
     assert sport_row.unmatched_events == 1
     assert sport_row.not_matched_events == 1
     assert snapshot.event_coverage[0].bookmaker_id == "betole"
+    assert snapshot.event_split_diagnostics.split_candidate_count == 1
+    assert snapshot.event_split_diagnostics.sports[0].sport == "football"
+    assert (
+        snapshot.event_split_diagnostics.top_split_candidates[0].events[
+            0
+        ].resolved_event_id
+        == "evt-left"
+    )
     assert snapshot.sports[0].sport == "football"
     assert snapshot.sports[0].matched_events == 2
 

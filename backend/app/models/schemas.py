@@ -641,6 +641,62 @@ class BenchmarkEventCoverageOut(BaseModel):
     match_rate: float = 0.0
 
 
+class BenchmarkSplitEventFragmentOut(BaseModel):
+    """One resolved-event fragment participating in a split/over-merge diagnostic."""
+
+    resolved_event_id: str
+    primary_match_id: str
+    display_home_team: str
+    display_away_team: str
+    display_league_name: Optional[str] = None
+    start_time: str
+    method: str
+    confidence: float = 0.0
+    bookmaker_ids: list[str] = Field(default_factory=list)
+    match_ids: list[str] = Field(default_factory=list)
+    member_count: int = 0
+
+
+class BenchmarkSplitClusterOut(BaseModel):
+    """Diagnostic candidate for logical event splitting or over-merging."""
+
+    sport: str
+    reason_code: str
+    score: float = 0.0
+    shared_side: Optional[str] = None
+    start_time: str
+    max_start_delta_minutes: float = 0.0
+    events: list[BenchmarkSplitEventFragmentOut] = Field(default_factory=list)
+
+
+class BenchmarkSplitSportDiagnosticsOut(BaseModel):
+    """Per-sport split/over-merge diagnostic aggregate."""
+
+    sport: str
+    split_candidate_count: int = 0
+    events_in_split_candidates: int = 0
+    members_in_split_candidates: int = 0
+    overmerge_candidate_count: int = 0
+    events_in_overmerge_candidates: int = 0
+    members_in_overmerge_candidates: int = 0
+
+
+class BenchmarkSplitDiagnosticsOut(BaseModel):
+    """Cycle-level diagnostics for split logical events and possible over-merges."""
+
+    split_candidate_count: int = 0
+    events_in_split_candidates: int = 0
+    members_in_split_candidates: int = 0
+    overmerge_candidate_count: int = 0
+    events_in_overmerge_candidates: int = 0
+    members_in_overmerge_candidates: int = 0
+    top_split_candidates: list[BenchmarkSplitClusterOut] = Field(default_factory=list)
+    top_overmerge_candidates: list[BenchmarkSplitClusterOut] = Field(
+        default_factory=list
+    )
+    sports: list[BenchmarkSplitSportDiagnosticsOut] = Field(default_factory=list)
+
+
 class SportBenchmarkOut(BaseModel):
     """Per-sport benchmark aggregates within a cycle or scraper row."""
 
@@ -733,6 +789,9 @@ class CycleBenchmarkOut(BaseModel):
         default_factory=EventResolverBenchmarkOut
     )
     event_coverage: list[BenchmarkEventCoverageOut] = Field(default_factory=list)
+    event_split_diagnostics: BenchmarkSplitDiagnosticsOut = Field(
+        default_factory=BenchmarkSplitDiagnosticsOut
+    )
     sports: list[SportBenchmarkOut] = Field(default_factory=list)
     scrapers: list[ScraperBenchmarkOut] = Field(default_factory=list)
 

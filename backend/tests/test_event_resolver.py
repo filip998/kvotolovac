@@ -27,6 +27,7 @@ from app.services.event_resolver import (
     _contextual_merge_source_ids,
     _event_coverage_benchmark,
     _event_review_case,
+    _event_split_diagnostics_benchmark,
     _orientation_scores,
     SameTimeCanonicalSlot,
     _same_time_slot_orientation,
@@ -424,6 +425,248 @@ def test_event_coverage_benchmark_counts_matched_unmatched_ungrouped_and_review(
     assert by_bookmaker["book-e"].unmatched_events == 1
     assert by_bookmaker["book-e"].in_review_events == 1
     assert by_bookmaker["book-e"].not_matched_events == 1
+
+
+def test_event_split_diagnostics_flags_split_candidate_without_merging():
+    cundinamarca = EventResolutionGroup(
+        event_id="evt-cundinamarca",
+        sport="football",
+        start_time=START_TIME,
+        primary_match_id="match-cundinamarca",
+        display_home_team="Jaguares",
+        display_away_team="Real Cundinamarca",
+        display_league_name="Kolumbija KUP",
+        method="auto_fuzzy_high",
+        confidence=0.796,
+        members=(
+            _event_candidate(
+                "book-a",
+                match_id="match-a",
+                sport="football",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Jaguares",
+                away_team="Real Cundinamarca",
+            ),
+            _event_candidate(
+                "book-b",
+                match_id="match-b",
+                sport="football",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Jaguares de Cordoba",
+                away_team="Real Cundinamarca",
+            ),
+        ),
+        evidence=(),
+    )
+    soacha = EventResolutionGroup(
+        event_id="evt-soacha",
+        sport="football",
+        start_time=START_TIME,
+        primary_match_id="match-soacha",
+        display_home_team="Jaguares de Cordoba",
+        display_away_team="Real Soacha",
+        display_league_name="Kolumbija KUP",
+        method="exact",
+        confidence=1.0,
+        members=(
+            _event_candidate(
+                "book-c",
+                match_id="match-c",
+                sport="football",
+                home_team_id=3,
+                away_team_id=4,
+                home_team="Jaguares de Cordoba",
+                away_team="Real Soacha",
+            ),
+            _event_candidate(
+                "book-d",
+                match_id="match-d",
+                sport="football",
+                home_team_id=3,
+                away_team_id=4,
+                home_team="Jaguares de Cordoba",
+                away_team="Real Soacha",
+            ),
+        ),
+        evidence=(),
+    )
+
+    diagnostics = _event_split_diagnostics_benchmark([cundinamarca, soacha])
+
+    assert diagnostics.split_candidate_count == 1
+    assert diagnostics.events_in_split_candidates == 2
+    assert diagnostics.members_in_split_candidates == 4
+    assert diagnostics.sports[0].sport == "football"
+    assert diagnostics.sports[0].split_candidate_count == 1
+    assert diagnostics.sports[0].members_in_split_candidates == 4
+    candidate = diagnostics.top_split_candidates[0]
+    assert candidate.reason_code == "same_side_conflicting_opponent"
+    assert candidate.shared_side == "home"
+    assert candidate.max_start_delta_minutes == 0.0
+    assert {event.resolved_event_id for event in candidate.events} == {
+        "evt-cundinamarca",
+        "evt-soacha",
+    }
+
+
+def test_event_split_diagnostics_flags_fuzzy_duplicate_resolved_events():
+    abbreviated = EventResolutionGroup(
+        event_id="evt-abbrev",
+        sport="football",
+        start_time=START_TIME,
+        primary_match_id="match-abbrev",
+        display_home_team="Aue",
+        display_away_team="Duisburg",
+        display_league_name="League",
+        method="exact",
+        confidence=1.0,
+        members=(
+            _event_candidate(
+                "book-a",
+                match_id="match-abbrev",
+                sport="football",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Aue",
+                away_team="Duisburg",
+            ),
+        ),
+        evidence=(),
+    )
+    full = EventResolutionGroup(
+        event_id="evt-full",
+        sport="football",
+        start_time=START_TIME,
+        primary_match_id="match-full",
+        display_home_team="Erzgebirge Aue",
+        display_away_team="MSV Duisburg",
+        display_league_name="League",
+        method="exact",
+        confidence=1.0,
+        members=(
+            _event_candidate(
+                "book-b",
+                match_id="match-full",
+                sport="football",
+                home_team_id=3,
+                away_team_id=4,
+                home_team="Erzgebirge Aue",
+                away_team="MSV Duisburg",
+            ),
+        ),
+        evidence=(),
+    )
+
+    diagnostics = _event_split_diagnostics_benchmark([abbreviated, full])
+
+    assert diagnostics.split_candidate_count == 1
+    candidate = diagnostics.top_split_candidates[0]
+    assert candidate.reason_code == "fuzzy_duplicate_resolved_events"
+    assert candidate.shared_side == "both"
+    assert candidate.score == 100.0
+
+
+def test_event_split_diagnostics_ignores_same_side_doubleheader_outside_time_window():
+    early = EventResolutionGroup(
+        event_id="evt-early",
+        sport="basketball",
+        start_time=START_TIME,
+        primary_match_id="match-early",
+        display_home_team="Team Alpha",
+        display_away_team="Team Beta",
+        display_league_name="League",
+        method="exact",
+        confidence=1.0,
+        members=(
+            _event_candidate(
+                "book-a",
+                match_id="match-early",
+                sport="basketball",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Team Alpha",
+                away_team="Team Beta",
+            ),
+        ),
+        evidence=(),
+    )
+    late = EventResolutionGroup(
+        event_id="evt-late",
+        sport="basketball",
+        start_time="2030-01-01T23:00:00+00:00",
+        primary_match_id="match-late",
+        display_home_team="Team Alpha",
+        display_away_team="Team Gamma",
+        display_league_name="League",
+        method="exact",
+        confidence=1.0,
+        members=(
+            _event_candidate(
+                "book-b",
+                match_id="match-late",
+                sport="basketball",
+                home_team_id=1,
+                away_team_id=3,
+                home_team="Team Alpha",
+                away_team="Team Gamma",
+                start_time="2030-01-01T23:00:00+00:00",
+            ),
+        ),
+        evidence=(),
+    )
+
+    diagnostics = _event_split_diagnostics_benchmark([early, late])
+
+    assert diagnostics.split_candidate_count == 0
+
+
+def test_event_split_diagnostics_flags_possible_overmerge():
+    overmerged = EventResolutionGroup(
+        event_id="evt-overmerged",
+        sport="basketball",
+        start_time=START_TIME,
+        primary_match_id="match-overmerged",
+        display_home_team="Team Alpha",
+        display_away_team="Team Beta",
+        display_league_name="League",
+        method="auto_fuzzy_high",
+        confidence=0.8,
+        members=(
+            _event_candidate(
+                "book-a",
+                match_id="match-a",
+                sport="basketball",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Team Alpha",
+                away_team="Team Beta",
+                source_league_name="League",
+            ),
+            _event_candidate(
+                "book-b",
+                match_id="match-b",
+                sport="basketball",
+                home_team_id=3,
+                away_team_id=4,
+                home_team="Completely Different",
+                away_team="Another Opponent",
+                source_league_name="League",
+            ),
+        ),
+        evidence=(),
+    )
+
+    diagnostics = _event_split_diagnostics_benchmark([overmerged])
+
+    assert diagnostics.overmerge_candidate_count == 1
+    assert diagnostics.events_in_overmerge_candidates == 1
+    assert diagnostics.sports[0].sport == "basketball"
+    assert diagnostics.sports[0].overmerge_candidate_count == 1
+    assert diagnostics.top_overmerge_candidates[0].events[0].resolved_event_id == (
+        "evt-overmerged"
+    )
 
 
 async def _seed_bookmakers(*bookmaker_ids: str) -> None:

@@ -26,6 +26,7 @@ from ..config import settings
 from ..models.schemas import (
     BenchmarkEventCoverageOut,
     BenchmarkRuntimeMetadataOut,
+    BenchmarkSplitDiagnosticsOut,
     CycleBenchmarkOut,
     EventResolverBenchmarkOut,
     HttpTimingBenchmarkOut,
@@ -282,6 +283,7 @@ class CycleBenchmarkRecorder:
         self._phase_durations_ms: dict[str, int] = {}
         self._outcome_normalization = OutcomeNormalizationBenchmarkOut()
         self._event_resolver = EventResolverBenchmarkOut()
+        self._event_split_diagnostics = BenchmarkSplitDiagnosticsOut()
 
     # ---- accumulation ---------------------------------------------------
     def begin_cycle(
@@ -349,6 +351,13 @@ class CycleBenchmarkRecorder:
     def record_event_resolver(self, metrics: EventResolverBenchmarkOut) -> None:
         with self._lock:
             self._event_resolver = metrics
+
+    def record_event_split_diagnostics(
+        self,
+        diagnostics: BenchmarkSplitDiagnosticsOut,
+    ) -> None:
+        with self._lock:
+            self._event_split_diagnostics = diagnostics
 
     @contextmanager
     def scrape_request_context(
@@ -566,6 +575,7 @@ class CycleBenchmarkRecorder:
                     coverage_rows,
                     key=lambda row: (row.sport, row.bookmaker_id),
                 ),
+                event_split_diagnostics=self._event_split_diagnostics,
                 sports=cycle_sports,
                 scrapers=scrapers,
             )

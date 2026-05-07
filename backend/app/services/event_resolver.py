@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 import hashlib
 import logging
 import re
@@ -11,6 +12,10 @@ from rapidfuzz import fuzz
 
 from ..models.schemas import (
     BenchmarkEventCoverageOut,
+    BenchmarkSplitClusterOut,
+    BenchmarkSplitDiagnosticsOut,
+    BenchmarkSplitEventFragmentOut,
+    BenchmarkSplitSportDiagnosticsOut,
     EventResolverBenchmarkOut,
     EventReviewCaseIn,
     NormalizedOdds,
@@ -663,6 +668,9 @@ class EventResolverResult:
     review_cases: int
     benchmark: EventResolverBenchmarkOut | None = None
     coverage: tuple[BenchmarkEventCoverageOut, ...] = ()
+    split_diagnostics: BenchmarkSplitDiagnosticsOut = field(
+        default_factory=BenchmarkSplitDiagnosticsOut
+    )
 
 
 _SourceEventKey = tuple[str, str, str]
@@ -785,6 +793,287 @@ def _event_coverage_benchmark(
             )
         )
     return tuple(rows)
+
+
+_SPLIT_TIME_WINDOW_MINUTES = 15
+_SPLIT_SAME_SIDE_SCORE = 90
+_SPLIT_FUZZY_AVG_SCORE = 82
+_SPLIT_FUZZY_WEAK_SCORE = 68
+_OVERMERGE_AVG_SCORE = 70
+_OVERMERGE_WEAK_SCORE = 45
+_MAX_SPLIT_DIAGNOSTIC_EXAMPLES = 20
+
+
+def _parse_event_time(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _event_time_delta_minutes(left: str, right: str) -> float | None:
+    if left == right:
+        return 0.0
+    left_dt = _parse_event_time(left)
+    right_dt = _parse_event_time(right)
+    if left_dt is None or right_dt is None:
+        return None
+    try:
+        return abs((left_dt - right_dt).total_seconds()) / 60
+    except TypeError:
+        return None
+
+
+def _split_name_score(left: str | None, right: str | None) -> float:
+    left_norm = normalize_identity_text(left or "")
+    right_norm = normalize_identity_text(right or "")
+    if not left_norm or not right_norm:
+        return 0.0
+    return float(fuzz.token_set_ratio(left_norm, right_norm))
+
+
+def _split_member_home(member: EventCandidate) -> str:
+    return member.source_home_team or member.home_team
+
+
+def _split_member_away(member: EventCandidate) -> str:
+    return member.source_away_team or member.away_team
+
+
+def _split_pair_scores(
+    left_home: str,
+    left_away: str,
+    right_home: str,
+    right_away: str,
+) -> tuple[str, float, float, float]:
+    as_home = _split_name_score(left_home, right_home)
+    as_away = _split_name_score(left_away, right_away)
+    rev_home = _split_name_score(left_home, right_away)
+    rev_away = _split_name_score(left_away, right_home)
+    as_avg = (as_home + as_away) / 2
+    rev_avg = (rev_home + rev_away) / 2
+    if rev_avg > as_avg:
+        return "reversed", rev_avg, rev_home, rev_away
+    return "as_listed", as_avg, as_home, as_away
+
+
+def _split_fragment(
+    resolution: EventResolutionGroup,
+) -> BenchmarkSplitEventFragmentOut:
+    return BenchmarkSplitEventFragmentOut(
+        resolved_event_id=resolution.event_id,
+        primary_match_id=resolution.primary_match_id,
+        display_home_team=resolution.display_home_team,
+        display_away_team=resolution.display_away_team,
+        display_league_name=resolution.display_league_name,
+        start_time=resolution.start_time,
+        method=resolution.method,
+        confidence=round(resolution.confidence, 4),
+        bookmaker_ids=sorted({member.bookmaker_id for member in resolution.members}),
+        match_ids=sorted({member.match_id for member in resolution.members}),
+        member_count=len(resolution.members),
+    )
+
+
+def _split_candidate_for_pair(
+    left: EventResolutionGroup,
+    right: EventResolutionGroup,
+) -> BenchmarkSplitClusterOut | None:
+    if left.sport != right.sport:
+        return None
+    delta = _event_time_delta_minutes(left.start_time, right.start_time)
+    if delta is None or delta > _SPLIT_TIME_WINDOW_MINUTES:
+        return None
+
+    orientation, avg_score, home_score, away_score = _split_pair_scores(
+        left.display_home_team,
+        left.display_away_team,
+        right.display_home_team,
+        right.display_away_team,
+    )
+    if orientation == "reversed":
+        home_side = "home_to_away"
+        away_side = "away_to_home"
+    else:
+        home_side = "home"
+        away_side = "away"
+
+    reason_code: str | None = None
+    shared_side: str | None = None
+    if home_score >= _SPLIT_SAME_SIDE_SCORE and away_score < _SPLIT_SAME_SIDE_SCORE:
+        reason_code = "same_side_conflicting_opponent"
+        shared_side = home_side
+    elif away_score >= _SPLIT_SAME_SIDE_SCORE and home_score < _SPLIT_SAME_SIDE_SCORE:
+        reason_code = "same_side_conflicting_opponent"
+        shared_side = away_side
+    elif (
+        avg_score >= _SPLIT_FUZZY_AVG_SCORE
+        and min(home_score, away_score) >= _SPLIT_FUZZY_WEAK_SCORE
+    ):
+        reason_code = "fuzzy_duplicate_resolved_events"
+        shared_side = "both"
+
+    if reason_code is None:
+        return None
+
+    return BenchmarkSplitClusterOut(
+        sport=left.sport,
+        reason_code=reason_code,
+        score=round(avg_score, 2),
+        shared_side=shared_side,
+        start_time=min(left.start_time, right.start_time),
+        max_start_delta_minutes=round(delta, 2),
+        events=[_split_fragment(left), _split_fragment(right)],
+    )
+
+
+def _overmerge_candidate_for_resolution(
+    resolution: EventResolutionGroup,
+) -> BenchmarkSplitClusterOut | None:
+    members = list(resolution.members)
+    if len(members) < 2:
+        return None
+    weakest_avg = 100.0
+    weakest_side = 100.0
+    for left_index, left in enumerate(members):
+        for right in members[left_index + 1 :]:
+            _orientation, avg_score, home_score, away_score = _split_pair_scores(
+                _split_member_home(left),
+                _split_member_away(left),
+                _split_member_home(right),
+                _split_member_away(right),
+            )
+            weakest_avg = min(weakest_avg, avg_score)
+            weakest_side = min(weakest_side, home_score, away_score)
+
+    if weakest_avg >= _OVERMERGE_AVG_SCORE and weakest_side >= _OVERMERGE_WEAK_SCORE:
+        return None
+
+    return BenchmarkSplitClusterOut(
+        sport=resolution.sport,
+        reason_code="possible_overmerge_conflicting_members",
+        score=round(weakest_avg, 2),
+        shared_side=None,
+        start_time=resolution.start_time,
+        max_start_delta_minutes=0.0,
+        events=[_split_fragment(resolution)],
+    )
+
+
+def _event_split_diagnostics_benchmark(
+    resolutions: list[EventResolutionGroup],
+) -> BenchmarkSplitDiagnosticsOut:
+    split_candidates: list[BenchmarkSplitClusterOut] = []
+    sorted_resolutions = sorted(
+        resolutions,
+        key=lambda item: (item.sport, item.start_time, item.event_id),
+    )
+    for left_index, left in enumerate(sorted_resolutions):
+        for right in sorted_resolutions[left_index + 1 :]:
+            if left.sport != right.sport:
+                break
+            candidate = _split_candidate_for_pair(left, right)
+            if candidate is not None:
+                split_candidates.append(candidate)
+
+    overmerge_candidates = [
+        candidate
+        for resolution in sorted_resolutions
+        if (candidate := _overmerge_candidate_for_resolution(resolution)) is not None
+    ]
+
+    split_event_ids = {
+        event.resolved_event_id
+        for candidate in split_candidates
+        for event in candidate.events
+    }
+    split_members = {
+        event.resolved_event_id: event.member_count
+        for candidate in split_candidates
+        for event in candidate.events
+    }
+    overmerge_event_ids = {
+        event.resolved_event_id
+        for candidate in overmerge_candidates
+        for event in candidate.events
+    }
+    overmerge_members = {
+        event.resolved_event_id: event.member_count
+        for candidate in overmerge_candidates
+        for event in candidate.events
+    }
+    sports = sorted({resolution.sport for resolution in sorted_resolutions})
+
+    top_split_candidates = sorted(
+        split_candidates,
+        key=lambda candidate: (
+            -sum(event.member_count for event in candidate.events),
+            -candidate.score,
+            candidate.sport,
+            candidate.start_time,
+        ),
+    )[:_MAX_SPLIT_DIAGNOSTIC_EXAMPLES]
+    top_overmerge_candidates = sorted(
+        overmerge_candidates,
+        key=lambda candidate: (
+            candidate.score,
+            -sum(event.member_count for event in candidate.events),
+            candidate.sport,
+            candidate.start_time,
+        ),
+    )[:_MAX_SPLIT_DIAGNOSTIC_EXAMPLES]
+
+    return BenchmarkSplitDiagnosticsOut(
+        split_candidate_count=len(split_candidates),
+        events_in_split_candidates=len(split_event_ids),
+        members_in_split_candidates=sum(split_members.values()),
+        overmerge_candidate_count=len(overmerge_candidates),
+        events_in_overmerge_candidates=len(overmerge_event_ids),
+        members_in_overmerge_candidates=sum(overmerge_members.values()),
+        top_split_candidates=top_split_candidates,
+        top_overmerge_candidates=top_overmerge_candidates,
+        sports=[
+            _split_sport_diagnostics(
+                sport=sport,
+                split_candidates=split_candidates,
+                overmerge_candidates=overmerge_candidates,
+            )
+            for sport in sports
+        ],
+    )
+
+
+def _split_sport_diagnostics(
+    *,
+    sport: str,
+    split_candidates: list[BenchmarkSplitClusterOut],
+    overmerge_candidates: list[BenchmarkSplitClusterOut],
+) -> BenchmarkSplitSportDiagnosticsOut:
+    sport_split_candidates = [
+        candidate for candidate in split_candidates if candidate.sport == sport
+    ]
+    sport_overmerge_candidates = [
+        candidate for candidate in overmerge_candidates if candidate.sport == sport
+    ]
+    split_event_members = {
+        event.resolved_event_id: event.member_count
+        for candidate in sport_split_candidates
+        for event in candidate.events
+    }
+    overmerge_event_members = {
+        event.resolved_event_id: event.member_count
+        for candidate in sport_overmerge_candidates
+        for event in candidate.events
+    }
+    return BenchmarkSplitSportDiagnosticsOut(
+        sport=sport,
+        split_candidate_count=len(sport_split_candidates),
+        events_in_split_candidates=len(split_event_members),
+        members_in_split_candidates=sum(split_event_members.values()),
+        overmerge_candidate_count=len(sport_overmerge_candidates),
+        events_in_overmerge_candidates=len(overmerge_event_members),
+        members_in_overmerge_candidates=sum(overmerge_event_members.values()),
+    )
 
 
 def _league_source(raw_league_id: str, bookmaker_id: str) -> tuple[str, str]:
@@ -2061,6 +2350,7 @@ async def resolve_and_persist_events(
         resolutions=resolutions,
         review_cases=review_cases,
     )
+    split_diagnostics = _event_split_diagnostics_benchmark(resolutions)
 
     persistence_started_at = time.perf_counter()
     result = await persist_event_resolution_groups(
@@ -2103,4 +2393,5 @@ async def resolve_and_persist_events(
         review_cases=result.review_cases,
         benchmark=benchmark,
         coverage=coverage,
+        split_diagnostics=split_diagnostics,
     )
