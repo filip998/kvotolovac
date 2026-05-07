@@ -232,6 +232,58 @@ def test_normalize_odds_infers_shared_platform_game_beside_other_tipoff_match():
     }
 
 
+def test_normalize_odds_prefers_inferred_match_for_source_bookmaker_when_other_anchor_shares_team():
+    normalized, unresolved = normalize_odds_with_issues(
+        [
+            RawOddsData(
+                bookmaker_id="mozzart",
+                league_id="poland",
+                home_team="Ostrow Wielkopolski",
+                away_team="Real Madrid",
+                market_type="game_total",
+                threshold=168.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2026-04-11T01:30:00+00:00",
+            ),
+            RawOddsData(
+                bookmaker_id="admiralbet",
+                league_id="poljska 1",
+                home_team="Ostrow Wielkopolski",
+                away_team="Daniel Laster",
+                market_type="player_points",
+                player_name="Daniel Laster",
+                threshold=11.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-11T01:30:00+00:00",
+            ),
+            RawOddsData(
+                bookmaker_id="maxbet",
+                league_id="poland",
+                home_team="Zielona Gora",
+                away_team="Ty Nichols",
+                market_type="player_points",
+                player_name="Ty Nichols",
+                threshold=14.5,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2026-04-11T01:30:00+00:00",
+            ),
+        ]
+    )
+
+    assert unresolved == []
+    assert {
+        (offer.player_name, offer.home_team, offer.away_team)
+        for offer in normalized
+        if offer.player_name
+    } == {
+        ("Daniel Laster", "Ostrow Wielkopolski", "Zielona Gora"),
+        ("Ty Nichols", "Ostrow Wielkopolski", "Zielona Gora"),
+    }
+
+
 def test_normalize_odds_infers_league_from_event_context(league_registry_file):
     normalized, unresolved, team_reviews = normalize_odds_with_diagnostics(
         [

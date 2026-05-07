@@ -23,6 +23,7 @@ _BASKETBALL_CANONICAL_ALIASES: dict[str, str] = {
     "maccabi": "Maccabi Tel Aviv",
     "hapoel tel aviv": "Hapoel Tel-Aviv",
     "hapoel tel-aviv": "Hapoel Tel-Aviv",
+    "hapoel ta": "Hapoel Tel-Aviv",
     "asvel": "Asvel",
     "asvel lyon-villeurbanne": "Asvel",
     "lyon-villeurb.": "Asvel",

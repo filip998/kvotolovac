@@ -20,6 +20,7 @@ from app.services.normalizer import (
 from app.services.team_registry import (
     CircularAliasError,
     clear_team_registry_cache,
+    create_canonical_team,
     remember_team_alias,
 )
 from app.models.schemas import RawOddsData
@@ -40,6 +41,7 @@ def test_normalize_team_alias():
     assert normalize_team_name("Budućnost") == "Buducnost"
     assert normalize_team_name("KK Crvena Zvezda") == "Crvena Zvezda"
     assert normalize_team_name("Ostrow") == "Ostrow Wielkopolski"
+    assert normalize_team_name("Hapoel TA", "euroleague") == "Hapoel Tel-Aviv"
     assert normalize_team_name("Fenerbahce Istanbul", "euroleague") == "Fenerbahce"
     assert normalize_team_name("ASVEL Lyon-Villeurbanne", "euroleague") == "Asvel"
     assert normalize_team_name("Lyon-Villeurb.", "euroleague") == "Asvel"
@@ -1034,6 +1036,70 @@ def test_normalize_odds_with_issues_infers_two_team_shared_platform_slot():
         (offer.home_team, offer.away_team)
         for offer in normalized
     } == {("Ostrow Wielkopolski", "Zielona Gora")}
+
+
+def test_normalize_odds_prefers_same_bookmaker_anchor_over_two_team_inference(
+    team_registry_file,
+):
+    create_canonical_team(display_name="Hapoel TA", sport="basketball")
+    create_canonical_team(display_name="Borac", sport="basketball")
+    start_time = "2026-05-07T18:00:00+00:00"
+
+    normalized, unresolved = normalize_odds_with_issues(
+        [
+            RawOddsData(
+                bookmaker_id="balkanbet",
+                league_id="euroleague",
+                home_team="Hapoel Tel-Aviv",
+                away_team="Real Madrid",
+                market_type="game_total_ot",
+                threshold=170.5,
+                over_odds=1.9,
+                under_odds=1.8,
+                start_time=start_time,
+            ),
+            RawOddsData(
+                bookmaker_id="balkanbet",
+                league_id="balkanbet_tournament_29227",
+                home_team="Hapoel TA",
+                away_team="Elijah Bryant",
+                market_type="player_points",
+                player_name="Elijah Bryant",
+                threshold=14.5,
+                over_odds=1.78,
+                under_odds=1.93,
+                start_time=start_time,
+            ),
+            RawOddsData(
+                bookmaker_id="balkanbet",
+                league_id="balkanbet_tournament_29227",
+                home_team="Borac",
+                away_team="P. Nikolic",
+                market_type="player_points",
+                player_name="P. Nikolic",
+                threshold=15.5,
+                over_odds=1.8,
+                under_odds=1.9,
+                start_time=start_time,
+            ),
+        ]
+    )
+
+    offers_by_player = {offer.player_name: offer for offer in normalized if offer.player_name}
+    hapoel_offer = offers_by_player["Elijah Bryant"]
+    assert hapoel_offer.home_team == "Hapoel Tel-Aviv"
+    assert hapoel_offer.away_team == "Real Madrid"
+    assert hapoel_offer.league_id == "euroleague"
+    assert "P. Nikolic" not in offers_by_player
+    assert {
+        (offer.home_team, offer.away_team)
+        for offer in normalized
+    } == {("Hapoel Tel-Aviv", "Real Madrid")}
+    assert any(
+        row.raw_team_name == "Borac"
+        and row.reason_code == "no_canonical_matchup_for_team_at_slot"
+        for row in unresolved
+    )
 
 
 def test_normalize_odds_resolves_unique_match_local_player_variants():
