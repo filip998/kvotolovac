@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     notification_retention_days: int = 3
     odds_history_retention_days: int = 7
     team_review_retention_days: int = 90
+    auto_migrate_on_startup: bool = False
     scraper_mode: str = "mock"  # "mock" or "real"
     proxy_list: str = ""
     rate_limit_per_second: float = 1.0

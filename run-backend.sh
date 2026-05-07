@@ -16,6 +16,11 @@ source venv/bin/activate
 echo "📦 Installing dependencies..."
 pip install -q --disable-pip-version-check -r requirements.txt
 
+# Local launcher convenience: migrate automatically unless explicitly configured.
+if [ -z "${AUTO_MIGRATE_ON_STARTUP+x}" ] && ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?AUTO_MIGRATE_ON_STARTUP[[:space:]]*=' .env 2>/dev/null; then
+    export AUTO_MIGRATE_ON_STARTUP=true
+fi
+
 # Run server
 echo "🚀 Starting backend on http://localhost:8000"
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000

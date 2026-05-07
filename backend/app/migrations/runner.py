@@ -39,6 +39,36 @@ def upgrade_database(db_path: str, revision: str = "head") -> None:
     command.upgrade(alembic_config(db_path), revision)
 
 
+def _migration_required_message(actual: str | None, expected: str) -> str:
+    state = actual or "unversioned/missing"
+    return (
+        "Database schema is not migrated. "
+        f"Current revision: {state}; expected: {expected}. "
+        "Run `cd backend && ./venv/bin/alembic upgrade head` before starting the backend."
+    )
+
+
+def migrate_database_to_head(db_path: str) -> tuple[str | None, str]:
+    expected = head_revision(db_path)
+    actual = current_revision(db_path)
+    if actual == expected:
+        return actual, expected
+
+    try:
+        upgrade_database(db_path)
+    except Exception as exc:
+        raise DatabaseMigrationRequired(
+            "Automatic database migration failed. "
+            f"{_migration_required_message(actual, expected)}"
+        ) from exc
+
+    migrated = current_revision(db_path)
+    if migrated != expected:
+        raise DatabaseMigrationRequired(_migration_required_message(migrated, expected))
+
+    return actual, expected
+
+
 def head_revision(db_path: str) -> str:
     script = ScriptDirectory.from_config(alembic_config(db_path))
     heads = script.get_heads()
@@ -72,9 +102,4 @@ def ensure_database_at_head(db_path: str) -> None:
     if actual == expected:
         return
 
-    state = actual or "unversioned/missing"
-    raise DatabaseMigrationRequired(
-        "Database schema is not migrated. "
-        f"Current revision: {state}; expected: {expected}. "
-        "Run `cd backend && ./venv/bin/alembic upgrade head` before starting the backend."
-    )
+    raise DatabaseMigrationRequired(_migration_required_message(actual, expected))

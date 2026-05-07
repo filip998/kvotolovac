@@ -9,6 +9,7 @@ from app.migrations.runner import (
     DatabaseMigrationRequired,
     current_revision,
     head_revision,
+    migrate_database_to_head,
     upgrade_database,
 )
 
@@ -64,6 +65,26 @@ async def test_init_db_rejects_unmigrated_database(tmp_path):
 
     with pytest.raises(DatabaseMigrationRequired, match="alembic upgrade head"):
         await init_db(str(db_path))
+
+
+def test_migrate_database_to_head_upgrades_stale_database(tmp_path):
+    db_path = tmp_path / "stale.db"
+    upgrade_database(str(db_path), "0005_middle_ev_opportunity_fields")
+    assert current_revision(str(db_path)) == "0005_middle_ev_opportunity_fields"
+
+    previous_revision, migrated_revision = migrate_database_to_head(str(db_path))
+
+    assert previous_revision == "0005_middle_ev_opportunity_fields"
+    assert migrated_revision == head_revision(str(db_path))
+    assert current_revision(str(db_path)) == migrated_revision
+    with sqlite3.connect(db_path) as conn:
+        profile_columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(telegram_notification_profiles)"
+            ).fetchall()
+        }
+    assert "min_middle_ev_percent" in profile_columns
 
 
 @pytest.mark.asyncio

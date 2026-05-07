@@ -30,6 +30,7 @@ from .scrapers.registry import registry
 from .services.scheduler import scheduler
 from .services.runtime_settings import ensure_scrape_settings_seeded
 from .store import odds_store
+from .migrations.runner import migrate_database_to_head
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
@@ -141,6 +142,20 @@ async def _shutdown_resources(
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Initialising database: %s", settings.db_path)
+    if settings.auto_migrate_on_startup:
+        logger.warning(
+            "AUTO_MIGRATE_ON_STARTUP enabled; applying pending database migrations "
+            "before startup"
+        )
+        previous_revision, head = migrate_database_to_head(settings.db_path)
+        if previous_revision == head:
+            logger.info("Database already at Alembic head: %s", head)
+        else:
+            logger.info(
+                "Database migrated to Alembic head: %s -> %s",
+                previous_revision or "unversioned/missing",
+                head,
+            )
     await init_db(settings.db_path)
     await ensure_scrape_settings_seeded()
 

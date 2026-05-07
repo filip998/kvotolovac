@@ -174,6 +174,7 @@ async def test_lifespan_starts_scheduler_without_blocking_on_run_cycle(monkeypat
         raise AssertionError("run_cycle should not be awaited during startup")
 
     monkeypatch.setattr("app.main.init_db", fake_init_db)
+    monkeypatch.setattr("app.main.settings.auto_migrate_on_startup", False, raising=False)
     monkeypatch.setattr(
         "app.main.ensure_scrape_settings_seeded",
         fake_ensure_scrape_settings_seeded,
@@ -231,6 +232,7 @@ async def test_lifespan_upserts_configured_bookmakers_before_starting_scheduler(
         calls.append("shutdown")
 
     monkeypatch.setattr("app.main.init_db", fake_init_db)
+    monkeypatch.setattr("app.main.settings.auto_migrate_on_startup", False, raising=False)
     monkeypatch.setattr(
         "app.main.ensure_scrape_settings_seeded",
         fake_ensure_scrape_settings_seeded,
@@ -254,6 +256,67 @@ async def test_lifespan_upserts_configured_bookmakers_before_starting_scheduler(
         "create:alpha,beta",
         "upsert:alpha:Alpha",
         "upsert:beta:Beta",
+        "scheduler.start",
+        "scheduler.stop",
+        "shutdown",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_lifespan_auto_migrates_before_initialising_database(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+
+    def fake_migrate_database_to_head(db_path: str) -> tuple[str | None, str]:
+        calls.append(f"migrate:{db_path}")
+        return ("0005_middle_ev_opportunity_fields", "0006_telegram_middle_ev_threshold")
+
+    async def fake_init_db(db_path: str) -> None:
+        calls.append(f"init_db:{db_path}")
+
+    async def fake_ensure_scrape_settings_seeded() -> None:
+        calls.append("settings.seed")
+
+    async def fake_scheduler_start() -> None:
+        calls.append("scheduler.start")
+
+    async def fake_scheduler_stop() -> None:
+        calls.append("scheduler.stop")
+
+    async def fake_shutdown_resources(_: list[HttpClient]) -> None:
+        calls.append("shutdown")
+
+    monkeypatch.setattr("app.main.migrate_database_to_head", fake_migrate_database_to_head)
+    monkeypatch.setattr("app.main.init_db", fake_init_db)
+    monkeypatch.setattr(
+        "app.main.ensure_scrape_settings_seeded",
+        fake_ensure_scrape_settings_seeded,
+    )
+    monkeypatch.setattr("app.main._shutdown_resources", fake_shutdown_resources)
+    monkeypatch.setattr("app.main.scheduler.start", fake_scheduler_start)
+    monkeypatch.setattr("app.main.scheduler.stop", fake_scheduler_stop)
+    monkeypatch.setattr("app.main.settings.auto_migrate_on_startup", True, raising=False)
+    monkeypatch.setattr(
+        "app.main.settings.database_url",
+        "sqlite:////tmp/kvotolovac-test.db",
+        raising=False,
+    )
+    monkeypatch.setattr("app.main.settings.scraper_mode", "mock", raising=False)
+    monkeypatch.setattr("app.main.settings.bookmakers", "", raising=False)
+
+    registry._scrapers.clear()
+    async with lifespan(FastAPI()):
+        assert calls[:3] == [
+            "migrate:/tmp/kvotolovac-test.db",
+            "init_db:/tmp/kvotolovac-test.db",
+            "settings.seed",
+        ]
+
+    assert calls == [
+        "migrate:/tmp/kvotolovac-test.db",
+        "init_db:/tmp/kvotolovac-test.db",
+        "settings.seed",
         "scheduler.start",
         "scheduler.stop",
         "shutdown",

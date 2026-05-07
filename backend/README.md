@@ -10,7 +10,7 @@ From the repository root:
 bash run-backend.sh
 ```
 
-The script creates `backend/venv` when needed, installs `requirements.txt`, and starts uvicorn at `http://localhost:8000`.
+The script creates `backend/venv` when needed, installs `requirements.txt`, applies pending local database migrations unless `AUTO_MIGRATE_ON_STARTUP` is set explicitly, and starts uvicorn at `http://localhost:8000`.
 
 Manual equivalent:
 
@@ -36,9 +36,14 @@ cd backend
 ## Database migrations
 
 Schema creation and upgrades are managed by Alembic migrations under
-`backend/app/migrations/`. Backend startup does **not** run migrations
-automatically; it verifies that the configured database is already at the latest
+`backend/app/migrations/`. Backend startup is fail-fast by default: direct
+`uvicorn` startup verifies that the configured database is already at the latest
 revision and fails with an actionable error if it is not.
+
+For local development, `bash run-backend.sh` opts into automatic startup
+migrations unless `AUTO_MIGRATE_ON_STARTUP` is already set in the shell or
+defined in `backend/.env`. Keep this disabled for production or multi-worker
+startup and run Alembic explicitly before deploying.
 
 Create or upgrade the configured local database before starting the backend:
 
@@ -74,6 +79,7 @@ Settings are loaded from environment variables and `backend/.env`. Copy `backend
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | `sqlite:///./kvotolovac.db` | SQLite database URL. Relative paths resolve from the backend working directory. |
+| `AUTO_MIGRATE_ON_STARTUP` | `false` | When `true`, FastAPI startup applies pending Alembic migrations before opening the database. `run-backend.sh` enables this for local development unless explicitly configured. |
 | `SCRAPE_INTERVAL_MINUTES` | `10` | Background scheduler interval between scrape cycles. |
 | `SCRAPE_LOOKAHEAD_HOURS` | `24` | Event lookahead window used by scrapers that support date filtering. |
 | `LOG_LEVEL` | `INFO` | Python logging level. |
