@@ -739,10 +739,27 @@ class EventResolverBenchmarkOut(BaseModel):
     """Subphase metrics for resolved-event extraction/grouping/persistence."""
 
     extract_event_candidates_ms: int = 0
+    extract_raw_odds_sources_ms: int = 0
+    extract_raw_outcome_sources_ms: int = 0
+    extract_normalized_odds_candidates_ms: int = 0
+    extract_normalized_outcome_candidates_ms: int = 0
+    extract_source_match_ms: int = 0
     football_raw_resolution_candidates_ms: int = 0
     reused_football_event_resolution_count: int = 0
     build_event_resolution_groups_ms: int = 0
     persist_event_resolution_groups_ms: int = 0
+    raw_odds_rows_scanned: int = 0
+    raw_odds_sources_emitted: int = 0
+    raw_outcome_offer_rows_scanned: int = 0
+    raw_outcome_sources_emitted: int = 0
+    normalized_odds_rows_scanned: int = 0
+    normalized_odds_candidates_emitted: int = 0
+    normalized_outcome_offer_rows_scanned: int = 0
+    normalized_outcome_candidates_emitted: int = 0
+    stored_outcome_match_bookmaker_count: int = 0
+    source_match_lookup_count: int = 0
+    source_match_source_count: int = 0
+    football_raw_candidate_count: int = 0
     candidate_count: int = 0
     exact_group_count: int = 0
     pair_check_count: int = 0

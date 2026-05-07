@@ -521,8 +521,29 @@ class EventResolutionGroup:
 
 @dataclass
 class _EventCandidateExtractionStats:
+    extract_raw_odds_sources_ms: int = 0
+    extract_raw_outcome_sources_ms: int = 0
+    extract_normalized_odds_candidates_ms: int = 0
+    extract_normalized_outcome_candidates_ms: int = 0
+    raw_odds_rows_scanned: int = 0
+    raw_odds_sources_emitted: int = 0
+    raw_outcome_offer_rows_scanned: int = 0
+    raw_outcome_sources_emitted: int = 0
+    normalized_odds_rows_scanned: int = 0
+    normalized_odds_candidates_emitted: int = 0
+    normalized_outcome_offer_rows_scanned: int = 0
+    normalized_outcome_candidates_emitted: int = 0
+    stored_outcome_match_bookmaker_count: int = 0
+    source_match_lookup_count: int = 0
+    source_match_source_count: int = 0
+    football_raw_candidate_count: int = 0
     football_raw_resolution_candidates_ms: int = 0
     reused_football_event_resolution_count: int = 0
+    _source_match_seconds: float = 0.0
+
+    @property
+    def source_match_ms(self) -> int:
+        return int(self._source_match_seconds * 1000)
 
 
 @dataclass
@@ -1273,22 +1294,57 @@ def _league_source(raw_league_id: str, bookmaker_id: str) -> tuple[str, str]:
     return resolution.league_id, resolution.display_name
 
 
-def _raw_odds_sources(raw_odds: list[RawOddsData]) -> list[_RawEventSource]:
-    sources: dict[tuple[str, str, str, str, str, str | None], _RawEventSource] = {}
+def _league_source_cached(
+    raw_league_id: str,
+    bookmaker_id: str,
+    cache: dict[tuple[str, str], tuple[str, str]] | None,
+) -> tuple[str, str]:
+    if cache is None:
+        return _league_source(raw_league_id, bookmaker_id)
+    key = (raw_league_id, bookmaker_id)
+    value = cache.get(key)
+    if value is None:
+        value = _league_source(raw_league_id, bookmaker_id)
+        cache[key] = value
+    return value
+
+
+def _normalized_identity_cached(value: str, cache: dict[str, str]) -> str:
+    normalized = cache.get(value)
+    if normalized is None:
+        normalized = normalize_identity_text(value)
+        cache[value] = normalized
+    return normalized
+
+
+def _raw_odds_sources(
+    raw_odds: list[RawOddsData],
+    *,
+    league_cache: dict[tuple[str, str], tuple[str, str]] | None = None,
+) -> list[_RawEventSource]:
+    source_rows: dict[tuple[str, str, str, str, str, str | None], RawOddsData] = {}
+    identity_cache: dict[str, str] = {}
     for raw in raw_odds:
         if not raw.start_time:
             continue
-        league_id, league_name = _league_source(raw.league_id, raw.bookmaker_id)
         key = (
             raw.bookmaker_id,
             raw.sport,
             raw.start_time,
-            normalize_identity_text(raw.home_team),
-            normalize_identity_text(raw.away_team),
+            _normalized_identity_cached(raw.home_team, identity_cache),
+            _normalized_identity_cached(raw.away_team, identity_cache),
             raw.source_url,
         )
-        sources.setdefault(
-            key,
+        source_rows.setdefault(key, raw)
+
+    sources: list[_RawEventSource] = []
+    for raw in source_rows.values():
+        league_id, league_name = _league_source_cached(
+            raw.league_id,
+            raw.bookmaker_id,
+            league_cache,
+        )
+        sources.append(
             _RawEventSource(
                 bookmaker_id=raw.bookmaker_id,
                 sport=raw.sport,
@@ -1301,25 +1357,37 @@ def _raw_odds_sources(raw_odds: list[RawOddsData]) -> list[_RawEventSource]:
                 source_kind="raw_odds",
             ),
         )
-    return list(sources.values())
+    return sources
 
 
-def _raw_outcome_sources(raw_offers: list[RawOutcomeOffer]) -> list[_RawEventSource]:
-    sources: dict[tuple[str, str, str, str, str, str | None], _RawEventSource] = {}
+def _raw_outcome_sources(
+    raw_offers: list[RawOutcomeOffer],
+    *,
+    league_cache: dict[tuple[str, str], tuple[str, str]] | None = None,
+) -> list[_RawEventSource]:
+    source_rows: dict[tuple[str, str, str, str, str, str | None], RawOutcomeOffer] = {}
+    identity_cache: dict[str, str] = {}
     for raw in raw_offers:
         if not raw.start_time:
             continue
-        league_id, league_name = _league_source(raw.league_id, raw.bookmaker_id)
         key = (
             raw.bookmaker_id,
             raw.sport,
             raw.start_time,
-            normalize_identity_text(raw.home_team),
-            normalize_identity_text(raw.away_team),
+            _normalized_identity_cached(raw.home_team, identity_cache),
+            _normalized_identity_cached(raw.away_team, identity_cache),
             raw.source_url,
         )
-        sources.setdefault(
-            key,
+        source_rows.setdefault(key, raw)
+
+    sources: list[_RawEventSource] = []
+    for raw in source_rows.values():
+        league_id, league_name = _league_source_cached(
+            raw.league_id,
+            raw.bookmaker_id,
+            league_cache,
+        )
+        sources.append(
             _RawEventSource(
                 bookmaker_id=raw.bookmaker_id,
                 sport=raw.sport,
@@ -1332,7 +1400,7 @@ def _raw_outcome_sources(raw_offers: list[RawOutcomeOffer]) -> list[_RawEventSou
                 source_kind="raw_outcome_offer",
             ),
         )
-    return list(sources.values())
+    return sources
 
 
 # Sports for which the resolver activates aggressive aliasing & dot-expansion
@@ -1553,27 +1621,47 @@ def _source_match_score(source: _RawEventSource, candidate: EventCandidate) -> f
 def _best_source(
     sources_by_slot: dict[tuple[str, str, str], list[_RawEventSource]],
     candidate: EventCandidate,
+    *,
+    stats: _EventCandidateExtractionStats | None = None,
 ) -> _RawEventSource | None:
+    started_at = time.perf_counter()
     sources = sources_by_slot.get(
         (candidate.bookmaker_id, candidate.sport, candidate.start_time),
         [],
     )
-    if not sources:
-        return None
-    best = max(sources, key=lambda source: _source_match_score(source, candidate))
-    if _source_match_score(best, candidate) < _SOURCE_MATCH_MIN_SCORE:
-        return None
-    return best
+    if stats is not None:
+        stats.source_match_lookup_count += 1
+        stats.source_match_source_count += len(sources)
+    try:
+        best: _RawEventSource | None = None
+        best_score = 0.0
+        for source in sources:
+            score = _source_match_score(source, candidate)
+            if best is None or score > best_score:
+                best = source
+                best_score = score
+        if best is None or best_score < _SOURCE_MATCH_MIN_SCORE:
+            return None
+        return best
+    finally:
+        if stats is not None:
+            stats._source_match_seconds += time.perf_counter() - started_at
 
 
 def _normalized_odds_candidate(
     row: NormalizedOdds,
     source: _RawEventSource | None,
+    *,
+    league_cache: dict[tuple[str, str], tuple[str, str]] | None = None,
 ) -> EventCandidate | None:
     if not row.start_time:
         return None
     league_id = row.league_id
-    league_name = resolve_league(row.league_id, bookmaker_id=row.bookmaker_id).display_name
+    league_name = _league_source_cached(
+        row.league_id,
+        row.bookmaker_id,
+        league_cache,
+    )[1]
     if source is not None:
         league_id = source.league_id
         league_name = source.league_name
@@ -1598,11 +1686,17 @@ def _normalized_odds_candidate(
 def _normalized_outcome_candidate(
     row: NormalizedOutcomeOffer,
     source: _RawEventSource | None,
+    *,
+    league_cache: dict[tuple[str, str], tuple[str, str]] | None = None,
 ) -> EventCandidate | None:
     if not row.start_time:
         return None
     league_id = row.league_id
-    league_name = resolve_league(row.league_id, bookmaker_id=row.bookmaker_id).display_name
+    league_name = _league_source_cached(
+        row.league_id,
+        row.bookmaker_id,
+        league_cache,
+    )[1]
     if source is not None:
         league_id = source.league_id
         league_name = source.league_name
@@ -1641,6 +1735,46 @@ def _merge_candidate(
         return
     if existing.source_url is None and candidate.source_url is not None:
         candidates[candidate.bookmaker_member_key] = candidate
+
+
+def _prefer_row_with_source_url(existing, row):
+    if not getattr(existing, "source_url", None) and getattr(
+        row,
+        "source_url",
+        None,
+    ):
+        return row
+    return existing
+
+
+def _unique_normalized_odds_rows(
+    rows: list[NormalizedOdds],
+) -> list[NormalizedOdds]:
+    unique: dict[tuple[str, str], NormalizedOdds] = {}
+    for row in rows:
+        if not row.start_time:
+            continue
+        key = (row.match_id, row.bookmaker_id)
+        existing = unique.get(key)
+        unique[key] = (
+            row if existing is None else _prefer_row_with_source_url(existing, row)
+        )
+    return list(unique.values())
+
+
+def _unique_normalized_outcome_rows(
+    rows: list[NormalizedOutcomeOffer],
+) -> list[NormalizedOutcomeOffer]:
+    unique: dict[tuple[str, str], NormalizedOutcomeOffer] = {}
+    for row in rows:
+        if not row.start_time:
+            continue
+        key = (row.match_id, row.bookmaker_id)
+        existing = unique.get(key)
+        unique[key] = (
+            row if existing is None else _prefer_row_with_source_url(existing, row)
+        )
+    return list(unique.values())
 
 
 def _football_raw_resolution_candidates(
@@ -1708,17 +1842,47 @@ def extract_event_candidates(
     """Build one source-event candidate per bookmaker/match from the current scrape."""
 
     candidates: dict[tuple[str, str], EventCandidate] = {}
-    odds_sources_by_slot: dict[tuple[str, str, str], list[_RawEventSource]] = defaultdict(list)
-    for source in _raw_odds_sources(raw_odds):
-        odds_sources_by_slot[(source.bookmaker_id, source.sport, source.start_time)].append(source)
+    league_cache: dict[tuple[str, str], tuple[str, str]] = {}
 
-    outcome_sources_by_slot: dict[tuple[str, str, str], list[_RawEventSource]] = defaultdict(list)
-    for source in _raw_outcome_sources(raw_outcome_offers):
+    raw_odds_sources_started_at = time.perf_counter()
+    odds_sources = _raw_odds_sources(raw_odds, league_cache=league_cache)
+    if stats is not None:
+        stats.extract_raw_odds_sources_ms = _elapsed_ms(raw_odds_sources_started_at)
+        stats.raw_odds_rows_scanned = len(raw_odds)
+        stats.raw_odds_sources_emitted = len(odds_sources)
+    odds_sources_by_slot: dict[tuple[str, str, str], list[_RawEventSource]] = (
+        defaultdict(list)
+    )
+    for source in odds_sources:
+        odds_sources_by_slot[
+            (source.bookmaker_id, source.sport, source.start_time)
+        ].append(source)
+
+    raw_outcome_sources_started_at = time.perf_counter()
+    outcome_sources = _raw_outcome_sources(
+        raw_outcome_offers,
+        league_cache=league_cache,
+    )
+    if stats is not None:
+        stats.extract_raw_outcome_sources_ms = _elapsed_ms(
+            raw_outcome_sources_started_at
+        )
+        stats.raw_outcome_offer_rows_scanned = len(raw_outcome_offers)
+        stats.raw_outcome_sources_emitted = len(outcome_sources)
+    outcome_sources_by_slot: dict[tuple[str, str, str], list[_RawEventSource]] = (
+        defaultdict(list)
+    )
+    for source in outcome_sources:
         outcome_sources_by_slot[
             (source.bookmaker_id, source.sport, source.start_time)
         ].append(source)
 
-    for row in normalized_odds:
+    normalized_odds_started_at = time.perf_counter()
+    unique_normalized_odds = _unique_normalized_odds_rows(normalized_odds)
+    if stats is not None:
+        stats.normalized_odds_rows_scanned = len(normalized_odds)
+        stats.normalized_odds_candidates_emitted = len(unique_normalized_odds)
+    for row in unique_normalized_odds:
         provisional = EventCandidate(
             match_id=row.match_id,
             bookmaker_id=row.bookmaker_id,
@@ -1731,12 +1895,24 @@ def extract_event_candidates(
             source_league_id=row.league_id,
             source_url=row.source_url,
         )
-        if not row.start_time:
-            continue
-        source = _best_source(odds_sources_by_slot, provisional)
-        _merge_candidate(candidates, _normalized_odds_candidate(row, source))
+        source = _best_source(odds_sources_by_slot, provisional, stats=stats)
+        _merge_candidate(
+            candidates,
+            _normalized_odds_candidate(row, source, league_cache=league_cache),
+        )
+    if stats is not None:
+        stats.extract_normalized_odds_candidates_ms = _elapsed_ms(
+            normalized_odds_started_at
+        )
 
-    for row in normalized_outcome_offers:
+    normalized_outcome_started_at = time.perf_counter()
+    unique_normalized_outcomes = _unique_normalized_outcome_rows(
+        normalized_outcome_offers
+    )
+    if stats is not None:
+        stats.normalized_outcome_offer_rows_scanned = len(normalized_outcome_offers)
+        stats.normalized_outcome_candidates_emitted = len(unique_normalized_outcomes)
+    for row in unique_normalized_outcomes:
         provisional = EventCandidate(
             match_id=row.match_id,
             bookmaker_id=row.bookmaker_id,
@@ -1749,14 +1925,21 @@ def extract_event_candidates(
             source_league_id=row.league_id,
             source_url=row.source_url,
         )
-        if not row.start_time:
-            continue
-        source = _best_source(outcome_sources_by_slot, provisional)
-        _merge_candidate(candidates, _normalized_outcome_candidate(row, source))
+        source = _best_source(outcome_sources_by_slot, provisional, stats=stats)
+        _merge_candidate(
+            candidates,
+            _normalized_outcome_candidate(row, source, league_cache=league_cache),
+        )
+    if stats is not None:
+        stats.extract_normalized_outcome_candidates_ms = _elapsed_ms(
+            normalized_outcome_started_at
+        )
 
     stored_outcome_match_bookmakers = {
         (offer.match_id, offer.bookmaker_id) for offer in normalized_outcome_offers
     }
+    if stats is not None:
+        stats.stored_outcome_match_bookmaker_count = len(stored_outcome_match_bookmakers)
     football_candidates_started_at = time.perf_counter()
     football_candidates = _football_raw_resolution_candidates(
         raw_outcome_offers,
@@ -1769,6 +1952,7 @@ def extract_event_candidates(
         stats.football_raw_resolution_candidates_ms = _elapsed_ms(
             football_candidates_started_at
         )
+        stats.football_raw_candidate_count = len(football_candidates)
     for candidate in football_candidates:
         _merge_candidate(candidates, candidate)
 
@@ -2553,6 +2737,17 @@ async def resolve_and_persist_events(
     persist_event_resolution_groups_ms = _elapsed_ms(persistence_started_at)
     benchmark = EventResolverBenchmarkOut(
         extract_event_candidates_ms=extract_event_candidates_ms,
+        extract_raw_odds_sources_ms=extraction_stats.extract_raw_odds_sources_ms,
+        extract_raw_outcome_sources_ms=(
+            extraction_stats.extract_raw_outcome_sources_ms
+        ),
+        extract_normalized_odds_candidates_ms=(
+            extraction_stats.extract_normalized_odds_candidates_ms
+        ),
+        extract_normalized_outcome_candidates_ms=(
+            extraction_stats.extract_normalized_outcome_candidates_ms
+        ),
+        extract_source_match_ms=extraction_stats.source_match_ms,
         football_raw_resolution_candidates_ms=(
             extraction_stats.football_raw_resolution_candidates_ms
         ),
@@ -2561,6 +2756,28 @@ async def resolve_and_persist_events(
         ),
         build_event_resolution_groups_ms=build_event_resolution_groups_ms,
         persist_event_resolution_groups_ms=persist_event_resolution_groups_ms,
+        raw_odds_rows_scanned=extraction_stats.raw_odds_rows_scanned,
+        raw_odds_sources_emitted=extraction_stats.raw_odds_sources_emitted,
+        raw_outcome_offer_rows_scanned=(
+            extraction_stats.raw_outcome_offer_rows_scanned
+        ),
+        raw_outcome_sources_emitted=extraction_stats.raw_outcome_sources_emitted,
+        normalized_odds_rows_scanned=extraction_stats.normalized_odds_rows_scanned,
+        normalized_odds_candidates_emitted=(
+            extraction_stats.normalized_odds_candidates_emitted
+        ),
+        normalized_outcome_offer_rows_scanned=(
+            extraction_stats.normalized_outcome_offer_rows_scanned
+        ),
+        normalized_outcome_candidates_emitted=(
+            extraction_stats.normalized_outcome_candidates_emitted
+        ),
+        stored_outcome_match_bookmaker_count=(
+            extraction_stats.stored_outcome_match_bookmaker_count
+        ),
+        source_match_lookup_count=extraction_stats.source_match_lookup_count,
+        source_match_source_count=extraction_stats.source_match_source_count,
+        football_raw_candidate_count=extraction_stats.football_raw_candidate_count,
         candidate_count=len(candidates),
         exact_group_count=group_stats.exact_group_count,
         pair_check_count=group_stats.pair_check_count,

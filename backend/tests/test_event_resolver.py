@@ -19,6 +19,7 @@ from app.services.event_resolver import (
     EventCandidate,
     EventResolutionGroup,
     _CandidateGroup,
+    _EventCandidateExtractionStats,
     _EventGroupBuildStats,
     _FUZZY_ORIENTATION_MARGIN,
     _PairResolution,
@@ -29,9 +30,11 @@ from app.services.event_resolver import (
     _event_review_case,
     _event_split_diagnostics_benchmark,
     _orientation_scores,
+    _raw_odds_sources,
     SameTimeCanonicalSlot,
     _same_time_slot_orientation,
     build_event_resolution_groups,
+    extract_event_candidates,
     resolve_and_persist_events,
 )
 from app.services.normalizer import generate_match_id
@@ -219,6 +222,182 @@ def _normalized_odds(
         under_odds=1.9,
         start_time=START_TIME,
     )
+
+
+def _raw_odds(
+    *,
+    bookmaker_id: str = "book-a",
+    league_id: str = "league",
+    home_team: str = "Team Alpha",
+    away_team: str = "Team Beta",
+    source_url: str | None = "https://example.test/match",
+    threshold: float = 10.5,
+) -> RawOddsData:
+    return RawOddsData(
+        bookmaker_id=bookmaker_id,
+        league_id=league_id,
+        sport="basketball",
+        home_team=home_team,
+        away_team=away_team,
+        source_url=source_url,
+        market_type="player_points",
+        player_name="Test Player",
+        threshold=threshold,
+        over_odds=1.9,
+        under_odds=1.9,
+        start_time=START_TIME,
+    )
+
+
+def _normalized_outcome_offer(
+    *,
+    bookmaker_id: str = "book-a",
+    match_id: str = "match-a",
+    league_id: str = "league",
+    home_team: str = "Team Alpha",
+    away_team: str = "Team Beta",
+    source_url: str | None = None,
+) -> NormalizedOutcomeOffer:
+    return NormalizedOutcomeOffer(
+        match_id=match_id,
+        bookmaker_id=bookmaker_id,
+        league_id=league_id,
+        sport="basketball",
+        home_team_id=1,
+        away_team_id=2,
+        home_team=home_team,
+        away_team=away_team,
+        source_url=source_url,
+        market_type="match_winner",
+        outcome_code="home",
+        odds=1.9,
+        start_time=START_TIME,
+    )
+
+
+def test_extract_event_candidates_dedupes_normalized_rows_before_source_matching():
+    stats = _EventCandidateExtractionStats()
+    candidates = extract_event_candidates(
+        raw_odds=[_raw_odds()],
+        raw_outcome_offers=[],
+        normalized_odds=[
+            _normalized_odds(
+                "book-a",
+                match_id="match-a",
+                league_id="league",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Team Alpha",
+                away_team="Team Beta",
+                threshold=10.5,
+            ),
+            _normalized_odds(
+                "book-a",
+                match_id="match-a",
+                league_id="league",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Team Alpha",
+                away_team="Team Beta",
+                threshold=11.5,
+            ),
+        ],
+        normalized_outcome_offers=[],
+        stats=stats,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].source_kind == "raw_odds"
+    assert stats.normalized_odds_rows_scanned == 2
+    assert stats.normalized_odds_candidates_emitted == 1
+    assert stats.source_match_lookup_count == 1
+    assert stats.source_match_source_count == 1
+
+
+def test_extract_event_candidates_duplicate_representative_prefers_source_url():
+    candidates = extract_event_candidates(
+        raw_odds=[],
+        raw_outcome_offers=[],
+        normalized_odds=[
+            _normalized_odds(
+                "book-a",
+                match_id="match-a",
+                league_id="league",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Team Alpha",
+                away_team="Team Beta",
+                threshold=10.5,
+            ),
+            _normalized_odds(
+                "book-a",
+                match_id="match-a",
+                league_id="league",
+                home_team_id=3,
+                away_team_id=4,
+                home_team="Team Gamma",
+                away_team="Team Delta",
+                threshold=11.5,
+            ).model_copy(update={"source_url": "https://example.test/with-url"}),
+        ],
+        normalized_outcome_offers=[],
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].home_team == "Team Gamma"
+    assert candidates[0].away_team == "Team Delta"
+    assert candidates[0].source_url == "https://example.test/with-url"
+
+
+def test_extract_event_candidates_preserves_normalized_loop_merge_precedence():
+    candidates = extract_event_candidates(
+        raw_odds=[],
+        raw_outcome_offers=[],
+        normalized_odds=[
+            _normalized_odds(
+                "book-a",
+                match_id="match-a",
+                league_id="league",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Team Alpha",
+                away_team="Team Beta",
+                threshold=10.5,
+            ).model_copy(update={"source_url": "https://example.test/odds"}),
+        ],
+        normalized_outcome_offers=[
+            _normalized_outcome_offer(source_url="https://example.test/outcome"),
+        ],
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].source_kind == "normalized_odds"
+    assert candidates[0].source_url == "https://example.test/odds"
+
+
+def test_raw_source_extraction_resolves_league_once_per_unique_source(monkeypatch):
+    calls = []
+
+    def fake_resolve_league(league_id: str, *, bookmaker_id: str):
+        calls.append((league_id, bookmaker_id))
+        return type(
+            "LeagueResolution",
+            (),
+            {"league_id": league_id, "display_name": f"{bookmaker_id}:{league_id}"},
+        )()
+
+    monkeypatch.setattr(event_resolver_module, "resolve_league", fake_resolve_league)
+
+    sources = _raw_odds_sources(
+        [
+            _raw_odds(threshold=10.5),
+            _raw_odds(threshold=11.5),
+            _raw_odds(source_url="https://example.test/other", threshold=12.5),
+        ],
+    )
+
+    assert len(sources) == 2
+    assert calls == [("league", "book-a"), ("league", "book-a")]
 
 
 def test_event_coverage_benchmark_counts_matched_unmatched_ungrouped_and_review():

@@ -15,6 +15,7 @@ from app.models.schemas import (
     BenchmarkSplitDiagnosticsOut,
     BenchmarkSplitEventFragmentOut,
     BenchmarkSplitSportDiagnosticsOut,
+    EventResolverBenchmarkOut,
     OpportunityAnalysisBenchmarkOut,
     OpportunityAnalysisRuleBenchmarkOut,
     ScrapeRuntimeSettings,
@@ -85,6 +86,9 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert body["outcome_normalization"]["runs"] >= 1
     assert body["outcome_normalization"]["raw_outcome_offer_count"] >= 0
     assert body["event_resolver"]["candidate_count"] >= 0
+    assert body["event_resolver"]["normalized_odds_rows_scanned"] >= 0
+    assert body["event_resolver"]["normalized_outcome_offer_rows_scanned"] >= 0
+    assert body["event_resolver"]["source_match_lookup_count"] >= 0
     assert body["opportunity_analysis"]["loaded_offer_count"] >= 0
     assert body["opportunity_analysis"]["opportunity_count"] >= 0
     assert isinstance(body["opportunity_analysis"]["rules"], list)
@@ -393,3 +397,21 @@ def test_opportunity_analysis_benchmark_defaults_and_serialization():
     assert payload["loaded_offer_count"] == 0
     assert payload["candidate_pair_count"] == 0
     assert payload["rules"] == []
+
+
+def test_event_resolver_extraction_benchmark_defaults_and_serialization():
+    metrics = EventResolverBenchmarkOut()
+
+    payload = metrics.model_dump()
+
+    assert payload["extract_raw_odds_sources_ms"] == 0
+    assert payload["extract_raw_outcome_sources_ms"] == 0
+    assert payload["extract_normalized_odds_candidates_ms"] == 0
+    assert payload["extract_normalized_outcome_candidates_ms"] == 0
+    assert payload["extract_source_match_ms"] == 0
+    assert payload["raw_odds_rows_scanned"] == 0
+    assert payload["normalized_odds_candidates_emitted"] == 0
+    assert payload["normalized_outcome_candidates_emitted"] == 0
+    assert payload["source_match_lookup_count"] == 0
+    assert payload["source_match_source_count"] == 0
+    assert payload["football_raw_candidate_count"] == 0
