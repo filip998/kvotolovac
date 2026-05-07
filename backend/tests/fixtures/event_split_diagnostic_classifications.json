@@ -1,0 +1,215 @@
+{
+  "source_report": "docs/benchmarks/2026-05-07-real-ex-meridian-analysis/report.md",
+  "classification_values": [
+    "confirmed_split",
+    "confirmed_overmerge",
+    "benign_duplicate",
+    "false_alarm",
+    "ambiguous_needs_more_source_evidence"
+  ],
+  "intended_action_values": [
+    "alias_candidate",
+    "do_not_merge",
+    "add_overmerge_regression",
+    "keep_as_diagnostic",
+    "needs_member_evidence"
+  ],
+  "reviewed": [
+    {
+      "id": "oakleigh_dandenong_conflict",
+      "diagnostic_type": "split",
+      "source": "report.md named example",
+      "sport": "football",
+      "classification": "false_alarm",
+      "intended_action": "do_not_merge",
+      "reason_code": "same_side_conflicting_opponent",
+      "shared_side": "away",
+      "events": [
+        {"home": "Oakleigh", "away": "Dandenong T."},
+        {"home": "Preston Lions", "away": "Dandenong City"}
+      ],
+      "notes": "Distinct teams share a same-side Dandenong token; keep as a diagnostic guardrail, not an auto-merge target."
+    },
+    {
+      "id": "franklin_nelson_alias",
+      "diagnostic_type": "split",
+      "source": "report.md named example",
+      "sport": "basketball",
+      "classification": "confirmed_split",
+      "intended_action": "alias_candidate",
+      "reason_code": "fuzzy_duplicate_resolved_events",
+      "shared_side": "both",
+      "events": [
+        {"home": "Franklin Bulls", "away": "Nelson Giants"},
+        {"home": "Franklin", "away": "Nelson"}
+      ],
+      "notes": "Likely city/team abbreviation split; handle with targeted basketball aliases."
+    },
+    {
+      "id": "aue_duisburg_alias",
+      "diagnostic_type": "split",
+      "source": "report.md named example",
+      "sport": "football",
+      "classification": "confirmed_split",
+      "intended_action": "alias_candidate",
+      "reason_code": "fuzzy_duplicate_resolved_events",
+      "shared_side": "both",
+      "events": [
+        {"home": "Aue", "away": "Duisburg"},
+        {"home": "Erzgebirge Aue", "away": "MSV Duisburg"}
+      ],
+      "notes": "Full-name/short-name football duplicate split."
+    },
+    {
+      "id": "fram_valur_alias",
+      "diagnostic_type": "split",
+      "source": "top split export",
+      "sport": "football",
+      "classification": "confirmed_split",
+      "intended_action": "alias_candidate",
+      "reason_code": "fuzzy_duplicate_resolved_events",
+      "shared_side": "both",
+      "events": [
+        {"home": "Fram", "away": "Valur"},
+        {"home": "Fram Reykjavik", "away": "Valur"}
+      ],
+      "notes": "Short/full club name split."
+    },
+    {
+      "id": "dortmund_frankfurt_overmerge",
+      "diagnostic_type": "overmerge",
+      "source": "report.md named example",
+      "sport": "football",
+      "classification": "ambiguous_needs_more_source_evidence",
+      "intended_action": "needs_member_evidence",
+      "reason_code": "possible_overmerge_conflicting_members",
+      "events": [
+        {"home": "Dortmund", "away": "Eintracht Frankfurt"}
+      ],
+      "synthetic_members": [
+        {"bookmaker_id": "book-a", "home": "Dortmund", "away": "Eintracht Frankfurt"},
+        {"bookmaker_id": "book-b", "home": "Dortmund", "away": "Unrelated Opponent"}
+      ],
+      "notes": "Top overmerge candidate needs weakest-member evidence before any behavior change."
+    },
+    {
+      "id": "cividale_rieti_overmerge",
+      "diagnostic_type": "overmerge",
+      "source": "report.md named example",
+      "sport": "basketball",
+      "classification": "ambiguous_needs_more_source_evidence",
+      "intended_action": "needs_member_evidence",
+      "reason_code": "possible_overmerge_conflicting_members",
+      "events": [
+        {"home": "Cividale", "away": "Rieti"}
+      ],
+      "synthetic_members": [
+        {"bookmaker_id": "book-a", "home": "Cividale", "away": "Rieti"},
+        {"bookmaker_id": "book-b", "home": "Cividale", "away": "Unrelated Opponent"}
+      ],
+      "notes": "Large basketball group needs member-level source comparison before declaring a true overmerge."
+    },
+    {
+      "id": "nishinomiya_yokohama_overmerge",
+      "diagnostic_type": "overmerge",
+      "source": "top overmerge export",
+      "sport": "basketball",
+      "classification": "ambiguous_needs_more_source_evidence",
+      "intended_action": "needs_member_evidence",
+      "reason_code": "possible_overmerge_conflicting_members",
+      "events": [
+        {"home": "Nishinomiya Storks", "away": "Yokohama Excellence"}
+      ],
+      "synthetic_members": [
+        {"bookmaker_id": "book-a", "home": "Nishinomiya Storks", "away": "Yokohama Excellence"},
+        {"bookmaker_id": "book-b", "home": "Kobe Storks", "away": "Unrelated Opponent"}
+      ],
+      "notes": "Potential rename/location variant; needs source evidence."
+    },
+    {
+      "id": "standard_leuven_overmerge",
+      "diagnostic_type": "overmerge",
+      "source": "top overmerge export",
+      "sport": "football",
+      "classification": "ambiguous_needs_more_source_evidence",
+      "intended_action": "needs_member_evidence",
+      "reason_code": "possible_overmerge_conflicting_members",
+      "events": [
+        {"home": "St. Liege", "away": "Leuven"}
+      ],
+      "synthetic_members": [
+        {"bookmaker_id": "book-a", "home": "St. Liege", "away": "Leuven"},
+        {"bookmaker_id": "book-b", "home": "Standard", "away": "Unrelated Opponent"}
+      ],
+      "notes": "Likely alias, but overmerge classification needs member evidence."
+    },
+    {
+      "id": "palmer_palma_overmerge",
+      "diagnostic_type": "overmerge",
+      "source": "top overmerge export",
+      "sport": "basketball",
+      "classification": "ambiguous_needs_more_source_evidence",
+      "intended_action": "needs_member_evidence",
+      "reason_code": "possible_overmerge_conflicting_members",
+      "events": [
+        {"home": "Palmer Basket", "away": "Mallorca Palma"}
+      ],
+      "synthetic_members": [
+        {"bookmaker_id": "book-a", "home": "Palmer Basket", "away": "Mallorca Palma"},
+        {"bookmaker_id": "book-b", "home": "Palmer Basket", "away": "Unrelated Opponent"}
+      ],
+      "notes": "Potential sponsor/name variant; needs source evidence."
+    },
+    {
+      "id": "fakel_ska_overmerge",
+      "diagnostic_type": "overmerge",
+      "source": "top overmerge export",
+      "sport": "football",
+      "classification": "ambiguous_needs_more_source_evidence",
+      "intended_action": "needs_member_evidence",
+      "reason_code": "possible_overmerge_conflicting_members",
+      "events": [
+        {"home": "F. Voronezh", "away": "SKA Khabarovsk"}
+      ],
+      "synthetic_members": [
+        {"bookmaker_id": "book-a", "home": "F. Voronezh", "away": "SKA Khabarovsk"},
+        {"bookmaker_id": "book-b", "home": "Fakel", "away": "Unrelated Opponent"}
+      ],
+      "notes": "Likely alias, but keep as evidence-needed overmerge diagnostic."
+    },
+    {
+      "id": "anorthosis_ypsonas_overmerge",
+      "diagnostic_type": "overmerge",
+      "source": "top overmerge export",
+      "sport": "football",
+      "classification": "ambiguous_needs_more_source_evidence",
+      "intended_action": "needs_member_evidence",
+      "reason_code": "possible_overmerge_conflicting_members",
+      "events": [
+        {"home": "Anorthosis", "away": "Krasava Ypsonas"}
+      ],
+      "synthetic_members": [
+        {"bookmaker_id": "book-a", "home": "Anorthosis", "away": "Krasava Ypsonas"},
+        {"bookmaker_id": "book-b", "home": "Anorthosis Famagusta", "away": "Unrelated Opponent"}
+      ],
+      "notes": "Long-form team names require evidence before treating this as true overmerge."
+    },
+    {
+      "id": "aalesund_lyn_overmerge",
+      "diagnostic_type": "overmerge",
+      "source": "top overmerge export",
+      "sport": "football",
+      "classification": "ambiguous_needs_more_source_evidence",
+      "intended_action": "needs_member_evidence",
+      "reason_code": "possible_overmerge_conflicting_members",
+      "events": [
+        {"home": "ž/FK Fortuna Aalesund", "away": "ž/Lyn"}
+      ],
+      "synthetic_members": [
+        {"bookmaker_id": "book-a", "home": "ž/FK Fortuna Aalesund", "away": "ž/Lyn"},
+        {"bookmaker_id": "book-b", "home": "Aalesund (W)", "away": "Unrelated Opponent"}
+      ],
+      "notes": "Women-marker and prefix variants need source evidence before changing behavior."
+    }
+  ]
+}

@@ -15,7 +15,9 @@ from ..models.schemas import (
     BenchmarkSplitClusterOut,
     BenchmarkSplitDiagnosticsOut,
     BenchmarkSplitEventFragmentOut,
+    BenchmarkSplitMemberFragmentOut,
     BenchmarkSplitSportDiagnosticsOut,
+    BenchmarkSplitWeakestMemberPairOut,
     EventResolverBenchmarkOut,
     EventReviewCaseIn,
     NormalizedOdds,
@@ -898,6 +900,65 @@ def _split_fragment(
     )
 
 
+def _split_member_fragment(member: EventCandidate) -> BenchmarkSplitMemberFragmentOut:
+    return BenchmarkSplitMemberFragmentOut(
+        bookmaker_id=member.bookmaker_id,
+        match_id=member.match_id,
+        home_team=member.home_team,
+        away_team=member.away_team,
+        source_home_team=member.source_home_team,
+        source_away_team=member.source_away_team,
+        source_kind=member.source_kind,
+    )
+
+
+def _weakest_member_pair(
+    resolution: EventResolutionGroup,
+) -> BenchmarkSplitWeakestMemberPairOut | None:
+    weakest_avg_pair: tuple[float, float, str, EventCandidate, EventCandidate] | None = (
+        None
+    )
+    weakest_side_pair: tuple[float, float, str, EventCandidate, EventCandidate] | None = (
+        None
+    )
+    members = list(resolution.members)
+    for left_index, left in enumerate(members):
+        for right in members[left_index + 1 :]:
+            orientation, avg_score, home_score, away_score = _split_pair_scores(
+                _split_member_home(left),
+                _split_member_away(left),
+                _split_member_home(right),
+                _split_member_away(right),
+            )
+            weak_side_score = min(home_score, away_score)
+            pair = (avg_score, weak_side_score, orientation, left, right)
+            if weakest_avg_pair is None or avg_score < weakest_avg_pair[0]:
+                weakest_avg_pair = pair
+            if weakest_side_pair is None or weak_side_score < weakest_side_pair[1]:
+                weakest_side_pair = pair
+    if weakest_avg_pair is None:
+        return None
+
+    if weakest_avg_pair[0] < _OVERMERGE_AVG_SCORE:
+        weakest = weakest_avg_pair
+    elif (
+        weakest_side_pair is not None
+        and weakest_side_pair[1] < _OVERMERGE_WEAK_SCORE
+    ):
+        weakest = weakest_side_pair
+    else:
+        weakest = weakest_avg_pair
+
+    avg_score, weak_side_score, orientation, left, right = weakest
+    return BenchmarkSplitWeakestMemberPairOut(
+        left=_split_member_fragment(left),
+        right=_split_member_fragment(right),
+        orientation=orientation,
+        average_score=round(avg_score, 2),
+        weak_side_score=round(weak_side_score, 2),
+    )
+
+
 def _split_candidate_for_pair(
     left: EventResolutionGroup,
     right: EventResolutionGroup,
@@ -953,33 +1014,25 @@ def _split_candidate_for_pair(
 def _overmerge_candidate_for_resolution(
     resolution: EventResolutionGroup,
 ) -> BenchmarkSplitClusterOut | None:
-    members = list(resolution.members)
-    if len(members) < 2:
+    weakest_pair = _weakest_member_pair(resolution)
+    if weakest_pair is None:
         return None
-    weakest_avg = 100.0
-    weakest_side = 100.0
-    for left_index, left in enumerate(members):
-        for right in members[left_index + 1 :]:
-            _orientation, avg_score, home_score, away_score = _split_pair_scores(
-                _split_member_home(left),
-                _split_member_away(left),
-                _split_member_home(right),
-                _split_member_away(right),
-            )
-            weakest_avg = min(weakest_avg, avg_score)
-            weakest_side = min(weakest_side, home_score, away_score)
 
-    if weakest_avg >= _OVERMERGE_AVG_SCORE and weakest_side >= _OVERMERGE_WEAK_SCORE:
+    if (
+        weakest_pair.average_score >= _OVERMERGE_AVG_SCORE
+        and weakest_pair.weak_side_score >= _OVERMERGE_WEAK_SCORE
+    ):
         return None
 
     return BenchmarkSplitClusterOut(
         sport=resolution.sport,
         reason_code="possible_overmerge_conflicting_members",
-        score=round(weakest_avg, 2),
+        score=weakest_pair.average_score,
         shared_side=None,
         start_time=resolution.start_time,
         max_start_delta_minutes=0.0,
         events=[_split_fragment(resolution)],
+        weakest_member_pair=weakest_pair,
     )
 
 

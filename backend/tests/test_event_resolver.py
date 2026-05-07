@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -745,6 +747,224 @@ def test_event_split_diagnostics_flags_fuzzy_duplicate_resolved_events():
     assert candidate.reason_code == "fuzzy_duplicate_resolved_events"
     assert candidate.shared_side == "both"
     assert candidate.score == 100.0
+
+
+def _diagnostic_classification_fixture() -> dict:
+    path = (
+        Path(__file__).parent
+        / "fixtures"
+        / "event_split_diagnostic_classifications.json"
+    )
+    return json.loads(path.read_text())
+
+
+def _classification_resolution_group(
+    *,
+    row_id: str,
+    sport: str,
+    index: int,
+    home_team: str,
+    away_team: str,
+    members: list[dict] | None = None,
+) -> EventResolutionGroup:
+    event_members = members or [
+        {
+            "bookmaker_id": f"book-{index}",
+            "home": home_team,
+            "away": away_team,
+        }
+    ]
+    return EventResolutionGroup(
+        event_id=f"evt-{row_id}-{index}",
+        sport=sport,
+        start_time=START_TIME,
+        primary_match_id=f"match-{row_id}-{index}",
+        display_home_team=home_team,
+        display_away_team=away_team,
+        display_league_name="Diagnostic Fixture League",
+        method="exact",
+        confidence=1.0,
+        members=tuple(
+            _event_candidate(
+                member["bookmaker_id"],
+                match_id=f"match-{row_id}-{index}-{member['bookmaker_id']}",
+                sport=sport,
+                home_team_id=100 + member_index * 2,
+                away_team_id=101 + member_index * 2,
+                home_team=member["home"],
+                away_team=member["away"],
+            )
+            for member_index, member in enumerate(event_members)
+        ),
+        evidence=(),
+    )
+
+
+def test_split_diagnostic_classification_fixture_uses_review_vocabulary():
+    fixture = _diagnostic_classification_fixture()
+    classifications = set(fixture["classification_values"])
+    intended_actions = set(fixture["intended_action_values"])
+    rows = fixture["reviewed"]
+
+    assert {
+        "oakleigh_dandenong_conflict",
+        "franklin_nelson_alias",
+        "aue_duisburg_alias",
+        "dortmund_frankfurt_overmerge",
+        "cividale_rieti_overmerge",
+    }.issubset({row["id"] for row in rows})
+    assert {row["classification"] for row in rows} <= classifications
+    assert {row["intended_action"] for row in rows} <= intended_actions
+    assert all(
+        row["intended_action"] == "add_overmerge_regression"
+        for row in rows
+        if row["classification"] == "confirmed_overmerge"
+    )
+
+
+def test_split_diagnostic_classification_fixture_maps_to_real_diagnostics():
+    fixture = _diagnostic_classification_fixture()
+
+    for row in fixture["reviewed"]:
+        if row["diagnostic_type"] == "split":
+            groups = [
+                _classification_resolution_group(
+                    row_id=row["id"],
+                    sport=row["sport"],
+                    index=index,
+                    home_team=event["home"],
+                    away_team=event["away"],
+                )
+                for index, event in enumerate(row["events"])
+            ]
+        else:
+            event = row["events"][0]
+            groups = [
+                _classification_resolution_group(
+                    row_id=row["id"],
+                    sport=row["sport"],
+                    index=0,
+                    home_team=event["home"],
+                    away_team=event["away"],
+                    members=row["synthetic_members"],
+                )
+            ]
+
+        diagnostics = _event_split_diagnostics_benchmark(groups)
+        candidates = (
+            diagnostics.top_split_candidates
+            if row["diagnostic_type"] == "split"
+            else diagnostics.top_overmerge_candidates
+        )
+
+        assert candidates, row["id"]
+        candidate = candidates[0]
+        assert candidate.reason_code == row["reason_code"]
+        if row["diagnostic_type"] == "split":
+            assert candidate.shared_side == row["shared_side"]
+            event_names = {
+                (event.display_home_team, event.display_away_team)
+                for event in candidate.events
+            }
+            assert event_names == {
+                (event["home"], event["away"]) for event in row["events"]
+            }
+        else:
+            assert candidate.weakest_member_pair is not None
+            weakest = candidate.weakest_member_pair
+            assert weakest.average_score < 100.0
+            assert weakest.weak_side_score < 100.0
+
+
+def test_same_side_conflicting_opponent_fixture_is_diagnosed_not_merged():
+    row = next(
+        item
+        for item in _diagnostic_classification_fixture()["reviewed"]
+        if item["id"] == "oakleigh_dandenong_conflict"
+    )
+    candidates = [
+        _event_candidate(
+            f"book-{index}",
+            match_id=f"match-{index}",
+            sport=row["sport"],
+            home_team_id=10 + index * 2,
+            away_team_id=11 + index * 2,
+            home_team=event["home"],
+            away_team=event["away"],
+        )
+        for index, event in enumerate(row["events"])
+    ]
+
+    resolutions, _review_cases = build_event_resolution_groups(candidates)
+    diagnostics = _event_split_diagnostics_benchmark(resolutions)
+
+    assert len(resolutions) == 2
+    assert diagnostics.split_candidate_count == 1
+    assert diagnostics.top_split_candidates[0].reason_code == row["reason_code"]
+
+
+def test_overmerge_diagnostics_include_weakest_member_pair_evidence():
+    group = _classification_resolution_group(
+        row_id="overmerge-evidence",
+        sport="football",
+        index=0,
+        home_team="Dortmund",
+        away_team="Eintracht Frankfurt",
+        members=[
+            {
+                "bookmaker_id": "book-a",
+                "home": "Dortmund",
+                "away": "Eintracht Frankfurt",
+            },
+            {
+                "bookmaker_id": "book-b",
+                "home": "Dortmund",
+                "away": "Unrelated Opponent",
+            },
+        ],
+    )
+
+    diagnostics = _event_split_diagnostics_benchmark([group])
+
+    assert diagnostics.overmerge_candidate_count == 1
+    candidate = diagnostics.top_overmerge_candidates[0]
+    assert candidate.weakest_member_pair is not None
+    weakest = candidate.weakest_member_pair
+    assert weakest.left.bookmaker_id == "book-a"
+    assert weakest.right.bookmaker_id == "book-b"
+    assert weakest.orientation == "as_listed"
+    assert weakest.average_score == candidate.score
+    assert weakest.weak_side_score < 80
+
+
+def test_overmerge_diagnostics_preserve_weak_side_threshold_evidence():
+    group = _classification_resolution_group(
+        row_id="overmerge-weak-side",
+        sport="football",
+        index=0,
+        home_team="Team Alpha",
+        away_team="Lions",
+        members=[
+            {
+                "bookmaker_id": "book-a",
+                "home": "Team Alpha",
+                "away": "Lions",
+            },
+            {
+                "bookmaker_id": "book-b",
+                "home": "Team Alpha",
+                "away": "Lynx",
+            },
+        ],
+    )
+
+    diagnostics = _event_split_diagnostics_benchmark([group])
+
+    assert diagnostics.overmerge_candidate_count == 1
+    weakest = diagnostics.top_overmerge_candidates[0].weakest_member_pair
+    assert weakest is not None
+    assert weakest.average_score >= 70.0
+    assert weakest.weak_side_score < 45.0
 
 
 def test_event_split_diagnostics_ignores_same_side_doubleheader_outside_time_window():

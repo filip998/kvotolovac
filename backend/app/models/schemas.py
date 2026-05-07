@@ -657,6 +657,28 @@ class BenchmarkSplitEventFragmentOut(BaseModel):
     member_count: int = 0
 
 
+class BenchmarkSplitMemberFragmentOut(BaseModel):
+    """One source member participating in an over-merge diagnostic."""
+
+    bookmaker_id: str
+    match_id: str
+    home_team: str
+    away_team: str
+    source_home_team: Optional[str] = None
+    source_away_team: Optional[str] = None
+    source_kind: str
+
+
+class BenchmarkSplitWeakestMemberPairOut(BaseModel):
+    """Weakest source-member pair inside a possible over-merged event."""
+
+    left: BenchmarkSplitMemberFragmentOut
+    right: BenchmarkSplitMemberFragmentOut
+    orientation: str
+    average_score: float = 0.0
+    weak_side_score: float = 0.0
+
+
 class BenchmarkSplitClusterOut(BaseModel):
     """Diagnostic candidate for logical event splitting or over-merging."""
 
@@ -667,6 +689,7 @@ class BenchmarkSplitClusterOut(BaseModel):
     start_time: str
     max_start_delta_minutes: float = 0.0
     events: list[BenchmarkSplitEventFragmentOut] = Field(default_factory=list)
+    weakest_member_pair: Optional[BenchmarkSplitWeakestMemberPairOut] = None
 
 
 class BenchmarkSplitSportDiagnosticsOut(BaseModel):
