@@ -622,6 +622,182 @@ def test_event_split_diagnostics_ignores_same_side_doubleheader_outside_time_win
     assert diagnostics.split_candidate_count == 0
 
 
+def test_event_split_diagnostics_limits_pair_checks_to_time_window(monkeypatch):
+    def group(
+        event_id: str,
+        start_time: str,
+        home_team: str,
+        away_team: str,
+    ) -> EventResolutionGroup:
+        return EventResolutionGroup(
+            event_id=event_id,
+            sport="football",
+            start_time=start_time,
+            primary_match_id=event_id.replace("evt-", "match-"),
+            display_home_team=home_team,
+            display_away_team=away_team,
+            display_league_name="League",
+            method="exact",
+            confidence=1.0,
+            members=(
+                _event_candidate(
+                    event_id,
+                    match_id=event_id.replace("evt-", "match-"),
+                    sport="football",
+                    home_team_id=1,
+                    away_team_id=2,
+                    home_team=home_team,
+                    away_team=away_team,
+                    start_time=start_time,
+                ),
+            ),
+            evidence=(),
+        )
+
+    groups = [
+        group("evt-near-a", START_TIME, "Aue", "Duisburg"),
+        group("evt-near-b", START_TIME, "Erzgebirge Aue", "MSV Duisburg"),
+    ]
+    groups.extend(
+        group(
+            f"evt-same-time-{index}",
+            START_TIME,
+            f"UniqueHome{index}",
+            f"UniqueAway{index}",
+        )
+        for index in range(48)
+    )
+    groups.extend(
+        group(
+            f"evt-far-{index}",
+            f"2030-01-{2 + index // 24:02d}T{index % 24:02d}:00:00+00:00",
+            f"FarHome{index}",
+            f"FarAway{index}",
+        )
+        for index in range(48)
+    )
+    original_candidate_for_pair = event_resolver_module._split_candidate_for_pair
+    pair_checks = 0
+
+    def counting_candidate_for_pair(
+        left: EventResolutionGroup,
+        right: EventResolutionGroup,
+    ):
+        nonlocal pair_checks
+        pair_checks += 1
+        return original_candidate_for_pair(left, right)
+
+    monkeypatch.setattr(
+        event_resolver_module,
+        "_split_candidate_for_pair",
+        counting_candidate_for_pair,
+    )
+
+    diagnostics = _event_split_diagnostics_benchmark(groups)
+
+    assert pair_checks == 1
+    assert diagnostics.split_candidate_count == 1
+
+
+def test_event_split_diagnostics_token_frequency_is_scoped_to_time_window():
+    def group(
+        event_id: str,
+        start_time: str,
+        home_team: str,
+        away_team: str,
+    ) -> EventResolutionGroup:
+        return EventResolutionGroup(
+            event_id=event_id,
+            sport="football",
+            start_time=start_time,
+            primary_match_id=event_id.replace("evt-", "match-"),
+            display_home_team=home_team,
+            display_away_team=away_team,
+            display_league_name="League",
+            method="exact",
+            confidence=1.0,
+            members=(
+                _event_candidate(
+                    event_id,
+                    match_id=event_id.replace("evt-", "match-"),
+                    sport="football",
+                    home_team_id=1,
+                    away_team_id=2,
+                    home_team=home_team,
+                    away_team=away_team,
+                    start_time=start_time,
+                ),
+            ),
+            evidence=(),
+        )
+
+    groups = [
+        group("evt-united-alpha", START_TIME, "United", "Alpha"),
+        group("evt-united-beta", START_TIME, "United", "Beta"),
+    ]
+    groups.extend(
+        group(
+            f"evt-later-united-{index}",
+            f"2030-01-{2 + index // 24:02d}T{index % 24:02d}:00:00+00:00",
+            f"United Far{index}",
+            f"Opponent Far{index}",
+        )
+        for index in range(49)
+    )
+
+    diagnostics = _event_split_diagnostics_benchmark(groups)
+
+    assert diagnostics.split_candidate_count == 1
+    assert diagnostics.top_split_candidates[0].shared_side == "home"
+
+
+def test_event_split_diagnostics_checks_bounded_high_frequency_token_fallback():
+    groups = [
+        EventResolutionGroup(
+            event_id=f"evt-united-{index}",
+            sport="football",
+            start_time=START_TIME,
+            primary_match_id=f"match-united-{index}",
+            display_home_team="United",
+            display_away_team=(
+                "Alpha" if index == 0 else "Beta" if index == 1 else f"Rival{index}"
+            ),
+            display_league_name="League",
+            method="exact",
+            confidence=1.0,
+            members=(
+                _event_candidate(
+                    f"book-{index}",
+                    match_id=f"match-united-{index}",
+                    sport="football",
+                    home_team_id=1,
+                    away_team_id=100 + index,
+                    home_team="United",
+                    away_team=(
+                        "Alpha"
+                        if index == 0
+                        else "Beta"
+                        if index == 1
+                        else f"Rival{index}"
+                    ),
+                ),
+            ),
+            evidence=(),
+        )
+        for index in range(51)
+    ]
+
+    direct_candidate = event_resolver_module._split_candidate_for_pair(
+        groups[0],
+        groups[1],
+    )
+    diagnostics = _event_split_diagnostics_benchmark(groups)
+
+    assert direct_candidate is not None
+    assert direct_candidate.shared_side == "home"
+    assert diagnostics.split_candidate_count > 0
+
+
 def test_event_split_diagnostics_flags_possible_overmerge():
     overmerged = EventResolutionGroup(
         event_id="evt-overmerged",
