@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -16,6 +17,7 @@ from app.models.schemas import (
     OpportunityLeg,
     RawOddsData,
     RawOutcomeOffer,
+    ScrapeRuntimeSettings,
     ScrapeRuntimeSettingsUpdate,
     TeamReviewDiagnostic,
     TelegramNotificationProfileCreate,
@@ -30,6 +32,7 @@ from app.services.notifications import (
     TelegramSendMessageResult,
 )
 from app.services.runtime_settings import update_scrape_settings
+from app.services.rate_limit_policy import RateLimitPolicy, ScrapeTypeRateLimit
 from app.services.team_registry import (
     create_canonical_team,
     get_canonical_team,
@@ -199,6 +202,37 @@ class StubScraper(BaseScraper):
         return list(self._outcome_payload_by_sport.get(sport, []))
 
 
+class RecordingRateLimitClient:
+    def __init__(self) -> None:
+        self.rate_limit_per_second = 0.0
+        self.active_rate_limit: float | None = None
+        self.seen_rate_limits: list[float] = []
+
+    @contextmanager
+    def use_rate_limit(self, rate_limit_per_second: float):
+        self.active_rate_limit = rate_limit_per_second
+        self.seen_rate_limits.append(rate_limit_per_second)
+        try:
+            yield
+        finally:
+            self.active_rate_limit = None
+
+
+class RateRecordingScraper(StubScraper):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._http = RecordingRateLimitClient()
+        self.observed_rate_limits: list[float | None] = []
+
+    async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
+        self.observed_rate_limits.append(self._http.active_rate_limit)
+        return await super().scrape_odds(league_id)
+
+    async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        self.observed_rate_limits.append(self._http.active_rate_limit)
+        return await super().scrape_outcome_offers(sport)
+
+
 def test_normalize_merge_pairings_flattens_valid_chains():
     normalized, conflicts = _normalize_merge_pairings([(3, 2), (2, 1)])
 
@@ -252,6 +286,120 @@ def test_scraper_capabilities_unify_threshold_and_outcome_lanes():
         ScraperCapability.threshold_odds(sport="football", league_id="football_league"),
         ScraperCapability.outcome_offer(sport="tennis"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_scrape_capability_applies_bookmaker_rate_policy_cap():
+    scraper = RateRecordingScraper(
+        "betole",
+        outcome_sports=("football",),
+        outcome_payload_by_sport={"football": [_raw_outcome_offer("betole", "home")]},
+    )
+    runtime_settings = ScrapeRuntimeSettings(
+        enabled_bookmakers=["betole"],
+        enabled_sports=["football"],
+        scrape_market_scope="all",
+        analysis_markets=["all"],
+        scrape_lookahead_hours=24,
+        scrape_interval_minutes=10,
+        max_middle_opportunities_per_market=10,
+        rate_limit_per_second=3.0,
+        meridian_rate_limit_per_second=2.0,
+        soccerbet_detail_mode="partial",
+        merkurxtip_detail_mode="partial",
+        pinnbet_detail_mode="partial",
+        betole_detail_mode="partial",
+        notification_gap_threshold=1.5,
+        persist_inapp_notifications=False,
+    )
+    policy = RateLimitPolicy(bookmaker_rate_limits={"betole": 1.0}, scrape_type_rate_limits=())
+
+    await Scheduler(interval_minutes=1)._scrape_capability(
+        scraper,
+        ScraperCapability.outcome_offer(sport="football"),
+        runtime_settings,
+        policy,
+    )
+
+    assert scraper.observed_rate_limits == [1.0]
+    assert scraper._http.seen_rate_limits == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_scrape_capability_applies_detail_specific_policy_before_bookmaker_cap():
+    scraper = RateRecordingScraper(
+        "betole",
+        outcome_sports=("football",),
+        outcome_payload_by_sport={"football": [_raw_outcome_offer("betole", "home")]},
+    )
+    runtime_settings = ScrapeRuntimeSettings(
+        enabled_bookmakers=["betole"],
+        enabled_sports=["football"],
+        scrape_market_scope="all",
+        analysis_markets=["all"],
+        scrape_lookahead_hours=24,
+        scrape_interval_minutes=10,
+        max_middle_opportunities_per_market=10,
+        rate_limit_per_second=3.0,
+        meridian_rate_limit_per_second=2.0,
+        soccerbet_detail_mode="partial",
+        merkurxtip_detail_mode="partial",
+        pinnbet_detail_mode="partial",
+        betole_detail_mode="full",
+        notification_gap_threshold=1.5,
+        persist_inapp_notifications=False,
+    )
+    policy = RateLimitPolicy(
+        bookmaker_rate_limits={"betole": 1.0},
+        scrape_type_rate_limits=(
+            ScrapeTypeRateLimit("betole", "outcome_offer", "full", 0.25),
+        ),
+    )
+
+    await Scheduler(interval_minutes=1)._scrape_capability(
+        scraper,
+        ScraperCapability.outcome_offer(sport="football"),
+        runtime_settings,
+        policy,
+    )
+
+    assert scraper.observed_rate_limits == [0.25]
+
+
+@pytest.mark.asyncio
+async def test_scrape_capability_policy_never_raises_above_default_rate():
+    scraper = RateRecordingScraper(
+        "365",
+        outcome_sports=("football",),
+        outcome_payload_by_sport={"football": [_raw_outcome_offer("365", "home")]},
+    )
+    runtime_settings = ScrapeRuntimeSettings(
+        enabled_bookmakers=["365"],
+        enabled_sports=["football"],
+        scrape_market_scope="all",
+        analysis_markets=["all"],
+        scrape_lookahead_hours=24,
+        scrape_interval_minutes=10,
+        max_middle_opportunities_per_market=10,
+        rate_limit_per_second=1.0,
+        meridian_rate_limit_per_second=2.0,
+        soccerbet_detail_mode="partial",
+        merkurxtip_detail_mode="partial",
+        pinnbet_detail_mode="partial",
+        betole_detail_mode="partial",
+        notification_gap_threshold=1.5,
+        persist_inapp_notifications=False,
+    )
+    policy = RateLimitPolicy(bookmaker_rate_limits={"365": 5.0}, scrape_type_rate_limits=())
+
+    await Scheduler(interval_minutes=1)._scrape_capability(
+        scraper,
+        ScraperCapability.outcome_offer(sport="football"),
+        runtime_settings,
+        policy,
+    )
+
+    assert scraper.observed_rate_limits == [1.0]
 
 
 @pytest.fixture(autouse=True)

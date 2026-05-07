@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     proxy_list: str = ""
     rate_limit_per_second: float = 1.0
     meridian_rate_limit_per_second: float = 2.0
+    # Comma/semicolon-separated '<bookmaker>:<rate>' caps.
+    bookmaker_rate_limits: str = ""
+    # Comma/semicolon-separated '<bookmaker>:<lane>:<rate>' or
+    # '<bookmaker>:<lane>:<detail_mode>:<rate>' caps.
+    scrape_type_rate_limits: str = ""
     # partial = preview feeds only; full = preview feeds plus match-by-code enrichment.
     soccerbet_detail_mode: Literal["partial", "full"] = "partial"
     # partial = list feeds only; full = list feeds plus match detail for alternate totals.
@@ -38,6 +43,9 @@ class Settings(BaseSettings):
     # partial = football list feed only (result + 2.5 totals); full = list feed
     # plus per-event detail fetch to also emit double chance.
     pinnbet_detail_mode: Literal["partial", "full"] = "partial"
+    # partial = football list feed only (result + 2.5 totals); full = list feed
+    # plus per-event detail fetch to also emit double chance.
+    betole_detail_mode: Literal["partial", "full"] = "partial"
     scrape_lookahead_hours: int = Field(default=24, ge=0)
     benchmark_dir: str = str(
         Path(__file__).resolve().parent.parent / "benchmarks"

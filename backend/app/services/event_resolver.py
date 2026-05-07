@@ -5,10 +5,12 @@ from dataclasses import dataclass
 import hashlib
 import logging
 import re
+import time
 
 from rapidfuzz import fuzz
 
 from ..models.schemas import (
+    EventResolverBenchmarkOut,
     EventReviewCaseIn,
     NormalizedOdds,
     NormalizedOutcomeOffer,
@@ -28,6 +30,7 @@ from .outcome_normalizer import (
     _same_team_context,
     _team_similarity,
     _team_qualifiers,
+    FootballEventResolutionMap,
 )
 from .text_normalizer import normalize_identity_text
 
@@ -74,6 +77,10 @@ _LOW_SIGNAL_TEAM_TOKENS = {
     "club",
     "team",
 }
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return int((time.perf_counter() - started_at) * 1000)
 
 
 @dataclass(frozen=True)
@@ -506,12 +513,154 @@ class EventResolutionGroup:
     evidence: tuple[str, ...]
 
 
+@dataclass
+class _EventCandidateExtractionStats:
+    football_raw_resolution_candidates_ms: int = 0
+    reused_football_event_resolution_count: int = 0
+
+
+@dataclass
+class _EventGroupBuildStats:
+    exact_group_count: int = 0
+    pair_check_count: int = 0
+    fuzzy_score_count: int = 0
+    accepted_fuzzy_pair_count: int = 0
+    review_case_count: int = 0
+
+
+class _ResolverTextCache:
+    def __init__(self, stats: _EventGroupBuildStats | None = None) -> None:
+        self._stats = stats
+        self._qualifiers: dict[tuple[str, str | None], set[str]] = {}
+        self._comparison_text: dict[tuple[str, str | None], str] = {}
+        self._significant_tokens: dict[tuple[str, str | None], set[str]] = {}
+        self._expanded_tokens: dict[tuple[str, str, str | None], str] = {}
+        self._team_similarity: dict[tuple[str, str, str | None], float] = {}
+        self._orientation_scores: dict[
+            tuple[str, str, str, str, str | None],
+            tuple[_OrientationScore, ...],
+        ] = {}
+
+    def qualifiers(self, name: str, *, sport: str | None = None) -> set[str]:
+        key = (name, sport)
+        cached = self._qualifiers.get(key)
+        if cached is None:
+            cached = _team_qualifiers(name, sport=sport)
+            self._qualifiers[key] = cached
+        return cached
+
+    def comparison_text(self, name: str, *, sport: str | None = None) -> str:
+        key = (name, sport)
+        cached = self._comparison_text.get(key)
+        if cached is None:
+            cached = _comparison_team_text(name, sport=sport)
+            self._comparison_text[key] = cached
+        return cached
+
+    def significant_tokens(self, name: str, *, sport: str | None = None) -> set[str]:
+        key = (name, sport)
+        cached = self._significant_tokens.get(key)
+        if cached is None:
+            cached = {
+                token
+                for token in self.comparison_text(name, sport=sport).split()
+                if token not in _LOW_SIGNAL_TEAM_TOKENS
+            }
+            self._significant_tokens[key] = cached
+        return cached
+
+    def same_context(self, left: str, right: str, *, sport: str | None = None) -> bool:
+        return self.qualifiers(left, sport=sport) == self.qualifiers(right, sport=sport)
+
+    def expanded_token(
+        self,
+        name: str,
+        counterpart: str,
+        *,
+        sport: str | None = None,
+    ) -> str:
+        key = (name, counterpart, sport)
+        cached = self._expanded_tokens.get(key)
+        if cached is None:
+            cached = (
+                _expand_dotted_token(name, counterpart)
+                if sport in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE
+                else name
+            )
+            self._expanded_tokens[key] = cached
+        return cached
+
+    def team_similarity(self, left: str, right: str, *, sport: str | None = None) -> float:
+        expanded_left = self.expanded_token(left, right, sport=sport)
+        expanded_right = self.expanded_token(right, left, sport=sport)
+        key = (expanded_left, expanded_right, sport)
+        reverse_key = (expanded_right, expanded_left, sport)
+        cached = self._team_similarity.get(key)
+        if cached is None:
+            cached = self._team_similarity.get(reverse_key)
+        if cached is not None:
+            return cached
+
+        left_key = self.comparison_text(expanded_left, sport=sport)
+        right_key = self.comparison_text(expanded_right, sport=sport)
+        if not left_key or not right_key:
+            score = 0.0
+        elif left_key == right_key:
+            score = 100.0
+        else:
+            left_tokens = self.significant_tokens(expanded_left, sport=sport)
+            right_tokens = self.significant_tokens(expanded_right, sport=sport)
+            if left_tokens and left_tokens == right_tokens:
+                score = 100.0
+            else:
+                if self._stats is not None:
+                    self._stats.fuzzy_score_count += 1
+                score = float(fuzz.token_sort_ratio(left_key, right_key))
+        self._team_similarity[key] = score
+        return score
+
+    def orientation_scores(
+        self,
+        left_home: str,
+        left_away: str,
+        right_home: str,
+        right_away: str,
+        *,
+        sport: str | None = None,
+    ) -> list[_OrientationScore]:
+        key = (left_home, left_away, right_home, right_away, sport)
+        cached = self._orientation_scores.get(key)
+        if cached is not None:
+            return list(cached)
+        scores: list[_OrientationScore] = []
+        if self.same_context(left_home, right_home, sport=sport) and self.same_context(left_away, right_away, sport=sport):
+            scores.append(
+                _OrientationScore(
+                    orientation="as_listed",
+                    home_score=self.team_similarity(left_home, right_home, sport=sport),
+                    away_score=self.team_similarity(left_away, right_away, sport=sport),
+                )
+            )
+        if self.same_context(left_home, right_away, sport=sport) and self.same_context(left_away, right_home, sport=sport):
+            scores.append(
+                _OrientationScore(
+                    orientation="reversed",
+                    home_score=self.team_similarity(left_home, right_away, sport=sport),
+                    away_score=self.team_similarity(left_away, right_home, sport=sport),
+                )
+            )
+        scores = sorted(scores, key=lambda score: score.avg_score, reverse=True)
+        self._orientation_scores[key] = tuple(scores)
+        return scores
+
+
 @dataclass(frozen=True)
 class EventResolverResult:
     candidates: int
     resolved_events: int
     resolved_event_members: int
     review_cases: int
+    benchmark: EventResolverBenchmarkOut | None = None
 
 
 def _league_source(raw_league_id: str, bookmaker_id: str) -> tuple[str, str]:
@@ -717,6 +866,7 @@ def _is_subset_or_equal_token_pair(
     right_name: str,
     *,
     sport: str | None = None,
+    text_cache: _ResolverTextCache | None = None,
 ) -> bool:
     """True iff one team's significant tokens are a subset/equal of the other's.
 
@@ -726,8 +876,12 @@ def _is_subset_or_equal_token_pair(
     ``Hermine Nantes Basket``) are typically the same team with an extra
     qualifier and are safe to auto-merge at lowered score thresholds.
     """
-    left_tokens = _significant_team_tokens(left_name, sport=sport)
-    right_tokens = _significant_team_tokens(right_name, sport=sport)
+    if text_cache is not None:
+        left_tokens = text_cache.significant_tokens(left_name, sport=sport)
+        right_tokens = text_cache.significant_tokens(right_name, sport=sport)
+    else:
+        left_tokens = _significant_team_tokens(left_name, sport=sport)
+        right_tokens = _significant_team_tokens(right_name, sport=sport)
     if not left_tokens or not right_tokens:
         return False
     return left_tokens <= right_tokens or right_tokens <= left_tokens
@@ -741,6 +895,7 @@ def _weak_side_pair_is_subset_or_equal(
     score: _OrientationScore,
     *,
     sport: str | None = None,
+    text_cache: _ResolverTextCache | None = None,
 ) -> bool:
     if score.orientation == "as_listed":
         home_pair = (left_home, right_home)
@@ -749,7 +904,7 @@ def _weak_side_pair_is_subset_or_equal(
         home_pair = (left_home, right_away)
         away_pair = (left_away, right_home)
     weak_pair = home_pair if score.home_score <= score.away_score else away_pair
-    return _is_subset_or_equal_token_pair(*weak_pair, sport=sport)
+    return _is_subset_or_equal_token_pair(*weak_pair, sport=sport, text_cache=text_cache)
 
 
 def _matching_canonical_sides(
@@ -886,10 +1041,16 @@ def _merge_candidate(
 def _football_raw_resolution_candidates(
     raw_offers: list[RawOutcomeOffer],
     stored_match_bookmakers: set[tuple[str, str]],
+    *,
+    football_event_resolutions: FootballEventResolutionMap | None = None,
 ) -> list[EventCandidate]:
     if not raw_offers:
         return []
-    event_resolutions = _build_football_event_resolutions(raw_offers)
+    event_resolutions = (
+        football_event_resolutions
+        if football_event_resolutions is not None
+        else _build_football_event_resolutions(raw_offers)
+    )
     seen_raw_events: set[tuple[str, str, str, str, str]] = set()
     candidates: list[EventCandidate] = []
     for raw in raw_offers:
@@ -936,6 +1097,8 @@ def extract_event_candidates(
     raw_outcome_offers: list[RawOutcomeOffer],
     normalized_odds: list[NormalizedOdds],
     normalized_outcome_offers: list[NormalizedOutcomeOffer],
+    football_event_resolutions: FootballEventResolutionMap | None = None,
+    stats: _EventCandidateExtractionStats | None = None,
 ) -> list[EventCandidate]:
     """Build one source-event candidate per bookmaker/match from the current scrape."""
 
@@ -989,10 +1152,19 @@ def extract_event_candidates(
     stored_outcome_match_bookmakers = {
         (offer.match_id, offer.bookmaker_id) for offer in normalized_outcome_offers
     }
-    for candidate in _football_raw_resolution_candidates(
+    football_candidates_started_at = time.perf_counter()
+    football_candidates = _football_raw_resolution_candidates(
         raw_outcome_offers,
         stored_outcome_match_bookmakers,
-    ):
+        football_event_resolutions=football_event_resolutions,
+    )
+    if stats is not None and football_event_resolutions is not None:
+        stats.reused_football_event_resolution_count = len(football_candidates)
+    if stats is not None:
+        stats.football_raw_resolution_candidates_ms = _elapsed_ms(
+            football_candidates_started_at
+        )
+    for candidate in football_candidates:
         _merge_candidate(candidates, candidate)
 
     return sorted(
@@ -1011,7 +1183,12 @@ def _shared_significant_tokens(
     right_name: str,
     *,
     sport: str | None = None,
+    text_cache: _ResolverTextCache | None = None,
 ) -> set[str]:
+    if text_cache is not None:
+        return text_cache.significant_tokens(
+            left_name, sport=sport
+        ) & text_cache.significant_tokens(right_name, sport=sport)
     return _significant_team_tokens(left_name, sport=sport) & _significant_team_tokens(
         right_name,
         sport=sport,
@@ -1024,6 +1201,7 @@ def _anchored_low_conf_detail(
     right_candidate: EventCandidate,
     top: _OrientationScore,
     combined_bookmaker_count: int,
+    text_cache: _ResolverTextCache | None = None,
 ) -> str | None:
     """Lower-threshold corroborated merge for same-slot pairs.
 
@@ -1084,7 +1262,11 @@ def _anchored_low_conf_detail(
         away_pair = (left_candidate.away_team, right_candidate.home_team)
     weak_pair = home_pair if top.home_score <= top.away_score else away_pair
 
-    if _is_subset_or_equal_token_pair(*weak_pair, sport=left_candidate.sport):
+    if _is_subset_or_equal_token_pair(
+        *weak_pair,
+        sport=left_candidate.sport,
+        text_cache=text_cache,
+    ):
         return "token subset anchored"
 
     if left_candidate.sport not in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
@@ -1092,7 +1274,11 @@ def _anchored_low_conf_detail(
     if right_candidate.sport not in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
         return None
 
-    if not _shared_significant_tokens(*weak_pair, sport=left_candidate.sport):
+    if not _shared_significant_tokens(
+        *weak_pair,
+        sport=left_candidate.sport,
+        text_cache=text_cache,
+    ):
         return None
 
     left_league = left_candidate.source_league_id
@@ -1108,6 +1294,7 @@ def _passes_anchored_low_conf(
     right_candidate: EventCandidate,
     top: _OrientationScore,
     combined_bookmaker_count: int,
+    text_cache: _ResolverTextCache | None = None,
 ) -> bool:
     return (
         _anchored_low_conf_detail(
@@ -1115,6 +1302,7 @@ def _passes_anchored_low_conf(
             right_candidate=right_candidate,
             top=top,
             combined_bookmaker_count=combined_bookmaker_count,
+            text_cache=text_cache,
         )
         is not None
     )
@@ -1193,12 +1381,15 @@ def _quorum_resolution_passes(
 def _group_pair_resolution(
     left: _CandidateGroup,
     right: _CandidateGroup,
+    *,
+    text_cache: _ResolverTextCache | None = None,
 ) -> _PairResolution | None:
+    text_cache = text_cache or _ResolverTextCache()
     best: _PairResolution | None = None
     combined_bookmaker_count = len(left.bookmakers | right.bookmakers)
     for left_candidate in left.candidates:
         for right_candidate in right.candidates:
-            scores = _orientation_scores(
+            scores = text_cache.orientation_scores(
                 left_candidate.home_team,
                 left_candidate.away_team,
                 right_candidate.home_team,
@@ -1231,6 +1422,7 @@ def _group_pair_resolution(
                     right_candidate.away_team,
                     top,
                     sport=left_candidate.sport,
+                    text_cache=text_cache,
                 )
                 and top.avg_score >= _HIGH_FUZZY_AVG_SCORE
                 and top.weak_side_score >= _HIGH_FUZZY_SIDE_SCORE
@@ -1260,6 +1452,7 @@ def _group_pair_resolution(
                     right_candidate=right_candidate,
                     top=top,
                     combined_bookmaker_count=combined_bookmaker_count,
+                    text_cache=text_cache,
                 )
             ) is not None:
                 resolution = _PairResolution(
@@ -1440,9 +1633,14 @@ def _build_exact_groups(candidates: list[EventCandidate]) -> list[_CandidateGrou
 
 def build_event_resolution_groups(
     candidates: list[EventCandidate],
+    *,
+    stats: _EventGroupBuildStats | None = None,
 ) -> tuple[list[EventResolutionGroup], list[EventReviewCaseIn]]:
     exact_groups = _build_exact_groups(candidates)
+    if stats is not None:
+        stats.exact_group_count = len(exact_groups)
     dsu = _DisjointSet(exact_groups)
+    text_cache = _ResolverTextCache(stats)
     accepted_pairs: list[tuple[int, int, _PairResolution]] = []
     review_cases: dict[str, EventReviewCaseIn] = {}
 
@@ -1468,13 +1666,17 @@ def build_event_resolution_groups(
                 # an already-merged component).
                 if dsu.find(left.index) == dsu.find(right.index):
                     continue
-                pair = _group_pair_resolution(left, right)
+                if stats is not None:
+                    stats.pair_check_count += 1
+                pair = _group_pair_resolution(left, right, text_cache=text_cache)
                 if pair is None:
                     continue
                 if pair.reason_code == "high_confidence_fuzzy_event_match":
                     if dsu.can_union(left.index, right.index):
                         dsu.union(left.index, right.index)
                         accepted_pairs.append((left.index, right.index, pair))
+                        if stats is not None:
+                            stats.accepted_fuzzy_pair_count += 1
                     elif _quorum_resolution_passes(left, right, pair):
                         dsu.union(left.index, right.index)
                         quorum_pair = _PairResolution(
@@ -1493,6 +1695,8 @@ def build_event_resolution_groups(
                             ),
                         )
                         accepted_pairs.append((left.index, right.index, quorum_pair))
+                        if stats is not None:
+                            stats.accepted_fuzzy_pair_count += 1
                         # Log the override for operator visibility instead of
                         # emitting an audit review case. The override is
                         # explicitly intended to clear pairs from the manual
@@ -1603,6 +1807,9 @@ def build_event_resolution_groups(
             )
         )
 
+    if stats is not None:
+        stats.review_case_count = len(review_cases)
+
     return (
         sorted(
             resolutions,
@@ -1702,18 +1909,54 @@ async def resolve_and_persist_events(
     raw_outcome_offers: list[RawOutcomeOffer],
     normalized_odds: list[NormalizedOdds],
     normalized_outcome_offers: list[NormalizedOutcomeOffer],
+    football_event_resolutions: FootballEventResolutionMap | None = None,
 ) -> EventResolverResult:
+    extraction_stats = _EventCandidateExtractionStats()
+    extraction_started_at = time.perf_counter()
     candidates = extract_event_candidates(
         raw_odds=raw_odds,
         raw_outcome_offers=raw_outcome_offers,
         normalized_odds=normalized_odds,
         normalized_outcome_offers=normalized_outcome_offers,
+        football_event_resolutions=football_event_resolutions,
+        stats=extraction_stats,
     )
-    resolutions, review_cases = build_event_resolution_groups(candidates)
+    extract_event_candidates_ms = _elapsed_ms(extraction_started_at)
+
+    group_stats = _EventGroupBuildStats()
+    grouping_started_at = time.perf_counter()
+    resolutions, review_cases = build_event_resolution_groups(
+        candidates,
+        stats=group_stats,
+    )
+    build_event_resolution_groups_ms = _elapsed_ms(grouping_started_at)
+
+    persistence_started_at = time.perf_counter()
     result = await persist_event_resolution_groups(
         resolutions,
         review_cases,
         snapshot_id=snapshot_id,
+    )
+    persist_event_resolution_groups_ms = _elapsed_ms(persistence_started_at)
+    benchmark = EventResolverBenchmarkOut(
+        extract_event_candidates_ms=extract_event_candidates_ms,
+        football_raw_resolution_candidates_ms=(
+            extraction_stats.football_raw_resolution_candidates_ms
+        ),
+        reused_football_event_resolution_count=(
+            extraction_stats.reused_football_event_resolution_count
+        ),
+        build_event_resolution_groups_ms=build_event_resolution_groups_ms,
+        persist_event_resolution_groups_ms=persist_event_resolution_groups_ms,
+        candidate_count=len(candidates),
+        exact_group_count=group_stats.exact_group_count,
+        pair_check_count=group_stats.pair_check_count,
+        fuzzy_score_count=group_stats.fuzzy_score_count,
+        accepted_fuzzy_pair_count=group_stats.accepted_fuzzy_pair_count,
+        review_case_count=group_stats.review_case_count,
+        persisted_resolved_event_count=result.resolved_events,
+        persisted_member_count=result.resolved_event_members,
+        persisted_review_case_count=result.review_cases,
     )
     logger.info(
         "Resolved %d source-event candidates into %d events (%d members, %d review cases)",
@@ -1727,4 +1970,5 @@ async def resolve_and_persist_events(
         resolved_events=result.resolved_events,
         resolved_event_members=result.resolved_event_members,
         review_cases=result.review_cases,
+        benchmark=benchmark,
     )

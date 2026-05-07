@@ -4,11 +4,13 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 import logging
 import re
+import time
 
 from rapidfuzz import fuzz
 
 from ..models.schemas import (
     NormalizedOutcomeOffer,
+    OutcomeNormalizationBenchmarkOut,
     RawOddsData,
     RawOutcomeOffer,
     TeamReviewDiagnostic,
@@ -16,7 +18,7 @@ from ..models.schemas import (
 )
 from .league_registry import resolve_league
 from .normalizer import generate_match_id, normalize_odds_with_diagnostics, resolve_team_name
-from .team_registry import create_canonical_team
+from .team_registry import create_canonical_team, create_canonical_teams_batch
 from .text_normalizer import normalize_identity_text
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,10 @@ _SAME_ORIENTATION = "same"
 _REVERSED_ORIENTATION = "reversed"
 
 
+def _elapsed_ms(started_at: float) -> int:
+    return int((time.perf_counter() - started_at) * 1000)
+
+
 @dataclass(frozen=True)
 class _OutcomeEvent:
     bookmaker_id: str
@@ -91,6 +97,19 @@ class _OutcomeEventResolution:
     orientation: str = _SAME_ORIENTATION
 
 
+FootballEventResolutionKey = tuple[str, str, str, str, str]
+FootballEventResolutionMap = dict[FootballEventResolutionKey, _OutcomeEventResolution]
+
+
+@dataclass(frozen=True)
+class OutcomeNormalizationResult:
+    normalized: list[NormalizedOutcomeOffer]
+    unresolved: list[UnresolvedOddsDiagnostic]
+    team_review_cases: list[TeamReviewDiagnostic]
+    benchmark: OutcomeNormalizationBenchmarkOut
+    football_event_resolutions: FootballEventResolutionMap
+
+
 @dataclass(frozen=True)
 class _OutcomeEventPair:
     left: _OutcomeEvent
@@ -110,6 +129,123 @@ class _OutcomeEventPair:
     @property
     def weak_side_score(self) -> float:
         return min(self.home_score, self.away_score)
+
+
+@dataclass
+class _FootballEventResolutionStats:
+    football_unique_event_count: int = 0
+    football_event_pair_candidate_count: int = 0
+    football_event_fuzzy_score_count: int = 0
+    football_event_pair_ranking_ms: int = 0
+    football_event_slot_lookup_ms: int = 0
+    football_event_slot_mutation_ms: int = 0
+
+
+class _OutcomeTextCache:
+    def __init__(self, stats: _FootballEventResolutionStats | None = None) -> None:
+        self._stats = stats
+        self._qualifiers: dict[tuple[str, str | None], set[str]] = {}
+        self._comparison_text: dict[tuple[str, str | None], str] = {}
+        self._significant_tokens: dict[tuple[str, str | None], set[str]] = {}
+        self._women_marker_forms: dict[str, frozenset[str]] = {}
+
+    def qualifiers(self, name: str, *, sport: str | None = None) -> set[str]:
+        key = (name, sport)
+        cached = self._qualifiers.get(key)
+        if cached is None:
+            cached = _team_qualifiers(name, sport=sport)
+            self._qualifiers[key] = cached
+        return cached
+
+    def comparison_text(self, name: str, *, sport: str | None = None) -> str:
+        key = (name, sport)
+        cached = self._comparison_text.get(key)
+        if cached is None:
+            qualifiers = self.qualifiers(name, sport=sport)
+            comparison_name = (
+                _strip_explicit_z_women_markers(name)
+                if "women" in qualifiers
+                else name
+            )
+            tokens = normalize_identity_text(comparison_name).split()
+            if "women" in qualifiers:
+                tokens = [
+                    token for token in tokens if token not in _WOMEN_MARKER_TOKENS
+                ]
+            cached = " ".join(tokens)
+            self._comparison_text[key] = cached
+        return cached
+
+    def significant_tokens(self, name: str, *, sport: str | None = None) -> set[str]:
+        key = (name, sport)
+        cached = self._significant_tokens.get(key)
+        if cached is None:
+            cached = {
+                token
+                for token in self.comparison_text(name, sport=sport).split()
+                if token not in _LOW_SIGNAL_TEAM_TOKENS
+            }
+            self._significant_tokens[key] = cached
+        return cached
+
+    def same_context(
+        self,
+        left: str,
+        right: str,
+        *,
+        sport: str | None = None,
+    ) -> bool:
+        return self.qualifiers(left, sport=sport) == self.qualifiers(
+            right, sport=sport
+        )
+
+    def team_similarity(
+        self,
+        left: str,
+        right: str,
+        *,
+        sport: str | None = None,
+    ) -> float:
+        left_key = self.comparison_text(left, sport=sport)
+        right_key = self.comparison_text(right, sport=sport)
+        if not left_key or not right_key:
+            return 0.0
+        if left_key == right_key:
+            return 100.0
+        left_tokens = self.significant_tokens(left, sport=sport)
+        right_tokens = self.significant_tokens(right, sport=sport)
+        if left_tokens and left_tokens == right_tokens:
+            return 100.0
+        if self._stats is not None:
+            self._stats.football_event_fuzzy_score_count += 1
+        return float(fuzz.token_sort_ratio(left_key, right_key))
+
+    def comparison_texts_are_compatible(
+        self,
+        left_name: str,
+        right_name: str,
+        *,
+        sport: str | None = None,
+        team_ids: tuple[int, int] | None = None,
+    ) -> bool:
+        if team_ids is not None and team_ids[0] == team_ids[1]:
+            return True
+        left_text = self.comparison_text(left_name, sport=sport)
+        right_text = self.comparison_text(right_name, sport=sport)
+        if left_text == right_text:
+            return True
+        left_tokens = self.significant_tokens(left_name, sport=sport)
+        right_tokens = self.significant_tokens(right_name, sport=sport)
+        if not left_tokens or not right_tokens:
+            return False
+        return left_tokens <= right_tokens or right_tokens <= left_tokens
+
+    def women_marker_forms(self, name: str) -> frozenset[str]:
+        cached = self._women_marker_forms.get(name)
+        if cached is None:
+            cached = _women_marker_forms(name, text_cache=self)
+            self._women_marker_forms[name] = cached
+        return cached
 
 
 def _significant_tokens(name: str, *, sport: str | None = None) -> set[str]:
@@ -238,7 +374,7 @@ def _display_name_for_event(*names: str) -> str:
     )
 
 
-def _autocreate_cross_book_football_teams(raw_list: list[RawOutcomeOffer]) -> None:
+def _autocreate_cross_book_football_teams(raw_list: list[RawOutcomeOffer]) -> int:
     matchup_counts: dict[tuple[str, str, tuple[str, str]], set[str]] = defaultdict(set)
     display_names: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
 
@@ -254,6 +390,7 @@ def _autocreate_cross_book_football_teams(raw_list: list[RawOutcomeOffer]) -> No
         display_names[(raw.sport, home_key)][raw.home_team.strip()] += 1
         display_names[(raw.sport, away_key)][raw.away_team.strip()] += 1
 
+    missing_display_names: dict[tuple[str, str], str] = {}
     for (sport, _start_time, team_keys), bookmaker_ids in matchup_counts.items():
         if len(bookmaker_ids) < 2:
             continue
@@ -263,7 +400,19 @@ def _autocreate_cross_book_football_teams(raw_list: list[RawOutcomeOffer]) -> No
                 continue
             display_name = max(counter.items(), key=lambda item: (item[1], len(item[0]), item[0]))[0]
             if resolve_team_name(display_name, sport=sport).team_id is None:
-                create_canonical_team(display_name=display_name, sport=sport)
+                missing_display_names[(sport, team_key)] = display_name
+
+    created_count = 0
+    by_sport: dict[str, list[str]] = defaultdict(list)
+    for (sport, _team_key), display_name in missing_display_names.items():
+        by_sport[sport].append(display_name)
+    for sport, sport_display_names in by_sport.items():
+        resolutions = create_canonical_teams_batch(
+            display_names=sport_display_names,
+            sport=sport,
+        )
+        created_count += sum(1 for resolution in resolutions if resolution.source == "batch_create")
+    return created_count
 
 
 def _unique_events(raw_list: list[RawOutcomeOffer]) -> list[_OutcomeEvent]:
@@ -294,33 +443,42 @@ def _unique_events(raw_list: list[RawOutcomeOffer]) -> list[_OutcomeEvent]:
     return events
 
 
-def _pair_candidates(left: _OutcomeEvent, right: _OutcomeEvent) -> _OutcomeEventPair | None:
+def _pair_candidates(
+    left: _OutcomeEvent,
+    right: _OutcomeEvent,
+    *,
+    text_cache: _OutcomeTextCache | None = None,
+    stats: _FootballEventResolutionStats | None = None,
+) -> _OutcomeEventPair | None:
     if left.bookmaker_id == right.bookmaker_id or left.sport != right.sport or left.start_time != right.start_time:
         return None
+    if stats is not None:
+        stats.football_event_pair_candidate_count += 1
+    text_cache = text_cache or _OutcomeTextCache(stats)
     candidates: list[_OutcomeEventPair] = []
-    if _same_team_context(left.home_team, right.home_team, sport=left.sport) and _same_team_context(left.away_team, right.away_team, sport=left.sport):
+    if text_cache.same_context(left.home_team, right.home_team, sport=left.sport) and text_cache.same_context(left.away_team, right.away_team, sport=left.sport):
         candidates.append(
             _OutcomeEventPair(
                 left=left,
                 right=right,
-                home_score=_team_similarity(
+                home_score=text_cache.team_similarity(
                     left.home_team, right.home_team, sport=left.sport
                 ),
-                away_score=_team_similarity(
+                away_score=text_cache.team_similarity(
                     left.away_team, right.away_team, sport=left.sport
                 ),
                 orientation=_SAME_ORIENTATION,
             )
         )
-    if _same_team_context(left.home_team, right.away_team, sport=left.sport) and _same_team_context(left.away_team, right.home_team, sport=left.sport):
+    if text_cache.same_context(left.home_team, right.away_team, sport=left.sport) and text_cache.same_context(left.away_team, right.home_team, sport=left.sport):
         candidates.append(
             _OutcomeEventPair(
                 left=left,
                 right=right,
-                home_score=_team_similarity(
+                home_score=text_cache.team_similarity(
                     left.home_team, right.away_team, sport=left.sport
                 ),
-                away_score=_team_similarity(
+                away_score=text_cache.team_similarity(
                     left.away_team, right.home_team, sport=left.sport
                 ),
                 orientation=_REVERSED_ORIENTATION,
@@ -505,7 +663,15 @@ def _comparison_team_texts_are_compatible(
     *,
     sport: str | None = None,
     team_ids: tuple[int, int] | None = None,
+    text_cache: _OutcomeTextCache | None = None,
 ) -> bool:
+    if text_cache is not None:
+        return text_cache.comparison_texts_are_compatible(
+            left_name,
+            right_name,
+            sport=sport,
+            team_ids=team_ids,
+        )
     if team_ids is not None and team_ids[0] == team_ids[1]:
         return True
     left_text = _comparison_team_text(left_name, sport=sport)
@@ -523,11 +689,13 @@ def _pair_has_compatible_women_context(
     pair: _OutcomeEventPair,
     *,
     oriented_team_ids: tuple[tuple[int, int], tuple[int, int]] | None = None,
+    text_cache: _OutcomeTextCache | None = None,
 ) -> bool:
+    text_cache = text_cache or _OutcomeTextCache()
     has_women_pair = False
     for index, (left_name, right_name) in enumerate(_oriented_pair_team_names(pair)):
-        left_qualifiers = _team_qualifiers(left_name, sport=pair.left.sport)
-        right_qualifiers = _team_qualifiers(right_name, sport=pair.left.sport)
+        left_qualifiers = text_cache.qualifiers(left_name, sport=pair.left.sport)
+        right_qualifiers = text_cache.qualifiers(right_name, sport=pair.left.sport)
         if left_qualifiers != right_qualifiers:
             return False
         if "women" in left_qualifiers:
@@ -537,12 +705,17 @@ def _pair_has_compatible_women_context(
             right_name,
             sport=pair.left.sport,
             team_ids=oriented_team_ids[index] if oriented_team_ids is not None else None,
+            text_cache=text_cache,
         ):
             return False
     return has_women_pair
 
 
-def _women_marker_forms(name: str) -> frozenset[str]:
+def _women_marker_forms(
+    name: str,
+    *,
+    text_cache: _OutcomeTextCache | None = None,
+) -> frozenset[str]:
     forms: set[str] = set()
     if re.search(r"\(\s*[žz]\s*\)", name, flags=re.IGNORECASE):
         forms.add("z:parenthesized")
@@ -589,13 +762,21 @@ def _women_marker_forms(name: str) -> frozenset[str]:
 
 
 def _pair_has_women_marker_variation(pair: _OutcomeEventPair) -> bool:
+    return _pair_has_women_marker_variation_cached(pair, text_cache=_OutcomeTextCache())
+
+
+def _pair_has_women_marker_variation_cached(
+    pair: _OutcomeEventPair,
+    *,
+    text_cache: _OutcomeTextCache,
+) -> bool:
     for left_name, right_name in _oriented_pair_team_names(pair):
-        left_qualifiers = _team_qualifiers(left_name, sport=pair.left.sport)
-        right_qualifiers = _team_qualifiers(right_name, sport=pair.left.sport)
+        left_qualifiers = text_cache.qualifiers(left_name, sport=pair.left.sport)
+        right_qualifiers = text_cache.qualifiers(right_name, sport=pair.left.sport)
         if (
             left_qualifiers == right_qualifiers
             and "women" in left_qualifiers
-            and _women_marker_forms(left_name) != _women_marker_forms(right_name)
+            and text_cache.women_marker_forms(left_name) != text_cache.women_marker_forms(right_name)
         ):
             return True
     return False
@@ -605,6 +786,7 @@ def _rank_event_pairs(
     events: list[_OutcomeEvent],
     *,
     resolutions: dict[tuple[str, str, str, str, str], _OutcomeEventResolution] | None = None,
+    stats: _FootballEventResolutionStats | None = None,
 ) -> list[_OutcomeEventPair]:
     events_by_slot: dict[tuple[str, str], list[_OutcomeEvent]] = defaultdict(list)
     for event in events:
@@ -612,11 +794,12 @@ def _rank_event_pairs(
 
     accepted: list[_OutcomeEventPair] = []
     for events in events_by_slot.values():
+        text_cache = _OutcomeTextCache(stats)
         all_pairs: list[_OutcomeEventPair] = []
         candidates_by_event: dict[_OutcomeEvent, list[_OutcomeEventPair]] = defaultdict(list)
         for idx, left in enumerate(events):
             for right in events[idx + 1 :]:
-                pair = _pair_candidates(left, right)
+                pair = _pair_candidates(left, right, text_cache=text_cache, stats=stats)
                 if pair is None:
                     continue
                 all_pairs.append(pair)
@@ -651,8 +834,9 @@ def _rank_event_pairs(
                 _pair_has_compatible_women_context(
                     pair,
                     oriented_team_ids=oriented_team_ids,
+                    text_cache=text_cache,
                 )
-                and _pair_has_women_marker_variation(pair)
+                and _pair_has_women_marker_variation_cached(pair, text_cache=text_cache)
                 and pair not in accepted
             ):
                 accepted.append(pair)
@@ -662,16 +846,28 @@ def _rank_event_pairs(
 
 def _build_football_event_resolutions(
     raw_list: list[RawOutcomeOffer],
-) -> dict[tuple[str, str, str, str, str], _OutcomeEventResolution]:
+    *,
+    stats: _FootballEventResolutionStats | None = None,
+) -> FootballEventResolutionMap:
     events = _unique_events(raw_list)
-    resolutions: dict[tuple[str, str, str, str, str], _OutcomeEventResolution] = {}
+    if stats is not None:
+        stats.football_unique_event_count = len(events)
+    resolutions: FootballEventResolutionMap = {}
+    lookup_started_at = time.perf_counter()
     for event in events:
         slot = _resolve_event_slot(event)
         if slot is None:
             continue
         resolutions[_event_key(event)] = _OutcomeEventResolution(slot=slot)
+    if stats is not None:
+        stats.football_event_slot_lookup_ms += _elapsed_ms(lookup_started_at)
 
-    for pair in _rank_event_pairs(events, resolutions=resolutions):
+    ranking_started_at = time.perf_counter()
+    ranked_pairs = _rank_event_pairs(events, resolutions=resolutions, stats=stats)
+    if stats is not None:
+        stats.football_event_pair_ranking_ms += _elapsed_ms(ranking_started_at)
+
+    for pair in ranked_pairs:
         left_key = _event_key(pair.left)
         right_key = _event_key(pair.right)
         left_resolution = resolutions.get(left_key)
@@ -683,6 +879,7 @@ def _build_football_event_resolutions(
             if pair.orientation == _REVERSED_ORIENTATION and _reversed_slots(
                 left_resolution, right_resolution
             ):
+                mutation_started_at = time.perf_counter()
                 _move_resolution_component(
                     resolutions,
                     source_resolution=right_resolution,
@@ -692,6 +889,10 @@ def _build_football_event_resolutions(
                         pair.orientation,
                     ),
                 )
+                if stats is not None:
+                    stats.football_event_slot_mutation_ms += _elapsed_ms(
+                        mutation_started_at
+                    )
                 continue
             if _pair_has_compatible_women_context(
                 pair,
@@ -701,6 +902,7 @@ def _build_football_event_resolutions(
                     right_resolution,
                 ),
             ):
+                mutation_started_at = time.perf_counter()
                 _move_resolution_component(
                     resolutions,
                     source_resolution=right_resolution,
@@ -710,6 +912,10 @@ def _build_football_event_resolutions(
                         pair.orientation,
                     ),
                 )
+                if stats is not None:
+                    stats.football_event_slot_mutation_ms += _elapsed_ms(
+                        mutation_started_at
+                    )
             continue
 
         if left_resolution is not None:
@@ -726,7 +932,10 @@ def _build_football_event_resolutions(
             )
             continue
 
+        mutation_started_at = time.perf_counter()
         slot = _create_event_slot(pair)
+        if stats is not None:
+            stats.football_event_slot_mutation_ms += _elapsed_ms(mutation_started_at)
         if slot is None:
             continue
         resolutions[left_key] = _OutcomeEventResolution(slot=slot)
@@ -868,15 +1077,22 @@ def _normalized_offer_from_resolution(
     )
 
 
-def normalize_outcome_offers_with_diagnostics(
+def normalize_outcome_offers_with_context(
     raw_list: list[RawOutcomeOffer],
-) -> tuple[
-    list[NormalizedOutcomeOffer],
-    list[UnresolvedOddsDiagnostic],
-    list[TeamReviewDiagnostic],
-]:
-    _autocreate_cross_book_football_teams(raw_list)
-    event_resolutions = _build_football_event_resolutions(raw_list)
+) -> OutcomeNormalizationResult:
+    autocreate_started_at = time.perf_counter()
+    auto_created_team_count = _autocreate_cross_book_football_teams(raw_list)
+    auto_create_football_teams_ms = _elapsed_ms(autocreate_started_at)
+
+    football_resolution_stats = _FootballEventResolutionStats()
+    event_resolution_started_at = time.perf_counter()
+    event_resolutions = _build_football_event_resolutions(
+        raw_list,
+        stats=football_resolution_stats,
+    )
+    football_event_resolution_ms = _elapsed_ms(event_resolution_started_at)
+
+    row_normalization_started_at = time.perf_counter()
     unresolved_event_rows = [
         raw
         for raw in raw_list
@@ -973,4 +1189,69 @@ def normalize_outcome_offers_with_diagnostics(
             )
         )
 
+    benchmark = OutcomeNormalizationBenchmarkOut(
+        runs=1,
+        raw_outcome_offer_count=len(raw_list),
+        normalized_outcome_offer_count=len(normalized),
+        unresolved_outcome_offer_count=len(unresolved),
+        football_unique_event_count=(
+            football_resolution_stats.football_unique_event_count
+        ),
+        football_event_pair_candidate_count=(
+            football_resolution_stats.football_event_pair_candidate_count
+        ),
+        football_event_fuzzy_score_count=(
+            football_resolution_stats.football_event_fuzzy_score_count
+        ),
+        auto_created_football_team_count=auto_created_team_count,
+        auto_create_football_teams_ms=auto_create_football_teams_ms,
+        football_event_resolution_ms=football_event_resolution_ms,
+        football_event_pair_ranking_ms=(
+            football_resolution_stats.football_event_pair_ranking_ms
+        ),
+        football_event_slot_lookup_ms=(
+            football_resolution_stats.football_event_slot_lookup_ms
+        ),
+        football_event_slot_mutation_ms=(
+            football_resolution_stats.football_event_slot_mutation_ms
+        ),
+        row_normalization_ms=_elapsed_ms(row_normalization_started_at),
+    )
+
+    return OutcomeNormalizationResult(
+        normalized=normalized,
+        unresolved=unresolved,
+        team_review_cases=team_review_cases,
+        benchmark=benchmark,
+        football_event_resolutions=event_resolutions,
+    )
+
+
+def normalize_outcome_offers_with_benchmark(
+    raw_list: list[RawOutcomeOffer],
+) -> tuple[
+    list[NormalizedOutcomeOffer],
+    list[UnresolvedOddsDiagnostic],
+    list[TeamReviewDiagnostic],
+    OutcomeNormalizationBenchmarkOut,
+]:
+    result = normalize_outcome_offers_with_context(raw_list)
+    return (
+        result.normalized,
+        result.unresolved,
+        result.team_review_cases,
+        result.benchmark,
+    )
+
+
+def normalize_outcome_offers_with_diagnostics(
+    raw_list: list[RawOutcomeOffer],
+) -> tuple[
+    list[NormalizedOutcomeOffer],
+    list[UnresolvedOddsDiagnostic],
+    list[TeamReviewDiagnostic],
+]:
+    normalized, unresolved, team_review_cases, _benchmark = (
+        normalize_outcome_offers_with_benchmark(raw_list)
+    )
     return normalized, unresolved, team_review_cases

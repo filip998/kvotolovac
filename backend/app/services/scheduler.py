@@ -10,7 +10,6 @@ from datetime import datetime
 
 from ..config import settings
 from ..models.schemas import (
-    MarketBenchmarkOut,
     NormalizedOdds,
     NormalizedOutcomeOffer,
     RawOddsData,
@@ -30,6 +29,7 @@ from ..services.market_allowlist import (
     MarketAllowlist,
     analysis_market_allowlist,
 )
+from ..services.rate_limit_policy import DetailMode, RateLimitPolicy
 from ..services.normalizer import (
     ANCHORED_AUTO_APPLY_THRESHOLD,
     log_unresolved_shared_platform_diagnostics,
@@ -48,7 +48,10 @@ from ..services.event_resolver import (
     _same_time_slot_orientation,
     resolve_and_persist_events,
 )
-from ..services.outcome_normalizer import normalize_outcome_offers_with_diagnostics
+from ..services.outcome_normalizer import (
+    FootballEventResolutionMap,
+    normalize_outcome_offers_with_context,
+)
 from ..services.notifications import (
     InAppNotificationProvider,
     NotificationService,
@@ -59,10 +62,7 @@ from ..services.scrape_window import (
     configured_lookahead_hours,
     filter_raw_odds_by_lookahead,
 )
-from ..services.scraper_benchmarks import (
-    recorder as benchmark_recorder,
-    scrape_request_context,
-)
+from ..services.scraper_benchmarks import recorder as benchmark_recorder
 from ..services.runtime_settings import (
     get_applied_scrape_settings,
     promote_pending_scrape_settings,
@@ -113,6 +113,7 @@ class _NormalizedPipelineBatch:
     outcome_offers: list[NormalizedOutcomeOffer] = field(default_factory=list)
     unresolved_odds: list[UnresolvedOddsDiagnostic] = field(default_factory=list)
     team_review_cases: list[TeamReviewDiagnostic] = field(default_factory=list)
+    football_event_resolutions: FootballEventResolutionMap = field(default_factory=dict)
 
 
 def _is_auto_alias_candidate(case) -> bool:
@@ -159,20 +160,19 @@ def _is_enabled_scraper_capability(
     return True
 
 
-def _capability_market_scope(capability: ScraperCapability) -> str:
-    return capability.lane
-
-
-def _record_phase_duration(
-    phase_durations_ms: dict[str, int] | None,
-    phase: str,
-    started_at: float,
-) -> None:
-    if phase_durations_ms is None:
-        return
-    phase_durations_ms[phase] = phase_durations_ms.get(phase, 0) + int(
-        (time.perf_counter() - started_at) * 1000
-    )
+def _runtime_detail_mode_for_scraper(
+    bookmaker_id: str,
+    runtime_settings: ScrapeRuntimeSettings,
+) -> DetailMode | None:
+    if bookmaker_id == "soccerbet":
+        return runtime_settings.soccerbet_detail_mode
+    if bookmaker_id == "merkurxtip":
+        return runtime_settings.merkurxtip_detail_mode
+    if bookmaker_id == "pinnbet":
+        return runtime_settings.pinnbet_detail_mode
+    if bookmaker_id == "betole":
+        return runtime_settings.betole_detail_mode
+    return None
 
 
 def _filter_normalized_pipeline_batch_by_market_allowlist(
@@ -204,6 +204,7 @@ def _filter_normalized_pipeline_batch_by_market_allowlist(
             )
         ],
         team_review_cases=batch.team_review_cases,
+        football_event_resolutions=batch.football_event_resolutions,
     )
 
 
@@ -245,6 +246,7 @@ def _event_resolution_batch_for_market_allowlist(
         ],
         unresolved_odds=full_batch.unresolved_odds,
         team_review_cases=full_batch.team_review_cases,
+        football_event_resolutions=full_batch.football_event_resolutions,
     )
 
 
@@ -253,34 +255,33 @@ def _normalize_pipeline_batch(
     raw_outcome_offers: list[RawOutcomeOffer],
     *,
     log_unresolved_shared_platform: bool = True,
-    phase_durations_ms: dict[str, int] | None = None,
 ) -> _NormalizedPipelineBatch:
-    started_at = time.perf_counter()
+    threshold_started_at = time.perf_counter()
     normalized_odds, unresolved_odds, team_review_cases = normalize_odds_with_diagnostics(
         raw_odds,
         log_unresolved_shared_platform=log_unresolved_shared_platform,
     )
-    _record_phase_duration(
-        phase_durations_ms,
+    benchmark_recorder.record_phase_duration(
         "normalize_threshold_odds",
-        started_at,
+        int((time.perf_counter() - threshold_started_at) * 1000),
     )
-    started_at = time.perf_counter()
-    (
-        normalized_outcome_offers,
-        unresolved_outcome_offers,
-        outcome_team_review_cases,
-    ) = normalize_outcome_offers_with_diagnostics(raw_outcome_offers)
-    _record_phase_duration(
-        phase_durations_ms,
+    outcome_started_at = time.perf_counter()
+    outcome_result = normalize_outcome_offers_with_context(raw_outcome_offers)
+    normalized_outcome_offers = outcome_result.normalized
+    unresolved_outcome_offers = outcome_result.unresolved
+    outcome_team_review_cases = outcome_result.team_review_cases
+    outcome_benchmark = outcome_result.benchmark
+    benchmark_recorder.record_phase_duration(
         "normalize_outcome_offers",
-        started_at,
+        int((time.perf_counter() - outcome_started_at) * 1000),
     )
+    benchmark_recorder.record_outcome_normalization(outcome_benchmark)
     return _NormalizedPipelineBatch(
         odds=normalized_odds,
         outcome_offers=normalized_outcome_offers,
         unresolved_odds=[*unresolved_odds, *unresolved_outcome_offers],
         team_review_cases=[*team_review_cases, *outcome_team_review_cases],
+        football_event_resolutions=outcome_result.football_event_resolutions,
     )
 
 
@@ -330,11 +331,8 @@ async def _persist_normalized_pipeline_batch(
 def _publish_benchmark_snapshot(
     batch: _NormalizedPipelineBatch,
     *,
-    raw_odds: list[RawOddsData],
-    raw_outcome_offers: list[RawOutcomeOffer],
     scrape_duration_ms: int,
     cycle_started_at: float,
-    phase_durations_ms: dict[str, int],
     seen_matches: set[str],
 ) -> None:
     matches_per_bm: dict[str, int] = defaultdict(int)
@@ -348,52 +346,12 @@ def _publish_benchmark_snapshot(
     benchmark_recorder.record_phase_durations(
         scrape_duration_ms=scrape_duration_ms,
         cycle_duration_ms=int((time.perf_counter() - cycle_started_at) * 1000),
-        phase_durations_ms=phase_durations_ms,
     )
     benchmark_recorder.publish(
         matches_per_bookmaker=dict(matches_per_bm),
         odds_per_bookmaker=dict(odds_per_bm),
         total_unique_matches=len(seen_matches),
-        market_breakdowns=_build_market_benchmark_rows(
-            raw_odds,
-            raw_outcome_offers,
-            batch,
-        ),
     )
-
-
-def _build_market_benchmark_rows(
-    raw_odds: list[RawOddsData],
-    raw_outcome_offers: list[RawOutcomeOffer],
-    batch: _NormalizedPipelineBatch,
-) -> list[MarketBenchmarkOut]:
-    raw_counts: dict[tuple[str, str, str], int] = defaultdict(int)
-    odds_counts: dict[tuple[str, str, str], int] = defaultdict(int)
-    seen_match_ids: dict[tuple[str, str, str], set[str]] = defaultdict(set)
-
-    for row in [*raw_odds, *raw_outcome_offers]:
-        raw_counts[(row.bookmaker_id, row.sport, row.market_type)] += 1
-    for row in [*batch.odds, *batch.outcome_offers]:
-        key = (row.bookmaker_id, row.sport, row.market_type)
-        odds_counts[key] += 1
-        seen_match_ids[key].add(row.match_id)
-
-    rows: list[MarketBenchmarkOut] = []
-    for bookmaker_id, sport, market_type in sorted(
-        set(raw_counts) | set(odds_counts) | set(seen_match_ids)
-    ):
-        key = (bookmaker_id, sport, market_type)
-        rows.append(
-            MarketBenchmarkOut(
-                bookmaker_id=bookmaker_id,
-                sport=sport,
-                market_type=market_type,
-                raw_items=raw_counts.get(key, 0),
-                matches_after_normalization=len(seen_match_ids.get(key, set())),
-                odds_count=odds_counts.get(key, 0),
-            )
-        )
-    return rows
 
 
 async def _load_current_canonical_analysis(
@@ -1058,22 +1016,13 @@ class Scheduler:
         scraper: BaseScraper,
         league_id: str,
         *,
-        sport: str,
-        market_scope: str,
         lookahead_hours: int,
     ) -> list[RawOddsData]:
         bookmaker_id = scraper.get_bookmaker_id()
         started_at = time.perf_counter()
 
         try:
-            with scrape_request_context(
-                bookmaker_id=bookmaker_id,
-                sport=sport,
-                lane="threshold_odds",
-                market_scope=market_scope,
-                league_id=league_id,
-            ):
-                raw = await scraper.scrape_odds(league_id)
+            raw = await scraper.scrape_odds(league_id)
             if not isinstance(raw, list):
                 raise TypeError(
                     f"Expected list[RawOddsData], got {type(raw).__name__}"
@@ -1087,10 +1036,6 @@ class Scheduler:
             self._scan_active_tasks = max(0, self._scan_active_tasks - 1)
             benchmark_recorder.record_scrape_task(
                 bookmaker_id=bookmaker_id,
-                sport=sport,
-                lane="threshold_odds",
-                market_scope=market_scope,
-                league_id=league_id,
                 duration_ms=duration_ms,
                 raw_items=0,
                 failed=True,
@@ -1114,10 +1059,6 @@ class Scheduler:
         self._scan_active_tasks = max(0, self._scan_active_tasks - 1)
         benchmark_recorder.record_scrape_task(
             bookmaker_id=bookmaker_id,
-            sport=sport,
-            lane="threshold_odds",
-            market_scope=market_scope,
-            league_id=league_id,
             duration_ms=duration_ms,
             raw_items=len(raw),
             failed=False,
@@ -1143,20 +1084,13 @@ class Scheduler:
         scraper: BaseScraper,
         sport: str,
         *,
-        market_scope: str,
         lookahead_hours: int,
     ) -> list[RawOutcomeOffer]:
         bookmaker_id = scraper.get_bookmaker_id()
         started_at = time.perf_counter()
 
         try:
-            with scrape_request_context(
-                bookmaker_id=bookmaker_id,
-                sport=sport,
-                lane="outcome_offer",
-                market_scope=market_scope,
-            ):
-                raw = await scraper.scrape_outcome_offers(sport)
+            raw = await scraper.scrape_outcome_offers(sport)
             if not isinstance(raw, list):
                 raise TypeError(
                     f"Expected list[RawOutcomeOffer], got {type(raw).__name__}"
@@ -1170,9 +1104,6 @@ class Scheduler:
             self._scan_active_tasks = max(0, self._scan_active_tasks - 1)
             benchmark_recorder.record_scrape_task(
                 bookmaker_id=bookmaker_id,
-                sport=sport,
-                lane="outcome_offer",
-                market_scope=market_scope,
                 duration_ms=duration_ms,
                 raw_items=0,
                 failed=True,
@@ -1196,9 +1127,6 @@ class Scheduler:
         self._scan_active_tasks = max(0, self._scan_active_tasks - 1)
         benchmark_recorder.record_scrape_task(
             bookmaker_id=bookmaker_id,
-            sport=sport,
-            lane="outcome_offer",
-            market_scope=market_scope,
             duration_ms=duration_ms,
             raw_items=len(raw),
             failed=False,
@@ -1224,34 +1152,49 @@ class Scheduler:
         scraper: BaseScraper,
         capability: ScraperCapability,
         runtime_settings: ScrapeRuntimeSettings,
+        rate_limit_policy: RateLimitPolicy,
     ) -> _ScrapeBatch:
-        if capability.lane == "threshold_odds":
-            if capability.league_id is None:
-                raise ValueError("threshold_odds capability is missing league_id")
-            return _ScrapeBatch(
-                capability=capability,
-                raw_odds=tuple(
-                    await self._scrape_one(
-                        scraper,
-                        capability.league_id,
-                        sport=capability.sport,
-                        market_scope=_capability_market_scope(capability),
-                        lookahead_hours=runtime_settings.scrape_lookahead_hours,
+        effective_rate_limit = rate_limit_policy.effective_rate_limit(
+            bookmaker_id=scraper.get_bookmaker_id(),
+            lane=capability.lane,
+            detail_mode=_runtime_detail_mode_for_scraper(
+                scraper.get_bookmaker_id(),
+                runtime_settings,
+            ),
+            global_rate_limit_per_second=runtime_settings.rate_limit_per_second,
+            meridian_rate_limit_per_second=runtime_settings.meridian_rate_limit_per_second,
+        )
+        with scraper.runtime_rate_limit(effective_rate_limit):
+            with benchmark_recorder.scrape_request_context(
+                bookmaker_id=scraper.get_bookmaker_id(),
+                lane=capability.lane,
+                sport=capability.sport,
+                league_id=capability.league_id,
+            ):
+                if capability.lane == "threshold_odds":
+                    if capability.league_id is None:
+                        raise ValueError("threshold_odds capability is missing league_id")
+                    return _ScrapeBatch(
+                        capability=capability,
+                        raw_odds=tuple(
+                            await self._scrape_one(
+                                scraper,
+                                capability.league_id,
+                                lookahead_hours=runtime_settings.scrape_lookahead_hours,
+                            )
+                        ),
                     )
-                ),
-            )
-        if capability.lane == "outcome_offer":
-            return _ScrapeBatch(
-                capability=capability,
-                raw_outcome_offers=tuple(
-                    await self._scrape_outcome_one(
-                        scraper,
-                        capability.sport,
-                        market_scope=_capability_market_scope(capability),
-                        lookahead_hours=runtime_settings.scrape_lookahead_hours,
+                if capability.lane == "outcome_offer":
+                    return _ScrapeBatch(
+                        capability=capability,
+                        raw_outcome_offers=tuple(
+                            await self._scrape_outcome_one(
+                                scraper,
+                                capability.sport,
+                                lookahead_hours=runtime_settings.scrape_lookahead_hours,
+                            )
+                        ),
                     )
-                ),
-            )
         raise ValueError(f"Unsupported scraper capability lane: {capability.lane}")
 
     def _apply_runtime_scraper_settings(
@@ -1266,12 +1209,18 @@ class Scheduler:
             else runtime_settings.rate_limit_per_second
         )
         scraper.set_runtime_rate_limit(rate_limit)
+        scraper.set_runtime_analysis_markets(
+            runtime_settings.analysis_markets,
+            scrape_market_scope=runtime_settings.scrape_market_scope,
+        )
         if bookmaker_id == "soccerbet":
             scraper.set_runtime_detail_mode(runtime_settings.soccerbet_detail_mode)
         if bookmaker_id == "merkurxtip":
             scraper.set_runtime_detail_mode(runtime_settings.merkurxtip_detail_mode)
         if bookmaker_id == "pinnbet":
             scraper.set_runtime_detail_mode(runtime_settings.pinnbet_detail_mode)
+        if bookmaker_id == "betole":
+            scraper.set_runtime_detail_mode(runtime_settings.betole_detail_mode)
 
     def _configure_notification_service_for_runtime_settings(
         self,
@@ -1311,23 +1260,20 @@ class Scheduler:
             self.interval_minutes = runtime_settings.scrape_interval_minutes
             cycle_started_at = time.perf_counter()
             cycle_started_at_iso = datetime.utcnow().isoformat()
-            phase_durations_ms: dict[str, int] = {}
-            scrape_duration_ms = 0
-            all_raw: list[RawOddsData] = []
-            all_raw_outcome_offers: list[RawOutcomeOffer] = []
-            normalized_batch = _NormalizedPipelineBatch()
-            seen_matches: set[str] = set()
             self._scan_phase = "starting"
             self._scan_started_at = cycle_started_at_iso
             self._scan_total_tasks = 0
             self._scan_completed_tasks = 0
             self._scan_failed_tasks = 0
             self._scan_active_tasks = 0
-            benchmark_recorder.begin_cycle(cycle_started_at_iso)
+            benchmark_recorder.begin_cycle(
+                cycle_started_at_iso,
+                runtime_settings=runtime_settings,
+            )
             logger.info("Starting scrape cycle at %s", cycle_started_at_iso)
 
-            setup_started_at = time.perf_counter()
             enabled_bookmakers = set(runtime_settings.enabled_bookmakers)
+            rate_limit_policy = RateLimitPolicy.from_settings()
             market_allowlist = analysis_market_allowlist(
                 runtime_settings.analysis_markets,
                 legacy_scrape_market_scope=runtime_settings.scrape_market_scope,
@@ -1340,6 +1286,7 @@ class Scheduler:
             for scraper in scrapers:
                 self._apply_runtime_scraper_settings(scraper, runtime_settings)
             enabled_sports = set(runtime_settings.enabled_sports)
+            scrape_started_at = time.perf_counter()
             scrape_capabilities = [
                 (scraper, capability)
                 for scraper in scrapers
@@ -1350,21 +1297,24 @@ class Scheduler:
                 )
             ]
             scrape_tasks = [
-                self._scrape_capability(scraper, capability, runtime_settings)
+                self._scrape_capability(
+                    scraper,
+                    capability,
+                    runtime_settings,
+                    rate_limit_policy,
+                )
                 for scraper, capability in scrape_capabilities
             ]
-            _record_phase_duration(phase_durations_ms, "setup", setup_started_at)
             self._scan_phase = "scraping"
             self._scan_total_tasks = len(scrape_tasks)
             self._scan_active_tasks = len(scrape_tasks)
-            scrape_started_at = time.perf_counter()
             scrape_batches = await asyncio.gather(*scrape_tasks) if scrape_tasks else []
             all_raw = [item for batch in scrape_batches for item in batch.raw_odds]
             all_raw_outcome_offers = [
                 item for batch in scrape_batches for item in batch.raw_outcome_offers
             ]
             scrape_duration_ms = int((time.perf_counter() - scrape_started_at) * 1000)
-            phase_durations_ms["scrape"] = scrape_duration_ms
+            benchmark_recorder.record_phase_duration("scrape", scrape_duration_ms)
             logger.info(
                 "Scrape phase complete: %d tasks, %d raw odds items, %d raw outcome offers in %d ms",
                 len(scrape_tasks),
@@ -1374,21 +1324,22 @@ class Scheduler:
             )
 
             self._scan_phase = "registering"
-            register_started_at = time.perf_counter()
+            registering_started_at = time.perf_counter()
             for scraper in scrapers:
                 await odds_store.upsert_bookmaker(
                     id=scraper.get_bookmaker_id(),
                     name=scraper.get_bookmaker_name(),
                 )
-            _record_phase_duration(
-                phase_durations_ms,
+            benchmark_recorder.record_phase_duration(
                 "register_bookmakers",
-                register_started_at,
+                int((time.perf_counter() - registering_started_at) * 1000),
             )
 
             self._scan_phase = "normalizing"
             normalized = []
             normalized_outcome_offers = []
+            normalized_batch = _NormalizedPipelineBatch()
+            seen_matches: set[str] = set()
             opportunities = []
             canonical_shadow = _CanonicalShadowResult()
             notified = 0
@@ -1398,28 +1349,15 @@ class Scheduler:
                 all_raw,
                 all_raw_outcome_offers,
                 log_unresolved_shared_platform=False,
-                phase_durations_ms=phase_durations_ms,
             )
-            filter_started_at = time.perf_counter()
             normalized_batch = _filter_normalized_pipeline_batch_by_market_allowlist(
                 full_normalized_batch,
                 market_allowlist,
             )
-            _record_phase_duration(
-                phase_durations_ms,
-                "filter_markets",
-                filter_started_at,
-            )
-            event_batch_started_at = time.perf_counter()
             event_resolution_batch = _event_resolution_batch_for_market_allowlist(
                 full_normalized_batch,
                 normalized_batch,
                 market_allowlist,
-            )
-            _record_phase_duration(
-                phase_durations_ms,
-                "prepare_event_resolution_batch",
-                event_batch_started_at,
             )
             normalized = normalized_batch.odds
             normalized_outcome_offers = normalized_batch.outcome_offers
@@ -1429,7 +1367,7 @@ class Scheduler:
             applied_auto_merges: list[tuple[int, int]] = []
             auto_approved_team_review_case_ids: list[int] = []
             try:
-                team_resolution_started_at = time.perf_counter()
+                team_auto_resolution_started_at = time.perf_counter()
                 (
                     same_time_auto_reviews,
                     same_time_auto_merges,
@@ -1454,37 +1392,23 @@ class Scheduler:
                     applied_auto_merges = await self._apply_canonical_merges(
                         pending_auto_merges
                     )
-                _record_phase_duration(
-                    phase_durations_ms,
+                benchmark_recorder.record_phase_duration(
                     "team_auto_resolution",
-                    team_resolution_started_at,
+                    int((time.perf_counter() - team_auto_resolution_started_at) * 1000),
                 )
                 if auto_approved_team_reviews or applied_auto_merges:
                     full_normalized_batch = _normalize_pipeline_batch(
                         all_raw,
                         all_raw_outcome_offers,
-                        phase_durations_ms=phase_durations_ms,
                     )
-                    filter_started_at = time.perf_counter()
                     normalized_batch = _filter_normalized_pipeline_batch_by_market_allowlist(
                         full_normalized_batch,
                         market_allowlist,
                     )
-                    _record_phase_duration(
-                        phase_durations_ms,
-                        "filter_markets",
-                        filter_started_at,
-                    )
-                    event_batch_started_at = time.perf_counter()
                     event_resolution_batch = _event_resolution_batch_for_market_allowlist(
                         full_normalized_batch,
                         normalized_batch,
                         market_allowlist,
-                    )
-                    _record_phase_duration(
-                        phase_durations_ms,
-                        "prepare_event_resolution_batch",
-                        event_batch_started_at,
                     )
                     normalized = normalized_batch.odds
                     normalized_outcome_offers = normalized_batch.outcome_offers
@@ -1495,7 +1419,7 @@ class Scheduler:
 
                 self._scan_phase = "storing"
                 cycle_scraped_at = datetime.utcnow().isoformat()
-                persist_started_at = time.perf_counter()
+                persist_snapshot_started_at = time.perf_counter()
                 persisted_snapshot = await odds_store.persist_scrape_snapshot_batch(
                     snapshot_at=cycle_scraped_at,
                     odds=normalized,
@@ -1503,11 +1427,6 @@ class Scheduler:
                     unresolved_odds=unresolved_odds,
                     team_review_cases=team_review_cases,
                     auto_approved_team_reviews=auto_approved_team_reviews,
-                )
-                _record_phase_duration(
-                    phase_durations_ms,
-                    "persist_snapshot",
-                    persist_started_at,
                 )
                 seen_matches = set(persisted_snapshot["seen_match_ids"])
                 snapshot_id = str(persisted_snapshot["snapshot_id"])
@@ -1517,25 +1436,36 @@ class Scheduler:
                         "auto_approved_team_review_case_ids"
                     ]
                 )
-                event_resolution_started_at = time.perf_counter()
-                await resolve_and_persist_events(
+                benchmark_recorder.record_phase_duration(
+                    "persist_snapshot",
+                    int((time.perf_counter() - persist_snapshot_started_at) * 1000),
+                )
+
+                resolve_events_started_at = time.perf_counter()
+                event_resolver_result = await resolve_and_persist_events(
                     snapshot_id=snapshot_id,
                     raw_odds=all_raw,
                     raw_outcome_offers=all_raw_outcome_offers,
                     normalized_odds=event_resolution_batch.odds,
                     normalized_outcome_offers=event_resolution_batch.outcome_offers,
+                    football_event_resolutions=(
+                        event_resolution_batch.football_event_resolutions
+                    ),
                 )
-                _record_phase_duration(
-                    phase_durations_ms,
+                benchmark_recorder.record_phase_duration(
                     "resolve_events",
-                    event_resolution_started_at,
+                    int((time.perf_counter() - resolve_events_started_at) * 1000),
                 )
+                if event_resolver_result.benchmark is not None:
+                    benchmark_recorder.record_event_resolver(
+                        event_resolver_result.benchmark
+                    )
 
                 self._scan_phase = "analyzing"
                 canonical_analysis = _CanonicalAnalysisResult()
                 canonical_analysis_failed = False
                 canonical_analysis_error: str | None = None
-                analysis_started_at = time.perf_counter()
+                analyze_started_at = time.perf_counter()
                 try:
                     canonical_analysis = await _load_current_canonical_analysis(
                         match_ids=seen_matches,
@@ -1548,15 +1478,13 @@ class Scheduler:
                     canonical_analysis_failed = True
                     canonical_analysis_error = f"{type(exc).__name__}: {exc}"
                     logger.exception("Canonical opportunity analysis failed")
-                finally:
-                    _record_phase_duration(
-                        phase_durations_ms,
-                        "analyze_opportunities",
-                        analysis_started_at,
-                    )
+                benchmark_recorder.record_phase_duration(
+                    "analyze_opportunities",
+                    int((time.perf_counter() - analyze_started_at) * 1000),
+                )
                 opportunities = list(canonical_analysis.opportunities)
 
-                opportunity_publish_started_at = time.perf_counter()
+                publish_opportunities_started_at = time.perf_counter()
                 if not canonical_analysis_failed:
                     opportunity_publish_id = await odds_store.publish_opportunities(
                         snapshot_id=snapshot_id,
@@ -1570,10 +1498,9 @@ class Scheduler:
                         snapshot_at=cycle_scraped_at,
                         error=canonical_analysis_error,
                     )
-                _record_phase_duration(
-                    phase_durations_ms,
+                benchmark_recorder.record_phase_duration(
                     "publish_opportunities",
-                    opportunity_publish_started_at,
+                    int((time.perf_counter() - publish_opportunities_started_at) * 1000),
                 )
 
                 if canonical_analysis_failed:
@@ -1592,10 +1519,10 @@ class Scheduler:
                     )
 
                 self._scan_phase = "notifying"
-                notify_started_at = time.perf_counter()
                 self._configure_notification_service_for_runtime_settings(
                     runtime_settings
                 )
+                notify_started_at = time.perf_counter()
                 notify_opportunities = self._notification_service.notify_opportunities
                 if "publish_id" in inspect.signature(notify_opportunities).parameters:
                     notified = await notify_opportunities(
@@ -1604,7 +1531,10 @@ class Scheduler:
                     )
                 else:
                     notified = await notify_opportunities(opportunities)
-                _record_phase_duration(phase_durations_ms, "notify", notify_started_at)
+                benchmark_recorder.record_phase_duration(
+                    "notify_opportunities",
+                    int((time.perf_counter() - notify_started_at) * 1000),
+                )
             except Exception:
                 await odds_store.rollback_pending_transaction()
                 rollback_failed = False
@@ -1650,11 +1580,8 @@ class Scheduler:
                 try:
                     _publish_benchmark_snapshot(
                         normalized_batch,
-                        raw_odds=all_raw,
-                        raw_outcome_offers=all_raw_outcome_offers,
                         scrape_duration_ms=scrape_duration_ms,
                         cycle_started_at=cycle_started_at,
-                        phase_durations_ms=phase_durations_ms,
                         seen_matches=seen_matches,
                     )
                 except Exception:
@@ -1678,7 +1605,6 @@ class Scheduler:
                 "notifications_sent": notified,
                 "scrape_duration_ms": scrape_duration_ms,
                 "cycle_duration_ms": int((time.perf_counter() - cycle_started_at) * 1000),
-                "phase_durations_ms": dict(phase_durations_ms),
             }
 
             logger.info("Cycle complete: %s", result)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -676,6 +677,37 @@ def create_canonical_team(
         conn.commit()
     clear_team_registry_cache(reset_bootstrap=False)
     return resolution
+
+
+def create_canonical_teams_batch(
+    *,
+    display_names: Iterable[str],
+    sport: str = DEFAULT_SPORT,
+) -> list[TeamAliasResolution]:
+    unique_names: dict[str, str] = {}
+    for display_name in display_names:
+        normalized_display_name = normalize_identity_text(display_name)
+        stripped_name = display_name.strip()
+        if normalized_display_name and stripped_name and normalized_display_name not in unique_names:
+            unique_names[normalized_display_name] = stripped_name
+    if not unique_names:
+        return []
+
+    _ensure_bootstrapped()
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        resolutions = [
+            _create_canonical_team(
+                conn,
+                sport=sport,
+                display_name=display_name,
+                source="batch_create",
+            )
+            for display_name in unique_names.values()
+        ]
+        conn.commit()
+    clear_team_registry_cache(reset_bootstrap=False)
+    return resolutions
 
 
 @lru_cache(maxsize=16)

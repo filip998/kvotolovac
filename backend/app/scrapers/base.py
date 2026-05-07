@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from typing import Literal
 
@@ -83,9 +84,26 @@ class BaseScraper(abc.ABC):
         if http_client is not None and hasattr(http_client, "rate_limit_per_second"):
             http_client.rate_limit_per_second = rate_limit_per_second
 
+    def runtime_rate_limit(self, rate_limit_per_second: float) -> AbstractContextManager[None]:
+        http_client = getattr(self, "_http", None)
+        if http_client is not None and hasattr(http_client, "use_rate_limit"):
+            return http_client.use_rate_limit(rate_limit_per_second)
+        return nullcontext()
+
     def set_runtime_detail_mode(self, detail_mode: Literal["partial", "full"]) -> None:
         if hasattr(self, "_detail_mode"):
             setattr(self, "_detail_mode", detail_mode)
+
+    def set_runtime_analysis_markets(
+        self,
+        analysis_markets: list[str],
+        *,
+        scrape_market_scope: str = "all",
+    ) -> None:
+        if hasattr(self, "_analysis_markets"):
+            setattr(self, "_analysis_markets", list(analysis_markets))
+        if hasattr(self, "_scrape_market_scope"):
+            setattr(self, "_scrape_market_scope", scrape_market_scope)
 
     @abc.abstractmethod
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:

@@ -13,9 +13,11 @@ from app.models.schemas import (
     TeamReviewCandidate,
     TeamReviewDiagnostic,
 )
+from app.services import event_resolver as event_resolver_module
 from app.services.event_resolver import (
     EventCandidate,
     _CandidateGroup,
+    _EventGroupBuildStats,
     _PairResolution,
     _comparison_team_text,
     _contextual_merge_source_ids,
@@ -26,7 +28,11 @@ from app.services.event_resolver import (
     resolve_and_persist_events,
 )
 from app.services.normalizer import generate_match_id
-from app.services.outcome_normalizer import _same_team_context, _team_qualifiers
+from app.services.outcome_normalizer import (
+    _same_team_context,
+    _team_qualifiers,
+    normalize_outcome_offers_with_context,
+)
 from app.services.team_registry import create_canonical_team
 from app.store import odds_store
 
@@ -146,6 +152,37 @@ def test_event_resolution_groups_keep_sports_separate_for_same_teams_and_time():
         ("basketball", "basketball-match"),
         ("football", "football-match"),
     }
+
+
+def test_event_resolution_benchmark_counts_pair_and_fuzzy_work():
+    candidates = [
+        EventCandidate(
+            match_id="basketball-a",
+            bookmaker_id="book-a",
+            sport="basketball",
+            start_time=START_TIME,
+            home_team_id=1,
+            away_team_id=2,
+            home_team="Basket Sibirsk",
+            away_team="CSKA Moscow",
+        ),
+        EventCandidate(
+            match_id="basketball-b",
+            bookmaker_id="book-b",
+            sport="basketball",
+            start_time=START_TIME,
+            home_team_id=3,
+            away_team_id=2,
+            home_team="Blec Sybirsk",
+            away_team="CSKA Moscow",
+        ),
+    ]
+    stats = _EventGroupBuildStats()
+
+    build_event_resolution_groups(candidates, stats=stats)
+
+    assert stats.pair_check_count == 1
+    assert stats.fuzzy_score_count >= 1
 
 
 async def _seed_bookmakers(*bookmaker_ids: str) -> None:
@@ -527,6 +564,99 @@ async def test_event_resolver_persists_football_outcome_candidates(team_registry
     assert event.sport == "football"
     assert {member.source_home_team for member in event.members} == {"Arsenal"}
     assert {member.source_away_team for member in event.members} == {"Chelsea"}
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_reuses_precomputed_football_outcome_resolutions(
+    monkeypatch,
+    team_registry_file,
+):
+    await _seed_bookmakers("maxbet", "balkanbet", "unusedbet")
+    await _seed_league("premier_league", "football")
+    raw = [
+        RawOutcomeOffer(
+            bookmaker_id="maxbet",
+            league_id="premier_league",
+            sport="football",
+            home_team="Arsenal",
+            away_team="Chelsea",
+            source_url="https://maxbet.example/football-event",
+            market_type="football_total_goals",
+            outcome_code="over",
+            odds=1.9,
+            line=2.5,
+            raw_label="Over 2.5",
+            start_time=START_TIME,
+        ),
+        RawOutcomeOffer(
+            bookmaker_id="balkanbet",
+            league_id="premier_league",
+            sport="football",
+            home_team="Arsenal",
+            away_team="Chelsea",
+            source_url="https://balkanbet.example/football-event",
+            market_type="football_total_goals",
+            outcome_code="under",
+            odds=1.95,
+            line=2.5,
+            raw_label="Under 2.5",
+            start_time=START_TIME,
+        ),
+        RawOutcomeOffer(
+            bookmaker_id="unusedbet",
+            league_id="premier_league",
+            sport="football",
+            home_team="Arsenal",
+            away_team="Chelsea",
+            source_url="https://unusedbet.example/football-event",
+            market_type="football_total_goals",
+            outcome_code="over",
+            odds=1.91,
+            line=2.5,
+            raw_label="Over 2.5",
+            start_time=START_TIME,
+        ),
+    ]
+    outcome_result = normalize_outcome_offers_with_context(raw)
+    assert len(outcome_result.football_event_resolutions) == 3
+    persisted_normalized = [
+        row
+        for row in outcome_result.normalized
+        if row.bookmaker_id in {"maxbet", "balkanbet"}
+    ]
+    for row in persisted_normalized:
+        await _store_match(row)
+
+    def fail_rebuild(*args, **kwargs):
+        raise AssertionError("football resolutions should be reused")
+
+    monkeypatch.setattr(
+        event_resolver_module,
+        "_build_football_event_resolutions",
+        fail_rebuild,
+    )
+
+    result = await resolve_and_persist_events(
+        raw_odds=[],
+        raw_outcome_offers=raw,
+        normalized_odds=[],
+        normalized_outcome_offers=persisted_normalized,
+        football_event_resolutions=outcome_result.football_event_resolutions,
+    )
+
+    assert result.resolved_events == 1
+    assert result.benchmark is not None
+    assert result.benchmark.reused_football_event_resolution_count == 2
+    event = await odds_store.get_resolved_event(
+        f"evt_{persisted_normalized[0].match_id}"
+    )
+    assert event is not None
+    assert {member.source_home_team for member in event.members} == {"Arsenal"}
+    assert {member.source_away_team for member in event.members} == {"Chelsea"}
+    assert {member.source_url for member in event.members} == {
+        "https://maxbet.example/football-event",
+        "https://balkanbet.example/football-event",
+    }
 
 
 @pytest.mark.asyncio

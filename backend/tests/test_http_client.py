@@ -7,7 +7,6 @@ import app.scrapers.http_client as http_client_module
 import httpx
 import pytest
 
-from app.config import settings
 from app.scrapers.http_client import HttpClient
 from app.services import scraper_benchmarks
 
@@ -56,53 +55,50 @@ async def test_get_json_success():
 
 
 @pytest.mark.asyncio
-async def test_get_json_records_benchmark_request_context(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "benchmark_dir", str(tmp_path / "benchmarks"))
-    scraper_benchmarks.recorder._latest = None
-    scraper_benchmarks.recorder._reset()
-    scraper_benchmarks.recorder.begin_cycle("2026-05-06T00:00:00")
-
+async def test_get_json_records_benchmark_http_timing_when_context_is_set():
     transport = MockTransport(
         responses=[
-            httpx.Response(500, json={"error": "server error"}),
+            httpx.Response(429, json={"error": "rate limited"}),
             httpx.Response(200, json={"ok": True}),
         ]
     )
     client = HttpClient(max_retries=1, backoff_base=0.01, rate_limit_per_second=0)
     client._client = httpx.AsyncClient(transport=transport)
+    scraper_benchmarks.recorder.begin_cycle("2026-05-06T12:00:00")
+    scraper_benchmarks.recorder.record_scrape_task(
+        bookmaker_id="365",
+        duration_ms=20,
+        raw_items=1,
+        failed=False,
+    )
 
-    try:
-        with scraper_benchmarks.scrape_request_context(
-            bookmaker_id="maxbet",
-            sport="football",
-            lane="outcome_offer",
-            market_scope="outcome_offer",
-        ):
-            result = await client.get_json("https://example.com/api")
+    with scraper_benchmarks.recorder.scrape_request_context(
+        bookmaker_id="365",
+        lane="outcome_offer",
+        sport="football",
+        league_id=None,
+    ):
+        result = await client.get_json("https://example.com/api")
 
-        snapshot = scraper_benchmarks.recorder.publish(
-            matches_per_bookmaker={},
-            odds_per_bookmaker={},
-            total_unique_matches=0,
-        )
-    finally:
-        scraper_benchmarks.recorder._latest = None
-        scraper_benchmarks.recorder._reset()
-        await client.close()
+    scraper_benchmarks.recorder.record_phase_durations(
+        scrape_duration_ms=20,
+        cycle_duration_ms=25,
+    )
+    snapshot = scraper_benchmarks.recorder.publish(
+        matches_per_bookmaker={"365": 1},
+        odds_per_bookmaker={"365": 1},
+        total_unique_matches=1,
+    )
 
     assert result == {"ok": True}
-    assert transport.call_count == 2
-    assert snapshot.request_count == 1
-    assert snapshot.request_attempt_count == 2
-    assert len(snapshot.requests) == 1
-    request = snapshot.requests[0]
-    assert request.bookmaker_id == "maxbet"
-    assert request.sport == "football"
-    assert request.lane == "outcome_offer"
-    assert request.market_scope == "outcome_offer"
-    assert request.method == "GET"
-    assert request.request_count == 1
-    assert request.request_attempt_count == 2
+    scraper_row = snapshot.scrapers[0]
+    assert scraper_row.http.logical_requests == 1
+    assert scraper_row.http.attempts == 2
+    assert scraper_row.http.retries == 1
+    assert scraper_row.http.errors == 0
+    assert scraper_row.http.status_classes == {"2xx": 1, "4xx": 1}
+    assert scraper_row.requests[0].total_network_ms >= 0
+    await client.close()
 
 
 @pytest.mark.asyncio
@@ -261,6 +257,15 @@ async def test_rate_limit_is_isolated_per_http_client():
     await client_b.close()
 
 
+def test_rate_limit_property_uses_context_override_for_scraper_concurrency():
+    client = HttpClient(rate_limit_per_second=3)
+
+    assert client.rate_limit_per_second == pytest.approx(3)
+    with client.use_rate_limit(0.5):
+        assert client.rate_limit_per_second == pytest.approx(0.5)
+    assert client.rate_limit_per_second == pytest.approx(3)
+
+
 class _FakeResponse:
     def __init__(self, lines: list[str], status_code: int = 200) -> None:
         self._lines = lines
@@ -324,6 +329,42 @@ async def test_get_sse_json_reads_first_json_message():
     result = await client.get_sse_json("https://example.test/stream")
 
     assert result == [[{"event_id": 1}]]
+
+
+@pytest.mark.asyncio
+async def test_get_sse_json_records_invalid_argument_benchmark_error():
+    client = HttpClient(max_retries=0)
+    scraper_benchmarks.recorder.begin_cycle("2026-05-06T12:00:00")
+    scraper_benchmarks.recorder.record_scrape_task(
+        bookmaker_id="superbet",
+        duration_ms=1,
+        raw_items=0,
+        failed=True,
+    )
+
+    with scraper_benchmarks.recorder.scrape_request_context(
+        bookmaker_id="superbet",
+        lane="outcome_offer",
+        sport="football",
+        league_id=None,
+    ):
+        with pytest.raises(ValueError, match="max_messages must be positive"):
+            await client.get_sse_json("https://example.test/stream", max_messages=0)
+
+    scraper_benchmarks.recorder.record_phase_durations(
+        scrape_duration_ms=1,
+        cycle_duration_ms=1,
+    )
+    snapshot = scraper_benchmarks.recorder.publish(
+        matches_per_bookmaker={"superbet": 0},
+        odds_per_bookmaker={"superbet": 0},
+        total_unique_matches=0,
+    )
+
+    scraper_row = snapshot.scrapers[0]
+    assert scraper_row.http.logical_requests == 1
+    assert scraper_row.http.attempts == 0
+    assert scraper_row.http.errors == 1
 
 
 @pytest.mark.asyncio
