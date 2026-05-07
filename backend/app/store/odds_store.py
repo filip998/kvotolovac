@@ -3557,6 +3557,171 @@ async def _enrich_opportunity_legs(
             )
 
 
+def _telegram_display_context(
+    *,
+    home_team: object = None,
+    away_team: object = None,
+    league_name: object = None,
+    start_time: object = None,
+    fallback_label: object = None,
+) -> dict[str, str | None]:
+    return {
+        "home_team": str(home_team) if home_team else None,
+        "away_team": str(away_team) if away_team else None,
+        "league_name": str(league_name) if league_name else None,
+        "start_time": str(start_time) if start_time else None,
+        "fallback_label": str(fallback_label) if fallback_label else None,
+    }
+
+
+async def get_telegram_opportunity_display_contexts(
+    opportunity_keys: list[tuple[str | None, str]],
+) -> dict[tuple[str | None, str], dict[str, str | None]]:
+    """Resolve display context for live Telegram opportunity notifications.
+
+    Keys are `(resolved_event_id, match_id)` pairs. Resolved event display labels
+    win first, canonical match labels second, and snapshot match labels last.
+    """
+    unique_keys = [
+        key
+        for key in dict.fromkeys(opportunity_keys)
+        if key[1]
+    ]
+    contexts = {
+        key: _telegram_display_context(fallback_label=key[0] or key[1])
+        for key in unique_keys
+    }
+    if not unique_keys:
+        return contexts
+
+    db = await get_db()
+    current_snapshot_id = await _get_current_snapshot_id(db)
+    event_ids = sorted({event_id for event_id, _match_id in unique_keys if event_id})
+    direct_match_ids = sorted({match_id for _event_id, match_id in unique_keys})
+
+    event_rows: dict[str, aiosqlite.Row] = {}
+    event_primary_match_ids: list[str] = []
+    if event_ids:
+        placeholders = _sql_placeholders(event_ids)
+        rows = await db.execute_fetchall(
+            f"""SELECT re.id AS resolved_event_id,
+                       re.primary_match_id,
+                       re.display_home_team,
+                       re.display_away_team,
+                       re.display_league_name,
+                       re.start_time AS event_start_time,
+                       m.home_team AS match_home_team,
+                       m.away_team AS match_away_team,
+                       m.start_time AS match_start_time,
+                       l.name AS match_league_name
+                FROM resolved_events re
+                LEFT JOIN matches m ON m.id = re.primary_match_id
+                LEFT JOIN leagues l ON l.id = m.league_id
+                WHERE re.id IN ({placeholders})""",
+            event_ids,
+        )
+        event_rows = {row["resolved_event_id"]: row for row in rows}
+        event_primary_match_ids = [
+            row["primary_match_id"] for row in rows if row["primary_match_id"]
+        ]
+
+    all_match_ids = sorted(set(direct_match_ids) | set(event_primary_match_ids))
+    match_contexts: dict[str, dict[str, str | None]] = {}
+    snapshot_contexts: dict[str, dict[str, str | None]] = {}
+    if all_match_ids:
+        placeholders = _sql_placeholders(all_match_ids)
+        match_rows = await db.execute_fetchall(
+            f"""SELECT m.id AS match_id,
+                       m.home_team,
+                       m.away_team,
+                       m.start_time,
+                       l.name AS league_name
+                FROM matches m
+                LEFT JOIN leagues l ON l.id = m.league_id
+                WHERE m.id IN ({placeholders})""",
+            all_match_ids,
+        )
+        match_contexts = {
+            row["match_id"]: _telegram_display_context(
+                home_team=row["home_team"],
+                away_team=row["away_team"],
+                league_name=row["league_name"],
+                start_time=row["start_time"],
+                fallback_label=row["match_id"],
+            )
+            for row in match_rows
+        }
+
+        snapshot_params: list[object] = list(all_match_ids)
+        snapshot_filter = ""
+        if current_snapshot_id is not None:
+            snapshot_filter = "AND sm.snapshot_id = ?"
+            snapshot_params.append(current_snapshot_id)
+        snapshot_rows = await db.execute_fetchall(
+            f"""SELECT sm.match_id,
+                       sm.home_team,
+                       sm.away_team,
+                       sm.start_time,
+                       l.name AS league_name
+                FROM snapshot_matches sm
+                LEFT JOIN leagues l ON l.id = sm.league_id
+                WHERE sm.match_id IN ({placeholders})
+                  {snapshot_filter}
+                ORDER BY sm.snapshot_id DESC, sm.rowid ASC""",
+            snapshot_params,
+        )
+        for row in snapshot_rows:
+            snapshot_contexts.setdefault(
+                row["match_id"],
+                _telegram_display_context(
+                    home_team=row["home_team"],
+                    away_team=row["away_team"],
+                    league_name=row["league_name"],
+                    start_time=row["start_time"],
+                    fallback_label=row["match_id"],
+                ),
+            )
+
+    for key in unique_keys:
+        event_id, match_id = key
+        if event_id and event_id in event_rows:
+            event = event_rows[event_id]
+            primary_match_id = event["primary_match_id"]
+            match_context = match_contexts.get(primary_match_id, {})
+            snapshot_context = snapshot_contexts.get(primary_match_id, {})
+            contexts[key] = _telegram_display_context(
+                home_team=(
+                    event["display_home_team"]
+                    or match_context.get("home_team")
+                    or snapshot_context.get("home_team")
+                ),
+                away_team=(
+                    event["display_away_team"]
+                    or match_context.get("away_team")
+                    or snapshot_context.get("away_team")
+                ),
+                league_name=(
+                    event["display_league_name"]
+                    or match_context.get("league_name")
+                    or snapshot_context.get("league_name")
+                ),
+                start_time=(
+                    event["event_start_time"]
+                    or match_context.get("start_time")
+                    or snapshot_context.get("start_time")
+                ),
+                fallback_label=event_id,
+            )
+            continue
+
+        contexts[key] = (
+            match_contexts.get(match_id)
+            or snapshot_contexts.get(match_id)
+            or contexts[key]
+        )
+    return contexts
+
+
 # ── Unresolved odds ────────────────────────────────────────
 
 async def insert_unresolved_odds(
