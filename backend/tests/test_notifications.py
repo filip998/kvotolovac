@@ -9,6 +9,7 @@ import pytest
 from app.database import get_db
 from app.models.schemas import (
     OpportunityLeg,
+    ResolvedEventIn,
     TelegramNotificationProfileCreate,
     TelegramNotificationProfileOut,
 )
@@ -21,66 +22,95 @@ from app.services.notifications import (
     TelegramBotClient,
     TelegramBotConfigError,
     TelegramNotificationProvider,
+    TelegramOpportunityDisplayContext,
     TelegramSendMessageResult,
+    format_telegram_opportunity,
     telegram_opportunity_fingerprint,
     telegram_profile_matches_opportunity,
 )
 from app.store import odds_store
 
 
-def _make_opportunity(gap: float, subject: str = "Lundberg") -> Opportunity:
+def _make_opportunity(
+    gap: float,
+    subject: str = "Lundberg",
+    *,
+    match_id: str = "m1",
+    resolved_event_id: str | None = None,
+    market_type: str = "player_points",
+    subject_type: str | None = "player",
+    line: float = 16.5,
+    first_bookmaker: str = "mozzart",
+    second_bookmaker: str = "meridian",
+    middle_ev: float | None = None,
+    middle_ev_rank: float | None = None,
+) -> Opportunity:
     return Opportunity(
         sport="basketball",
-        match_id="m1",
+        match_id=match_id,
+        resolved_event_id=resolved_event_id,
         opportunity_type="middle",
-        market_type="player_points",
+        market_type=market_type,
         line=None,
         profit_margin=-0.04,
         middle_profit_margin=0.5,
-        subject_type="player",
+        subject_type=subject_type,
         subject_name=subject,
+        middle_ev=middle_ev,
+        middle_ev_rank=middle_ev_rank,
         legs=[
             OpportunityLeg(
-                bookmaker_id="mozzart",
-                market_type="player_points",
+                bookmaker_id=first_bookmaker,
+                market_type=market_type,
                 outcome_code="over",
-                line=16.5,
+                line=line,
                 odds=1.85,
             ),
             OpportunityLeg(
-                bookmaker_id="meridian",
-                market_type="player_points",
+                bookmaker_id=second_bookmaker,
+                market_type=market_type,
                 outcome_code="under",
-                line=16.5 + gap,
+                line=line + gap,
                 odds=2.00,
             ),
         ],
     )
 
 
-def _make_arbitrage_opportunity(subject: str = "Match winner") -> Opportunity:
+def _make_arbitrage_opportunity(
+    subject: str = "Match winner",
+    *,
+    match_id: str | None = None,
+    resolved_event_id: str | None = None,
+    market_type: str = "football_total_goals",
+    subject_type: str | None = None,
+    line: float = 2.5,
+    profit_margin: float = 0.05,
+) -> Opportunity:
     return Opportunity(
         sport="football",
-        match_id=f"football-{subject}",
+        match_id=match_id or f"football-{subject}",
+        resolved_event_id=resolved_event_id,
         opportunity_type="same_line_arbitrage",
-        market_type="football_total_goals",
-        line=2.5,
-        profit_margin=0.05,
+        market_type=market_type,
+        line=line,
+        profit_margin=profit_margin,
         middle_profit_margin=None,
+        subject_type=subject_type,
         subject_name=subject,
         legs=[
             OpportunityLeg(
                 bookmaker_id="mozzart",
-                market_type="football_total_goals",
+                market_type=market_type,
                 outcome_code="over",
-                line=2.5,
+                line=line,
                 odds=2.10,
             ),
             OpportunityLeg(
                 bookmaker_id="meridian",
-                market_type="football_total_goals",
+                market_type=market_type,
                 outcome_code="under",
-                line=2.5,
+                line=line,
                 odds=2.10,
             ),
         ],
@@ -225,6 +255,80 @@ def test_telegram_profile_filtering_and_fingerprint_stability():
     assert telegram_opportunity_fingerprint(opportunity) != telegram_opportunity_fingerprint(
         changed_line
     )
+
+
+def test_telegram_formatter_uses_matchup_and_escapes_html():
+    opportunity = _make_arbitrage_opportunity(
+        "Aaron <Doornekamp>",
+        market_type="player_rebounds",
+        subject_type="player",
+        profit_margin=0.106,
+    )
+    text = format_telegram_opportunity(
+        opportunity,
+        TelegramOpportunityDisplayContext(
+            home_team="Gran <Canaria>",
+            away_team="Valencia & Co",
+            fallback_label="evt_hidden",
+        ),
+    )
+
+    assert "<b>Aaron &lt;Doornekamp&gt; - rebounds</b>" in text
+    assert "Gran &lt;Canaria&gt; vs Valencia &amp; Co" in text
+    assert "ROI 10.60%" in text
+    assert "1) <b>mozzart</b> Over 2.5 @ 2.1" in text
+    assert "evt_hidden" not in text
+
+
+def test_telegram_formatter_falls_back_to_internal_event_id():
+    opportunity = _make_arbitrage_opportunity(
+        "Aaron Doornekamp",
+        resolved_event_id="evt_8fda3e10a634",
+        market_type="player_rebounds",
+        subject_type="player",
+    )
+    text = format_telegram_opportunity(
+        opportunity,
+        TelegramOpportunityDisplayContext(fallback_label="evt_8fda3e10a634"),
+    )
+
+    assert "Event: <code>evt_8fda3e10a634</code>" in text
+
+
+@pytest.mark.asyncio
+async def test_telegram_display_context_prefers_resolved_event_labels():
+    await odds_store.upsert_league("euroleague", "EuroLeague", "basketball")
+    await odds_store.upsert_match(
+        id="m1",
+        league_id="euroleague",
+        home_team="Canonical Home",
+        away_team="Canonical Away",
+        sport="basketball",
+        start_time="2026-05-08T18:00:00Z",
+    )
+    event_id = await odds_store.upsert_resolved_event(
+        ResolvedEventIn(
+            id="evt_display",
+            sport="basketball",
+            start_time="2026-05-08T18:00:00Z",
+            primary_match_id="m1",
+            display_home_team="Display Home",
+            display_away_team="Display Away",
+            display_league_name="Display League",
+        )
+    )
+
+    contexts = await odds_store.get_telegram_opportunity_display_contexts(
+        [(event_id, "m1")]
+    )
+
+    assert contexts[(event_id, "m1")] == {
+        "home_team": "Display Home",
+        "away_team": "Display Away",
+        "league_name": "Display League",
+        "start_time": "2026-05-08T18:00:00Z",
+        "fallback_label": "evt_display",
+    }
 
 
 @pytest.mark.asyncio
@@ -392,12 +496,13 @@ async def test_telegram_provider_sends_non_middles_individually_and_middles_as_d
     ]
     provider = TelegramNotificationProvider(bot_client=StubTelegramClient())  # type: ignore[arg-type]
 
-    assert await provider.send_opportunities(opportunities, publish_id="pub-1") == 14
+    assert await provider.send_opportunities(opportunities, publish_id="pub-1") == 12
     assert len(calls) == 3
     assert "middle digest" not in calls[0][1]
     assert "middle digest" not in calls[1][1]
     assert "middle digest" in calls[2][1]
-    assert "+2 more covered by this digest" in calls[2][1]
+    assert "Showing 10 new middle groups of 12 matched" in calls[2][1]
+    assert "+2 matched groups remain eligible later" in calls[2][1]
 
     rows = await (await get_db()).execute_fetchall(
         """SELECT status, telegram_message_id, COUNT(*) AS c
@@ -408,7 +513,7 @@ async def test_telegram_provider_sends_non_middles_individually_and_middles_as_d
     assert [(row["status"], row["telegram_message_id"], row["c"]) for row in rows] == [
         ("sent", 1, 1),
         ("sent", 2, 1),
-        ("sent", 3, 12),
+        ("sent", 3, 10),
     ]
 
 
@@ -435,14 +540,192 @@ async def test_telegram_provider_caps_profile_messages_per_publish():
     ]
     provider = TelegramNotificationProvider(bot_client=StubTelegramClient())  # type: ignore[arg-type]
 
-    assert await provider.send_opportunities(opportunities, publish_id="pub-1") == 25
+    assert await provider.send_opportunities(opportunities, publish_id="pub-1") == 15
     assert len(calls) == 6
     assert sum("middle digest" in call for call in calls) == 1
 
     rows = await (await get_db()).execute_fetchall(
         "SELECT status, COUNT(*) AS c FROM telegram_notification_deliveries GROUP BY status"
     )
-    assert [(row["status"], row["c"]) for row in rows] == [("sent", 25)]
+    assert [(row["status"], row["c"]) for row in rows] == [("sent", 15)]
+
+
+@pytest.mark.asyncio
+async def test_telegram_provider_groups_same_player_event_market_in_one_message():
+    await odds_store.create_telegram_notification_profile(
+        TelegramNotificationProfileCreate(
+            label="Main",
+            chat_id="123",
+            min_roi_percent=1,
+        )
+    )
+    calls: list[str] = []
+
+    class StubTelegramClient:
+        async def send_message(self, *, chat_id: str, text: str) -> TelegramSendMessageResult:
+            calls.append(text)
+            return TelegramSendMessageResult(message_id=len(calls))
+
+    opportunities = [
+        _make_arbitrage_opportunity(
+            "Aaron Doornekamp",
+            match_id="m1",
+            market_type="player_rebounds",
+            subject_type="player",
+            line=4.5,
+            profit_margin=0.106,
+        ),
+        _make_arbitrage_opportunity(
+            "Aaron Doornekamp",
+            match_id="m1",
+            market_type="player_rebounds",
+            subject_type="player",
+            line=5.5,
+            profit_margin=0.0744,
+        ),
+    ]
+    provider = TelegramNotificationProvider(bot_client=StubTelegramClient())  # type: ignore[arg-type]
+
+    assert await provider.send_opportunities(opportunities, publish_id="pub-1") == 2
+    assert len(calls) == 1
+    assert "<b>Aaron Doornekamp - rebounds</b>" in calls[0]
+    assert "More new options:" in calls[0]
+    assert "ROI 7.44%" in calls[0]
+
+    rows = await (await get_db()).execute_fetchall(
+        """SELECT telegram_message_id, COUNT(*) AS c
+           FROM telegram_notification_deliveries
+           GROUP BY telegram_message_id"""
+    )
+    assert [(row["telegram_message_id"], row["c"]) for row in rows] == [(1, 2)]
+
+
+@pytest.mark.asyncio
+async def test_telegram_provider_does_not_group_different_player_markets():
+    await odds_store.create_telegram_notification_profile(
+        TelegramNotificationProfileCreate(
+            label="Main",
+            chat_id="123",
+            min_roi_percent=1,
+        )
+    )
+    calls: list[str] = []
+
+    class StubTelegramClient:
+        async def send_message(self, *, chat_id: str, text: str) -> TelegramSendMessageResult:
+            calls.append(text)
+            return TelegramSendMessageResult(message_id=len(calls))
+
+    opportunities = [
+        _make_arbitrage_opportunity(
+            "Aaron Doornekamp",
+            match_id="m1",
+            market_type="player_rebounds",
+            subject_type="player",
+            line=4.5,
+        ),
+        _make_arbitrage_opportunity(
+            "Aaron Doornekamp",
+            match_id="m1",
+            market_type="player_assists",
+            subject_type="player",
+            line=4.5,
+        ),
+    ]
+    provider = TelegramNotificationProvider(bot_client=StubTelegramClient())  # type: ignore[arg-type]
+
+    assert await provider.send_opportunities(opportunities, publish_id="pub-1") == 2
+    assert len(calls) == 2
+    assert "More new options:" not in "\n".join(calls)
+
+
+@pytest.mark.asyncio
+async def test_telegram_provider_does_not_group_subjectless_event_markets():
+    await odds_store.create_telegram_notification_profile(
+        TelegramNotificationProfileCreate(
+            label="Main",
+            chat_id="123",
+            min_roi_percent=1,
+        )
+    )
+    calls: list[str] = []
+
+    class StubTelegramClient:
+        async def send_message(self, *, chat_id: str, text: str) -> TelegramSendMessageResult:
+            calls.append(text)
+            return TelegramSendMessageResult(message_id=len(calls))
+
+    opportunities = [
+        _make_arbitrage_opportunity(
+            "Event totals",
+            match_id="football-match",
+            line=2.5,
+        ),
+        _make_arbitrage_opportunity(
+            "Event totals",
+            match_id="football-match",
+            line=3.5,
+        ),
+    ]
+    provider = TelegramNotificationProvider(bot_client=StubTelegramClient())  # type: ignore[arg-type]
+
+    assert await provider.send_opportunities(opportunities, publish_id="pub-1") == 2
+    assert len(calls) == 2
+    assert "More new options:" not in "\n".join(calls)
+
+
+@pytest.mark.asyncio
+async def test_telegram_provider_applies_top_limit_to_groups_not_raw_options():
+    await odds_store.create_telegram_notification_profile(
+        TelegramNotificationProfileCreate(
+            label="Main",
+            chat_id="123",
+            min_roi_percent=1,
+        )
+    )
+    calls: list[str] = []
+
+    class StubTelegramClient:
+        async def send_message(self, *, chat_id: str, text: str) -> TelegramSendMessageResult:
+            calls.append(text)
+            return TelegramSendMessageResult(message_id=len(calls))
+
+    opportunities = [
+        _make_arbitrage_opportunity(
+            "Player A",
+            match_id="m1",
+            market_type="player_rebounds",
+            subject_type="player",
+            line=line,
+            profit_margin=margin,
+        )
+        for line, margin in [(4.5, 0.30), (5.5, 0.29), (6.5, 0.28)]
+    ]
+    opportunities.extend(
+        _make_arbitrage_opportunity(
+            f"Player {name}",
+            match_id=f"m{name}",
+            market_type="player_rebounds",
+            subject_type="player",
+            profit_margin=margin,
+        )
+        for name, margin in [
+            ("B", 0.27),
+            ("C", 0.26),
+            ("D", 0.25),
+            ("E", 0.24),
+            ("F", 0.23),
+        ]
+    )
+    provider = TelegramNotificationProvider(bot_client=StubTelegramClient())  # type: ignore[arg-type]
+
+    assert await provider.send_opportunities(opportunities, publish_id="pub-1") == 7
+    assert len(calls) == 5
+    combined = "\n".join(calls)
+    for expected in ("Player A", "Player B", "Player C", "Player D", "Player E"):
+        assert expected in combined
+    assert "Player F" not in combined
+    assert calls[0].index("ROI 29.00%") < calls[0].index("ROI 28.00%")
 
 
 @pytest.mark.asyncio
