@@ -4,6 +4,7 @@ import pytest
 
 from app.models.schemas import NormalizedOdds, NormalizedOutcomeOffer
 from app.services.analyzer import find_threshold_gaps
+from app.services import middle_ev
 from app.services.canonical_analyzer import (
     analyze_canonical_offers,
     analyze_canonical_offers_with_benchmark,
@@ -484,6 +485,48 @@ def test_canonical_analysis_benchmark_counts_rule_paths_without_changing_output(
     assert benchmark.publishable_candidate_count == sum(
         row.publishable_candidate_count for row in benchmark.rules
     )
+
+
+def test_canonical_line_middle_counts_only_feasible_pairs_and_reuses_model(monkeypatch):
+    original_consensus_points = middle_ev._consensus_points
+    original_fit_normal = middle_ev._fit_normal
+    calls = {"consensus": 0, "fit": 0}
+
+    def counting_consensus_points(quotes):
+        calls["consensus"] += 1
+        return original_consensus_points(quotes)
+
+    def counting_fit_normal(points):
+        calls["fit"] += 1
+        return original_fit_normal(points)
+
+    monkeypatch.setattr(middle_ev, "_consensus_points", counting_consensus_points)
+    monkeypatch.setattr(middle_ev, "_fit_normal", counting_fit_normal)
+
+    offers = []
+    for index, line in enumerate([8.5, 10.5, 12.5, 14.5]):
+        offers.extend(
+            _odds(
+                f"book-{index}",
+                "Lundberg",
+                line,
+                over=2.00,
+                under=2.00,
+            )
+        )
+
+    result = analyze_canonical_offers_with_benchmark(
+        offers,
+        max_middle_opportunities_per_market=100,
+    )
+    rules = {
+        (row.rule, row.market_type): row
+        for row in result.benchmark.rules
+    }
+    middle = rules[("line_middle", "player_points")]
+
+    assert middle.candidate_pair_count == 6
+    assert calls == {"consensus": 1, "fit": 1}
 
 
 def test_canonical_same_bookmaker_alternate_lines_are_ignored():

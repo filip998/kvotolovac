@@ -63,6 +63,198 @@ class _ConsensusPoint:
     observations: int
 
 
+class MiddleEstimator:
+    """Reusable estimator for all middle candidates in one market group."""
+
+    def __init__(
+        self,
+        *,
+        sport: str,
+        market_type: str,
+        market_quotes: list[MiddleMarketQuote],
+    ) -> None:
+        self.sport = sport
+        self.market_type = market_type
+        self.market_quotes = tuple(market_quotes)
+        self.family = _model_family(sport=sport, market_type=market_type)
+        self._consensus_loaded = False
+        self._consensus_points: list[_ConsensusPoint] = []
+        self._model_loaded = False
+        self._model: dict[str, Any] | None = None
+
+    def estimate(
+        self,
+        *,
+        low_line: float,
+        high_line: float,
+        low_odds: float,
+        high_odds: float,
+        outside_margin: float | None,
+        middle_margin: float | None,
+        min_gap: float = 0.0,
+        outside_margin_floor: float | None = None,
+    ) -> MiddleEstimate:
+        """Estimate one over-low/under-high middle candidate."""
+        gap = high_line - low_line
+        fallback_min_gap = max(min_gap, FALLBACK_MIDDLE_MIN_GAP)
+        base_diagnostics: dict[str, Any] = {
+            "gap": round(gap, 4),
+            "fallback_min_gap": fallback_min_gap,
+            "fallback_min_leg_odds": FALLBACK_MIDDLE_MIN_LEG_ODDS,
+            "staking": "equal_payout",
+        }
+        if (
+            gap <= 0
+            or low_odds <= 0
+            or high_odds <= 0
+            or outside_margin is None
+            or middle_margin is None
+        ):
+            return _fallback_estimate(
+                should_publish=False,
+                reason="invalid_candidate",
+                diagnostics=base_diagnostics,
+            )
+
+        if outside_margin_floor is not None and outside_margin < outside_margin_floor:
+            return _fallback_estimate(
+                should_publish=False,
+                reason="outside_margin_below_floor",
+                diagnostics={
+                    **base_diagnostics,
+                    "outside_margin_floor": outside_margin_floor,
+                },
+            )
+
+        if self.family is None:
+            return _fallback_from_candidate(
+                reason="unsupported_market_family",
+                diagnostics=base_diagnostics,
+                gap=gap,
+                low_odds=low_odds,
+                high_odds=high_odds,
+                min_gap=fallback_min_gap,
+            )
+
+        if not (_is_half_point_line(low_line) and _is_half_point_line(high_line)):
+            return _fallback_from_candidate(
+                reason="unsupported_line_fraction",
+                diagnostics={**base_diagnostics, "model_family": self.family},
+                gap=gap,
+                low_odds=low_odds,
+                high_odds=high_odds,
+                min_gap=fallback_min_gap,
+            )
+
+        consensus = self.consensus_points()
+        if not consensus:
+            return _fallback_from_candidate(
+                reason="no_same_book_consensus_points",
+                diagnostics={**base_diagnostics, "model_family": self.family},
+                gap=gap,
+                low_odds=low_odds,
+                high_odds=high_odds,
+                min_gap=fallback_min_gap,
+            )
+
+        model = self.model()
+        if model is None:
+            return _fallback_from_candidate(
+                reason="model_fit_failed",
+                diagnostics={
+                    **base_diagnostics,
+                    "model_family": self.family,
+                    "consensus_points": len(consensus),
+                    "consensus_lines": [point.line for point in consensus],
+                },
+                gap=gap,
+                low_odds=low_odds,
+                high_odds=high_odds,
+                min_gap=fallback_min_gap,
+            )
+
+        hit_probability = _middle_hit_probability(
+            family=self.family,
+            low_line=low_line,
+            high_line=high_line,
+            parameter_a=model["parameter_a"],
+            parameter_b=model.get("parameter_b"),
+        )
+        if hit_probability is None:
+            return _fallback_from_candidate(
+                reason="hit_probability_failed",
+                diagnostics={**base_diagnostics, "model_family": self.family},
+                gap=gap,
+                low_odds=low_odds,
+                high_odds=high_odds,
+                min_gap=fallback_min_gap,
+            )
+
+        expected_roi = hit_probability * middle_margin + (
+            1.0 - hit_probability
+        ) * outside_margin
+        confidence = str(model["confidence"])
+        rank_score = expected_roi * _CONFIDENCE_PENALTY.get(confidence, 0.5)
+        diagnostics = {
+            **base_diagnostics,
+            "mode": "fitted",
+            "model_family": self.family,
+            "confidence": confidence,
+            "consensus_points": len(consensus),
+            "consensus_observations": sum(point.observations for point in consensus),
+            "rmse": model["rmse"],
+            "rank_penalty": _CONFIDENCE_PENALTY.get(confidence, 0.5),
+        }
+        if self.family == "normal":
+            diagnostics.update(
+                {"mu": model["parameter_a"], "sigma": model["parameter_b"]}
+            )
+        else:
+            diagnostics.update({"lambda": model["parameter_a"]})
+        if model.get("monotonic_adjusted"):
+            diagnostics["monotonic_adjusted"] = True
+
+        return MiddleEstimate(
+            should_publish=expected_roi > 0,
+            hit_probability=round(hit_probability, 4),
+            expected_roi=round(expected_roi, 4),
+            confidence=confidence,
+            diagnostics=diagnostics,
+            rank_score=round(rank_score, 6),
+        )
+
+    def consensus_points(self) -> list[_ConsensusPoint]:
+        if not self._consensus_loaded:
+            self._consensus_points = _consensus_points(list(self.market_quotes))
+            self._consensus_loaded = True
+        return self._consensus_points
+
+    def model(self) -> dict[str, Any] | None:
+        if not self._model_loaded:
+            consensus = self.consensus_points()
+            if not consensus or self.family is None:
+                self._model = None
+            elif self.family == "normal":
+                self._model = _fit_normal(consensus)
+            else:
+                self._model = _fit_poisson(consensus)
+            self._model_loaded = True
+        return self._model
+
+
+def build_middle_estimator(
+    *,
+    sport: str,
+    market_type: str,
+    market_quotes: list[MiddleMarketQuote],
+) -> MiddleEstimator:
+    return MiddleEstimator(
+        sport=sport,
+        market_type=market_type,
+        market_quotes=market_quotes,
+    )
+
+
 def estimate_middle(
     *,
     sport: str,
@@ -78,130 +270,20 @@ def estimate_middle(
     outside_margin_floor: float | None = None,
 ) -> MiddleEstimate:
     """Estimate hit probability and EV for an over-low/under-high middle candidate."""
-    gap = high_line - low_line
-    fallback_min_gap = max(min_gap, FALLBACK_MIDDLE_MIN_GAP)
-    base_diagnostics: dict[str, Any] = {
-        "gap": round(gap, 4),
-        "fallback_min_gap": fallback_min_gap,
-        "fallback_min_leg_odds": FALLBACK_MIDDLE_MIN_LEG_ODDS,
-        "staking": "equal_payout",
-    }
-    if (
-        gap <= 0
-        or low_odds <= 0
-        or high_odds <= 0
-        or outside_margin is None
-        or middle_margin is None
-    ):
-        return _fallback_estimate(
-            should_publish=False,
-            reason="invalid_candidate",
-            diagnostics=base_diagnostics,
-        )
-
-    if outside_margin_floor is not None and outside_margin < outside_margin_floor:
-        return _fallback_estimate(
-            should_publish=False,
-            reason="outside_margin_below_floor",
-            diagnostics={**base_diagnostics, "outside_margin_floor": outside_margin_floor},
-        )
-
-    family = _model_family(sport=sport, market_type=market_type)
-    if family is None:
-        return _fallback_from_candidate(
-            reason="unsupported_market_family",
-            diagnostics=base_diagnostics,
-            gap=gap,
-            low_odds=low_odds,
-            high_odds=high_odds,
-            min_gap=fallback_min_gap,
-        )
-
-    if not (_is_half_point_line(low_line) and _is_half_point_line(high_line)):
-        return _fallback_from_candidate(
-            reason="unsupported_line_fraction",
-            diagnostics={**base_diagnostics, "model_family": family},
-            gap=gap,
-            low_odds=low_odds,
-            high_odds=high_odds,
-            min_gap=fallback_min_gap,
-        )
-
-    consensus = _consensus_points(market_quotes)
-    if not consensus:
-        return _fallback_from_candidate(
-            reason="no_same_book_consensus_points",
-            diagnostics={**base_diagnostics, "model_family": family},
-            gap=gap,
-            low_odds=low_odds,
-            high_odds=high_odds,
-            min_gap=fallback_min_gap,
-        )
-
-    if family == "normal":
-        model = _fit_normal(consensus)
-    else:
-        model = _fit_poisson(consensus)
-
-    if model is None:
-        return _fallback_from_candidate(
-            reason="model_fit_failed",
-            diagnostics={
-                **base_diagnostics,
-                "model_family": family,
-                "consensus_points": len(consensus),
-                "consensus_lines": [point.line for point in consensus],
-            },
-            gap=gap,
-            low_odds=low_odds,
-            high_odds=high_odds,
-            min_gap=fallback_min_gap,
-        )
-
-    hit_probability = _middle_hit_probability(
-        family=family,
+    estimator = build_middle_estimator(
+        sport=sport,
+        market_type=market_type,
+        market_quotes=market_quotes,
+    )
+    return estimator.estimate(
         low_line=low_line,
         high_line=high_line,
-        parameter_a=model["parameter_a"],
-        parameter_b=model.get("parameter_b"),
-    )
-    if hit_probability is None:
-        return _fallback_from_candidate(
-            reason="hit_probability_failed",
-            diagnostics={**base_diagnostics, "model_family": family},
-            gap=gap,
-            low_odds=low_odds,
-            high_odds=high_odds,
-            min_gap=fallback_min_gap,
-        )
-
-    expected_roi = hit_probability * middle_margin + (1.0 - hit_probability) * outside_margin
-    confidence = str(model["confidence"])
-    rank_score = expected_roi * _CONFIDENCE_PENALTY.get(confidence, 0.5)
-    diagnostics = {
-        **base_diagnostics,
-        "mode": "fitted",
-        "model_family": family,
-        "confidence": confidence,
-        "consensus_points": len(consensus),
-        "consensus_observations": sum(point.observations for point in consensus),
-        "rmse": model["rmse"],
-        "rank_penalty": _CONFIDENCE_PENALTY.get(confidence, 0.5),
-    }
-    if family == "normal":
-        diagnostics.update({"mu": model["parameter_a"], "sigma": model["parameter_b"]})
-    else:
-        diagnostics.update({"lambda": model["parameter_a"]})
-    if model.get("monotonic_adjusted"):
-        diagnostics["monotonic_adjusted"] = True
-
-    return MiddleEstimate(
-        should_publish=expected_roi > 0,
-        hit_probability=round(hit_probability, 4),
-        expected_roi=round(expected_roi, 4),
-        confidence=confidence,
-        diagnostics=diagnostics,
-        rank_score=round(rank_score, 6),
+        low_odds=low_odds,
+        high_odds=high_odds,
+        outside_margin=outside_margin,
+        middle_margin=middle_margin,
+        min_gap=min_gap,
+        outside_margin_floor=outside_margin_floor,
     )
 
 
