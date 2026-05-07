@@ -10,6 +10,7 @@ import time
 from rapidfuzz import fuzz
 
 from ..models.schemas import (
+    BenchmarkEventCoverageOut,
     EventResolverBenchmarkOut,
     EventReviewCaseIn,
     NormalizedOdds,
@@ -661,6 +662,129 @@ class EventResolverResult:
     resolved_event_members: int
     review_cases: int
     benchmark: EventResolverBenchmarkOut | None = None
+    coverage: tuple[BenchmarkEventCoverageOut, ...] = ()
+
+
+_SourceEventKey = tuple[str, str, str]
+
+
+def _source_event_key(
+    *,
+    bookmaker_id: str,
+    sport: str,
+    match_id: str,
+) -> _SourceEventKey:
+    return bookmaker_id, sport, match_id
+
+
+def _normalized_source_event_keys(
+    normalized_odds: list[NormalizedOdds],
+    normalized_outcome_offers: list[NormalizedOutcomeOffer],
+) -> set[_SourceEventKey]:
+    return {
+        _source_event_key(
+            bookmaker_id=row.bookmaker_id,
+            sport=row.sport,
+            match_id=row.match_id,
+        )
+        for row in [*normalized_odds, *normalized_outcome_offers]
+    }
+
+
+def _review_source_event_keys(
+    review_cases: list[EventReviewCaseIn],
+) -> set[_SourceEventKey]:
+    keys: set[_SourceEventKey] = set()
+    for review_case in review_cases:
+        variants = review_case.metadata.get("source_variants")
+        if not isinstance(variants, list):
+            continue
+        for variant in variants:
+            if not isinstance(variant, dict):
+                continue
+            bookmaker_id = variant.get("bookmaker_id")
+            match_id = variant.get("match_id")
+            if isinstance(bookmaker_id, str) and isinstance(match_id, str):
+                keys.add(
+                    _source_event_key(
+                        bookmaker_id=bookmaker_id,
+                        sport=review_case.sport,
+                        match_id=match_id,
+                    )
+                )
+    return keys
+
+
+def _event_coverage_benchmark(
+    *,
+    normalized_odds: list[NormalizedOdds],
+    normalized_outcome_offers: list[NormalizedOutcomeOffer],
+    resolutions: list[EventResolutionGroup],
+    review_cases: list[EventReviewCaseIn],
+) -> tuple[BenchmarkEventCoverageOut, ...]:
+    source_events = _normalized_source_event_keys(
+        normalized_odds,
+        normalized_outcome_offers,
+    )
+    matched_events: set[_SourceEventKey] = set()
+    singleton_events: set[_SourceEventKey] = set()
+
+    for resolution in resolutions:
+        has_cross_bookmaker_match = (
+            len({member.bookmaker_id for member in resolution.members}) >= 2
+        )
+        for member in resolution.members:
+            key = _source_event_key(
+                bookmaker_id=member.bookmaker_id,
+                sport=member.sport,
+                match_id=member.match_id,
+            )
+            source_events.add(key)
+            if has_cross_bookmaker_match:
+                matched_events.add(key)
+            else:
+                singleton_events.add(key)
+
+    singleton_events -= matched_events
+    grouped_events = matched_events | singleton_events
+    ungrouped_events = source_events - grouped_events
+    review_events = _review_source_event_keys(review_cases) & source_events
+
+    rows: list[BenchmarkEventCoverageOut] = []
+    bucket_keys = sorted(
+        {(bookmaker_id, sport) for bookmaker_id, sport, _ in source_events}
+    )
+    for bookmaker_id, sport in bucket_keys:
+        bucket_source_events = {
+            key
+            for key in source_events
+            if key[0] == bookmaker_id and key[1] == sport
+        }
+        normalized_count = len(bucket_source_events)
+        matched_count = len(bucket_source_events & matched_events)
+        unmatched_count = len(bucket_source_events & singleton_events)
+        ungrouped_count = len(bucket_source_events & ungrouped_events)
+        in_review_count = len(bucket_source_events & review_events)
+        not_matched_count = unmatched_count + ungrouped_count
+        match_rate = (
+            round(matched_count / normalized_count, 4)
+            if normalized_count
+            else 0.0
+        )
+        rows.append(
+            BenchmarkEventCoverageOut(
+                bookmaker_id=bookmaker_id,
+                sport=sport,
+                normalized_events=normalized_count,
+                matched_events=matched_count,
+                unmatched_events=unmatched_count,
+                ungrouped_events=ungrouped_count,
+                in_review_events=in_review_count,
+                not_matched_events=not_matched_count,
+                match_rate=match_rate,
+            )
+        )
+    return tuple(rows)
 
 
 def _league_source(raw_league_id: str, bookmaker_id: str) -> tuple[str, str]:
@@ -1931,6 +2055,12 @@ async def resolve_and_persist_events(
         stats=group_stats,
     )
     build_event_resolution_groups_ms = _elapsed_ms(grouping_started_at)
+    coverage = _event_coverage_benchmark(
+        normalized_odds=normalized_odds,
+        normalized_outcome_offers=normalized_outcome_offers,
+        resolutions=resolutions,
+        review_cases=review_cases,
+    )
 
     persistence_started_at = time.perf_counter()
     result = await persist_event_resolution_groups(
@@ -1972,4 +2102,5 @@ async def resolve_and_persist_events(
         resolved_event_members=result.resolved_event_members,
         review_cases=result.review_cases,
         benchmark=benchmark,
+        coverage=coverage,
     )

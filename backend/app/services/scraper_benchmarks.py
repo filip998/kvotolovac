@@ -24,6 +24,7 @@ from typing import Iterator, Optional
 
 from ..config import settings
 from ..models.schemas import (
+    BenchmarkEventCoverageOut,
     BenchmarkRuntimeMetadataOut,
     CycleBenchmarkOut,
     EventResolverBenchmarkOut,
@@ -32,6 +33,7 @@ from ..models.schemas import (
     ScrapeRuntimeSettings,
     ScraperBenchmarkOut,
     ScraperRequestBenchmarkOut,
+    SportBenchmarkOut,
 )
 from .rate_limit_policy import RateLimitPolicy
 
@@ -205,6 +207,56 @@ def _merge_outcome_metrics(
     )
 
 
+def _cycle_sport_totals(scrapers: list[ScraperBenchmarkOut]) -> list[SportBenchmarkOut]:
+    totals: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for scraper in scrapers:
+        for sport_row in scraper.sports:
+            bucket = totals[sport_row.sport]
+            bucket["duration_ms"] += sport_row.duration_ms
+            bucket["raw_items"] += sport_row.raw_items
+            bucket["matches_after_normalization"] += sport_row.matches_after_normalization
+            bucket["odds_count"] += sport_row.odds_count
+            bucket["leagues_attempted"] += sport_row.leagues_attempted
+            bucket["leagues_failed"] += sport_row.leagues_failed
+            bucket["matched_events"] += sport_row.matched_events
+            bucket["unmatched_events"] += sport_row.unmatched_events
+            bucket["ungrouped_events"] += sport_row.ungrouped_events
+            bucket["in_review_events"] += sport_row.in_review_events
+            bucket["not_matched_events"] += sport_row.not_matched_events
+
+    rows: list[SportBenchmarkOut] = []
+    for sport, bucket in sorted(totals.items()):
+        attempted = bucket["leagues_attempted"]
+        normalized_events = bucket["matches_after_normalization"]
+        rows.append(
+            SportBenchmarkOut(
+                sport=sport,
+                duration_ms=bucket["duration_ms"],
+                raw_items=bucket["raw_items"],
+                matches_after_normalization=normalized_events,
+                odds_count=bucket["odds_count"],
+                leagues_attempted=attempted,
+                leagues_failed=bucket["leagues_failed"],
+                failure_rate=(
+                    round(bucket["leagues_failed"] / attempted, 4)
+                    if attempted
+                    else 0.0
+                ),
+                matched_events=bucket["matched_events"],
+                unmatched_events=bucket["unmatched_events"],
+                ungrouped_events=bucket["ungrouped_events"],
+                in_review_events=bucket["in_review_events"],
+                not_matched_events=bucket["not_matched_events"],
+                match_rate=(
+                    round(bucket["matched_events"] / normalized_events, 4)
+                    if normalized_events
+                    else 0.0
+                ),
+            )
+        )
+    return rows
+
+
 class CycleBenchmarkRecorder:
     """Accumulates per-scraper stats for one in-flight cycle, then publishes."""
 
@@ -219,6 +271,9 @@ class CycleBenchmarkRecorder:
         self._scrape_duration_ms: int = 0
         self._cycle_duration_ms: int = 0
         self._buckets: dict[str, _BookmakerAcc] = defaultdict(_BookmakerAcc)
+        self._sport_buckets: dict[tuple[str, str], _BookmakerAcc] = defaultdict(
+            _BookmakerAcc
+        )
         self._http_by_bookmaker: dict[str, _HttpTimingAcc] = defaultdict(_HttpTimingAcc)
         self._http_by_request: dict[
             tuple[str, str | None, str | None, str | None, str],
@@ -251,6 +306,8 @@ class CycleBenchmarkRecorder:
         duration_ms: int,
         raw_items: int,
         failed: bool,
+        sport: str | None = None,
+        lane: str | None = None,
     ) -> None:
         with self._lock:
             acc = self._buckets[bookmaker_id]
@@ -259,6 +316,13 @@ class CycleBenchmarkRecorder:
             acc.leagues_attempted += 1
             if failed:
                 acc.leagues_failed += 1
+            if sport:
+                sport_acc = self._sport_buckets[(bookmaker_id, sport)]
+                sport_acc.duration_ms += int(duration_ms)
+                sport_acc.raw_items += int(raw_items)
+                sport_acc.leagues_attempted += 1
+                if failed:
+                    sport_acc.leagues_failed += 1
 
     def record_phase_durations(
         self, *, scrape_duration_ms: int, cycle_duration_ms: int
@@ -355,6 +419,11 @@ class CycleBenchmarkRecorder:
         matches_per_bookmaker: dict[str, int],
         odds_per_bookmaker: dict[str, int],
         total_unique_matches: int,
+        matches_per_bookmaker_sport: dict[tuple[str, str], int] | None = None,
+        odds_per_bookmaker_sport: dict[tuple[str, str], int] | None = None,
+        event_coverage: list[BenchmarkEventCoverageOut]
+        | tuple[BenchmarkEventCoverageOut, ...]
+        | None = None,
     ) -> CycleBenchmarkOut:
         """Build the snapshot, replace the in-memory latest, and write files.
 
@@ -363,14 +432,27 @@ class CycleBenchmarkRecorder:
         the per-scraper view). ``total_unique_matches`` is the globally deduped count
         and matches ``len(seen_matches)`` from the scheduler cycle result.
         """
+        matches_per_bookmaker_sport = matches_per_bookmaker_sport or {}
+        odds_per_bookmaker_sport = odds_per_bookmaker_sport or {}
+        coverage_rows = list(event_coverage or [])
+        coverage_by_key = {
+            (row.bookmaker_id, row.sport): row for row in coverage_rows
+        }
         with self._lock:
             cycle_finished_at = datetime.utcnow().isoformat()
             scrapers: list[ScraperBenchmarkOut] = []
+            sport_keys = (
+                set(self._sport_buckets)
+                | set(matches_per_bookmaker_sport)
+                | set(odds_per_bookmaker_sport)
+                | set(coverage_by_key)
+            )
             all_keys = (
                 set(self._buckets)
                 | set(matches_per_bookmaker)
                 | set(odds_per_bookmaker)
                 | set(self._http_by_bookmaker)
+                | {bookmaker_id for bookmaker_id, _sport in sport_keys}
             )
             for bm in sorted(all_keys):
                 acc = self._buckets.get(bm) or _BookmakerAcc()
@@ -405,6 +487,50 @@ class CycleBenchmarkRecorder:
                 failure_rate = (
                     (acc.leagues_failed / attempted) if attempted > 0 else 0.0
                 )
+                sport_rows: list[SportBenchmarkOut] = []
+                for _, sport in sorted(key for key in sport_keys if key[0] == bm):
+                    sport_acc = self._sport_buckets.get((bm, sport)) or _BookmakerAcc()
+                    sport_attempted = sport_acc.leagues_attempted
+                    sport_failure_rate = (
+                        (sport_acc.leagues_failed / sport_attempted)
+                        if sport_attempted > 0
+                        else 0.0
+                    )
+                    coverage = coverage_by_key.get((bm, sport))
+                    sport_rows.append(
+                        SportBenchmarkOut(
+                            sport=sport,
+                            duration_ms=sport_acc.duration_ms,
+                            raw_items=sport_acc.raw_items,
+                            matches_after_normalization=(
+                                coverage.normalized_events
+                                if coverage is not None
+                                else int(matches_per_bookmaker_sport.get((bm, sport), 0))
+                            ),
+                            odds_count=int(odds_per_bookmaker_sport.get((bm, sport), 0)),
+                            leagues_attempted=sport_attempted,
+                            leagues_failed=sport_acc.leagues_failed,
+                            failure_rate=round(sport_failure_rate, 4),
+                            matched_events=(
+                                coverage.matched_events if coverage is not None else 0
+                            ),
+                            unmatched_events=(
+                                coverage.unmatched_events if coverage is not None else 0
+                            ),
+                            ungrouped_events=(
+                                coverage.ungrouped_events if coverage is not None else 0
+                            ),
+                            in_review_events=(
+                                coverage.in_review_events if coverage is not None else 0
+                            ),
+                            not_matched_events=(
+                                coverage.not_matched_events if coverage is not None else 0
+                            ),
+                            match_rate=(
+                                coverage.match_rate if coverage is not None else 0.0
+                            ),
+                        )
+                    )
                 scrapers.append(
                     ScraperBenchmarkOut(
                         bookmaker_id=bm,
@@ -419,9 +545,11 @@ class CycleBenchmarkRecorder:
                         failure_rate=round(failure_rate, 4),
                         http=self._http_by_bookmaker[bm].to_model(),
                         requests=request_rows,
+                        sports=sport_rows,
                     )
                 )
 
+            cycle_sports = _cycle_sport_totals(scrapers)
             snapshot = CycleBenchmarkOut(
                 cycle_started_at=self._cycle_started_at,
                 cycle_finished_at=cycle_finished_at,
@@ -434,6 +562,11 @@ class CycleBenchmarkRecorder:
                 phase_durations_ms=dict(sorted(self._phase_durations_ms.items())),
                 outcome_normalization=self._outcome_normalization,
                 event_resolver=self._event_resolver,
+                event_coverage=sorted(
+                    coverage_rows,
+                    key=lambda row: (row.sport, row.bookmaker_id),
+                ),
+                sports=cycle_sports,
                 scrapers=scrapers,
             )
             self._latest = snapshot

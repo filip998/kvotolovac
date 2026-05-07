@@ -17,6 +17,7 @@ from app.models.schemas import (
 from app.services import event_resolver as event_resolver_module
 from app.services.event_resolver import (
     EventCandidate,
+    EventResolutionGroup,
     _CandidateGroup,
     _EventGroupBuildStats,
     _FUZZY_ORIENTATION_MARGIN,
@@ -24,6 +25,7 @@ from app.services.event_resolver import (
     _REVIEW_FUZZY_AVG_SCORE,
     _comparison_team_text,
     _contextual_merge_source_ids,
+    _event_coverage_benchmark,
     _event_review_case,
     _orientation_scores,
     SameTimeCanonicalSlot,
@@ -187,6 +189,241 @@ def test_event_resolution_benchmark_counts_pair_and_fuzzy_work():
 
     assert stats.pair_check_count == 1
     assert stats.fuzzy_score_count >= 1
+
+
+def _normalized_odds(
+    bookmaker_id: str,
+    *,
+    match_id: str,
+    league_id: str,
+    home_team_id: int,
+    away_team_id: int,
+    home_team: str,
+    away_team: str,
+    threshold: float,
+) -> NormalizedOdds:
+    return NormalizedOdds(
+        match_id=match_id,
+        bookmaker_id=bookmaker_id,
+        league_id=league_id,
+        sport="basketball",
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        home_team=home_team,
+        away_team=away_team,
+        market_type="player_points",
+        player_name="Test Player",
+        threshold=threshold,
+        over_odds=1.9,
+        under_odds=1.9,
+        start_time=START_TIME,
+    )
+
+
+def test_event_coverage_benchmark_counts_matched_unmatched_ungrouped_and_review():
+    matched_a = _normalized_odds(
+        "book-a",
+        match_id="match-a",
+        league_id="league",
+        home_team_id=1,
+        away_team_id=2,
+        home_team="Team Alpha",
+        away_team="Team Beta",
+        threshold=10.5,
+    )
+    matched_b = _normalized_odds(
+        "book-b",
+        match_id="match-b",
+        league_id="league",
+        home_team_id=1,
+        away_team_id=2,
+        home_team="Team Alpha",
+        away_team="Team Beta",
+        threshold=10.5,
+    )
+    singleton = _normalized_odds(
+        "book-c",
+        match_id="match-c",
+        league_id="league",
+        home_team_id=3,
+        away_team_id=4,
+        home_team="Team Gamma",
+        away_team="Team Delta",
+        threshold=10.5,
+    )
+    ungrouped = _normalized_odds(
+        "book-d",
+        match_id="match-d",
+        league_id="league",
+        home_team_id=5,
+        away_team_id=6,
+        home_team="Team Epsilon",
+        away_team="Team Zeta",
+        threshold=10.5,
+    ).model_copy(update={"start_time": None})
+    review_left = _normalized_odds(
+        "book-e",
+        match_id="match-e",
+        league_id="league",
+        home_team_id=7,
+        away_team_id=8,
+        home_team="Team Eta",
+        away_team="Team Theta",
+        threshold=10.5,
+    )
+    review_right = _normalized_odds(
+        "book-f",
+        match_id="match-f",
+        league_id="league",
+        home_team_id=9,
+        away_team_id=10,
+        home_team="Team Eta City",
+        away_team="Team Theta",
+        threshold=10.5,
+    )
+    matched_group = EventResolutionGroup(
+        event_id="evt-match-a",
+        sport="basketball",
+        start_time=START_TIME,
+        primary_match_id="match-a",
+        display_home_team="Team Alpha",
+        display_away_team="Team Beta",
+        display_league_name="League",
+        method="exact",
+        confidence=1.0,
+        members=(
+            _event_candidate(
+                "book-a",
+                match_id="match-a",
+                sport="basketball",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Team Alpha",
+                away_team="Team Beta",
+            ),
+            _event_candidate(
+                "book-b",
+                match_id="match-b",
+                sport="basketball",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Team Alpha",
+                away_team="Team Beta",
+            ),
+        ),
+        evidence=(),
+    )
+    singleton_group = EventResolutionGroup(
+        event_id="evt-match-c",
+        sport="basketball",
+        start_time=START_TIME,
+        primary_match_id="match-c",
+        display_home_team="Team Gamma",
+        display_away_team="Team Delta",
+        display_league_name="League",
+        method="exact",
+        confidence=1.0,
+        members=(
+            _event_candidate(
+                "book-c",
+                match_id="match-c",
+                sport="basketball",
+                home_team_id=3,
+                away_team_id=4,
+                home_team="Team Gamma",
+                away_team="Team Delta",
+            ),
+        ),
+        evidence=(),
+    )
+    review_left_group = EventResolutionGroup(
+        event_id="evt-match-e",
+        sport="basketball",
+        start_time=START_TIME,
+        primary_match_id="match-e",
+        display_home_team="Team Eta",
+        display_away_team="Team Theta",
+        display_league_name="League",
+        method="exact",
+        confidence=1.0,
+        members=(
+            _event_candidate(
+                "book-e",
+                match_id="match-e",
+                sport="basketball",
+                home_team_id=7,
+                away_team_id=8,
+                home_team="Team Eta",
+                away_team="Team Theta",
+            ),
+        ),
+        evidence=(),
+    )
+    review_right_group = EventResolutionGroup(
+        event_id="evt-match-f",
+        sport="basketball",
+        start_time=START_TIME,
+        primary_match_id="match-f",
+        display_home_team="Team Eta City",
+        display_away_team="Team Theta",
+        display_league_name="League",
+        method="exact",
+        confidence=1.0,
+        members=(
+            _event_candidate(
+                "book-f",
+                match_id="match-f",
+                sport="basketball",
+                home_team_id=9,
+                away_team_id=10,
+                home_team="Team Eta City",
+                away_team="Team Theta",
+            ),
+        ),
+        evidence=(),
+    )
+    review_case = EventReviewCaseIn(
+        fingerprint="review-coverage",
+        sport="basketball",
+        start_time=START_TIME,
+        reason_code="possible_event_equivalence_low_confidence",
+        metadata={
+            "source_variants": [
+                {"bookmaker_id": "book-e", "match_id": "match-e"},
+                {"bookmaker_id": "book-f", "match_id": "match-f"},
+            ]
+        },
+    )
+
+    coverage = _event_coverage_benchmark(
+        normalized_odds=[
+            matched_a,
+            matched_b,
+            singleton,
+            ungrouped,
+            review_left,
+            review_right,
+        ],
+        normalized_outcome_offers=[],
+        resolutions=[
+            matched_group,
+            singleton_group,
+            review_left_group,
+            review_right_group,
+        ],
+        review_cases=[review_case],
+    )
+
+    by_bookmaker = {row.bookmaker_id: row for row in coverage}
+    assert by_bookmaker["book-a"].matched_events == 1
+    assert by_bookmaker["book-a"].not_matched_events == 0
+    assert by_bookmaker["book-c"].unmatched_events == 1
+    assert by_bookmaker["book-c"].not_matched_events == 1
+    assert by_bookmaker["book-d"].ungrouped_events == 1
+    assert by_bookmaker["book-d"].not_matched_events == 1
+    assert by_bookmaker["book-e"].unmatched_events == 1
+    assert by_bookmaker["book-e"].in_review_events == 1
+    assert by_bookmaker["book-e"].not_matched_events == 1
 
 
 async def _seed_bookmakers(*bookmaker_ids: str) -> None:

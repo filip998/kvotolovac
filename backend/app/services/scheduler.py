@@ -10,6 +10,7 @@ from datetime import datetime
 
 from ..config import settings
 from ..models.schemas import (
+    BenchmarkEventCoverageOut,
     NormalizedOdds,
     NormalizedOutcomeOffer,
     RawOddsData,
@@ -334,15 +335,24 @@ def _publish_benchmark_snapshot(
     scrape_duration_ms: int,
     cycle_started_at: float,
     seen_matches: set[str],
+    event_coverage: tuple[BenchmarkEventCoverageOut, ...] = (),
 ) -> None:
     matches_per_bm: dict[str, int] = defaultdict(int)
     odds_per_bm: dict[str, int] = defaultdict(int)
     seen_match_per_bm: dict[str, set[str]] = defaultdict(set)
+    matches_per_bm_sport: dict[tuple[str, str], int] = defaultdict(int)
+    odds_per_bm_sport: dict[tuple[str, str], int] = defaultdict(int)
+    seen_match_per_bm_sport: dict[tuple[str, str], set[str]] = defaultdict(set)
     for row in [*batch.odds, *batch.outcome_offers]:
         odds_per_bm[row.bookmaker_id] += 1
+        sport_key = (row.bookmaker_id, row.sport)
+        odds_per_bm_sport[sport_key] += 1
         if row.match_id not in seen_match_per_bm[row.bookmaker_id]:
             seen_match_per_bm[row.bookmaker_id].add(row.match_id)
             matches_per_bm[row.bookmaker_id] += 1
+        if row.match_id not in seen_match_per_bm_sport[sport_key]:
+            seen_match_per_bm_sport[sport_key].add(row.match_id)
+            matches_per_bm_sport[sport_key] += 1
     benchmark_recorder.record_phase_durations(
         scrape_duration_ms=scrape_duration_ms,
         cycle_duration_ms=int((time.perf_counter() - cycle_started_at) * 1000),
@@ -351,6 +361,9 @@ def _publish_benchmark_snapshot(
         matches_per_bookmaker=dict(matches_per_bm),
         odds_per_bookmaker=dict(odds_per_bm),
         total_unique_matches=len(seen_matches),
+        matches_per_bookmaker_sport=dict(matches_per_bm_sport),
+        odds_per_bookmaker_sport=dict(odds_per_bm_sport),
+        event_coverage=event_coverage,
     )
 
 
@@ -1016,6 +1029,7 @@ class Scheduler:
         scraper: BaseScraper,
         league_id: str,
         *,
+        sport: str,
         lookahead_hours: int,
     ) -> list[RawOddsData]:
         bookmaker_id = scraper.get_bookmaker_id()
@@ -1039,6 +1053,8 @@ class Scheduler:
                 duration_ms=duration_ms,
                 raw_items=0,
                 failed=True,
+                sport=sport,
+                lane="threshold_odds",
             )
             logger.exception(
                 "Scraper %s failed for league %s after %d ms",
@@ -1062,6 +1078,8 @@ class Scheduler:
             duration_ms=duration_ms,
             raw_items=len(raw),
             failed=False,
+            sport=sport,
+            lane="threshold_odds",
         )
         logger.info(
             "Scraper %s completed for league %s in %d ms (%d items)",
@@ -1107,6 +1125,8 @@ class Scheduler:
                 duration_ms=duration_ms,
                 raw_items=0,
                 failed=True,
+                sport=sport,
+                lane="outcome_offer",
             )
             logger.exception(
                 "Outcome scraper %s failed for sport %s after %d ms",
@@ -1130,6 +1150,8 @@ class Scheduler:
             duration_ms=duration_ms,
             raw_items=len(raw),
             failed=False,
+            sport=sport,
+            lane="outcome_offer",
         )
         logger.info(
             "Outcome scraper %s completed for sport %s in %d ms (%d items)",
@@ -1180,6 +1202,7 @@ class Scheduler:
                             await self._scrape_one(
                                 scraper,
                                 capability.league_id,
+                                sport=capability.sport,
                                 lookahead_hours=runtime_settings.scrape_lookahead_hours,
                             )
                         ),
@@ -1345,6 +1368,7 @@ class Scheduler:
             notified = 0
             opportunity_publish_id: str | None = None
             pending_auto_merges: list[tuple[int, int]] = []
+            event_coverage: tuple[BenchmarkEventCoverageOut, ...] = ()
             full_normalized_batch = _normalize_pipeline_batch(
                 all_raw,
                 all_raw_outcome_offers,
@@ -1460,6 +1484,7 @@ class Scheduler:
                     benchmark_recorder.record_event_resolver(
                         event_resolver_result.benchmark
                     )
+                event_coverage = event_resolver_result.coverage
 
                 self._scan_phase = "analyzing"
                 canonical_analysis = _CanonicalAnalysisResult()
@@ -1583,6 +1608,7 @@ class Scheduler:
                         scrape_duration_ms=scrape_duration_ms,
                         cycle_started_at=cycle_started_at,
                         seen_matches=seen_matches,
+                        event_coverage=event_coverage,
                     )
                 except Exception:
                     logger.exception("Failed to publish scraper benchmark snapshot")

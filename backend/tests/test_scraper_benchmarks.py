@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from app.config import settings
 from app.database import close_db, init_db
 from app.main import app
-from app.models.schemas import ScrapeRuntimeSettings
+from app.models.schemas import BenchmarkEventCoverageOut, ScrapeRuntimeSettings
 from app.scrapers.mock_scraper import MockScraper
 from app.scrapers.registry import registry
 from app.services import scraper_benchmarks
@@ -76,6 +76,14 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert body["outcome_normalization"]["runs"] >= 1
     assert body["outcome_normalization"]["raw_outcome_offer_count"] >= 0
     assert body["event_resolver"]["candidate_count"] >= 0
+    assert isinstance(body["event_coverage"], list)
+    assert isinstance(body["sports"], list)
+    if body["event_coverage"]:
+        coverage_row = body["event_coverage"][0]
+        assert coverage_row["bookmaker_id"]
+        assert coverage_row["sport"]
+        assert coverage_row["normalized_events"] >= 0
+        assert coverage_row["not_matched_events"] >= 0
 
     bm_ids = {s["bookmaker_id"] for s in body["scrapers"]}
     assert {"mozzart", "meridian"}.issubset(bm_ids)
@@ -87,6 +95,12 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
         assert 0.0 <= entry["failure_rate"] <= 1.0
         assert entry["http"]["logical_requests"] >= 0
         assert isinstance(entry["requests"], list)
+        assert isinstance(entry["sports"], list)
+        for sport_row in entry["sports"]:
+            assert sport_row["sport"]
+            assert sport_row["matches_after_normalization"] >= 0
+            assert sport_row["not_matched_events"] >= 0
+            assert 0.0 <= sport_row["match_rate"] <= 1.0
 
     # Files written
     out_dir = Path(settings.benchmark_dir)
@@ -103,6 +117,8 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert parsed["phase_durations_ms"]
     assert "outcome_normalization" in parsed
     assert "event_resolver" in parsed
+    assert "event_coverage" in parsed
+    assert "sports" in parsed
 
 
 @pytest.mark.asyncio
@@ -181,6 +197,8 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
         duration_ms=50,
         raw_items=12,
         failed=False,
+        sport="football",
+        lane="outcome_offer",
     )
     with scraper_benchmarks.recorder.scrape_request_context(
         bookmaker_id="betole",
@@ -206,6 +224,19 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
         matches_per_bookmaker={"betole": 3},
         odds_per_bookmaker={"betole": 12},
         total_unique_matches=3,
+        matches_per_bookmaker_sport={("betole", "football"): 3},
+        odds_per_bookmaker_sport={("betole", "football"): 12},
+        event_coverage=[
+            BenchmarkEventCoverageOut(
+                bookmaker_id="betole",
+                sport="football",
+                normalized_events=3,
+                matched_events=2,
+                unmatched_events=1,
+                not_matched_events=1,
+                match_rate=0.6667,
+            )
+        ],
     )
 
     assert snapshot.metadata is not None
@@ -228,6 +259,18 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
     assert request_row.lane == "outcome_offer"
     assert request_row.sport == "football"
     assert request_row.method == "GET"
+    assert len(scraper_row.sports) == 1
+    sport_row = scraper_row.sports[0]
+    assert sport_row.sport == "football"
+    assert sport_row.duration_ms == 50
+    assert sport_row.raw_items == 12
+    assert sport_row.matches_after_normalization == 3
+    assert sport_row.matched_events == 2
+    assert sport_row.unmatched_events == 1
+    assert sport_row.not_matched_events == 1
+    assert snapshot.event_coverage[0].bookmaker_id == "betole"
+    assert snapshot.sports[0].sport == "football"
+    assert snapshot.sports[0].matched_events == 2
 
     out_dir = Path(settings.benchmark_dir)
     persisted = "\n".join(path.read_text() for path in out_dir.glob("*"))

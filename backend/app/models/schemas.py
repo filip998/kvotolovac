@@ -627,6 +627,39 @@ class ScraperRequestBenchmarkOut(HttpTimingBenchmarkOut):
     method: str
 
 
+class BenchmarkEventCoverageOut(BaseModel):
+    """Matched-event coverage for one bookmaker/sport source-event bucket."""
+
+    bookmaker_id: str
+    sport: str
+    normalized_events: int = 0
+    matched_events: int = 0
+    unmatched_events: int = 0
+    ungrouped_events: int = 0
+    in_review_events: int = 0
+    not_matched_events: int = 0
+    match_rate: float = 0.0
+
+
+class SportBenchmarkOut(BaseModel):
+    """Per-sport benchmark aggregates within a cycle or scraper row."""
+
+    sport: str
+    duration_ms: int = 0
+    raw_items: int = 0
+    matches_after_normalization: int = 0
+    odds_count: int = 0
+    leagues_attempted: int = 0
+    leagues_failed: int = 0
+    failure_rate: float = 0.0
+    matched_events: int = 0
+    unmatched_events: int = 0
+    ungrouped_events: int = 0
+    in_review_events: int = 0
+    not_matched_events: int = 0
+    match_rate: float = 0.0
+
+
 class OutcomeNormalizationBenchmarkOut(BaseModel):
     """Subphase metrics for football outcome-offer normalization."""
 
@@ -678,6 +711,7 @@ class ScraperBenchmarkOut(BaseModel):
     failure_rate: float
     http: HttpTimingBenchmarkOut = Field(default_factory=HttpTimingBenchmarkOut)
     requests: list[ScraperRequestBenchmarkOut] = Field(default_factory=list)
+    sports: list[SportBenchmarkOut] = Field(default_factory=list)
 
 
 class CycleBenchmarkOut(BaseModel):
@@ -698,6 +732,8 @@ class CycleBenchmarkOut(BaseModel):
     event_resolver: EventResolverBenchmarkOut = Field(
         default_factory=EventResolverBenchmarkOut
     )
+    event_coverage: list[BenchmarkEventCoverageOut] = Field(default_factory=list)
+    sports: list[SportBenchmarkOut] = Field(default_factory=list)
     scrapers: list[ScraperBenchmarkOut] = Field(default_factory=list)
 
 
