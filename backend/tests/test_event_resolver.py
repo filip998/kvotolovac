@@ -19,10 +19,13 @@ from app.services.event_resolver import (
     EventCandidate,
     _CandidateGroup,
     _EventGroupBuildStats,
+    _FUZZY_ORIENTATION_MARGIN,
     _PairResolution,
+    _REVIEW_FUZZY_AVG_SCORE,
     _comparison_team_text,
     _contextual_merge_source_ids,
     _event_review_case,
+    _orientation_scores,
     SameTimeCanonicalSlot,
     _same_time_slot_orientation,
     build_event_resolution_groups,
@@ -307,6 +310,20 @@ def test_event_resolver_merges_same_slot_when_one_canonical_side_matches_footbal
 
 
 def test_event_resolver_suppresses_low_signal_ambiguous_football_orientation():
+    low_signal_scores = _orientation_scores(
+        "Team Alpha",
+        "Club Beta",
+        "Gamma Delta",
+        "Epsilon Zeta",
+        sport="football",
+    )
+    assert len(low_signal_scores) > 1
+    assert low_signal_scores[0].avg_score < _REVIEW_FUZZY_AVG_SCORE
+    assert (
+        low_signal_scores[0].avg_score - low_signal_scores[1].avg_score
+        < _FUZZY_ORIENTATION_MARGIN
+    )
+
     candidates = [
         _event_candidate(
             "maxbet",
