@@ -55,6 +55,7 @@ FUZZY_THRESHOLD = 75
 TEAM_REVIEW_CANDIDATE_THRESHOLD = 76
 ANCHORED_AUTO_APPLY_THRESHOLD = 85
 TEAM_REVIEW_MAX_CANDIDATES = 3
+SAME_BOOKMAKER_MATCHUP_TEAM_THRESHOLD = 90.0
 
 _MARKET_TYPE_MAPPING: dict[str, str] = {
     "player_points": "player_points",
@@ -1264,6 +1265,10 @@ class _CanonicalMatchup:
     away_team_id: int
     home_team: str
     away_team: str
+    league_id: str | None = None
+    bookmaker_ids: frozenset[str] = frozenset()
+    home_team_names: frozenset[str] = frozenset()
+    away_team_names: frozenset[str] = frozenset()
 
 
 def _event_slot_key(
@@ -1891,6 +1896,84 @@ def _format_matchup(matchup: tuple[str, str]) -> str:
     return f"{matchup[0]} vs {matchup[1]}"
 
 
+def _has_meaningful_shared_team_token(raw_key: str, candidate_key: str) -> bool:
+    raw_tokens = set(raw_key.split())
+    candidate_tokens = set(candidate_key.split())
+    return any(len(token) >= 4 for token in raw_tokens & candidate_tokens)
+
+
+def _has_tail_initial_team_match(raw_key: str, candidate_key: str) -> bool:
+    raw_tokens = raw_key.split()
+    candidate_tokens = candidate_key.split()
+    if len(raw_tokens) < 2 or len(candidate_tokens) <= len(raw_tokens):
+        return False
+
+    for prefix_len in range(1, len(raw_tokens)):
+        raw_prefix = raw_tokens[:prefix_len]
+        raw_suffix = raw_tokens[prefix_len:]
+        if len(raw_suffix) != 1:
+            continue
+        suffix = raw_suffix[0]
+        if len(suffix) < 2 or not suffix.isalpha():
+            continue
+        if candidate_tokens[:prefix_len] != raw_prefix:
+            continue
+        candidate_tail_initials = "".join(token[0] for token in candidate_tokens[prefix_len:])
+        if candidate_tail_initials == suffix:
+            return True
+
+    return False
+
+
+def _same_bookmaker_team_name_score(
+    raw_team_name: str,
+    candidate_team_names: frozenset[str],
+) -> float:
+    raw_key = _normalize_team_key(raw_team_name)
+    if not raw_key:
+        return 0.0
+
+    best_score = 0.0
+    for candidate_team_name in candidate_team_names:
+        candidate_key = _normalize_team_key(candidate_team_name)
+        if not candidate_key:
+            continue
+        if candidate_key == raw_key:
+            return 100.0
+        if _has_tail_initial_team_match(raw_key, candidate_key):
+            best_score = max(best_score, 98.0)
+            continue
+        if not _has_meaningful_shared_team_token(raw_key, candidate_key):
+            continue
+        best_score = max(best_score, _team_candidate_score(raw_team_name, candidate_team_name))
+
+    return best_score
+
+
+def _find_same_bookmaker_anchored_matchup(
+    raw: RawOddsData,
+    matchups: list[_CanonicalMatchup],
+) -> _CanonicalMatchup | None:
+    candidates: list[tuple[_CanonicalMatchup, str, float]] = []
+    for matchup in matchups:
+        if raw.bookmaker_id not in matchup.bookmaker_ids:
+            continue
+        home_score = _same_bookmaker_team_name_score(raw.home_team, matchup.home_team_names)
+        if home_score >= SAME_BOOKMAKER_MATCHUP_TEAM_THRESHOLD:
+            candidates.append((matchup, "home", home_score))
+        away_score = _same_bookmaker_team_name_score(raw.home_team, matchup.away_team_names)
+        if away_score >= SAME_BOOKMAKER_MATCHUP_TEAM_THRESHOLD:
+            candidates.append((matchup, "away", away_score))
+
+    unique_candidates = {
+        (matchup.home_team_id, matchup.away_team_id, side): (matchup, score)
+        for matchup, side, score in candidates
+    }
+    if len(unique_candidates) != 1:
+        return None
+    return next(iter(unique_candidates.values()))[0]
+
+
 def _separate_missing_start_times(
     raw_list: list[RawOddsData],
 ) -> tuple[list[RawOddsData], list[UnresolvedOddsDiagnostic]]:
@@ -2000,12 +2083,19 @@ def _build_canonical_matchups(
         tuple[tuple[str, str], tuple[int, int]],
         dict[tuple[int, int], int],
     ] = {}
+    league_counts: dict[tuple[tuple[str, str], tuple[int, int]], Counter[str]] = defaultdict(Counter)
+    bookmaker_ids: dict[tuple[tuple[str, str], tuple[int, int]], set[str]] = defaultdict(set)
+    team_source_names: dict[
+        tuple[tuple[str, str], tuple[int, int]],
+        dict[int, set[str]],
+    ] = defaultdict(lambda: defaultdict(set))
     team_names: dict[int, str] = {}
 
     for raw in raw_list:
         if _is_unresolved_shared_platform_prop(raw) or raw.start_time is None:
             continue
 
+        direct_league = resolve_league(raw.league_id, raw.bookmaker_id)
         home_resolution = resolve_team_name(
             raw.home_team,
             bookmaker_id=raw.bookmaker_id,
@@ -2034,6 +2124,10 @@ def _build_canonical_matchups(
             orientation,
             0,
         ) + 1
+        league_counts[slot][direct_league.league_id] += 1
+        bookmaker_ids[slot].add(raw.bookmaker_id)
+        team_source_names[slot][home_resolution.team_id].add(raw.home_team)
+        team_source_names[slot][away_resolution.team_id].add(raw.away_team)
         team_names[home_resolution.team_id] = home_resolution.team_name
         team_names[away_resolution.team_id] = away_resolution.team_name
 
@@ -2048,6 +2142,14 @@ def _build_canonical_matchups(
             away_team_id=chosen_away_id,
             home_team=team_names[chosen_home_id],
             away_team=team_names[chosen_away_id],
+            league_id=str(_choose_majority_value(league_counts[slot])),
+            bookmaker_ids=frozenset(bookmaker_ids[slot]),
+            home_team_names=frozenset(
+                {team_names[chosen_home_id], *team_source_names[slot][chosen_home_id]}
+            ),
+            away_team_names=frozenset(
+                {team_names[chosen_away_id], *team_source_names[slot][chosen_away_id]}
+            ),
         )
     return canonical
 
@@ -2057,9 +2159,18 @@ def _build_inferred_shared_platform_matchups(
     matchups_by_slot: dict[tuple[str, str], list[_CanonicalMatchup]],
 ) -> dict[tuple[str, str], list[_CanonicalMatchup]]:
     teams_by_slot: dict[tuple[str, str], dict[int, str]] = defaultdict(dict)
+    bookmaker_ids_by_slot_team: dict[
+        tuple[str, str],
+        dict[int, set[str]],
+    ] = defaultdict(lambda: defaultdict(set))
 
     for raw in raw_list:
         if not _is_unresolved_shared_platform_prop(raw) or raw.start_time is None:
+            continue
+
+        slot = _event_identity_slot(raw.start_time, raw.sport)
+        existing_matchups = matchups_by_slot.get(slot, [])
+        if any(raw.bookmaker_id in matchup.bookmaker_ids for matchup in existing_matchups):
             continue
 
         known_team = resolve_team_name(
@@ -2069,26 +2180,28 @@ def _build_inferred_shared_platform_matchups(
         )
         if known_team.team_id is None:
             continue
-        slot = _event_identity_slot(raw.start_time, raw.sport)
-        existing_matchups = matchups_by_slot.get(slot, [])
-        if any(
-            known_team.team_id in {matchup.home_team_id, matchup.away_team_id}
-            for matchup in existing_matchups
-        ):
-            continue
         teams_by_slot[slot][known_team.team_id] = known_team.team_name
+        bookmaker_ids_by_slot_team[slot][known_team.team_id].add(raw.bookmaker_id)
 
     inferred: dict[tuple[str, str], list[_CanonicalMatchup]] = defaultdict(list)
     for slot, teams in teams_by_slot.items():
         if len(teams) != 2:
             continue
         ordered = sorted(teams.items(), key=lambda item: item[1])
+        inferred_bookmaker_ids = frozenset(
+            bookmaker_id
+            for team_id, _team_name in ordered
+            for bookmaker_id in bookmaker_ids_by_slot_team[slot][team_id]
+        )
         inferred[slot].append(
             _CanonicalMatchup(
                 home_team_id=ordered[0][0],
                 away_team_id=ordered[1][0],
                 home_team=ordered[0][1],
                 away_team=ordered[1][1],
+                bookmaker_ids=inferred_bookmaker_ids,
+                home_team_names=frozenset({ordered[0][1]}),
+                away_team_names=frozenset({ordered[1][1]}),
             )
         )
 
@@ -2151,18 +2264,46 @@ def _resolve_shared_platform_matchups(
                 )
             continue
 
+        slot = _event_identity_slot(raw.start_time, raw.sport)
+        same_bookmaker_matchup = _find_same_bookmaker_anchored_matchup(
+            raw,
+            matchups_by_slot.get(slot, []),
+        )
+        if same_bookmaker_matchup is not None:
+            resolved.append(
+                RawOddsData(
+                    bookmaker_id=raw.bookmaker_id,
+                    league_id=same_bookmaker_matchup.league_id or raw.league_id,
+                    sport=raw.sport,
+                    home_team=same_bookmaker_matchup.home_team,
+                    away_team=same_bookmaker_matchup.away_team,
+                    source_url=raw.source_url,
+                    market_type=raw.market_type,
+                    player_name=raw.player_name,
+                    threshold=raw.threshold,
+                    over_odds=raw.over_odds,
+                    under_odds=raw.under_odds,
+                    start_time=raw.start_time,
+                )
+            )
+            continue
+
         known_team = resolve_team_name(
             raw.home_team,
             bookmaker_id=raw.bookmaker_id,
             sport=raw.sport,
         )
-        slot = _event_identity_slot(raw.start_time, raw.sport)
         candidates = [
             matchup
             for matchup in matchups_by_slot.get(slot, [])
             if known_team.team_id is not None
             and known_team.team_id in {matchup.home_team_id, matchup.away_team_id}
         ]
+        same_bookmaker_candidates = [
+            matchup for matchup in candidates if raw.bookmaker_id in matchup.bookmaker_ids
+        ]
+        if same_bookmaker_candidates:
+            candidates = same_bookmaker_candidates
 
         if len(candidates) != 1:
             reason_code = (
@@ -2199,7 +2340,7 @@ def _resolve_shared_platform_matchups(
         resolved.append(
             RawOddsData(
                 bookmaker_id=raw.bookmaker_id,
-                league_id=raw.league_id,
+                league_id=selected.league_id or raw.league_id,
                 sport=raw.sport,
                 home_team=selected.home_team,
                 away_team=selected.away_team,
