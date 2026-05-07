@@ -1804,6 +1804,40 @@ def _event_review_case_values(case: EventReviewCaseIn) -> tuple:
     )
 
 
+async def _delete_stale_generated_football_ambiguous_review_cases_tx(
+    db: aiosqlite.Connection,
+    *,
+    events: list[ResolvedEventIn],
+    review_cases: list[EventReviewCaseIn],
+) -> int:
+    has_current_football_resolution = any(event.sport == "football" for event in events) or any(
+        case.sport == "football" for case in review_cases
+    )
+    if not has_current_football_resolution:
+        return 0
+
+    current_fingerprints = [
+        case.fingerprint
+        for case in review_cases
+        if case.sport == "football"
+        and case.method == "auto_candidate"
+        and case.reason_code == "ambiguous_event_orientation"
+    ]
+    params: list[object] = []
+    query = """DELETE FROM event_review_cases
+               WHERE sport = 'football'
+                 AND status = 'pending'
+                 AND method = 'auto_candidate'
+                 AND reason_code = 'ambiguous_event_orientation'"""
+    if current_fingerprints:
+        placeholders = _sql_placeholders(current_fingerprints)
+        query += f" AND fingerprint NOT IN ({placeholders})"
+        params.extend(current_fingerprints)
+
+    cursor = await db.execute(query, params)
+    return cursor.rowcount or 0
+
+
 async def persist_event_resolution_batch(
     *,
     snapshot_id: str | None = None,
@@ -2001,6 +2035,11 @@ async def persist_event_resolution_batch(
                    END,
                    updated_at = CURRENT_TIMESTAMP""",
             [_event_review_case_values(case) for case in review_cases],
+        )
+        await _delete_stale_generated_football_ambiguous_review_cases_tx(
+            db,
+            events=events,
+            review_cases=review_cases,
         )
         await db.commit()
     except Exception:

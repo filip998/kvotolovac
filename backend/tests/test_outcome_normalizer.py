@@ -156,6 +156,41 @@ def test_weak_football_event_pair_remains_unmatched(team_registry_file):
     assert _auto_review_alias_count() == 0
 
 
+def test_football_unresolved_team_dedupes_across_outcome_markets(team_registry_file):
+    create_canonical_team(display_name="Known Away", sport="football")
+    raw = [
+        _offer(
+            "365",
+            "Unknown Home",
+            "Known Away",
+            market_type="football_result",
+            outcome_code="home",
+        ),
+        _offer(
+            "365",
+            "Unknown Home",
+            "Known Away",
+            market_type="football_double_chance",
+            outcome_code="home_or_draw",
+        ),
+        _offer(
+            "365",
+            "Unknown Home",
+            "Known Away",
+            market_type="football_total_goals",
+            outcome_code="over",
+        ),
+    ]
+
+    normalized, unresolved, _ = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert normalized == []
+    assert [
+        (row.raw_team_name, row.reason_code)
+        for row in unresolved
+    ] == [("Unknown Home", "unresolved_home_team")]
+
+
 def test_reversed_football_event_swaps_orientation_sensitive_outcomes(team_registry_file):
     home = create_canonical_team(display_name="Team Alpha", sport="football")
     away = create_canonical_team(display_name="Team Beta", sport="football")

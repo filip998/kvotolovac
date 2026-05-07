@@ -1032,6 +1032,21 @@ def _unresolved_team_diagnostic(
     )
 
 
+def _unresolved_outcome_key(
+    raw: RawOutcomeOffer,
+    *,
+    raw_team_name: str,
+    reason_code: str,
+) -> tuple[str, str, str, str | None, str]:
+    market_type = (
+        ""
+        if raw.sport == "football"
+        and reason_code in {"unresolved_home_team", "unresolved_away_team"}
+        else raw.market_type
+    )
+    return (raw.bookmaker_id, market_type, raw_team_name, raw.start_time, reason_code)
+
+
 def _normalized_offer_from_resolution(
     raw: RawOutcomeOffer,
     *,
@@ -1140,7 +1155,11 @@ def normalize_outcome_offers_with_context(
 
         if home_resolution.team_id is None or away_resolution.team_id is None:
             if home_resolution.team_id is None:
-                key = (raw.bookmaker_id, raw.market_type, raw.home_team, raw.start_time, "unresolved_home_team")
+                key = _unresolved_outcome_key(
+                    raw,
+                    raw_team_name=raw.home_team,
+                    reason_code="unresolved_home_team",
+                )
                 if key not in seen_unresolved:
                     seen_unresolved.add(key)
                     unresolved.append(
@@ -1151,7 +1170,11 @@ def normalize_outcome_offers_with_context(
                         )
                     )
             if away_resolution.team_id is None:
-                key = (raw.bookmaker_id, raw.market_type, raw.away_team, raw.start_time, "unresolved_away_team")
+                key = _unresolved_outcome_key(
+                    raw,
+                    raw_team_name=raw.away_team,
+                    reason_code="unresolved_away_team",
+                )
                 if key not in seen_unresolved:
                     seen_unresolved.add(key)
                     unresolved.append(

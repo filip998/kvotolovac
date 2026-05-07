@@ -1401,6 +1401,7 @@ def _group_pair_resolution(
             top = scores[0]
             if (
                 len(scores) > 1
+                and top.avg_score >= _REVIEW_FUZZY_AVG_SCORE
                 and top.avg_score - scores[1].avg_score < _FUZZY_ORIENTATION_MARGIN
             ):
                 resolution = _PairResolution(

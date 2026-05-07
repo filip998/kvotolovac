@@ -6,6 +6,7 @@ import pytest
 
 from app.config import settings
 from app.models.schemas import (
+    EventReviewCaseIn,
     NormalizedOdds,
     NormalizedOutcomeOffer,
     RawOddsData,
@@ -305,6 +306,103 @@ def test_event_resolver_merges_same_slot_when_one_canonical_side_matches_footbal
     assert any("canonical side anchored" in item for item in event.evidence)
 
 
+def test_event_resolver_suppresses_low_signal_ambiguous_football_orientation():
+    candidates = [
+        _event_candidate(
+            "maxbet",
+            match_id="team-alpha-club-beta",
+            sport="football",
+            home_team_id=1001,
+            away_team_id=1002,
+            home_team="Team Alpha",
+            away_team="Club Beta",
+            source_league_id="england_1",
+            source_league_name="England 1",
+        ),
+        _event_candidate(
+            "superbet",
+            match_id="gamma-delta-epsilon-zeta",
+            sport="football",
+            home_team_id=1003,
+            away_team_id=1004,
+            home_team="Gamma Delta",
+            away_team="Epsilon Zeta",
+            source_league_id="finland_1",
+            source_league_name="Finland 1",
+        ),
+    ]
+
+    resolutions, review_cases = build_event_resolution_groups(candidates)
+
+    assert review_cases == []
+    assert {resolution.primary_match_id for resolution in resolutions} == {
+        "team-alpha-club-beta",
+        "gamma-delta-epsilon-zeta",
+    }
+
+
+def test_event_resolver_keeps_high_signal_ambiguous_football_orientation_review():
+    candidates = [
+        _event_candidate(
+            "maxbet",
+            match_id="north-sunshine-sunshine-coast",
+            sport="football",
+            home_team_id=1101,
+            away_team_id=1102,
+            home_team="North Sunshine Eagles",
+            away_team="Sunshine Coast",
+        ),
+        _event_candidate(
+            "superbet",
+            match_id="sunshine-eagles-north-sunshine",
+            sport="football",
+            home_team_id=1103,
+            away_team_id=1104,
+            home_team="Sunshine Eagles",
+            away_team="North Sunshine",
+        ),
+    ]
+
+    _resolutions, review_cases = build_event_resolution_groups(candidates)
+
+    assert len(review_cases) == 1
+    assert review_cases[0].reason_code == "ambiguous_event_orientation"
+    assert review_cases[0].confidence >= 0.65
+
+
+def test_event_resolver_still_auto_merges_unambiguous_high_confidence_football_pair():
+    candidates = [
+        _event_candidate(
+            "maxbet",
+            match_id="team-alpha-beta",
+            sport="football",
+            home_team_id=1201,
+            away_team_id=1202,
+            home_team="Team Alpha",
+            away_team="Team Beta",
+        ),
+        _event_candidate(
+            "superbet",
+            match_id="team-alpha-fc-beta-fc",
+            sport="football",
+            home_team_id=1203,
+            away_team_id=1204,
+            home_team="Team Alpha FC",
+            away_team="Team Beta FC",
+        ),
+    ]
+
+    resolutions, review_cases = build_event_resolution_groups(candidates)
+
+    assert review_cases == []
+    assert len(resolutions) == 1
+    assert resolutions[0].method == "auto_fuzzy_high"
+    assert {member.match_id for member in resolutions[0].members} == {
+        "team-alpha-beta",
+        "team-alpha-fc-beta-fc",
+    }
+
+
 def test_event_resolver_merges_same_slot_when_one_canonical_side_matches_basketball():
     candidates = [
         _event_candidate(
@@ -564,6 +662,89 @@ async def test_event_resolver_persists_football_outcome_candidates(team_registry
     assert event.sport == "football"
     assert {member.source_home_team for member in event.members} == {"Arsenal"}
     assert {member.source_away_team for member in event.members} == {"Chelsea"}
+
+
+@pytest.mark.asyncio
+async def test_event_resolver_clears_stale_pending_football_ambiguous_cases(
+    team_registry_file,
+):
+    home = create_canonical_team(display_name="Arsenal", sport="football")
+    away = create_canonical_team(display_name="Chelsea", sport="football")
+    match_id = generate_match_id(home.team_id, away.team_id, START_TIME, "football")
+    league_id = "premier_league"
+    await _seed_bookmakers("maxbet")
+    await _seed_league(league_id, "football")
+    normalized = [
+        NormalizedOutcomeOffer(
+            match_id=match_id,
+            bookmaker_id="maxbet",
+            league_id=league_id,
+            sport="football",
+            home_team_id=home.team_id,
+            away_team_id=away.team_id,
+            home_team=home.team_name,
+            away_team=away.team_name,
+            market_type="football_total_goals",
+            outcome_code="over",
+            odds=1.9,
+            line=2.5,
+            raw_label="Over 2.5",
+            start_time=START_TIME,
+        )
+    ]
+    await _store_match(normalized[0])
+    pending_fingerprint = "event-review-stale-pending-football-ambiguous"
+    accepted_fingerprint = "event-review-accepted-football-ambiguous"
+    pending_case_id = await odds_store.upsert_event_review_case(
+        EventReviewCaseIn(
+            fingerprint=pending_fingerprint,
+            sport="football",
+            start_time=START_TIME,
+            primary_match_id=match_id,
+            candidate_match_ids=[match_id, "old-pending-other"],
+            reason_code="ambiguous_event_orientation",
+            confidence=0.2,
+            method="auto_candidate",
+            source_bookmaker_ids=["maxbet", "superbet"],
+            source_league_labels=["Old League"],
+            evidence=["stale low-signal ambiguous orientation"],
+        )
+    )
+    accepted_case_id = await odds_store.upsert_event_review_case(
+        EventReviewCaseIn(
+            fingerprint=accepted_fingerprint,
+            sport="football",
+            start_time=START_TIME,
+            primary_match_id=match_id,
+            candidate_match_ids=[match_id, "old-accepted-other"],
+            reason_code="ambiguous_event_orientation",
+            confidence=0.2,
+            method="auto_candidate",
+            source_bookmaker_ids=["maxbet", "superbet"],
+            source_league_labels=["Old League"],
+            evidence=["accepted decisions are preserved"],
+        )
+    )
+    await odds_store.mark_event_review_case_accepted(accepted_case_id)
+
+    result = await resolve_and_persist_events(
+        raw_odds=[],
+        raw_outcome_offers=[],
+        normalized_odds=[],
+        normalized_outcome_offers=normalized,
+    )
+
+    assert pending_case_id > 0
+    assert result.resolved_events == 1
+    assert (
+        await odds_store.get_event_review_case_by_fingerprint(pending_fingerprint)
+        is None
+    )
+    accepted_case = await odds_store.get_event_review_case_by_fingerprint(
+        accepted_fingerprint
+    )
+    assert accepted_case is not None
+    assert accepted_case.status == "accepted"
 
 
 @pytest.mark.asyncio
