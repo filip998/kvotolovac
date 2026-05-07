@@ -16,6 +16,8 @@ from app.models.schemas import (
     NormalizedOutcomeOffer,
     OpportunityLeg,
     RawOddsData,
+    ResolvedEventIn,
+    ResolvedEventMemberIn,
     TeamReviewDiagnostic,
     UnresolvedOddsDiagnostic,
 )
@@ -712,6 +714,184 @@ async def test_football_market_offers_and_opportunities_api(client: AsyncClient)
     )
     assert no_match_resp.status_code == 200
     assert no_match_resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_match_market_offers_include_resolved_event_members(client: AsyncClient):
+    home = create_canonical_team(display_name="Jelgava", sport="football")
+    away = create_canonical_team(display_name="Super Nova", sport="football")
+    current_snapshot = "2030-01-01T12:00:00"
+    stale_snapshot = "2029-12-31T12:00:00"
+
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    await odds_store.upsert_bookmaker("balkanbet", "BalkanBet")
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_league("latvia_1", "Latvia 1", "football")
+    for match_id, home_team, away_team in (
+        ("primary-football-match", "Jelgava", "Super Nova"),
+        ("sibling-football-match", "FS Jelgava", "SK Super Nova"),
+        ("stale-football-match", "Jelgava Old", "Super Nova Old"),
+    ):
+        await odds_store.upsert_match(
+            id=match_id,
+            league_id="latvia_1",
+            sport="football",
+            home_team_id=home.team_id,
+            away_team_id=away.team_id,
+            home_team=home_team,
+            away_team=away_team,
+            start_time="2030-01-01T20:00:00+00:00",
+        )
+
+    await odds_store.upsert_outcome_offer(
+        NormalizedOutcomeOffer(
+            match_id="primary-football-match",
+            bookmaker_id="maxbet",
+            league_id="latvia_1",
+            sport="football",
+            home_team_id=home.team_id,
+            away_team_id=away.team_id,
+            home_team="Jelgava",
+            away_team="Super Nova",
+            source_url="https://www.maxbet.rs/event/1",
+            market_type="football_result",
+            outcome_code="home",
+            odds=2.4,
+            start_time="2030-01-01T20:00:00+00:00",
+        ),
+        scraped_at=current_snapshot,
+    )
+    await odds_store.upsert_outcome_offer(
+        NormalizedOutcomeOffer(
+            match_id="sibling-football-match",
+            bookmaker_id="balkanbet",
+            league_id="latvia_1",
+            sport="football",
+            home_team_id=home.team_id,
+            away_team_id=away.team_id,
+            home_team="FS Jelgava",
+            away_team="SK Super Nova",
+            source_url="https://balkanbet.rs/event/1",
+            market_type="football_result",
+            outcome_code="away",
+            odds=2.8,
+            start_time="2030-01-01T20:00:00+00:00",
+        ),
+        scraped_at=current_snapshot,
+    )
+    await odds_store.upsert_outcome_offer(
+        NormalizedOutcomeOffer(
+            match_id="stale-football-match",
+            bookmaker_id="mozzart",
+            league_id="latvia_1",
+            sport="football",
+            home_team_id=home.team_id,
+            away_team_id=away.team_id,
+            home_team="Jelgava Old",
+            away_team="Super Nova Old",
+            source_url="https://mozzartbet.com/event/old",
+            market_type="football_result",
+            outcome_code="draw",
+            odds=3.1,
+            start_time="2030-01-01T20:00:00+00:00",
+        ),
+        scraped_at=stale_snapshot,
+    )
+    await odds_store.upsert_resolved_event(
+        ResolvedEventIn(
+            id="evt-latvia-football",
+            sport="football",
+            start_time="2030-01-01T20:00:00+00:00",
+            primary_match_id="primary-football-match",
+            method="auto_fuzzy_high",
+        )
+    )
+    for match_id, bookmaker_id, snapshot_id in (
+        ("primary-football-match", "maxbet", current_snapshot),
+        ("sibling-football-match", "balkanbet", current_snapshot),
+        ("stale-football-match", "mozzart", stale_snapshot),
+    ):
+        await odds_store.link_resolved_event_member(
+            ResolvedEventMemberIn(
+                snapshot_id=snapshot_id,
+                resolved_event_id="evt-latvia-football",
+                match_id=match_id,
+                bookmaker_id=bookmaker_id,
+            )
+        )
+    await odds_store.set_current_snapshot(current_snapshot)
+
+    resp = await client.get("/api/v1/matches/sibling-football-match/market-offers")
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert {row["match_id"] for row in rows} == {
+        "primary-football-match",
+        "sibling-football-match",
+    }
+    assert {row["bookmaker_id"] for row in rows} == {"maxbet", "balkanbet"}
+
+    filtered_resp = await client.get(
+        "/api/v1/matches/primary-football-match/market-offers",
+        params={"bookmaker_ids": "maxbet"},
+    )
+    assert filtered_resp.status_code == 200
+    assert {row["bookmaker_id"] for row in filtered_resp.json()} == {"maxbet"}
+
+    detail_resp = await client.get("/api/v1/matches/primary-football-match")
+    assert detail_resp.status_code == 200
+    assert {row["id"] for row in detail_resp.json()["available_bookmakers"]} == {
+        "maxbet",
+        "balkanbet",
+    }
+
+
+@pytest.mark.asyncio
+async def test_match_market_offers_fall_back_to_exact_match(client: AsyncClient):
+    home = create_canonical_team(display_name="Napredak", sport="football")
+    away = create_canonical_team(display_name="Radnicki", sport="football")
+    scraped_at = "2030-01-01T12:00:00"
+
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    await odds_store.upsert_league("serbia_1", "Serbia 1", "football")
+    await odds_store.upsert_match(
+        id="standalone-football-match",
+        league_id="serbia_1",
+        sport="football",
+        home_team_id=home.team_id,
+        away_team_id=away.team_id,
+        home_team=home.team_name,
+        away_team=away.team_name,
+        start_time="2030-01-01T18:00:00+00:00",
+    )
+    await odds_store.upsert_outcome_offer(
+        NormalizedOutcomeOffer(
+            match_id="standalone-football-match",
+            bookmaker_id="maxbet",
+            league_id="serbia_1",
+            sport="football",
+            home_team_id=home.team_id,
+            away_team_id=away.team_id,
+            home_team=home.team_name,
+            away_team=away.team_name,
+            market_type="football_total_goals",
+            outcome_code="over",
+            odds=1.9,
+            line=2.5,
+            raw_label="3+",
+            start_time="2030-01-01T18:00:00+00:00",
+        ),
+        scraped_at=scraped_at,
+    )
+    await odds_store.set_current_snapshot(scraped_at)
+
+    resp = await client.get("/api/v1/matches/standalone-football-match/market-offers")
+    assert resp.status_code == 200
+    assert [(row["match_id"], row["bookmaker_id"]) for row in resp.json()] == [
+        ("standalone-football-match", "maxbet")
+    ]
+
+    missing_resp = await client.get("/api/v1/matches/not-a-match/market-offers")
+    assert missing_resp.status_code == 404
 
 
 @pytest.mark.asyncio

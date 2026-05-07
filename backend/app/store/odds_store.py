@@ -504,6 +504,86 @@ async def _current_or_legacy_snapshot_filter(
 
 # ── Matches ────────────────────────────────────────────────
 
+
+async def _get_resolved_event_id_for_match(
+    db: aiosqlite.Connection,
+    match_id: str,
+    *,
+    snapshot_id: str | None,
+) -> str | None:
+    if snapshot_id is not None:
+        rows = await db.execute_fetchall(
+            """SELECT rem.resolved_event_id
+               FROM resolved_event_members rem
+              WHERE rem.match_id = ?
+                AND rem.status = 'active'
+                AND (
+                    rem.snapshot_id = ?
+                    OR rem.snapshot_id IS NULL
+                )
+              ORDER BY CASE
+                  WHEN EXISTS (
+                      SELECT 1
+                      FROM resolved_events re
+                      WHERE re.id = rem.resolved_event_id
+                        AND re.method IN ('manual', 'manual_review')
+                  ) THEN 0
+                  ELSE 1
+              END,
+              CASE
+                  WHEN rem.snapshot_id = ? THEN 0
+                  ELSE 1
+              END,
+              rem.resolved_event_id ASC
+              LIMIT 1""",
+            (match_id, snapshot_id, snapshot_id),
+        )
+    else:
+        rows = await db.execute_fetchall(
+            """SELECT rem.resolved_event_id
+               FROM resolved_event_members rem
+              WHERE rem.match_id = ?
+                AND rem.status = 'active'
+                AND rem.snapshot_id IS NULL
+              ORDER BY rem.resolved_event_id ASC
+              LIMIT 1""",
+            (match_id,),
+        )
+    return rows[0]["resolved_event_id"] if rows else None
+
+
+async def _get_resolved_event_member_match_ids(
+    db: aiosqlite.Connection,
+    resolved_event_id: str,
+    *,
+    snapshot_id: str | None,
+) -> list[str]:
+    if snapshot_id is not None:
+        rows = await db.execute_fetchall(
+            """SELECT DISTINCT rem.match_id
+               FROM resolved_event_members rem
+              WHERE rem.resolved_event_id = ?
+                AND rem.status = 'active'
+                AND (
+                    rem.snapshot_id = ?
+                    OR rem.snapshot_id IS NULL
+                )
+              ORDER BY rem.match_id ASC""",
+            (resolved_event_id, snapshot_id),
+        )
+    else:
+        rows = await db.execute_fetchall(
+            """SELECT DISTINCT rem.match_id
+               FROM resolved_event_members rem
+              WHERE rem.resolved_event_id = ?
+                AND rem.status = 'active'
+                AND rem.snapshot_id IS NULL
+              ORDER BY rem.match_id ASC""",
+            (resolved_event_id,),
+        )
+    return [row["match_id"] for row in rows]
+
+
 async def upsert_match(
     id: str,
     league_id: str,
@@ -1096,7 +1176,10 @@ async def get_match(
 ) -> MatchOut | None:
     db = await get_db()
     current_snapshot_id = await _get_current_snapshot_id(db)
+    snapshot_at: str | None = None
+    cutoff_at: str | None = None
     if current_snapshot_id is not None:
+        snapshot_at = await _get_current_snapshot_at(db)
         visibility_clause = ""
         params: list[object] = [
             current_snapshot_id,
@@ -1164,10 +1247,13 @@ async def get_match(
     else:
         if require_current_snapshot and await _has_scrape_snapshots(db):
             return None
+        legacy_window = None if await _has_scrape_snapshots(db) else await _get_legacy_snapshot_cutoff(db)
+        if legacy_window is not None:
+            _, cutoff_at = legacy_window
         row = await db.execute_fetchall(
             """SELECT m.*, l.name as league_name,
                       (
-                          SELECT rem.resolved_event_id
+                           SELECT rem.resolved_event_id
                           FROM resolved_event_members rem
                           WHERE rem.match_id = m.id
                             AND rem.status = 'active'
@@ -1182,7 +1268,32 @@ async def get_match(
         )
     if not row:
         return None
-    return MatchOut(**_row_to_dict(row[0]))
+    data = _row_to_dict(row[0])
+    match_ids_for_bookmakers = [data["id"]]
+    if data.get("resolved_event_id"):
+        event_member_ids = await _get_resolved_event_member_match_ids(
+            db,
+            data["resolved_event_id"],
+            snapshot_id=current_snapshot_id,
+        )
+        if event_member_ids:
+            match_ids_for_bookmakers = event_member_ids
+    bookmaker_map = await _get_match_bookmaker_map(
+        db,
+        match_ids_for_bookmakers,
+        snapshot_id=current_snapshot_id,
+        snapshot_at=snapshot_at,
+        cutoff_at=cutoff_at,
+    )
+    bookmakers_by_id: dict[str, MatchBookmakerOut] = {}
+    for scoped_match_id in match_ids_for_bookmakers:
+        for bookmaker in bookmaker_map.get(scoped_match_id, []):
+            bookmakers_by_id.setdefault(bookmaker.id, bookmaker)
+    data["available_bookmakers"] = sorted(
+        bookmakers_by_id.values(),
+        key=lambda bookmaker: bookmaker.name.lower(),
+    )
+    return MatchOut(**data)
 
 
 # ── Resolved events ─────────────────────────────────────────
@@ -3009,6 +3120,7 @@ async def get_outcome_offers(
     *,
     sport: str | None = None,
     match_id: str | None = None,
+    match_ids: list[str] | None = None,
     bookmaker_ids: list[str] | None = None,
     market_type: str | None = None,
     limit: int = 200,
@@ -3034,13 +3146,15 @@ async def get_outcome_offers(
            """
     conditions = [snapshot_filter]
     params: list[object] = [current_snapshot_id, *snapshot_params]
+    selected_match_ids = list(dict.fromkeys(match_ids or ([] if match_id is None else [match_id])))
 
     if sport:
         conditions.append("CASE WHEN sm.match_id IS NOT NULL THEN sm.sport ELSE m.sport END = ?")
         params.append(sport)
-    if match_id:
-        conditions.append("o.match_id = ?")
-        params.append(match_id)
+    if selected_match_ids:
+        placeholders = _sql_placeholders(selected_match_ids)
+        conditions.append(f"o.match_id IN ({placeholders})")
+        params.extend(selected_match_ids)
     if bookmaker_ids:
         placeholders = _sql_placeholders(bookmaker_ids)
         conditions.append(f"o.bookmaker_id IN ({placeholders})")
@@ -3057,6 +3171,40 @@ async def get_outcome_offers(
     params.extend([limit, offset])
     rows = await db.execute_fetchall(q, params)
     return [OutcomeOfferOut(**_row_to_dict(row)) for row in rows]
+
+
+async def get_outcome_offers_for_match(
+    match_id: str,
+    *,
+    bookmaker_ids: list[str] | None = None,
+    market_type: str | None = None,
+    limit: int = 1000,
+    offset: int = 0,
+) -> list[OutcomeOfferOut]:
+    db = await get_db()
+    current_snapshot_id = await _get_current_snapshot_id(db)
+    resolved_event_id = await _get_resolved_event_id_for_match(
+        db,
+        match_id,
+        snapshot_id=current_snapshot_id,
+    )
+    scoped_match_ids = [match_id]
+    if resolved_event_id is not None:
+        event_match_ids = await _get_resolved_event_member_match_ids(
+            db,
+            resolved_event_id,
+            snapshot_id=current_snapshot_id,
+        )
+        if event_match_ids:
+            scoped_match_ids = event_match_ids
+
+    return await get_outcome_offers(
+        match_ids=scoped_match_ids,
+        bookmaker_ids=bookmaker_ids,
+        market_type=market_type,
+        limit=limit,
+        offset=offset,
+    )
 
 
 async def deactivate_opportunities(*, sport: str | None = None) -> None:
