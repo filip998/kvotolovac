@@ -973,7 +973,7 @@ def test_normalize_odds_logs_grouped_shared_platform_warnings(caplog):
         if "unresolved shared-platform props" in record.message
     ]
     assert len(warning_messages) == 1
-    assert "Dropping 2 unresolved shared-platform props for Borac Cacak" in warning_messages[0]
+    assert "Dropping 2 unresolved shared-platform props for Borac" in warning_messages[0]
 
 
 def test_normalize_odds_with_issues_infers_two_team_shared_platform_slot():
@@ -1434,6 +1434,272 @@ def test_normalize_odds_resolves_shared_platform_matchups_and_aliases():
     assert {offer.home_team for offer in normalized} == {"Houston Rockets"}
     assert {offer.away_team for offer in normalized} == {"Minnesota Timberwolves"}
     assert {offer.player_name for offer in normalized} == {"Kevin Durant"}
+
+
+def test_normalize_odds_resolves_shared_platform_props_after_seeded_club_aliases(
+    team_registry_file,
+):
+    raw = [
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="champions_league",
+            home_team="Rytas Vilnius",
+            away_team="CB 1939 Canarias",
+            market_type="game_total_ot",
+            threshold=164.5,
+            over_odds=1.88,
+            under_odds=1.88,
+            start_time="2026-05-07T16:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="champions_league",
+            home_team="Lietuvos Rytas",
+            away_team="Tenerife",
+            market_type="game_total_ot",
+            threshold=165.5,
+            over_odds=1.9,
+            under_odds=1.86,
+            start_time="2026-05-07T16:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="balkanbet_tournament_123",
+            home_team="Tenerife",
+            away_team="Marcelinho Huertas",
+            market_type="player_points",
+            player_name="Marcelinho Huertas",
+            threshold=9.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-05-07T16:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="meridian",
+            league_id="champions_league",
+            home_team="AEK Athens",
+            away_team="Unicaja Malaga",
+            market_type="game_total_ot",
+            threshold=159.5,
+            over_odds=1.9,
+            under_odds=1.8,
+            start_time="2026-05-07T17:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="maxbet",
+            league_id="champions_league",
+            home_team="BC AEK Athens",
+            away_team="CB Malaga",
+            market_type="game_total_ot",
+            threshold=160.5,
+            over_odds=1.87,
+            under_odds=1.87,
+            start_time="2026-05-07T17:00:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="balkanbet_tournament_456",
+            home_team="Unicaja",
+            away_team="Kendrick Perry",
+            market_type="player_points",
+            player_name="Kendrick Perry",
+            threshold=11.5,
+            over_odds=1.86,
+            under_odds=1.86,
+            start_time="2026-05-07T17:00:00+00:00",
+        ),
+    ]
+
+    normalized, unresolved = normalize_odds_with_issues(raw)
+
+    assert unresolved == []
+    assert len(normalized) == 6
+    offers_by_player = {offer.player_name: offer for offer in normalized if offer.player_name}
+    assert offers_by_player["Marcelinho Huertas"].home_team == "Rytas"
+    assert offers_by_player["Marcelinho Huertas"].away_team == "Tenerife"
+    assert offers_by_player["Kendrick Perry"].home_team == "AEK Athens"
+    assert offers_by_player["Kendrick Perry"].away_team == "Unicaja"
+    assert {
+        offer.match_id
+        for offer in normalized
+        if offer.start_time == "2026-05-07T16:00:00+00:00"
+    } == {offers_by_player["Marcelinho Huertas"].match_id}
+    assert {
+        offer.match_id
+        for offer in normalized
+        if offer.start_time == "2026-05-07T17:00:00+00:00"
+    } == {offers_by_player["Kendrick Perry"].match_id}
+
+
+def test_normalize_odds_repairs_balkanbet_split_feed_prop_start_time(
+    team_registry_file,
+):
+    create_canonical_team(display_name="KK TFT Skopje", sport="basketball")
+    raw = [
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="aba_liga",
+            home_team="KK Borac Cacak",
+            away_team="KK TFT Skopje",
+            market_type="game_total_ot",
+            threshold=164.5,
+            over_odds=1.88,
+            under_odds=1.88,
+            start_time="2026-05-07T18:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="aba_liga",
+            home_team="Borac",
+            away_team="P.Nikolic",
+            market_type="player_points",
+            player_name="P.Nikolic",
+            threshold=10.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-05-07T18:00:00+00:00",
+        ),
+    ]
+
+    normalized, unresolved = normalize_odds_with_issues(raw)
+
+    assert unresolved == []
+    assert len(normalized) == 2
+    prop_offer = next(offer for offer in normalized if offer.player_name == "P.Nikolic")
+    assert prop_offer.home_team == "Borac"
+    assert prop_offer.away_team == "KK TFT Skopje"
+    assert prop_offer.start_time == "2026-05-07T18:30:00+00:00"
+    assert {offer.match_id for offer in normalized} == {prop_offer.match_id}
+
+
+def test_normalize_odds_keeps_balkanbet_split_feed_prop_unresolved_with_multiple_nearby_games(
+    team_registry_file,
+):
+    create_canonical_team(display_name="KK TFT Skopje", sport="basketball")
+    create_canonical_team(display_name="Split Feed Rival", sport="basketball")
+    raw = [
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="aba_liga",
+            home_team="KK Borac Cacak",
+            away_team="KK TFT Skopje",
+            market_type="game_total_ot",
+            threshold=164.5,
+            over_odds=1.88,
+            under_odds=1.88,
+            start_time="2026-05-07T18:15:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="aba_liga",
+            home_team="KK Borac Cacak",
+            away_team="Split Feed Rival",
+            market_type="game_total_ot",
+            threshold=150.5,
+            over_odds=1.88,
+            under_odds=1.88,
+            start_time="2026-05-07T18:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="aba_liga",
+            home_team="Borac",
+            away_team="P.Nikolic",
+            market_type="player_points",
+            player_name="P.Nikolic",
+            threshold=10.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-05-07T18:00:00+00:00",
+        ),
+    ]
+
+    normalized, unresolved = normalize_odds_with_issues(raw)
+
+    assert len(normalized) == 2
+    assert all(offer.player_name is None for offer in normalized)
+    assert len(unresolved) == 1
+    assert unresolved[0].raw_team_name == "Borac"
+    assert unresolved[0].reason_code == "no_canonical_matchup_for_team_at_slot"
+
+
+def test_normalize_odds_does_not_repair_balkanbet_prop_to_earlier_game_start(
+    team_registry_file,
+):
+    create_canonical_team(display_name="KK TFT Skopje", sport="basketball")
+    raw = [
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="aba_liga",
+            home_team="KK Borac Cacak",
+            away_team="KK TFT Skopje",
+            market_type="game_total_ot",
+            threshold=164.5,
+            over_odds=1.88,
+            under_odds=1.88,
+            start_time="2026-05-07T17:45:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="aba_liga",
+            home_team="Borac",
+            away_team="P.Nikolic",
+            market_type="player_points",
+            player_name="P.Nikolic",
+            threshold=10.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-05-07T18:00:00+00:00",
+        ),
+    ]
+
+    normalized, unresolved = normalize_odds_with_issues(raw)
+
+    assert len(normalized) == 1
+    assert normalized[0].player_name is None
+    assert len(unresolved) == 1
+    assert unresolved[0].raw_team_name == "Borac"
+    assert unresolved[0].reason_code == "no_canonical_matchup_for_team_at_slot"
+
+
+def test_normalize_odds_does_not_repair_balkanbet_prop_without_same_bookmaker_game_market(
+    team_registry_file,
+):
+    create_canonical_team(display_name="KK TFT Skopje", sport="basketball")
+    raw = [
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="aba_liga",
+            home_team="KK Borac Cacak",
+            away_team="KK TFT Skopje",
+            market_type="player_points",
+            player_name="TFT Player",
+            threshold=12.5,
+            over_odds=1.88,
+            under_odds=1.88,
+            start_time="2026-05-07T18:30:00+00:00",
+        ),
+        RawOddsData(
+            bookmaker_id="balkanbet",
+            league_id="aba_liga",
+            home_team="Borac",
+            away_team="P.Nikolic",
+            market_type="player_points",
+            player_name="P.Nikolic",
+            threshold=10.5,
+            over_odds=1.85,
+            under_odds=1.85,
+            start_time="2026-05-07T18:00:00+00:00",
+        ),
+    ]
+
+    normalized, unresolved = normalize_odds_with_issues(raw)
+
+    assert len(normalized) == 1
+    assert normalized[0].player_name == "TFT Player"
+    assert len(unresolved) == 1
+    assert unresolved[0].raw_team_name == "Borac"
+    assert unresolved[0].reason_code == "no_canonical_matchup_for_team_at_slot"
 
 
 def test_normalize_odds_merges_korihait_vilpas_bookmaker_variants():

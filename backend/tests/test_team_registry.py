@@ -61,6 +61,19 @@ def test_bootstrap_seed_reuses_inactive_merged_display_name(
     assert resolution.team_name == target.team_name
 
 
+@pytest.mark.parametrize("raw_alias", ["aek", "canarias"])
+def test_basketball_seed_data_does_not_promote_bare_ambiguous_aliases(
+    team_registry_file,
+    raw_alias,
+):
+    normalized_seed_aliases = {
+        normalize_identity_text(alias) for alias in SPORT_ALIAS_SEEDS["basketball"]
+    }
+
+    assert normalize_identity_text(raw_alias) not in normalized_seed_aliases
+    assert resolve_team_alias(raw_alias, sport="basketball") is None
+
+
 def test_create_canonical_team_reports_unresolved_inactive_conflict(team_registry_file):
     create_canonical_team(display_name="QA Schema Anchor")
     display_name = "QA Orphan Inactive"

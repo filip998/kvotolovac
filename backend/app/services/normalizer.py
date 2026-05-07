@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 import re
 from collections import Counter, defaultdict
 from functools import lru_cache
@@ -56,6 +57,9 @@ TEAM_REVIEW_CANDIDATE_THRESHOLD = 76
 ANCHORED_AUTO_APPLY_THRESHOLD = 85
 TEAM_REVIEW_MAX_CANDIDATES = 3
 SAME_BOOKMAKER_MATCHUP_TEAM_THRESHOLD = 90.0
+_TIME_TOLERANT_SHARED_PLATFORM_MATCHUP_WINDOWS: dict[tuple[str, str], timedelta] = {
+    ("basketball", "balkanbet"): timedelta(minutes=30),
+}
 
 _MARKET_TYPE_MAPPING: dict[str, str] = {
     "player_points": "player_points",
@@ -1323,6 +1327,7 @@ class _CanonicalMatchup:
     bookmaker_ids: frozenset[str] = frozenset()
     home_team_names: frozenset[str] = frozenset()
     away_team_names: frozenset[str] = frozenset()
+    game_market_bookmaker_ids: frozenset[str] = frozenset()
 
 
 def _event_slot_key(
@@ -2028,6 +2033,88 @@ def _find_same_bookmaker_anchored_matchup(
     return next(iter(unique_candidates.values()))[0]
 
 
+def _parse_event_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _find_time_tolerant_same_bookmaker_matchup(
+    raw: RawOddsData,
+    *,
+    known_team_id: int | None,
+    matchups_by_slot: dict[tuple[str, str], list[_CanonicalMatchup]],
+) -> tuple[_CanonicalMatchup, str] | None:
+    if known_team_id is None:
+        return None
+
+    tolerance = _TIME_TOLERANT_SHARED_PLATFORM_MATCHUP_WINDOWS.get(
+        (normalize_identity_text(raw.sport), normalize_identity_text(raw.bookmaker_id))
+    )
+    if tolerance is None:
+        return None
+
+    prop_start = _parse_event_datetime(raw.start_time)
+    if prop_start is None:
+        return None
+
+    candidates: dict[tuple[str, int, int], tuple[_CanonicalMatchup, str]] = {}
+    for slot, matchups in matchups_by_slot.items():
+        slot_sport, slot_start_time = slot
+        if normalize_identity_text(slot_sport) != normalize_identity_text(raw.sport):
+            continue
+        matchup_start = _parse_event_datetime(slot_start_time)
+        if matchup_start is None:
+            continue
+        try:
+            delta = matchup_start - prop_start
+        except TypeError:
+            continue
+        if delta < timedelta(0) or delta > tolerance:
+            continue
+
+        for matchup in matchups:
+            if raw.bookmaker_id not in matchup.bookmaker_ids:
+                continue
+            if raw.bookmaker_id not in matchup.game_market_bookmaker_ids:
+                continue
+            if known_team_id not in {matchup.home_team_id, matchup.away_team_id}:
+                continue
+            candidates[(slot_start_time, matchup.home_team_id, matchup.away_team_id)] = (
+                matchup,
+                slot_start_time,
+            )
+
+    if len(candidates) != 1:
+        return None
+    return next(iter(candidates.values()))
+
+
+def _raw_with_shared_platform_matchup(
+    raw: RawOddsData,
+    matchup: _CanonicalMatchup,
+    *,
+    start_time: str | None,
+) -> RawOddsData:
+    return RawOddsData(
+        bookmaker_id=raw.bookmaker_id,
+        league_id=matchup.league_id or raw.league_id,
+        sport=raw.sport,
+        home_team=matchup.home_team,
+        away_team=matchup.away_team,
+        source_url=raw.source_url,
+        market_type=raw.market_type,
+        player_name=raw.player_name,
+        threshold=raw.threshold,
+        over_odds=raw.over_odds,
+        under_odds=raw.under_odds,
+        start_time=start_time,
+    )
+
+
 def _separate_missing_start_times(
     raw_list: list[RawOddsData],
 ) -> tuple[list[RawOddsData], list[UnresolvedOddsDiagnostic]]:
@@ -2139,6 +2226,10 @@ def _build_canonical_matchups(
     ] = {}
     league_counts: dict[tuple[tuple[str, str], tuple[int, int]], Counter[str]] = defaultdict(Counter)
     bookmaker_ids: dict[tuple[tuple[str, str], tuple[int, int]], set[str]] = defaultdict(set)
+    game_market_bookmaker_ids: dict[
+        tuple[tuple[str, str], tuple[int, int]],
+        set[str],
+    ] = defaultdict(set)
     team_source_names: dict[
         tuple[tuple[str, str], tuple[int, int]],
         dict[int, set[str]],
@@ -2180,6 +2271,8 @@ def _build_canonical_matchups(
         ) + 1
         league_counts[slot][direct_league.league_id] += 1
         bookmaker_ids[slot].add(raw.bookmaker_id)
+        if not normalize_market_type(raw.market_type).startswith("player_"):
+            game_market_bookmaker_ids[slot].add(raw.bookmaker_id)
         team_source_names[slot][home_resolution.team_id].add(raw.home_team)
         team_source_names[slot][away_resolution.team_id].add(raw.away_team)
         team_names[home_resolution.team_id] = home_resolution.team_name
@@ -2204,6 +2297,7 @@ def _build_canonical_matchups(
             away_team_names=frozenset(
                 {team_names[chosen_away_id], *team_source_names[slot][chosen_away_id]}
             ),
+            game_market_bookmaker_ids=frozenset(game_market_bookmaker_ids[slot]),
         )
     return canonical
 
@@ -2325,18 +2419,9 @@ def _resolve_shared_platform_matchups(
         )
         if same_bookmaker_matchup is not None:
             resolved.append(
-                RawOddsData(
-                    bookmaker_id=raw.bookmaker_id,
-                    league_id=same_bookmaker_matchup.league_id or raw.league_id,
-                    sport=raw.sport,
-                    home_team=same_bookmaker_matchup.home_team,
-                    away_team=same_bookmaker_matchup.away_team,
-                    source_url=raw.source_url,
-                    market_type=raw.market_type,
-                    player_name=raw.player_name,
-                    threshold=raw.threshold,
-                    over_odds=raw.over_odds,
-                    under_odds=raw.under_odds,
+                _raw_with_shared_platform_matchup(
+                    raw,
+                    same_bookmaker_matchup,
                     start_time=raw.start_time,
                 )
             )
@@ -2358,6 +2443,23 @@ def _resolve_shared_platform_matchups(
         ]
         if same_bookmaker_candidates:
             candidates = same_bookmaker_candidates
+
+        if len(candidates) == 0:
+            repaired_matchup = _find_time_tolerant_same_bookmaker_matchup(
+                raw,
+                known_team_id=known_team.team_id,
+                matchups_by_slot=matchups_by_slot,
+            )
+            if repaired_matchup is not None:
+                selected, selected_start_time = repaired_matchup
+                resolved.append(
+                    _raw_with_shared_platform_matchup(
+                        raw,
+                        selected,
+                        start_time=selected_start_time,
+                    )
+                )
+                continue
 
         if len(candidates) != 1:
             reason_code = (
@@ -2392,18 +2494,9 @@ def _resolve_shared_platform_matchups(
 
         selected = candidates[0]
         resolved.append(
-            RawOddsData(
-                bookmaker_id=raw.bookmaker_id,
-                league_id=selected.league_id or raw.league_id,
-                sport=raw.sport,
-                home_team=selected.home_team,
-                away_team=selected.away_team,
-                source_url=raw.source_url,
-                market_type=raw.market_type,
-                player_name=raw.player_name,
-                threshold=raw.threshold,
-                over_odds=raw.over_odds,
-                under_odds=raw.under_odds,
+            _raw_with_shared_platform_matchup(
+                raw,
+                selected,
                 start_time=raw.start_time,
             )
         )
