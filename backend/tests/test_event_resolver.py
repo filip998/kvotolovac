@@ -199,6 +199,194 @@ def _basketball_odds(
     )
 
 
+def _event_candidate(
+    bookmaker_id: str,
+    *,
+    match_id: str,
+    sport: str,
+    home_team_id: int,
+    away_team_id: int,
+    home_team: str,
+    away_team: str,
+    start_time: str = START_TIME,
+    source_league_id: str = "test_league",
+    source_league_name: str = "Test League",
+) -> EventCandidate:
+    return EventCandidate(
+        match_id=match_id,
+        bookmaker_id=bookmaker_id,
+        sport=sport,
+        start_time=start_time,
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        home_team=home_team,
+        away_team=away_team,
+        source_league_id=source_league_id,
+        source_league_name=source_league_name,
+    )
+
+
+def test_event_resolver_merges_same_slot_when_one_canonical_side_matches_football():
+    candidates = [
+        _event_candidate(
+            bookmaker_id,
+            match_id="kraluv-loko-vltavin",
+            sport="football",
+            home_team_id=100,
+            away_team_id=200,
+            home_team="Kraluv Dvur",
+            away_team="Loko Vltavin Prague",
+            source_league_id="ceska_3",
+            source_league_name="Ceska 3",
+        )
+        for bookmaker_id in ("superbet", "volcanobet")
+    ] + [
+        _event_candidate(
+            bookmaker_id,
+            match_id="kraluv-loko-praha",
+            sport="football",
+            home_team_id=100,
+            away_team_id=201,
+            home_team="Kraluv Dvur",
+            away_team="Loko Praha",
+            source_league_id="ceska_3_a_cfl",
+            source_league_name="Ceska 3 A CFL",
+        )
+        for bookmaker_id in ("admiralbet", "maxbet", "mozzart", "pinnbet", "soccerbet")
+    ]
+
+    resolutions, review_cases = build_event_resolution_groups(candidates)
+
+    assert review_cases == []
+    assert len(resolutions) == 1
+    event = resolutions[0]
+    assert event.method == "auto_fuzzy_high"
+    assert {member.match_id for member in event.members} == {
+        "kraluv-loko-vltavin",
+        "kraluv-loko-praha",
+    }
+    assert any("canonical side anchored" in item for item in event.evidence)
+
+
+def test_event_resolver_merges_same_slot_when_one_canonical_side_matches_basketball():
+    candidates = [
+        _event_candidate(
+            "balkanbet",
+            match_id="dubai-basketball-spartak-subotica",
+            sport="basketball",
+            home_team_id=300,
+            away_team_id=56,
+            home_team="Dubai Basketball",
+            away_team="Spartak Subotica",
+            source_league_id="balkanbet_tournament_507",
+            source_league_name="Balkanbet Tournament 507",
+        )
+    ] + [
+        _event_candidate(
+            bookmaker_id,
+            match_id="dubai-spartak-subotica",
+            sport="basketball",
+            home_team_id=301,
+            away_team_id=56,
+            home_team="Dubai",
+            away_team="Spartak Subotica",
+            source_league_id="aba_liga",
+            source_league_name="ABA League",
+        )
+        for bookmaker_id in ("maxbet", "superbet", "volcanobet")
+    ]
+
+    resolutions, review_cases = build_event_resolution_groups(candidates)
+
+    assert review_cases == []
+    assert len(resolutions) == 1
+    event = resolutions[0]
+    assert event.method == "auto_fuzzy_high"
+    assert {member.match_id for member in event.members} == {
+        "dubai-basketball-spartak-subotica",
+        "dubai-spartak-subotica",
+    }
+    assert any("canonical side anchored" in item for item in event.evidence)
+
+
+def test_event_resolver_quorum_resolves_one_canonical_side_same_bookmaker_conflict():
+    candidates = [
+        _event_candidate(
+            bookmaker_id,
+            match_id="dubai-spartak-subotica",
+            sport="basketball",
+            home_team_id=301,
+            away_team_id=56,
+            home_team="Dubai",
+            away_team="Spartak Subotica",
+            source_league_id="aba_liga",
+            source_league_name="ABA League",
+        )
+        for bookmaker_id in ("admiralbet", "balkanbet", "maxbet", "superbet", "volcanobet")
+    ] + [
+        _event_candidate(
+            bookmaker_id,
+            match_id="dubai-spartak-s",
+            sport="basketball",
+            home_team_id=301,
+            away_team_id=57,
+            home_team="Dubai",
+            away_team="Spartak S",
+            source_league_id="aba_liga",
+            source_league_name="ABA League",
+        )
+        for bookmaker_id in ("balkanbet", "pinnbet")
+    ]
+
+    resolutions, review_cases = build_event_resolution_groups(candidates)
+
+    assert review_cases == []
+    assert len(resolutions) == 1
+    event = resolutions[0]
+    assert event.method == "auto_fuzzy_high"
+    assert {member.match_id for member in event.members} == {
+        "dubai-spartak-subotica",
+        "dubai-spartak-s",
+    }
+    assert any("Quorum-resolved same-bookmaker conflict" in item for item in event.evidence)
+
+
+def test_event_resolver_keeps_same_teams_with_different_start_times_separate():
+    later_start = "2030-01-01T20:20:00+00:00"
+    candidates = [
+        _event_candidate(
+            "admiralbet",
+            match_id="juventus-siauliai-1530",
+            sport="basketball",
+            home_team_id=1269,
+            away_team_id=954,
+            home_team="Juventus",
+            away_team="Siauliai",
+            start_time=START_TIME,
+            source_league_id="litvanija_lkl",
+            source_league_name="Litvanija LKL",
+        ),
+        _event_candidate(
+            "betole",
+            match_id="juventus-siauliai-1550",
+            sport="basketball",
+            home_team_id=1269,
+            away_team_id=954,
+            home_team="Juventus",
+            away_team="Siauliai",
+            start_time=later_start,
+            source_league_id="litvanija_1",
+            source_league_name="Litvanija 1",
+        ),
+    ]
+
+    resolutions, review_cases = build_event_resolution_groups(candidates)
+
+    assert review_cases == []
+    assert len(resolutions) == 2
+    assert {event.start_time for event in resolutions} == {START_TIME, later_start}
+
+
 @pytest.mark.asyncio
 async def test_event_resolver_persists_exact_basketball_group(team_registry_file):
     home = create_canonical_team(display_name="Partizan", sport="basketball")

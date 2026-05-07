@@ -51,12 +51,18 @@ CANONICAL_TEAM_AUTO_MERGE_THRESHOLD = 88.0
 _ANCHORED_FUZZY_AVG_SCORE = 70.0
 _ANCHORED_FUZZY_SIDE_SCORE = 50.0
 _ANCHORED_MIN_BOOKMAKERS = 3
+_CANONICAL_SIDE_ANCHOR_AVG_SCORE = 65.0
+_CANONICAL_SIDE_ANCHOR_WEAK_SIDE_SCORE = 45.0
+_CANONICAL_SIDE_ANCHOR_MIN_BOOKMAKERS = 3
+_CANONICAL_SIDE_ANCHOR_MIN_BOOKMAKERS_NON_TARGETED = 5
 # Same-bookmaker conflict resolution by quorum: if one exact group dwarfs the
 # other in distinct bookmaker count, fold the smaller group into the larger
 # despite a same-bookmaker overlap. Uses the immutable per-group bookmaker
 # sets, never the (mutable) DSU root sizes, so the decision is order-independent.
 _QUORUM_FUZZY_AVG_SCORE = 80.0
 _QUORUM_FUZZY_SIDE_SCORE = 60.0
+_QUORUM_CANONICAL_SIDE_ANCHOR_AVG_SCORE = 70.0
+_QUORUM_CANONICAL_SIDE_ANCHOR_WEAK_SIDE_SCORE = 45.0
 _QUORUM_MIN_LARGER_BOOKMAKERS = 5
 _QUORUM_MIN_BOOKMAKER_DIFFERENCE = 3
 _LOW_SIGNAL_TEAM_TOKENS = {
@@ -746,6 +752,26 @@ def _weak_side_pair_is_subset_or_equal(
     return _is_subset_or_equal_token_pair(*weak_pair, sport=sport)
 
 
+def _matching_canonical_sides(
+    left_candidate: EventCandidate,
+    right_candidate: EventCandidate,
+    orientation: str,
+) -> set[str]:
+    if orientation == "as_listed":
+        home_pair = (left_candidate.home_team_id, right_candidate.home_team_id)
+        away_pair = (left_candidate.away_team_id, right_candidate.away_team_id)
+    else:
+        home_pair = (left_candidate.home_team_id, right_candidate.away_team_id)
+        away_pair = (left_candidate.away_team_id, right_candidate.home_team_id)
+
+    matching: set[str] = set()
+    if home_pair[0] is not None and home_pair[0] == home_pair[1]:
+        matching.add("home")
+    if away_pair[0] is not None and away_pair[0] == away_pair[1]:
+        matching.add("away")
+    return matching
+
+
 def _source_match_score(source: _RawEventSource, candidate: EventCandidate) -> float:
     scores = _orientation_scores(
         source.home_team,
@@ -992,13 +1018,13 @@ def _shared_significant_tokens(
     )
 
 
-def _passes_anchored_low_conf(
+def _anchored_low_conf_detail(
     *,
     left_candidate: EventCandidate,
     right_candidate: EventCandidate,
     top: _OrientationScore,
     combined_bookmaker_count: int,
-) -> bool:
+) -> str | None:
     """Lower-threshold corroborated merge for same-slot pairs.
 
     The subset/equal branch is cross-sport so explicit women-marker variants
@@ -1023,12 +1049,32 @@ def _passes_anchored_low_conf(
       and Austria/Australia regression tests.
     """
 
-    if top.avg_score < _ANCHORED_FUZZY_AVG_SCORE:
-        return False
-    if top.weak_side_score < _ANCHORED_FUZZY_SIDE_SCORE:
-        return False
     if combined_bookmaker_count < _ANCHORED_MIN_BOOKMAKERS:
-        return False
+        return None
+
+    matching_canonical_sides = _matching_canonical_sides(
+        left_candidate,
+        right_candidate,
+        top.orientation,
+    )
+    if matching_canonical_sides:
+        min_bookmakers = (
+            _CANONICAL_SIDE_ANCHOR_MIN_BOOKMAKERS
+            if left_candidate.sport in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE
+            and right_candidate.sport in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE
+            else _CANONICAL_SIDE_ANCHOR_MIN_BOOKMAKERS_NON_TARGETED
+        )
+        if (
+            combined_bookmaker_count >= min_bookmakers
+            and top.avg_score >= _CANONICAL_SIDE_ANCHOR_AVG_SCORE
+            and top.weak_side_score >= _CANONICAL_SIDE_ANCHOR_WEAK_SIDE_SCORE
+        ):
+            return "canonical side anchored"
+
+    if top.avg_score < _ANCHORED_FUZZY_AVG_SCORE:
+        return None
+    if top.weak_side_score < _ANCHORED_FUZZY_SIDE_SCORE:
+        return None
 
     if top.orientation == "as_listed":
         home_pair = (left_candidate.home_team, right_candidate.home_team)
@@ -1039,19 +1085,39 @@ def _passes_anchored_low_conf(
     weak_pair = home_pair if top.home_score <= top.away_score else away_pair
 
     if _is_subset_or_equal_token_pair(*weak_pair, sport=left_candidate.sport):
-        return True
+        return "token subset anchored"
 
     if left_candidate.sport not in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
-        return False
+        return None
     if right_candidate.sport not in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
-        return False
+        return None
 
     if not _shared_significant_tokens(*weak_pair, sport=left_candidate.sport):
-        return False
+        return None
 
     left_league = left_candidate.source_league_id
     right_league = right_candidate.source_league_id
-    return bool(left_league and right_league and left_league == right_league)
+    if left_league and right_league and left_league == right_league:
+        return "league anchored"
+    return None
+
+
+def _passes_anchored_low_conf(
+    *,
+    left_candidate: EventCandidate,
+    right_candidate: EventCandidate,
+    top: _OrientationScore,
+    combined_bookmaker_count: int,
+) -> bool:
+    return (
+        _anchored_low_conf_detail(
+            left_candidate=left_candidate,
+            right_candidate=right_candidate,
+            top=top,
+            combined_bookmaker_count=combined_bookmaker_count,
+        )
+        is not None
+    )
 
 
 def _quorum_resolution_passes(
@@ -1088,9 +1154,31 @@ def _quorum_resolution_passes(
     if representative.sport not in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
         return False
 
-    if pair.score < _QUORUM_FUZZY_AVG_SCORE:
-        return False
-    if pair.weak_side_score < _QUORUM_FUZZY_SIDE_SCORE:
+    passes_standard_threshold = (
+        pair.score >= _QUORUM_FUZZY_AVG_SCORE
+        and pair.weak_side_score >= _QUORUM_FUZZY_SIDE_SCORE
+    )
+    passes_canonical_anchor_threshold = False
+    if not passes_standard_threshold:
+        for left_candidate in left.candidates:
+            for right_candidate in right.candidates:
+                if not _matching_canonical_sides(
+                    left_candidate,
+                    right_candidate,
+                    pair.orientation,
+                ):
+                    continue
+                passes_canonical_anchor_threshold = (
+                    pair.score >= _QUORUM_CANONICAL_SIDE_ANCHOR_AVG_SCORE
+                    and pair.weak_side_score
+                    >= _QUORUM_CANONICAL_SIDE_ANCHOR_WEAK_SIDE_SCORE
+                )
+                if passes_canonical_anchor_threshold:
+                    break
+            if passes_canonical_anchor_threshold:
+                break
+
+    if not passes_standard_threshold and not passes_canonical_anchor_threshold:
         return False
 
     larger_count = max(len(left.bookmakers), len(right.bookmakers))
@@ -1166,12 +1254,14 @@ def _group_pair_resolution(
                         ),
                     ),
                 )
-            elif _passes_anchored_low_conf(
-                left_candidate=left_candidate,
-                right_candidate=right_candidate,
-                top=top,
-                combined_bookmaker_count=combined_bookmaker_count,
-            ):
+            elif (
+                anchored_detail := _anchored_low_conf_detail(
+                    left_candidate=left_candidate,
+                    right_candidate=right_candidate,
+                    top=top,
+                    combined_bookmaker_count=combined_bookmaker_count,
+                )
+            ) is not None:
                 resolution = _PairResolution(
                     confidence=top.avg_score / 100,
                     score=top.avg_score,
@@ -1186,7 +1276,7 @@ def _group_pair_resolution(
                             f"{right_candidate.home_team} vs {right_candidate.away_team} "
                             f"({top.orientation}, score {top.avg_score:.1f}, "
                             f"weak {top.weak_side_score:.1f}, "
-                            f"{combined_bookmaker_count} bookmakers, league anchored)"
+                            f"{combined_bookmaker_count} bookmakers, {anchored_detail})"
                         ),
                     ),
                 )
