@@ -508,6 +508,11 @@ def test_outcome_normalization_benchmark_defaults_and_serialization():
 
     assert payload["runs"] == 0
     assert payload["team_review_proxy_rows"] == 0
+    assert payload["team_review_proxy_slot_resolution_ms"] == 0
+    assert payload["team_review_proxy_case_build_ms"] == 0
+    assert payload["team_review_proxy_resolve_team_cache_hits"] == 0
+    assert payload["team_review_proxy_slot_candidate_search_count"] == 0
+    assert payload["team_review_proxy_global_candidate_cache_hits"] == 0
     assert payload["row_iteration_ms"] == 0
     assert payload["event_resolution_offer_count"] == 0
     assert payload["football_event_time_slot_count"] == 0
