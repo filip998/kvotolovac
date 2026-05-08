@@ -1663,6 +1663,85 @@ async def test_system_status_counts_outcome_offer_only_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_persist_scrape_snapshot_batch_returns_persistence_benchmark():
+    snapshot_at = "2026-04-11T20:06:00.735723"
+    await odds_store.upsert_bookmaker("maxbet", "MaxBet")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+
+    persisted = await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at=snapshot_at,
+        odds=[
+            NormalizedOdds(
+                match_id="basketball-match",
+                bookmaker_id="meridian",
+                league_id="euroleague",
+                sport="basketball",
+                home_team="Partizan",
+                away_team="Crvena Zvezda",
+                source_url="https://example.test/odds",
+                market_type="player_points",
+                player_name="Saben Lee",
+                threshold=13.5,
+                over_odds=1.8,
+                under_odds=2.0,
+                start_time="2026-04-11T20:00:00+00:00",
+            )
+        ],
+        outcome_offers=[
+            NormalizedOutcomeOffer(
+                match_id="football-match",
+                bookmaker_id="maxbet",
+                league_id="premier-league",
+                sport="football",
+                home_team="Arsenal",
+                away_team="Chelsea",
+                source_url="https://example.test/outcome",
+                market_type="football_total_goals",
+                outcome_code="over",
+                odds=1.85,
+                line=2.5,
+                start_time="2026-04-11T20:00:00+00:00",
+            )
+        ],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+
+    benchmark = persisted["benchmark"]
+
+    assert benchmark.wall_ms >= 0
+    assert benchmark.commit_ms >= 0
+    assert benchmark.row_counts == {
+        "leagues": 2,
+        "matches": 2,
+        "snapshot_matches": 2,
+        "sources": 2,
+        "odds": 1,
+        "odds_history": 1,
+        "outcome_offers": 1,
+        "unresolved_odds": 0,
+        "team_review_cases": 0,
+        "auto_approved_team_reviews": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_persist_scrape_snapshot_batch_empty_input_returns_persistence_benchmark():
+    persisted = await odds_store.persist_scrape_snapshot_batch(
+        snapshot_at="2026-04-11T20:06:00.735723",
+        odds=[],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[],
+    )
+
+    benchmark = persisted["benchmark"]
+
+    assert benchmark.wall_ms >= 0
+    assert set(benchmark.row_counts.values()) == {0}
+
+
+@pytest.mark.asyncio
 async def test_persisted_snapshot_is_hidden_until_opportunity_publish():
     old_snapshot_at = "2026-04-11T20:06:00.735723"
     new_snapshot_at = "2026-04-11T20:11:00.735723"

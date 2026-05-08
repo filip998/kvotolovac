@@ -2374,6 +2374,8 @@ async def test_scheduler_run_cycle_keeps_previous_snapshot_if_store_fails_mid_ba
 
     assert [match.id for match in matches] == ["old"]
     assert status.last_scrape_at == "2026-04-10T13:39:04.516801"
+    assert scraper_benchmarks.recorder._persistence.wall_ms == 0
+    assert scraper_benchmarks.recorder._persistence.row_counts == {}
 
 
 @pytest.mark.asyncio

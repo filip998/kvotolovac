@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import unicodedata
 import uuid
 from datetime import datetime, timedelta
@@ -27,6 +28,7 @@ from ..models.schemas import (
     OpportunityLeg,
     OpportunityOut,
     OutcomeOfferOut,
+    PersistenceBenchmarkOut,
     ResolvedEventIn,
     ResolvedEventMemberIn,
     ResolvedEventMemberOut,
@@ -52,6 +54,10 @@ from ..services.league_registry import league_country, league_display_name
 
 def _row_to_dict(row: aiosqlite.Row) -> dict:
     return dict(row)
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return int((time.perf_counter() - started_at) * 1000)
 
 
 async def _open_isolated_db_connection() -> aiosqlite.Connection:
@@ -719,16 +725,34 @@ async def persist_scrape_snapshot_batch(
     team_review_cases: list[TeamReviewDiagnostic],
     auto_approved_team_reviews: list[TeamReviewDiagnostic] | None = None,
 ) -> dict[str, object]:
+    wall_started_at = time.perf_counter()
     snapshot_id = _snapshot_id_from_scraped_at(snapshot_at)
     auto_approved_team_reviews = auto_approved_team_reviews or []
     rows: list[NormalizedOdds | NormalizedOutcomeOffer] = [*odds, *outcome_offers]
     seen_match_rows = {row.match_id: row for row in rows}
     league_ids = sorted({row.league_id for row in rows})
+    benchmark = PersistenceBenchmarkOut(
+        row_counts={
+            "leagues": len(league_ids),
+            "matches": len(seen_match_rows),
+            "snapshot_matches": len(seen_match_rows),
+            "sources": 0,
+            "odds": len(odds),
+            "odds_history": len(odds),
+            "outcome_offers": len(outcome_offers),
+            "unresolved_odds": len(unresolved_odds),
+            "team_review_cases": len(team_review_cases),
+            "auto_approved_team_reviews": len(auto_approved_team_reviews),
+        }
+    )
 
     db = await get_db()
     auto_approved_case_ids: list[int] = []
     try:
+        subphase_started_at = time.perf_counter()
         await db.execute("BEGIN IMMEDIATE")
+        benchmark.begin_transaction_ms = _elapsed_ms(subphase_started_at)
+        subphase_started_at = time.perf_counter()
         await _upsert_scrape_snapshot_tx(
             db,
             snapshot_id=snapshot_id,
@@ -741,6 +765,8 @@ async def persist_scrape_snapshot_batch(
             team_review_cases_count=len(team_review_cases)
             + len(auto_approved_team_reviews),
         )
+        benchmark.upsert_snapshot_persisting_ms = _elapsed_ms(subphase_started_at)
+        subphase_started_at = time.perf_counter()
         await db.executemany(
             "INSERT OR REPLACE INTO leagues (id, name, sport, country) VALUES (?, ?, ?, ?)",
             [
@@ -753,6 +779,8 @@ async def persist_scrape_snapshot_batch(
                 for league_id in league_ids
             ],
         )
+        benchmark.upsert_leagues_ms = _elapsed_ms(subphase_started_at)
+        subphase_started_at = time.perf_counter()
         await db.executemany(
             """INSERT OR REPLACE INTO matches (
                    id,
@@ -768,6 +796,8 @@ async def persist_scrape_snapshot_batch(
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [_match_row_from_offer_row(row) for row in seen_match_rows.values()],
         )
+        benchmark.upsert_matches_ms = _elapsed_ms(subphase_started_at)
+        subphase_started_at = time.perf_counter()
         await db.executemany(
             """INSERT OR REPLACE INTO snapshot_matches (
                    snapshot_id,
@@ -790,11 +820,14 @@ async def persist_scrape_snapshot_batch(
                 for row in seen_match_rows.values()
             ],
         )
+        benchmark.upsert_snapshot_matches_ms = _elapsed_ms(subphase_started_at)
+        subphase_started_at = time.perf_counter()
         source_rows = [
             (snapshot_id, row.match_id, row.bookmaker_id, row.source_url)
             for row in rows
             if row.source_url is not None
         ]
+        benchmark.row_counts["sources"] = len(source_rows)
         await db.executemany(
             """INSERT INTO match_bookmaker_sources (snapshot_id, match_id, bookmaker_id, source_url)
                VALUES (?, ?, ?, ?)
@@ -803,6 +836,8 @@ async def persist_scrape_snapshot_batch(
                     updated_at = CURRENT_TIMESTAMP""",
             source_rows,
         )
+        benchmark.upsert_sources_ms = _elapsed_ms(subphase_started_at)
+        subphase_started_at = time.perf_counter()
         await db.executemany(
             """INSERT OR REPLACE INTO odds
                (snapshot_id, match_id, bookmaker_id, market_type, player_name, threshold,
@@ -823,6 +858,8 @@ async def persist_scrape_snapshot_batch(
                 for item in odds
             ],
         )
+        benchmark.upsert_odds_ms = _elapsed_ms(subphase_started_at)
+        subphase_started_at = time.perf_counter()
         await db.executemany(
             """INSERT INTO odds_history
                (snapshot_id, match_id, bookmaker_id, market_type, player_name, threshold,
@@ -843,6 +880,8 @@ async def persist_scrape_snapshot_batch(
                 for item in odds
             ],
         )
+        benchmark.insert_odds_history_ms = _elapsed_ms(subphase_started_at)
+        subphase_started_at = time.perf_counter()
         await db.executemany(
             """INSERT OR REPLACE INTO outcome_offers
                (snapshot_id, match_id, bookmaker_id, market_type, outcome_code, line,
@@ -863,6 +902,8 @@ async def persist_scrape_snapshot_batch(
                 for item in outcome_offers
             ],
         )
+        benchmark.upsert_outcome_offers_ms = _elapsed_ms(subphase_started_at)
+        subphase_started_at = time.perf_counter()
         await db.executemany(
             """INSERT INTO unresolved_odds
                (snapshot_id, bookmaker_id, raw_league_id, league_id, sport, market_type,
@@ -894,6 +935,8 @@ async def persist_scrape_snapshot_batch(
                 for item in unresolved_odds
             ],
         )
+        benchmark.insert_unresolved_odds_ms = _elapsed_ms(subphase_started_at)
+        subphase_started_at = time.perf_counter()
         team_review_sql = """INSERT INTO team_review_cases
                (snapshot_id, bookmaker_id, raw_league_id, normalized_raw_league_id, sport,
                 scope_league_id, raw_team_name, normalized_raw_team_name, suggested_team_id,
@@ -908,13 +951,19 @@ async def persist_scrape_snapshot_batch(
                 for item in team_review_cases
             ],
         )
+        benchmark.insert_team_review_cases_ms = _elapsed_ms(subphase_started_at)
         for item in auto_approved_team_reviews:
+            subphase_started_at = time.perf_counter()
             cursor = await db.execute(
                 team_review_sql,
                 _team_review_values(item, snapshot_id=snapshot_id, scraped_at=snapshot_at),
             )
+            benchmark.insert_auto_approved_team_reviews_ms += _elapsed_ms(
+                subphase_started_at
+            )
             case_id = cursor.lastrowid or 0
             auto_approved_case_ids.append(case_id)
+            subphase_started_at = time.perf_counter()
             await db.execute(
                 """UPDATE team_review_cases
                    SET status = 'approved',
@@ -922,6 +971,10 @@ async def persist_scrape_snapshot_batch(
                    WHERE id = ?""",
                 (case_id,),
             )
+            benchmark.update_auto_approved_reviews_ms += _elapsed_ms(
+                subphase_started_at
+            )
+        subphase_started_at = time.perf_counter()
         await _upsert_scrape_snapshot_tx(
             db,
             snapshot_id=snapshot_id,
@@ -934,7 +987,11 @@ async def persist_scrape_snapshot_batch(
             team_review_cases_count=len(team_review_cases)
             + len(auto_approved_team_reviews),
         )
+        benchmark.upsert_snapshot_persisted_ms = _elapsed_ms(subphase_started_at)
+        subphase_started_at = time.perf_counter()
         await db.commit()
+        benchmark.commit_ms = _elapsed_ms(subphase_started_at)
+        benchmark.wall_ms = _elapsed_ms(wall_started_at)
     except Exception:
         await db.rollback()
         raise
@@ -950,6 +1007,7 @@ async def persist_scrape_snapshot_batch(
         "unresolved_odds_count": len(unresolved_odds),
         "team_review_cases_count": len(team_review_cases)
         + len(auto_approved_team_reviews),
+        "benchmark": benchmark,
     }
 
 

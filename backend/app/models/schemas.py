@@ -618,6 +618,28 @@ class HttpTimingBenchmarkOut(BaseModel):
     status_classes: dict[str, int] = Field(default_factory=dict)
 
 
+class PersistenceBenchmarkOut(BaseModel):
+    """Subphase timings for persisting a normalized scrape snapshot."""
+
+    wall_ms: int = 0
+    begin_transaction_ms: int = 0
+    upsert_snapshot_persisting_ms: int = 0
+    upsert_leagues_ms: int = 0
+    upsert_matches_ms: int = 0
+    upsert_snapshot_matches_ms: int = 0
+    upsert_sources_ms: int = 0
+    upsert_odds_ms: int = 0
+    insert_odds_history_ms: int = 0
+    upsert_outcome_offers_ms: int = 0
+    insert_unresolved_odds_ms: int = 0
+    insert_team_review_cases_ms: int = 0
+    insert_auto_approved_team_reviews_ms: int = 0
+    update_auto_approved_reviews_ms: int = 0
+    upsert_snapshot_persisted_ms: int = 0
+    commit_ms: int = 0
+    row_counts: dict[str, int] = Field(default_factory=dict)
+
+
 class ScraperRequestBenchmarkOut(HttpTimingBenchmarkOut):
     """HTTP timing aggregate scoped to one scraper capability/method."""
 
@@ -1065,6 +1087,9 @@ class CycleBenchmarkOut(BaseModel):
     )
     auto_resolution_rerun: AutoResolutionRerunBenchmarkOut = Field(
         default_factory=AutoResolutionRerunBenchmarkOut
+    )
+    persistence: PersistenceBenchmarkOut = Field(
+        default_factory=PersistenceBenchmarkOut
     )
     opportunity_analysis: OpportunityAnalysisBenchmarkOut = Field(
         default_factory=OpportunityAnalysisBenchmarkOut

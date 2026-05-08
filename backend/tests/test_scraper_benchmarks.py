@@ -22,6 +22,7 @@ from app.models.schemas import (
     OpportunityAnalysisBenchmarkOut,
     OpportunityAnalysisRuleBenchmarkOut,
     OutcomeNormalizationBenchmarkOut,
+    PersistenceBenchmarkOut,
     ScrapeRuntimeSettings,
 )
 from app.scrapers.mock_scraper import MockScraper
@@ -116,6 +117,8 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert isinstance(body["auto_resolution_rerun"]["reasons"], list)
     assert body["auto_resolution_rerun"]["before"]["normalized_threshold_odds"] >= 0
     assert body["auto_resolution_rerun"]["after"]["normalized_threshold_odds"] >= 0
+    assert body["persistence"]["wall_ms"] >= 0
+    assert isinstance(body["persistence"]["row_counts"], dict)
     if body["event_coverage"]:
         coverage_row = body["event_coverage"][0]
         assert coverage_row["bookmaker_id"]
@@ -386,6 +389,14 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
             ),
         )
     )
+    scraper_benchmarks.recorder.record_persistence(
+        PersistenceBenchmarkOut(
+            wall_ms=9,
+            upsert_odds_ms=3,
+            commit_ms=2,
+            row_counts={"odds": 12, "outcome_offers": 0},
+        )
+    )
 
     snapshot = scraper_benchmarks.recorder.publish(
         matches_per_bookmaker={"betole": 3},
@@ -455,6 +466,8 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
     )
     assert snapshot.auto_resolution_rerun.delta.unresolved_diagnostics == -1
     assert snapshot.event_split_diagnostics.sports[0].sport == "football"
+    assert snapshot.persistence.wall_ms == 9
+    assert snapshot.persistence.row_counts["odds"] == 12
     assert (
         snapshot.event_split_diagnostics.top_split_candidates[0].events[
             0
@@ -470,6 +483,7 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
     assert secret_proxy not in persisted
     assert "secret-token" not in persisted
     assert '"opportunity_analysis"' in persisted
+    assert '"persistence"' in persisted
 
 
 def test_opportunity_analysis_benchmark_defaults_and_serialization():
@@ -508,6 +522,30 @@ def test_event_resolver_extraction_benchmark_defaults_and_serialization():
     assert payload["source_match_truncated_slot_count"] == 0
     assert payload["top_source_match_slots"] == []
     assert payload["football_raw_candidate_count"] == 0
+
+
+def test_persistence_benchmark_defaults_and_serialization():
+    metrics = PersistenceBenchmarkOut()
+
+    payload = metrics.model_dump()
+
+    assert payload["wall_ms"] == 0
+    assert payload["begin_transaction_ms"] == 0
+    assert payload["upsert_snapshot_persisting_ms"] == 0
+    assert payload["upsert_leagues_ms"] == 0
+    assert payload["upsert_matches_ms"] == 0
+    assert payload["upsert_snapshot_matches_ms"] == 0
+    assert payload["upsert_sources_ms"] == 0
+    assert payload["upsert_odds_ms"] == 0
+    assert payload["insert_odds_history_ms"] == 0
+    assert payload["upsert_outcome_offers_ms"] == 0
+    assert payload["insert_unresolved_odds_ms"] == 0
+    assert payload["insert_team_review_cases_ms"] == 0
+    assert payload["insert_auto_approved_team_reviews_ms"] == 0
+    assert payload["update_auto_approved_reviews_ms"] == 0
+    assert payload["upsert_snapshot_persisted_ms"] == 0
+    assert payload["commit_ms"] == 0
+    assert payload["row_counts"] == {}
 
 
 def test_outcome_normalization_benchmark_defaults_and_serialization():
