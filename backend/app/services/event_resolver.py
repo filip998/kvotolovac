@@ -462,6 +462,16 @@ class _RawEventSource:
 
 
 @dataclass(frozen=True)
+class _SourceSlotIndex:
+    all_sources: tuple[_RawEventSource, ...]
+    by_source_url: dict[str, tuple[_RawEventSource, ...]]
+    by_listed_pair: dict[tuple[str, str], tuple[_RawEventSource, ...]]
+    by_unordered_pair: dict[frozenset[str], tuple[_RawEventSource, ...]]
+    source_urls: frozenset[str]
+    league_ids: frozenset[str]
+
+
+@dataclass(frozen=True)
 class _OrientationScore:
     orientation: str
     home_score: float
@@ -539,6 +549,12 @@ class _EventCandidateExtractionStats:
     stored_outcome_match_bookmaker_count: int = 0
     source_match_lookup_count: int = 0
     source_match_source_count: int = 0
+    source_match_scored_source_count: int = 0
+    source_match_index_candidate_count: int = 0
+    source_match_exact_url_hit_count: int = 0
+    source_match_listed_pair_hit_count: int = 0
+    source_match_unordered_pair_hit_count: int = 0
+    source_match_fallback_scan_count: int = 0
     source_match_max_sources_per_lookup: int = 0
     source_match_slot_lookup_counts: Counter[tuple[str, str, str]] = field(
         default_factory=Counter
@@ -1679,15 +1695,87 @@ def _source_match_score(source: _RawEventSource, candidate: EventCandidate) -> f
     return score
 
 
+def _source_match_max_score(
+    candidate: EventCandidate,
+    slot_index: _SourceSlotIndex,
+) -> float:
+    score = 100.0
+    if candidate.source_url and candidate.source_url in slot_index.source_urls:
+        score += 10.0
+    if (
+        candidate.source_league_id
+        and candidate.source_league_id in slot_index.league_ids
+    ):
+        score += 3.0
+    return score
+
+
+def _source_listed_pair_key(
+    home_team: str | None,
+    away_team: str | None,
+) -> tuple[str, str]:
+    return (
+        normalize_identity_text(home_team),
+        normalize_identity_text(away_team),
+    )
+
+
+def _source_unordered_pair_key(
+    home_team: str | None,
+    away_team: str | None,
+) -> frozenset[str]:
+    return frozenset(_source_listed_pair_key(home_team, away_team))
+
+
+def _freeze_multimap(
+    rows: dict,
+) -> dict:
+    return {key: tuple(value) for key, value in rows.items()}
+
+
+def _build_source_slot_indexes(
+    sources: list[_RawEventSource],
+) -> dict[tuple[str, str, str], _SourceSlotIndex]:
+    by_slot: dict[tuple[str, str, str], list[_RawEventSource]] = defaultdict(list)
+    for source in sources:
+        by_slot[(source.bookmaker_id, source.sport, source.start_time)].append(source)
+
+    indexes: dict[tuple[str, str, str], _SourceSlotIndex] = {}
+    for slot_key, slot_sources in by_slot.items():
+        by_source_url: dict[str, list[_RawEventSource]] = defaultdict(list)
+        by_listed_pair: dict[tuple[str, str], list[_RawEventSource]] = defaultdict(list)
+        by_unordered_pair: dict[frozenset[str], list[_RawEventSource]] = defaultdict(list)
+        source_urls: set[str] = set()
+        league_ids: set[str] = set()
+        for source in slot_sources:
+            if source.source_url:
+                by_source_url[source.source_url].append(source)
+                source_urls.add(source.source_url)
+            league_ids.add(source.league_id)
+            listed_key = _source_listed_pair_key(source.home_team, source.away_team)
+            by_listed_pair[listed_key].append(source)
+            by_unordered_pair[frozenset(listed_key)].append(source)
+        indexes[slot_key] = _SourceSlotIndex(
+            all_sources=tuple(slot_sources),
+            by_source_url=_freeze_multimap(by_source_url),
+            by_listed_pair=_freeze_multimap(by_listed_pair),
+            by_unordered_pair=_freeze_multimap(by_unordered_pair),
+            source_urls=frozenset(source_urls),
+            league_ids=frozenset(league_ids),
+        )
+    return indexes
+
+
 def _best_source(
-    sources_by_slot: dict[tuple[str, str, str], list[_RawEventSource]],
+    sources_by_slot: dict[tuple[str, str, str], _SourceSlotIndex],
     candidate: EventCandidate,
     *,
     stats: _EventCandidateExtractionStats | None = None,
 ) -> _RawEventSource | None:
     started_at = time.perf_counter()
     slot_key = (candidate.bookmaker_id, candidate.sport, candidate.start_time)
-    sources = sources_by_slot.get(slot_key, [])
+    slot_index = sources_by_slot.get(slot_key)
+    sources = slot_index.all_sources if slot_index is not None else ()
     if stats is not None:
         stats.source_match_lookup_count += 1
         stats.source_match_source_count += len(sources)
@@ -1698,10 +1786,87 @@ def _best_source(
         stats.source_match_slot_lookup_counts[slot_key] += 1
         stats.source_match_slot_source_counts[slot_key] += len(sources)
     try:
+        if slot_index is None:
+            return None
+        score_cache: dict[int, float] = {}
+
+        def score_source(source: _RawEventSource) -> float:
+            cache_key = id(source)
+            if cache_key not in score_cache:
+                score_cache[cache_key] = _source_match_score(source, candidate)
+                if stats is not None:
+                    stats.source_match_scored_source_count += 1
+            return score_cache[cache_key]
+
+        def best_from_subset(
+            subset: tuple[_RawEventSource, ...],
+        ) -> tuple[_RawEventSource | None, float]:
+            best_source: _RawEventSource | None = None
+            best_subset_score = 0.0
+            for source in subset:
+                score = score_source(source)
+                if best_source is None or score > best_subset_score:
+                    best_source = source
+                    best_subset_score = score
+            return best_source, best_subset_score
+
+        def maybe_fast_return(
+            subset: tuple[_RawEventSource, ...],
+            counter_name: str,
+        ) -> _RawEventSource | None:
+            if not subset:
+                return None
+            if stats is not None:
+                stats.source_match_index_candidate_count += len(subset)
+            best_subset_source, best_subset_score = best_from_subset(subset)
+            if best_subset_source is None:
+                return None
+            if best_subset_score < _SOURCE_MATCH_MIN_SCORE:
+                return None
+            if best_subset_score < _source_match_max_score(candidate, slot_index):
+                return None
+            if not (
+                candidate.source_url
+                and best_subset_source.source_url == candidate.source_url
+            ) and (not sources or sources[0] is not best_subset_source):
+                return None
+            if stats is not None:
+                setattr(stats, counter_name, getattr(stats, counter_name) + 1)
+            return best_subset_source
+
+        if candidate.source_url:
+            source = maybe_fast_return(
+                slot_index.by_source_url.get(candidate.source_url, ()),
+                "source_match_exact_url_hit_count",
+            )
+            if source is not None:
+                return source
+
+        listed_key = _source_listed_pair_key(candidate.home_team, candidate.away_team)
+        source = maybe_fast_return(
+            slot_index.by_listed_pair.get(listed_key, ()),
+            "source_match_listed_pair_hit_count",
+        )
+        if source is not None:
+            return source
+
+        unordered_key = _source_unordered_pair_key(
+            candidate.home_team,
+            candidate.away_team,
+        )
+        source = maybe_fast_return(
+            slot_index.by_unordered_pair.get(unordered_key, ()),
+            "source_match_unordered_pair_hit_count",
+        )
+        if source is not None:
+            return source
+
+        if stats is not None:
+            stats.source_match_fallback_scan_count += 1
         best: _RawEventSource | None = None
         best_score = 0.0
         for source in sources:
-            score = _source_match_score(source, candidate)
+            score = score_source(source)
             if best is None or score > best_score:
                 best = source
                 best_score = score
@@ -1915,13 +2080,7 @@ def extract_event_candidates(
         stats.extract_raw_odds_sources_ms = _elapsed_ms(raw_odds_sources_started_at)
         stats.raw_odds_rows_scanned = len(raw_odds)
         stats.raw_odds_sources_emitted = len(odds_sources)
-    odds_sources_by_slot: dict[tuple[str, str, str], list[_RawEventSource]] = (
-        defaultdict(list)
-    )
-    for source in odds_sources:
-        odds_sources_by_slot[
-            (source.bookmaker_id, source.sport, source.start_time)
-        ].append(source)
+    odds_sources_by_slot = _build_source_slot_indexes(odds_sources)
 
     raw_outcome_sources_started_at = time.perf_counter()
     outcome_sources = _raw_outcome_sources(
@@ -1934,13 +2093,7 @@ def extract_event_candidates(
         )
         stats.raw_outcome_offer_rows_scanned = len(raw_outcome_offers)
         stats.raw_outcome_sources_emitted = len(outcome_sources)
-    outcome_sources_by_slot: dict[tuple[str, str, str], list[_RawEventSource]] = (
-        defaultdict(list)
-    )
-    for source in outcome_sources:
-        outcome_sources_by_slot[
-            (source.bookmaker_id, source.sport, source.start_time)
-        ].append(source)
+    outcome_sources_by_slot = _build_source_slot_indexes(outcome_sources)
 
     normalized_odds_started_at = time.perf_counter()
     unique_normalized_odds = _unique_normalized_odds_rows(normalized_odds)
@@ -2878,6 +3031,24 @@ async def resolve_and_persist_events(
         ),
         source_match_lookup_count=extraction_stats.source_match_lookup_count,
         source_match_source_count=extraction_stats.source_match_source_count,
+        source_match_scored_source_count=(
+            extraction_stats.source_match_scored_source_count
+        ),
+        source_match_index_candidate_count=(
+            extraction_stats.source_match_index_candidate_count
+        ),
+        source_match_exact_url_hit_count=(
+            extraction_stats.source_match_exact_url_hit_count
+        ),
+        source_match_listed_pair_hit_count=(
+            extraction_stats.source_match_listed_pair_hit_count
+        ),
+        source_match_unordered_pair_hit_count=(
+            extraction_stats.source_match_unordered_pair_hit_count
+        ),
+        source_match_fallback_scan_count=(
+            extraction_stats.source_match_fallback_scan_count
+        ),
         source_match_max_sources_per_lookup=(
             extraction_stats.source_match_max_sources_per_lookup
         ),

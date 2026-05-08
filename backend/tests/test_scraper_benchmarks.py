@@ -93,6 +93,9 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert body["event_resolver"]["normalized_odds_rows_scanned"] >= 0
     assert body["event_resolver"]["normalized_outcome_offer_rows_scanned"] >= 0
     assert body["event_resolver"]["source_match_lookup_count"] >= 0
+    assert body["event_resolver"]["source_match_scored_source_count"] >= 0
+    assert body["event_resolver"]["source_match_index_candidate_count"] >= 0
+    assert body["event_resolver"]["source_match_fallback_scan_count"] >= 0
     assert body["opportunity_analysis"]["loaded_offer_count"] >= 0
     assert body["opportunity_analysis"]["opportunity_count"] >= 0
     assert isinstance(body["opportunity_analysis"]["rules"], list)
@@ -495,6 +498,12 @@ def test_event_resolver_extraction_benchmark_defaults_and_serialization():
     assert payload["normalized_outcome_candidates_emitted"] == 0
     assert payload["source_match_lookup_count"] == 0
     assert payload["source_match_source_count"] == 0
+    assert payload["source_match_scored_source_count"] == 0
+    assert payload["source_match_index_candidate_count"] == 0
+    assert payload["source_match_exact_url_hit_count"] == 0
+    assert payload["source_match_listed_pair_hit_count"] == 0
+    assert payload["source_match_unordered_pair_hit_count"] == 0
+    assert payload["source_match_fallback_scan_count"] == 0
     assert payload["source_match_max_sources_per_lookup"] == 0
     assert payload["source_match_truncated_slot_count"] == 0
     assert payload["top_source_match_slots"] == []

@@ -207,6 +207,7 @@ def _normalized_odds(
     home_team: str,
     away_team: str,
     threshold: float,
+    source_url: str | None = None,
 ) -> NormalizedOdds:
     return NormalizedOdds(
         match_id=match_id,
@@ -217,6 +218,7 @@ def _normalized_odds(
         away_team_id=away_team_id,
         home_team=home_team,
         away_team=away_team,
+        source_url=source_url,
         market_type="player_points",
         player_name="Test Player",
         threshold=threshold,
@@ -314,6 +316,241 @@ def test_extract_event_candidates_dedupes_normalized_rows_before_source_matching
     assert stats.normalized_odds_candidates_emitted == 1
     assert stats.source_match_lookup_count == 1
     assert stats.source_match_source_count == 1
+
+
+def test_source_match_exact_url_fast_path_avoids_full_slot_scan():
+    stats = _EventCandidateExtractionStats()
+    candidates = extract_event_candidates(
+        raw_odds=[
+            _raw_odds(source_url="https://example.test/match"),
+            _raw_odds(
+                home_team="Team Gamma",
+                away_team="Team Delta",
+                source_url="https://example.test/other",
+            ),
+        ],
+        raw_outcome_offers=[],
+        normalized_odds=[
+            _normalized_odds(
+                "book-a",
+                match_id="match-a",
+                league_id="league",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Team Alpha",
+                away_team="Team Beta",
+                threshold=10.5,
+                source_url="https://example.test/match",
+            ),
+        ],
+        normalized_outcome_offers=[],
+        stats=stats,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].source_url == "https://example.test/match"
+    assert candidates[0].source_kind == "raw_odds"
+    assert stats.source_match_source_count == 2
+    assert stats.source_match_scored_source_count == 1
+    assert stats.source_match_index_candidate_count == 1
+    assert stats.source_match_exact_url_hit_count == 1
+    assert stats.source_match_fallback_scan_count == 0
+
+
+def test_source_match_listed_pair_fast_path_when_first_slot_source_is_exact_match():
+    stats = _EventCandidateExtractionStats()
+    candidates = extract_event_candidates(
+        raw_odds=[
+            _raw_odds(source_url="https://example.test/match"),
+            _raw_odds(
+                home_team="Team Gamma",
+                away_team="Team Delta",
+                source_url="https://example.test/other",
+            ),
+        ],
+        raw_outcome_offers=[],
+        normalized_odds=[
+            _normalized_odds(
+                "book-a",
+                match_id="match-a",
+                league_id="league",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Team Alpha",
+                away_team="Team Beta",
+                threshold=10.5,
+            ),
+        ],
+        normalized_outcome_offers=[],
+        stats=stats,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].source_url == "https://example.test/match"
+    assert stats.source_match_scored_source_count == 1
+    assert stats.source_match_listed_pair_hit_count == 1
+    assert stats.source_match_fallback_scan_count == 0
+
+
+def test_source_match_unordered_pair_fast_path_preserves_reversed_source_metadata():
+    stats = _EventCandidateExtractionStats()
+    candidates = extract_event_candidates(
+        raw_odds=[
+            _raw_odds(
+                home_team="Team Beta",
+                away_team="Team Alpha",
+                source_url="https://example.test/reversed",
+            ),
+            _raw_odds(
+                home_team="Team Gamma",
+                away_team="Team Delta",
+                source_url="https://example.test/other",
+            ),
+        ],
+        raw_outcome_offers=[],
+        normalized_odds=[
+            _normalized_odds(
+                "book-a",
+                match_id="match-a",
+                league_id="league",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Team Alpha",
+                away_team="Team Beta",
+                threshold=10.5,
+            ),
+        ],
+        normalized_outcome_offers=[],
+        stats=stats,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].source_home_team == "Team Beta"
+    assert candidates[0].source_away_team == "Team Alpha"
+    assert candidates[0].source_url == "https://example.test/reversed"
+    assert stats.source_match_scored_source_count == 1
+    assert stats.source_match_unordered_pair_hit_count == 1
+    assert stats.source_match_fallback_scan_count == 0
+
+
+def test_source_match_index_hit_falls_back_when_full_slot_can_score_higher():
+    stats = _EventCandidateExtractionStats()
+    candidates = extract_event_candidates(
+        raw_odds=[
+            _raw_odds(
+                home_team="Team Alpha",
+                away_team="Team Beta",
+                source_url="https://example.test/listed-only",
+                league_id="other-league",
+            ),
+            _raw_odds(
+                home_team="Team Alphaa",
+                away_team="Team Beta",
+                source_url="https://example.test/fuzzy-with-league",
+                league_id="league",
+            ),
+        ],
+        raw_outcome_offers=[],
+        normalized_odds=[
+            _normalized_odds(
+                "book-a",
+                match_id="match-a",
+                league_id="league",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Team Alpha",
+                away_team="Team Beta",
+                threshold=10.5,
+            ),
+        ],
+        normalized_outcome_offers=[],
+        stats=stats,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].source_url == "https://example.test/fuzzy-with-league"
+    assert stats.source_match_listed_pair_hit_count == 0
+    assert stats.source_match_fallback_scan_count == 1
+    assert stats.source_match_source_count == 2
+    assert stats.source_match_scored_source_count == 2
+
+
+def test_source_match_duplicate_pair_falls_back_to_preserve_first_slot_tie():
+    stats = _EventCandidateExtractionStats()
+    candidates = extract_event_candidates(
+        raw_odds=[
+            _raw_odds(
+                source_url="https://example.test/first",
+                threshold=10.5,
+            ),
+            _raw_odds(
+                source_url="https://example.test/second",
+                threshold=11.5,
+            ),
+        ],
+        raw_outcome_offers=[],
+        normalized_odds=[
+            _normalized_odds(
+                "book-a",
+                match_id="match-a",
+                league_id="league",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Team Alpha",
+                away_team="Team Beta",
+                threshold=10.5,
+                source_url="https://example.test/second",
+            ),
+        ],
+        normalized_outcome_offers=[],
+        stats=stats,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].source_url == "https://example.test/second"
+    assert stats.source_match_exact_url_hit_count == 1
+    assert stats.source_match_fallback_scan_count == 0
+
+
+def test_source_match_no_index_hit_uses_fallback_scan():
+    stats = _EventCandidateExtractionStats()
+    candidates = extract_event_candidates(
+        raw_odds=[
+            _raw_odds(
+                home_team="Team Alpha",
+                away_team="Team Beta",
+                source_url=None,
+            ),
+            _raw_odds(
+                home_team="Team Gamma",
+                away_team="Team Delta",
+                source_url=None,
+            ),
+        ],
+        raw_outcome_offers=[],
+        normalized_odds=[
+            _normalized_odds(
+                "book-a",
+                match_id="match-a",
+                league_id="league",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Unlisted Home",
+                away_team="Unlisted Away",
+                threshold=10.5,
+                source_url="https://example.test/missing",
+            ),
+        ],
+        normalized_outcome_offers=[],
+        stats=stats,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].source_kind == "normalized_odds"
+    assert candidates[0].source_url == "https://example.test/missing"
+    assert stats.source_match_fallback_scan_count == 1
+    assert stats.source_match_source_count == 2
+    assert stats.source_match_scored_source_count == 2
 
 
 def test_extract_event_candidates_duplicate_representative_prefers_source_url():
