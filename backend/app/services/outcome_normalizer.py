@@ -22,8 +22,9 @@ from ..models.schemas import (
 from .league_registry import resolve_league
 from .normalizer import (
     TEAM_REVIEW_CANDIDATE_THRESHOLD,
+    TeamReviewDiagnosticsMetrics,
+    build_team_review_cases_for_diagnostics,
     generate_match_id,
-    normalize_odds_with_diagnostics,
     resolve_team_name,
 )
 from .team_registry import create_canonical_team, create_canonical_teams_batch
@@ -1250,10 +1251,11 @@ def normalize_outcome_offers_with_context(
         or event_key not in event_resolutions
     ]
     team_review_proxy_rows = _team_review_proxy_rows(unresolved_event_rows)
+    team_review_proxy_metrics = TeamReviewDiagnosticsMetrics()
     team_review_proxy_started_at = time.perf_counter()
-    _, _, team_review_cases = normalize_odds_with_diagnostics(
+    team_review_cases = build_team_review_cases_for_diagnostics(
         team_review_proxy_rows,
-        log_unresolved_shared_platform=False,
+        metrics=team_review_proxy_metrics,
     )
     team_review_proxy_ms = _elapsed_ms(team_review_proxy_started_at)
 
@@ -1503,6 +1505,41 @@ def normalize_outcome_offers_with_context(
         row_normalization_ms=row_normalization_ms,
         team_review_proxy_rows=len(team_review_proxy_rows),
         team_review_proxy_ms=team_review_proxy_ms,
+        team_review_proxy_slot_resolution_ms=(
+            team_review_proxy_metrics.event_slot_resolution_ms
+        ),
+        team_review_proxy_case_build_ms=team_review_proxy_metrics.case_build_ms,
+        team_review_proxy_resolve_league_ms=(
+            team_review_proxy_metrics.resolve_league_ms
+        ),
+        team_review_proxy_resolve_team_ms=team_review_proxy_metrics.resolve_team_ms,
+        team_review_proxy_slot_candidate_ms=(
+            team_review_proxy_metrics.slot_candidate_ms
+        ),
+        team_review_proxy_global_candidate_ms=(
+            team_review_proxy_metrics.global_candidate_ms
+        ),
+        team_review_proxy_duplicate_suppression_ms=(
+            team_review_proxy_metrics.duplicate_suppression_ms
+        ),
+        team_review_proxy_resolve_team_cache_hits=(
+            team_review_proxy_metrics.resolve_team_cache_hit_count
+        ),
+        team_review_proxy_slot_candidate_search_count=(
+            team_review_proxy_metrics.slot_candidate_search_count
+        ),
+        team_review_proxy_slot_candidate_cache_hits=(
+            team_review_proxy_metrics.slot_candidate_cache_hit_count
+        ),
+        team_review_proxy_global_candidate_search_count=(
+            team_review_proxy_metrics.global_candidate_search_count
+        ),
+        team_review_proxy_global_candidate_cache_hits=(
+            team_review_proxy_metrics.global_candidate_cache_hit_count
+        ),
+        team_review_proxy_duplicate_suppression_count=(
+            team_review_proxy_metrics.duplicate_suppression_hit_count
+        ),
         row_iteration_ms=row_iteration_ms,
         missing_start_time_count=missing_start_time_count,
         event_resolution_offer_count=event_resolution_offer_count,
@@ -1563,6 +1600,41 @@ def normalize_outcome_offers_with_context(
         row_normalization_ms=row_normalization_ms,
         team_review_proxy_rows=len(team_review_proxy_rows),
         team_review_proxy_ms=team_review_proxy_ms,
+        team_review_proxy_slot_resolution_ms=(
+            team_review_proxy_metrics.event_slot_resolution_ms
+        ),
+        team_review_proxy_case_build_ms=team_review_proxy_metrics.case_build_ms,
+        team_review_proxy_resolve_league_ms=(
+            team_review_proxy_metrics.resolve_league_ms
+        ),
+        team_review_proxy_resolve_team_ms=team_review_proxy_metrics.resolve_team_ms,
+        team_review_proxy_slot_candidate_ms=(
+            team_review_proxy_metrics.slot_candidate_ms
+        ),
+        team_review_proxy_global_candidate_ms=(
+            team_review_proxy_metrics.global_candidate_ms
+        ),
+        team_review_proxy_duplicate_suppression_ms=(
+            team_review_proxy_metrics.duplicate_suppression_ms
+        ),
+        team_review_proxy_resolve_team_cache_hits=(
+            team_review_proxy_metrics.resolve_team_cache_hit_count
+        ),
+        team_review_proxy_slot_candidate_search_count=(
+            team_review_proxy_metrics.slot_candidate_search_count
+        ),
+        team_review_proxy_slot_candidate_cache_hits=(
+            team_review_proxy_metrics.slot_candidate_cache_hit_count
+        ),
+        team_review_proxy_global_candidate_search_count=(
+            team_review_proxy_metrics.global_candidate_search_count
+        ),
+        team_review_proxy_global_candidate_cache_hits=(
+            team_review_proxy_metrics.global_candidate_cache_hit_count
+        ),
+        team_review_proxy_duplicate_suppression_count=(
+            team_review_proxy_metrics.duplicate_suppression_hit_count
+        ),
         row_iteration_ms=row_iteration_ms,
         missing_start_time_count=missing_start_time_count,
         event_resolution_offer_count=event_resolution_offer_count,

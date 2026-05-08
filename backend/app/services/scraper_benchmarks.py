@@ -244,6 +244,58 @@ def _merge_outcome_metrics(
         team_review_proxy_ms=(
             current.team_review_proxy_ms + update.team_review_proxy_ms
         ),
+        team_review_proxy_slot_resolution_ms=(
+            current.team_review_proxy_slot_resolution_ms
+            + update.team_review_proxy_slot_resolution_ms
+        ),
+        team_review_proxy_case_build_ms=(
+            current.team_review_proxy_case_build_ms
+            + update.team_review_proxy_case_build_ms
+        ),
+        team_review_proxy_resolve_league_ms=(
+            current.team_review_proxy_resolve_league_ms
+            + update.team_review_proxy_resolve_league_ms
+        ),
+        team_review_proxy_resolve_team_ms=(
+            current.team_review_proxy_resolve_team_ms
+            + update.team_review_proxy_resolve_team_ms
+        ),
+        team_review_proxy_slot_candidate_ms=(
+            current.team_review_proxy_slot_candidate_ms
+            + update.team_review_proxy_slot_candidate_ms
+        ),
+        team_review_proxy_global_candidate_ms=(
+            current.team_review_proxy_global_candidate_ms
+            + update.team_review_proxy_global_candidate_ms
+        ),
+        team_review_proxy_duplicate_suppression_ms=(
+            current.team_review_proxy_duplicate_suppression_ms
+            + update.team_review_proxy_duplicate_suppression_ms
+        ),
+        team_review_proxy_resolve_team_cache_hits=(
+            current.team_review_proxy_resolve_team_cache_hits
+            + update.team_review_proxy_resolve_team_cache_hits
+        ),
+        team_review_proxy_slot_candidate_search_count=(
+            current.team_review_proxy_slot_candidate_search_count
+            + update.team_review_proxy_slot_candidate_search_count
+        ),
+        team_review_proxy_slot_candidate_cache_hits=(
+            current.team_review_proxy_slot_candidate_cache_hits
+            + update.team_review_proxy_slot_candidate_cache_hits
+        ),
+        team_review_proxy_global_candidate_search_count=(
+            current.team_review_proxy_global_candidate_search_count
+            + update.team_review_proxy_global_candidate_search_count
+        ),
+        team_review_proxy_global_candidate_cache_hits=(
+            current.team_review_proxy_global_candidate_cache_hits
+            + update.team_review_proxy_global_candidate_cache_hits
+        ),
+        team_review_proxy_duplicate_suppression_count=(
+            current.team_review_proxy_duplicate_suppression_count
+            + update.team_review_proxy_duplicate_suppression_count
+        ),
         row_iteration_ms=current.row_iteration_ms + update.row_iteration_ms,
         missing_start_time_count=update.missing_start_time_count,
         event_resolution_offer_count=update.event_resolution_offer_count,

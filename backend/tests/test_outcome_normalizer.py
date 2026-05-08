@@ -3,8 +3,14 @@ from __future__ import annotations
 import sqlite3
 
 from app.config import settings
-from app.models.schemas import RawOutcomeOffer
-from app.services.normalizer import generate_match_id
+from app.models.schemas import RawOddsData, RawOutcomeOffer
+from app.services import normalizer as normalizer_service
+from app.services.normalizer import (
+    TeamReviewDiagnosticsMetrics,
+    build_team_review_cases_for_diagnostics,
+    generate_match_id,
+    normalize_odds_with_diagnostics,
+)
 from app.services.outcome_normalizer import (
     _FootballEventResolutionStats,
     _build_football_event_resolutions,
@@ -43,6 +49,33 @@ def _offer(
     )
 
 
+def _proxy_row(
+    bookmaker_id: str,
+    home_team: str,
+    away_team: str,
+    *,
+    start_time: str | None = START_TIME,
+) -> RawOddsData:
+    return RawOddsData(
+        bookmaker_id=bookmaker_id,
+        league_id="football_test_league",
+        sport="football",
+        home_team=home_team,
+        away_team=away_team,
+        source_url=None,
+        market_type="football_result",
+        player_name=None,
+        threshold=0.0,
+        over_odds=1.9,
+        under_odds=None,
+        start_time=start_time,
+    )
+
+
+def _review_payloads(cases):
+    return [case.model_dump(mode="json") for case in cases]
+
+
 def _auto_review_alias_count() -> int:
     with sqlite3.connect(settings.db_path) as conn:
         row = conn.execute(
@@ -63,6 +96,88 @@ def test_team_similarity_does_not_force_strict_subset_to_exact_match():
 
 def test_team_similarity_allows_low_signal_prefix_difference():
     assert _team_similarity("Llosetense", "CD Llosetense") == 100.0
+
+
+def test_team_review_proxy_helper_matches_legacy_diagnostics(team_registry_file):
+    create_canonical_team(display_name="Municipal Limeno", sport="football")
+    create_canonical_team(display_name="Aston Villa", sport="football")
+    create_canonical_team(display_name="Nottingham Forest", sport="football")
+    create_canonical_team(display_name="Nottingham Forrest", sport="football")
+    rows = [
+        _proxy_row("admiralbet", "CD Municipal Limeno", "Completely New Opponent"),
+        _proxy_row("superbet", "Aston Villa", "Nottingham Forest"),
+        _proxy_row("maxbet", "Aston Villa", "Nottingham Forrest"),
+        _proxy_row("365", "Aston Villa", "Nottm.Forest"),
+        _proxy_row("pinnbet", "No Start Home", "No Start Away", start_time=None),
+    ]
+
+    legacy_cases = normalize_odds_with_diagnostics(
+        rows,
+        log_unresolved_shared_platform=False,
+    )[2]
+    helper_cases = build_team_review_cases_for_diagnostics(rows)
+
+    assert _review_payloads(helper_cases) == _review_payloads(legacy_cases)
+
+
+def test_team_review_proxy_helper_preserves_exact_autocreate_side_effect(team_registry_file):
+    rows = [
+        _proxy_row("superbet", "Batch Proxy Home", "Batch Proxy Away"),
+        _proxy_row("balkanbet", "Batch Proxy Home", "Batch Proxy Away"),
+    ]
+
+    review_cases = build_team_review_cases_for_diagnostics(rows)
+
+    assert review_cases == []
+    assert {"Batch Proxy Home", "Batch Proxy Away"} <= _canonical_team_names()
+
+
+def test_team_review_proxy_helper_caches_global_candidate_search(
+    monkeypatch,
+    team_registry_file,
+):
+    create_canonical_team(display_name="Municipal Limeno", sport="football")
+    calls: list[tuple[str, str]] = []
+    original_search = normalizer_service.search_canonical_team_candidates
+
+    def spy_search(raw_team_name, *, sport, limit):
+        calls.append((raw_team_name, sport))
+        return original_search(raw_team_name, sport=sport, limit=limit)
+
+    monkeypatch.setattr(
+        normalizer_service,
+        "search_canonical_team_candidates",
+        spy_search,
+    )
+    metrics = TeamReviewDiagnosticsMetrics()
+    rows = [
+        _proxy_row("superbet", "CD Municipal Limeno", "Unknown One"),
+        _proxy_row("balkanbet", "CD Municipal Limeno", "Unknown Two"),
+    ]
+
+    build_team_review_cases_for_diagnostics(rows, metrics=metrics)
+
+    assert calls.count(("CD Municipal Limeno", "football")) == 1
+    assert metrics.global_candidate_cache_hit_count >= 1
+
+
+def test_team_review_proxy_helper_caches_slot_candidate_search(team_registry_file):
+    create_canonical_team(display_name="Aston Villa", sport="football")
+    create_canonical_team(display_name="Nottingham Forest", sport="football")
+    create_canonical_team(display_name="Nottingham Forrest", sport="football")
+    metrics = TeamReviewDiagnosticsMetrics()
+    rows = [
+        _proxy_row("superbet", "Aston Villa", "Nottingham Forest"),
+        _proxy_row("maxbet", "Aston Villa", "Nottingham Forrest"),
+        _proxy_row("365", "Aston Villa", "Nottm.Forest"),
+        _proxy_row("365", "Aston Villa", "Nottm.Forest"),
+    ]
+
+    review_cases = build_team_review_cases_for_diagnostics(rows, metrics=metrics)
+
+    assert any(case.raw_team_name == "Nottm.Forest" for case in review_cases)
+    assert metrics.slot_candidate_search_count >= 1
+    assert metrics.slot_candidate_cache_hit_count >= 1
 
 
 def test_team_qualifiers_treat_prefix_women_as_explicit_marker():

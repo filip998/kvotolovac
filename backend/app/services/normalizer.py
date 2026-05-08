@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import re
+import time
 from collections import Counter, defaultdict
 from functools import lru_cache
 
@@ -17,7 +18,7 @@ from ..models.schemas import (
     TeamReviewDiagnostic,
     UnresolvedOddsDiagnostic,
 )
-from .league_registry import resolve_league
+from .league_registry import LeagueResolution, resolve_league
 from .team_registry import (
     DEFAULT_SPORT,
     create_canonical_team,
@@ -1317,6 +1318,61 @@ class _TeamReviewSlotCandidate:
     slot_support: int
 
 
+@dataclass
+class TeamReviewDiagnosticsMetrics:
+    """Internal timings/counters for team-review diagnostic construction."""
+
+    event_slot_resolution_seconds: float = 0.0
+    case_build_seconds: float = 0.0
+    resolve_league_seconds: float = 0.0
+    resolve_team_seconds: float = 0.0
+    slot_candidate_seconds: float = 0.0
+    global_candidate_seconds: float = 0.0
+    duplicate_suppression_seconds: float = 0.0
+    resolve_league_lookup_count: int = 0
+    resolve_league_cache_hit_count: int = 0
+    resolve_team_lookup_count: int = 0
+    resolve_team_cache_hit_count: int = 0
+    slot_candidate_search_count: int = 0
+    slot_candidate_cache_hit_count: int = 0
+    global_candidate_search_count: int = 0
+    global_candidate_cache_hit_count: int = 0
+    duplicate_suppression_check_count: int = 0
+    duplicate_suppression_hit_count: int = 0
+
+    @staticmethod
+    def _ms(seconds: float) -> int:
+        return int(seconds * 1000)
+
+    @property
+    def event_slot_resolution_ms(self) -> int:
+        return self._ms(self.event_slot_resolution_seconds)
+
+    @property
+    def case_build_ms(self) -> int:
+        return self._ms(self.case_build_seconds)
+
+    @property
+    def resolve_league_ms(self) -> int:
+        return self._ms(self.resolve_league_seconds)
+
+    @property
+    def resolve_team_ms(self) -> int:
+        return self._ms(self.resolve_team_seconds)
+
+    @property
+    def slot_candidate_ms(self) -> int:
+        return self._ms(self.slot_candidate_seconds)
+
+    @property
+    def global_candidate_ms(self) -> int:
+        return self._ms(self.global_candidate_seconds)
+
+    @property
+    def duplicate_suppression_ms(self) -> int:
+        return self._ms(self.duplicate_suppression_seconds)
+
+
 @dataclass(frozen=True)
 class _CanonicalMatchup:
     home_team_id: int
@@ -1355,6 +1411,8 @@ def _choose_majority_value(counter: Counter[object]) -> object:
 
 def _build_event_slot_resolutions(
     raw_list: list[RawOddsData],
+    *,
+    metrics: TeamReviewDiagnosticsMetrics | None = None,
 ) -> dict[tuple[tuple[str, str], tuple[int, int]], _EventSlotResolution]:
     orientation_counts: dict[
         tuple[tuple[str, str], tuple[int, int]],
@@ -1368,7 +1426,12 @@ def _build_event_slot_resolutions(
     for raw in raw_list:
         if raw.start_time is None:
             continue
+        league_started_at = time.perf_counter()
         direct_league = resolve_league(raw.league_id, raw.bookmaker_id)
+        if metrics is not None:
+            metrics.resolve_league_lookup_count += 1
+            metrics.resolve_league_seconds += time.perf_counter() - league_started_at
+        team_started_at = time.perf_counter()
         home_resolution = resolve_team_name(
             raw.home_team,
             bookmaker_id=raw.bookmaker_id,
@@ -1379,6 +1442,9 @@ def _build_event_slot_resolutions(
             bookmaker_id=raw.bookmaker_id,
             sport=raw.sport,
         )
+        if metrics is not None:
+            metrics.resolve_team_lookup_count += 2
+            metrics.resolve_team_seconds += time.perf_counter() - team_started_at
         if (
             home_resolution.team_id is None
             or away_resolution.team_id is None
@@ -1640,16 +1706,116 @@ def _search_global_review_candidates(
 def _build_team_review_cases(
     raw_list: list[RawOddsData],
     slot_resolutions: dict[tuple[tuple[str, str], tuple[int, int]], _EventSlotResolution],
+    *,
+    metrics: TeamReviewDiagnosticsMetrics | None = None,
 ) -> list[TeamReviewDiagnostic]:
     slots_by_start_time: dict[tuple[str, str], list[_EventSlotResolution]] = defaultdict(list)
     for (slot_time, _), resolution in slot_resolutions.items():
         slots_by_start_time[slot_time].append(resolution)
 
     review_cases: dict[tuple[str, str, str, str, str], TeamReviewDiagnostic] = {}
+    duplicate_candidate_keys: set[tuple[str, str | None, str | None, int, int]] = set()
+    league_cache: dict[tuple[str | None, str], LeagueResolution] = {}
+    team_resolution_cache: dict[tuple[str, str, str], TeamNameResolution] = {}
+    slot_candidate_cache: dict[
+        tuple[str, str, int, str, float],
+        tuple[dict[int, _TeamReviewSlotCandidate], list[_TeamReviewCandidate]],
+    ] = {}
+    global_candidate_cache: dict[tuple[str, str], list[_TeamReviewCandidate]] = {}
+
+    def resolve_league_cached(raw: RawOddsData) -> LeagueResolution:
+        key = (raw.league_id, raw.bookmaker_id)
+        if key in league_cache:
+            if metrics is not None:
+                metrics.resolve_league_cache_hit_count += 1
+            return league_cache[key]
+        started_at = time.perf_counter()
+        resolution = resolve_league(raw.league_id, raw.bookmaker_id)
+        if metrics is not None:
+            metrics.resolve_league_lookup_count += 1
+            metrics.resolve_league_seconds += time.perf_counter() - started_at
+        league_cache[key] = resolution
+        return resolution
+
+    def resolve_team_cached(raw: RawOddsData, team_name: str) -> TeamNameResolution:
+        key = (raw.sport, raw.bookmaker_id, team_name)
+        if key in team_resolution_cache:
+            if metrics is not None:
+                metrics.resolve_team_cache_hit_count += 1
+            return team_resolution_cache[key]
+        started_at = time.perf_counter()
+        resolution = resolve_team_name(
+            team_name,
+            bookmaker_id=raw.bookmaker_id,
+            sport=raw.sport,
+        )
+        if metrics is not None:
+            metrics.resolve_team_lookup_count += 1
+            metrics.resolve_team_seconds += time.perf_counter() - started_at
+        team_resolution_cache[key] = resolution
+        return resolution
+
+    def ranked_slot_candidates_cached(
+        *,
+        raw: RawOddsData,
+        candidate_slots: list[_EventSlotResolution],
+        counterpart_team_id: int,
+        raw_team_name: str,
+        threshold: float,
+    ) -> tuple[dict[int, _TeamReviewSlotCandidate], list[_TeamReviewCandidate]]:
+        key = (
+            raw.sport,
+            raw.start_time or "",
+            counterpart_team_id,
+            normalize_identity_text(raw_team_name),
+            threshold,
+        )
+        if key in slot_candidate_cache:
+            if metrics is not None:
+                metrics.slot_candidate_cache_hit_count += 1
+            slot_candidates, ranked_candidates = slot_candidate_cache[key]
+            return slot_candidates, list(ranked_candidates)
+        started_at = time.perf_counter()
+        slot_candidates = _team_review_slot_candidates(
+            candidate_slots,
+            counterpart_team_id=counterpart_team_id,
+            raw_team_name=raw_team_name,
+        )
+        ranked_candidates = _rank_slot_team_review_candidates(
+            raw_team_name,
+            list(slot_candidates.values()),
+            threshold=threshold,
+        )
+        if metrics is not None:
+            metrics.slot_candidate_search_count += 1
+            metrics.slot_candidate_seconds += time.perf_counter() - started_at
+        slot_candidate_cache[key] = (slot_candidates, ranked_candidates)
+        return slot_candidates, list(ranked_candidates)
+
+    def global_review_candidates_cached(
+        raw_team_name: str,
+        *,
+        sport: str,
+    ) -> list[_TeamReviewCandidate]:
+        key = (sport, raw_team_name.strip())
+        if key in global_candidate_cache:
+            if metrics is not None:
+                metrics.global_candidate_cache_hit_count += 1
+            return list(global_candidate_cache[key])
+        started_at = time.perf_counter()
+        ranked_candidates = _search_global_review_candidates(
+            raw_team_name,
+            sport=sport,
+        )
+        if metrics is not None:
+            metrics.global_candidate_search_count += 1
+            metrics.global_candidate_seconds += time.perf_counter() - started_at
+        global_candidate_cache[key] = ranked_candidates
+        return list(ranked_candidates)
 
     for include_resolved in (False, True):
         for raw in raw_list:
-            direct_league = resolve_league(raw.league_id, raw.bookmaker_id)
+            direct_league = resolve_league_cached(raw)
             if raw.start_time is None:
                 continue
 
@@ -1657,11 +1823,7 @@ def _build_team_review_cases(
 
             team_inputs = (raw.home_team, raw.away_team)
             team_resolutions = [
-                resolve_team_name(
-                    team_name,
-                    bookmaker_id=raw.bookmaker_id,
-                    sport=raw.sport,
-                )
+                resolve_team_cached(raw, team_name)
                 for team_name in team_inputs
             ]
 
@@ -1687,10 +1849,12 @@ def _build_team_review_cases(
                     if counterpart_resolution.team_id is None:
                         continue
 
-                    slot_candidates = _team_review_slot_candidates(
-                        candidate_slots,
+                    slot_candidates, ranked_candidates = ranked_slot_candidates_cached(
+                        raw=raw,
+                        candidate_slots=candidate_slots,
                         counterpart_team_id=counterpart_resolution.team_id,
                         raw_team_name=raw_team_name,
+                        threshold=0.0,
                     )
                     current_slot = slot_resolutions.get(
                         _event_slot_key(
@@ -1703,11 +1867,6 @@ def _build_team_review_cases(
                     if not slot_candidates or current_slot is None:
                         continue
 
-                    ranked_candidates = _rank_slot_team_review_candidates(
-                        raw_team_name,
-                        list(slot_candidates.values()),
-                        threshold=0.0,
-                    )
                     if not ranked_candidates:
                         continue
 
@@ -1751,17 +1910,17 @@ def _build_team_review_cases(
                     )
                 else:
                     if counterpart_resolution.team_id is not None:
-                        slot_candidates = _team_review_slot_candidates(
-                            candidate_slots,
-                            counterpart_team_id=counterpart_resolution.team_id,
-                            raw_team_name=raw_team_name,
+                        slot_candidates, ranked_candidates = (
+                            ranked_slot_candidates_cached(
+                                raw=raw,
+                                candidate_slots=candidate_slots,
+                                counterpart_team_id=counterpart_resolution.team_id,
+                                raw_team_name=raw_team_name,
+                                threshold=0.0,
+                            )
                         )
                         if len(slot_candidates) == 1:
                             slot_candidate = next(iter(slot_candidates.values()))
-                            ranked_candidates = _rank_slot_team_review_candidates(
-                                raw_team_name,
-                                list(slot_candidates.values()),
-                            )
                             suggested_slot_candidate = ranked_candidates[0]
                             review_kind = "alias_suggestion"
                             confidence = "high"
@@ -1775,11 +1934,6 @@ def _build_team_review_cases(
                                 ]
                             )
                         elif slot_candidates:
-                            ranked_candidates = _rank_slot_team_review_candidates(
-                                raw_team_name,
-                                list(slot_candidates.values()),
-                                threshold=0.0,
-                            )
                             review_kind = "candidate_search"
                             confidence = "medium"
                             evidence.extend(
@@ -1790,7 +1944,7 @@ def _build_team_review_cases(
                             )
 
                     if not ranked_candidates:
-                        ranked_candidates = _search_global_review_candidates(
+                        ranked_candidates = global_review_candidates_cached(
                             raw_team_name,
                             sport=raw.sport,
                         )
@@ -1820,18 +1974,25 @@ def _build_team_review_cases(
                     canonical_home_team = suggested_candidate.canonical_home_team
                     canonical_away_team = suggested_candidate.canonical_away_team
 
-                if team_resolution.team_id is not None and any(
-                    existing_case.sport == raw.sport
-                    and existing_case.start_time == raw.start_time
-                    and existing_case.matched_counterpart_team == matched_counterpart_team
-                    and existing_case.suggested_team_id == suggested_candidate.team_id
-                    and any(
-                        candidate.team_id == team_resolution.team_id
-                        for candidate in existing_case.candidate_teams
+                if team_resolution.team_id is not None and suggested_candidate is not None:
+                    duplicate_started_at = time.perf_counter()
+                    duplicate_key = (
+                        raw.sport,
+                        raw.start_time,
+                        matched_counterpart_team,
+                        suggested_candidate.team_id,
+                        team_resolution.team_id,
                     )
-                    for existing_case in review_cases.values()
-                ):
-                    continue
+                    duplicate_found = duplicate_key in duplicate_candidate_keys
+                    if metrics is not None:
+                        metrics.duplicate_suppression_check_count += 1
+                        metrics.duplicate_suppression_seconds += (
+                            time.perf_counter() - duplicate_started_at
+                        )
+                        if duplicate_found:
+                            metrics.duplicate_suppression_hit_count += 1
+                    if duplicate_found:
+                        continue
 
                 review_key = (
                     raw.bookmaker_id,
@@ -1880,8 +2041,52 @@ def _build_team_review_cases(
                     canonical_away_team=canonical_away_team,
                     evidence=evidence,
                 )
+                if suggested_candidate is not None:
+                    for candidate in ranked_candidates:
+                        duplicate_candidate_keys.add(
+                            (
+                                raw.sport,
+                                raw.start_time,
+                                matched_counterpart_team,
+                                suggested_candidate.team_id,
+                                candidate.team_id,
+                            )
+                        )
 
     return list(review_cases.values())
+
+
+def build_team_review_cases_for_diagnostics(
+    raw_list: list[RawOddsData],
+    *,
+    metrics: TeamReviewDiagnosticsMetrics | None = None,
+) -> list[TeamReviewDiagnostic]:
+    """Build only team-review diagnostics while preserving legacy preprocessing."""
+
+    timed_raw_list, _missing_start_time = _separate_missing_start_times(raw_list)
+    _autocreate_exact_match_teams(timed_raw_list)
+    resolved_shared_platform, _unresolved_shared_platform = _resolve_shared_platform_matchups(
+        timed_raw_list
+    )
+    resolved_raw_list = _resolve_contextual_player_names(resolved_shared_platform)
+
+    slot_started_at = time.perf_counter()
+    slot_resolutions = _build_event_slot_resolutions(
+        resolved_raw_list,
+        metrics=metrics,
+    )
+    if metrics is not None:
+        metrics.event_slot_resolution_seconds += time.perf_counter() - slot_started_at
+
+    case_started_at = time.perf_counter()
+    team_review_cases = _build_team_review_cases(
+        resolved_raw_list,
+        slot_resolutions,
+        metrics=metrics,
+    )
+    if metrics is not None:
+        metrics.case_build_seconds += time.perf_counter() - case_started_at
+    return team_review_cases
 
 
 def normalize_market_type(raw_type: str) -> str:
