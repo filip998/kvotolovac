@@ -46,6 +46,66 @@
       "notes": "Likely city/team abbreviation split; handle with targeted basketball aliases."
     },
     {
+      "id": "vechta_rostock_alias",
+      "diagnostic_type": "split",
+      "source": "issue 115 baseline top split",
+      "sport": "basketball",
+      "classification": "confirmed_split",
+      "intended_action": "alias_candidate",
+      "reason_code": "fuzzy_duplicate_resolved_events",
+      "shared_side": "both",
+      "events": [
+        {"home": "Rasta Vechta", "away": "Rostock Seawolves"},
+        {"home": "Vechta", "away": "Rostock Seawolves"}
+      ],
+      "notes": "Full-name/short-name basketball split; handle with a targeted basketball alias."
+    },
+    {
+      "id": "bonn_trier_alias",
+      "diagnostic_type": "split",
+      "source": "issue 115 baseline top split",
+      "sport": "basketball",
+      "classification": "confirmed_split",
+      "intended_action": "alias_candidate",
+      "reason_code": "fuzzy_duplicate_resolved_events",
+      "shared_side": "both",
+      "events": [
+        {"home": "Telekom Bonn", "away": "Trier"},
+        {"home": "Telekom Bonn", "away": "TBB Trier"}
+      ],
+      "notes": "Away-side short/full club name split; handle with a targeted basketball alias."
+    },
+    {
+      "id": "mikawa_ryukyu_alias",
+      "diagnostic_type": "split",
+      "source": "issue 115 baseline top split",
+      "sport": "basketball",
+      "classification": "confirmed_split",
+      "intended_action": "alias_candidate",
+      "reason_code": "same_side_conflicting_opponent",
+      "shared_side": "away",
+      "events": [
+        {"home": "SeaHorses Mikawa", "away": "Ryukyu Golden Kings"},
+        {"home": "Aisin Mikawa", "away": "Ryukyu Golden Kings Okinawa"}
+      ],
+      "notes": "Both sides are known basketball short/full variants; handle with targeted aliases rather than fuzzy-threshold changes."
+    },
+    {
+      "id": "cluj_buducnost_alias",
+      "diagnostic_type": "split",
+      "source": "issue 115 baseline top split",
+      "sport": "basketball",
+      "classification": "confirmed_split",
+      "intended_action": "alias_candidate",
+      "reason_code": "same_side_conflicting_opponent",
+      "shared_side": "away",
+      "events": [
+        {"home": "Universitatea Cluj", "away": "Buducnost"},
+        {"home": "U BT Cluj", "away": "Budućnost Podgorica"}
+      ],
+      "notes": "Both sides are known basketball short/full variants; handle with targeted aliases rather than fuzzy-threshold changes."
+    },
+    {
       "id": "aue_duisburg_alias",
       "diagnostic_type": "split",
       "source": "report.md named example",
