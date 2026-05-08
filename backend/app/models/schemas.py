@@ -911,6 +911,12 @@ class EventResolverBenchmarkOut(BaseModel):
     stored_outcome_match_bookmaker_count: int = 0
     source_match_lookup_count: int = 0
     source_match_source_count: int = 0
+    source_match_scored_source_count: int = 0
+    source_match_index_candidate_count: int = 0
+    source_match_exact_url_hit_count: int = 0
+    source_match_listed_pair_hit_count: int = 0
+    source_match_unordered_pair_hit_count: int = 0
+    source_match_fallback_scan_count: int = 0
     source_match_max_sources_per_lookup: int = 0
     source_match_truncated_slot_count: int = 0
     football_raw_candidate_count: int = 0
