@@ -1797,7 +1797,7 @@ def _build_team_review_cases(
         *,
         sport: str,
     ) -> list[_TeamReviewCandidate]:
-        key = (sport, raw_team_name.strip())
+        key = (sport, normalize_identity_text(raw_team_name))
         if key in global_candidate_cache:
             if metrics is not None:
                 metrics.global_candidate_cache_hit_count += 1
