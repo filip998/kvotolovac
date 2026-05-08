@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -986,3 +987,121 @@ async def test_scrape_outcome_offers_unsupported_sport_does_not_fetch():
 
     assert await scraper.scrape_outcome_offers("basketball") == []
     http_client.get_json.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_lanes_share_base_and_fixtures_without_stale_fixture_cache():
+    offer_base_calls = 0
+    fixture_calls = 0
+    market_calls: list[str] = []
+
+    def fixtures_for(basketball_event_id: str) -> dict:
+        return {
+            "f": [
+                {
+                    "ai": basketball_event_id,
+                    "sd": "2026-05-06T15:00:00Z",
+                    "s": "NSY",
+                    "si": "3",
+                    "lei": "64",
+                    "p": [
+                        {"n": "Detroit Pistons", "p": "1"},
+                        {"n": "Orlando Magic", "p": "2"},
+                    ],
+                },
+                {
+                    "ai": "FOOTBALL1",
+                    "sd": "2026-05-06T15:00:00Z",
+                    "s": "NSY",
+                    "si": "1",
+                    "lei": "11625",
+                    "p": [
+                        {"n": "Ceske Budejovice B", "p": "1"},
+                        {"n": "Hostoun", "p": "2"},
+                    ],
+                },
+            ]
+        }
+
+    def market_payload(url: str) -> list[dict]:
+        market_calls.append(url)
+        if "eventIds=FOOTBALL1" in url:
+            return [
+                {
+                    "e": "FOOTBALL1",
+                    "m": [
+                        {
+                            "id": "1",
+                            "b": [
+                                {"id": "1", "od": 1.63, "s": "O"},
+                                {"id": "x", "od": 5.2, "s": "O"},
+                                {"id": "2", "od": 4.5, "s": "O"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+
+        event_id = "BASKETBALL2" if "eventIds=BASKETBALL2" in url else "BASKETBALL1"
+        return [
+            {
+                "e": event_id,
+                "m": [
+                    {
+                        "id": "921",
+                        "b": [
+                            {
+                                "pn": "Cade Cunningham",
+                                "pid": "p1",
+                                "bl": "22.5",
+                                "od": 1.9,
+                                "id": "over",
+                            },
+                            {
+                                "pn": "Cade Cunningham",
+                                "pid": "p1",
+                                "bl": "22.5",
+                                "od": 1.85,
+                                "id": "under",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ]
+
+    async def mock_get_json(url, *, params=None, headers=None):
+        nonlocal offer_base_calls, fixture_calls
+        del params, headers
+        if url == _OFFER_BASE_URL:
+            offer_base_calls += 1
+            await asyncio.sleep(0)
+            return _football_offer_base()
+        if url == _FIXTURES_URL:
+            fixture_calls += 1
+            await asyncio.sleep(0)
+            return fixtures_for("BASKETBALL1" if fixture_calls == 1 else "BASKETBALL2")
+        assert url.startswith(_EVENT_MARKETS_URL)
+        return market_payload(url)
+
+    http_client = AsyncMock()
+    http_client.get_json.side_effect = mock_get_json
+    scraper = VolcanoBetScraper(http_client=http_client)
+
+    with patch(
+        "app.scrapers.volcanobet_scraper.current_utc_time",
+        return_value=datetime(2026, 5, 6, 12, 0, tzinfo=timezone.utc),
+    ):
+        basketball_rows, football_rows = await asyncio.gather(
+            scraper.scrape_odds("basketball"),
+            scraper.scrape_outcome_offers("football"),
+        )
+        second_basketball_rows = await scraper.scrape_odds("basketball")
+
+    assert offer_base_calls == 1
+    assert fixture_calls == 2
+    assert len(market_calls) == 3
+    assert basketball_rows
+    assert football_rows
+    assert second_basketball_rows
+    assert any("eventIds=BASKETBALL2" in url for url in market_calls)

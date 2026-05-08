@@ -229,11 +229,22 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
     ):
         scraper_benchmarks.recorder.record_http_request(
             method="GET",
+            url="https://api.example.test/offer/GetFixtures?token=secret-token",
             elapsed_ms=120,
             attempts=2,
             rate_limit_wait_ms=35,
             network_ms=70,
             status_codes=[429, 200],
+            error=False,
+        )
+        scraper_benchmarks.recorder.record_http_request(
+            method="GET",
+            url="https://api.example.test/Offer/GetEventMarkets?eventIds=1&token=secret-token",
+            elapsed_ms=80,
+            attempts=1,
+            rate_limit_wait_ms=5,
+            network_ms=60,
+            status_codes=[200],
             error=False,
         )
     scraper_benchmarks.recorder.record_phase_durations(
@@ -347,17 +358,20 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
         "betole:outcome_offer:partial": 0.25
     }
     scraper_row = snapshot.scrapers[0]
-    assert scraper_row.http.logical_requests == 1
-    assert scraper_row.http.attempts == 2
+    assert scraper_row.http.logical_requests == 2
+    assert scraper_row.http.attempts == 3
     assert scraper_row.http.retries == 1
-    assert scraper_row.http.total_rate_limit_wait_ms == 35
-    assert scraper_row.http.total_network_ms == 70
-    assert scraper_row.http.status_classes == {"2xx": 1, "4xx": 1}
-    assert len(scraper_row.requests) == 1
-    request_row = scraper_row.requests[0]
-    assert request_row.lane == "outcome_offer"
-    assert request_row.sport == "football"
-    assert request_row.method == "GET"
+    assert scraper_row.http.total_rate_limit_wait_ms == 40
+    assert scraper_row.http.total_network_ms == 130
+    assert scraper_row.http.status_classes == {"2xx": 2, "4xx": 1}
+    assert len(scraper_row.requests) == 2
+    requests_by_endpoint = {row.endpoint: row for row in scraper_row.requests}
+    fixtures_request = requests_by_endpoint["/offer/GetFixtures"]
+    assert fixtures_request.lane == "outcome_offer"
+    assert fixtures_request.sport == "football"
+    assert fixtures_request.method == "GET"
+    assert fixtures_request.logical_requests == 1
+    assert requests_by_endpoint["/Offer/GetEventMarkets"].logical_requests == 1
     assert len(scraper_row.sports) == 1
     sport_row = scraper_row.sports[0]
     assert sport_row.sport == "football"
@@ -386,6 +400,7 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
     persisted = "\n".join(path.read_text() for path in out_dir.glob("*"))
     assert "secret-password" not in persisted
     assert secret_proxy not in persisted
+    assert "secret-token" not in persisted
     assert '"opportunity_analysis"' in persisted
 
 

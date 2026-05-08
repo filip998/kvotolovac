@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from typing import Iterator, Optional
+from urllib.parse import urlsplit
 
 from ..config import settings
 from ..models.schemas import (
@@ -40,6 +41,16 @@ from ..models.schemas import (
 from .rate_limit_policy import RateLimitPolicy
 
 logger = logging.getLogger(__name__)
+
+
+def _endpoint_path(url: str | None) -> str | None:
+    if not url:
+        return None
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    return parsed.path or "/"
 
 
 class _BookmakerAcc:
@@ -293,7 +304,7 @@ class CycleBenchmarkRecorder:
         )
         self._http_by_bookmaker: dict[str, _HttpTimingAcc] = defaultdict(_HttpTimingAcc)
         self._http_by_request: dict[
-            tuple[str, str | None, str | None, str | None, str],
+            tuple[str, str | None, str | None, str | None, str | None, str],
             _HttpTimingAcc,
         ] = defaultdict(_HttpTimingAcc)
         self._phase_durations_ms: dict[str, int] = {}
@@ -414,11 +425,13 @@ class CycleBenchmarkRecorder:
         network_ms: int,
         status_codes: list[int],
         error: bool,
+        url: str | None = None,
     ) -> None:
         context = _HTTP_REQUEST_CONTEXT.get()
         if context is None:
             return
         normalized_method = method.upper()
+        endpoint = _endpoint_path(url)
         with self._lock:
             self._http_by_bookmaker[context.bookmaker_id].record(
                 elapsed_ms=elapsed_ms,
@@ -433,6 +446,7 @@ class CycleBenchmarkRecorder:
                 context.lane,
                 context.sport,
                 context.league_id,
+                endpoint,
                 normalized_method,
             )
             self._http_by_request[request_key].record(
@@ -493,6 +507,7 @@ class CycleBenchmarkRecorder:
                         lane=lane,
                         sport=sport,
                         league_id=league_id,
+                        endpoint=endpoint,
                         method=method,
                         **http_acc.to_model().model_dump(),
                     )
@@ -501,6 +516,7 @@ class CycleBenchmarkRecorder:
                         lane,
                         sport,
                         league_id,
+                        endpoint,
                         method,
                     ),
                     http_acc in sorted(
@@ -510,7 +526,8 @@ class CycleBenchmarkRecorder:
                             item[0][1] or "",
                             item[0][2] or "",
                             item[0][3] or "",
-                            item[0][4],
+                            item[0][4] or "",
+                            item[0][5],
                         ),
                     )
                     if request_bookmaker_id == bm

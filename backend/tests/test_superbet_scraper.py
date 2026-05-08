@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
@@ -1145,3 +1146,61 @@ async def test_scrape_outcome_offers_football_end_to_end():
     assert {o.line for o in totals} == {2.5}
     assert {o.outcome_code for o in totals} == {"over", "under"}
 
+
+@pytest.mark.asyncio
+async def test_concurrent_lanes_share_structure_catalog_fetch():
+    structure_calls = 0
+    discovery_sport_ids: list[str] = []
+
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        nonlocal structure_calls
+        del headers
+        if url == _STRUCTURE_URL:
+            structure_calls += 1
+            await asyncio.sleep(0)
+            return STRUCTURE_RESPONSE
+        if url == _MARKET_GROUPS_URL.format(sport_id=4):
+            return MARKET_GROUPS_RESPONSE
+        if url == _EVENTS_BY_DATE_URL:
+            assert params is not None
+            discovery_sport_ids.append(params["sportId"])
+            if params["sportId"] == "4":
+                return {"data": [DISCOVERY_EVENT_ONE]}
+            if params["sportId"] == "5":
+                return {
+                    "data": [
+                        {
+                            "eventId": 12850987,
+                            "sportId": 5,
+                            "matchName": "Vila Nova GO U20·Botafogo SP U20",
+                            "tournamentId": 86166,
+                            "categoryId": 74,
+                            "utcDate": START_Z,
+                        }
+                    ]
+                }
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    async def fake_get_sse_json(url: str, *, params=None, headers=None, max_messages=1, read_timeout=None):
+        del headers, max_messages, read_timeout
+        assert url == _EVENT_SUBSCRIPTION_URL
+        if params == {"events": "12629345"}:
+            return [[EVENT_PAYLOAD_ONE]]
+        if params == {"events": "12850987"}:
+            return [[_football_payload()]]
+        raise AssertionError(f"Unexpected params: {params}")
+
+    http_client = AsyncMock()
+    http_client.get_json.side_effect = fake_get_json
+    http_client.get_sse_json.side_effect = fake_get_sse_json
+    scraper = SuperbetScraper(http_client=http_client)
+
+    basketball_rows, football_rows = await asyncio.gather(
+        scraper.scrape_odds("basketball"),
+        scraper.scrape_outcome_offers("football"),
+    )
+
+    assert structure_calls == 1
+    assert sorted(discovery_sport_ids) == ["4", "5"]
+    assert basketball_rows
+    assert football_rows
