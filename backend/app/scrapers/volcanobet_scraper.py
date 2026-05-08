@@ -37,7 +37,7 @@ _DEFAULT_HEADERS: dict[str, str] = {
     ),
 }
 
-_EVENT_BATCH_SIZE = 12
+_EVENT_BATCH_SIZE = 24
 _EVENT_BATCH_CONCURRENCY = 4
 
 _PLAYER_POINTS_MARKET_NAME = "broj poena igraca uklj prod"
@@ -735,6 +735,10 @@ class VolcanoBetScraper(BaseScraper):
     def __init__(self, http_client: HttpClient | None = None) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
         self._offer_base_cache: OfferBaseLookup | None = None
+        self._offer_base_task: asyncio.Task[OfferBaseLookup] | None = None
+        self._offer_base_lock: asyncio.Lock | None = None
+        self._fixtures_task: asyncio.Task[object] | None = None
+        self._fixtures_lock: asyncio.Lock | None = None
 
     def get_bookmaker_id(self) -> str:
         return _BOOKMAKER_ID
@@ -748,10 +752,17 @@ class VolcanoBetScraper(BaseScraper):
     def get_supported_outcome_sports(self) -> list[str]:
         return ["football"]
 
-    async def _get_offer_base_lookup(self) -> OfferBaseLookup:
-        if self._offer_base_cache is not None:
-            return self._offer_base_cache
+    def _get_offer_base_lock(self) -> asyncio.Lock:
+        if self._offer_base_lock is None:
+            self._offer_base_lock = asyncio.Lock()
+        return self._offer_base_lock
 
+    def _get_fixtures_lock(self) -> asyncio.Lock:
+        if self._fixtures_lock is None:
+            self._fixtures_lock = asyncio.Lock()
+        return self._fixtures_lock
+
+    async def _request_offer_base_lookup(self) -> OfferBaseLookup:
         data = await self._http.get_json(
             _OFFER_BASE_URL,
             params={
@@ -761,10 +772,34 @@ class VolcanoBetScraper(BaseScraper):
             },
             headers=_DEFAULT_HEADERS,
         )
-        self._offer_base_cache = _build_offer_base_lookup(data)
-        return self._offer_base_cache
+        return _build_offer_base_lookup(data)
 
-    async def _fetch_fixtures(self) -> object:
+    async def _load_offer_base_lookup(self) -> OfferBaseLookup:
+        current_task = asyncio.current_task()
+        try:
+            lookup = await self._request_offer_base_lookup()
+            self._offer_base_cache = lookup
+            return lookup
+        finally:
+            async with self._get_offer_base_lock():
+                if self._offer_base_task is current_task:
+                    self._offer_base_task = None
+
+    async def _get_offer_base_lookup(self) -> OfferBaseLookup:
+        if self._offer_base_cache is not None:
+            return self._offer_base_cache
+
+        async with self._get_offer_base_lock():
+            if self._offer_base_cache is not None:
+                return self._offer_base_cache
+            task = self._offer_base_task
+            if task is None:
+                task = asyncio.create_task(self._load_offer_base_lookup())
+                self._offer_base_task = task
+
+        return await asyncio.shield(task)
+
+    async def _request_fixtures(self) -> object:
         return await self._http.get_json(
             _FIXTURES_URL,
             params={
@@ -774,6 +809,24 @@ class VolcanoBetScraper(BaseScraper):
             },
             headers=_DEFAULT_HEADERS,
         )
+
+    async def _load_fixtures(self) -> object:
+        current_task = asyncio.current_task()
+        try:
+            return await self._request_fixtures()
+        finally:
+            async with self._get_fixtures_lock():
+                if self._fixtures_task is current_task:
+                    self._fixtures_task = None
+
+    async def _fetch_fixtures(self) -> object:
+        async with self._get_fixtures_lock():
+            task = self._fixtures_task
+            if task is None:
+                task = asyncio.create_task(self._load_fixtures())
+                self._fixtures_task = task
+
+        return await asyncio.shield(task)
 
     async def _fetch_event_markets_batch(
         self,

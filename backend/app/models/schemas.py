@@ -624,6 +624,7 @@ class ScraperRequestBenchmarkOut(HttpTimingBenchmarkOut):
     lane: Optional[str] = None
     sport: Optional[str] = None
     league_id: Optional[str] = None
+    endpoint: Optional[str] = None
     method: str
 
 

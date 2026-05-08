@@ -192,6 +192,7 @@ class HttpClient:
         finally:
             benchmark_recorder.record_http_request(
                 method="POST",
+                url=url,
                 elapsed_ms=_elapsed_ms(benchmark_started_at),
                 attempts=attempts_made,
                 rate_limit_wait_ms=total_rate_limit_wait_ms,
@@ -266,6 +267,7 @@ class HttpClient:
         finally:
             benchmark_recorder.record_http_request(
                 method="GET",
+                url=url,
                 elapsed_ms=_elapsed_ms(benchmark_started_at),
                 attempts=attempts_made,
                 rate_limit_wait_ms=total_rate_limit_wait_ms,
@@ -344,6 +346,7 @@ class HttpClient:
         finally:
             benchmark_recorder.record_http_request(
                 method="PUT",
+                url=url,
                 elapsed_ms=_elapsed_ms(benchmark_started_at),
                 attempts=attempts_made,
                 rate_limit_wait_ms=total_rate_limit_wait_ms,
@@ -469,6 +472,7 @@ class HttpClient:
         finally:
             benchmark_recorder.record_http_request(
                 method="GET",
+                url=url,
                 elapsed_ms=_elapsed_ms(benchmark_started_at),
                 attempts=attempts_made,
                 rate_limit_wait_ms=total_rate_limit_wait_ms,

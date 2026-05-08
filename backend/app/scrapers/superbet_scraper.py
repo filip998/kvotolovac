@@ -38,7 +38,7 @@ _SSE_HEADERS: dict[str, str] = {
 }
 
 _BOOKMAKER_ID = "superbet"
-_DETAIL_BATCH_SIZE = 8
+_DETAIL_BATCH_SIZE = 16
 _DETAIL_CONCURRENCY = 4
 _MATCH_NAME_RE = re.compile(r"\s*·\s*|\s+vs\s+|\s+v\s+|\s+-\s+|\s+—\s+", re.IGNORECASE)
 
@@ -722,7 +722,9 @@ class SuperbetScraper(BaseScraper):
 
     def __init__(self, http_client: HttpClient | None = None) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
-        self._structure_cache: dict[str, StructureLookup] = {}
+        self._structure_lookup: StructureLookup | None = None
+        self._structure_lookup_task: asyncio.Task[StructureLookup] | None = None
+        self._structure_lookup_lock: asyncio.Lock | None = None
         self._market_group_cache: dict[str, dict[int, str]] = {}
 
     def get_bookmaker_id(self) -> str:
@@ -734,11 +736,12 @@ class SuperbetScraper(BaseScraper):
     def get_supported_leagues(self) -> list[str]:
         return sorted(_SPORT_SPECS)
 
-    async def _get_structure_lookup(self, spec: SportSpec) -> StructureLookup:
-        cached = self._structure_cache.get(spec.scope_id)
-        if cached is not None:
-            return cached
+    def _get_structure_lookup_lock(self) -> asyncio.Lock:
+        if self._structure_lookup_lock is None:
+            self._structure_lookup_lock = asyncio.Lock()
+        return self._structure_lookup_lock
 
+    async def _request_structure_lookup(self) -> StructureLookup:
         try:
             data = await self._http.get_json(
                 _STRUCTURE_URL,
@@ -772,13 +775,37 @@ class SuperbetScraper(BaseScraper):
                 continue
             category_names[category_id] = category_name
 
-        lookup = StructureLookup(
+        return StructureLookup(
             tournament_names=tournament_names,
             category_names=category_names,
         )
-        if tournament_names or category_names:
-            self._structure_cache[spec.scope_id] = lookup
-        return lookup
+
+    async def _load_structure_lookup(self) -> StructureLookup:
+        current_task = asyncio.current_task()
+        try:
+            lookup = await self._request_structure_lookup()
+            if lookup.tournament_names or lookup.category_names:
+                self._structure_lookup = lookup
+            return lookup
+        finally:
+            async with self._get_structure_lookup_lock():
+                if self._structure_lookup_task is current_task:
+                    self._structure_lookup_task = None
+
+    async def _get_structure_lookup(self, spec: SportSpec) -> StructureLookup:
+        del spec
+        if self._structure_lookup is not None:
+            return self._structure_lookup
+
+        async with self._get_structure_lookup_lock():
+            if self._structure_lookup is not None:
+                return self._structure_lookup
+            task = self._structure_lookup_task
+            if task is None:
+                task = asyncio.create_task(self._load_structure_lookup())
+                self._structure_lookup_task = task
+
+        return await asyncio.shield(task)
 
     async def _get_market_group_lookup(self, spec: SportSpec) -> dict[int, str]:
         cached = self._market_group_cache.get(spec.scope_id)
