@@ -16,6 +16,7 @@ from app.models.schemas import (
     BenchmarkSplitEventFragmentOut,
     BenchmarkSplitSportDiagnosticsOut,
     EventResolverBenchmarkOut,
+    OpportunityDetailModeYieldOut,
     OpportunityAnalysisBenchmarkOut,
     OpportunityAnalysisRuleBenchmarkOut,
     ScrapeRuntimeSettings,
@@ -92,6 +93,7 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert body["opportunity_analysis"]["loaded_offer_count"] >= 0
     assert body["opportunity_analysis"]["opportunity_count"] >= 0
     assert isinstance(body["opportunity_analysis"]["rules"], list)
+    assert isinstance(body["opportunity_analysis"]["detail_mode_yield"], list)
     assert isinstance(body["event_coverage"], list)
     assert body["event_split_diagnostics"]["split_candidate_count"] >= 0
     assert body["event_split_diagnostics"]["overmerge_candidate_count"] >= 0
@@ -262,6 +264,15 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
             candidate_pair_count=4,
             publishable_candidate_count=1,
             opportunity_count=1,
+            detail_mode_yield=[
+                OpportunityDetailModeYieldOut(
+                    bookmaker_id="betole",
+                    detail_mode="partial",
+                    opportunity_count=1,
+                    opportunity_leg_count=2,
+                    market_counts={"football_result_double_chance": 1},
+                )
+            ],
             rules=[
                 OpportunityAnalysisRuleBenchmarkOut(
                     sport="football",
@@ -384,6 +395,11 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
     assert snapshot.event_coverage[0].bookmaker_id == "betole"
     assert snapshot.opportunity_analysis.loaded_offer_count == 5
     assert snapshot.opportunity_analysis.candidate_pair_count == 4
+    assert snapshot.opportunity_analysis.detail_mode_yield[0].bookmaker_id == "betole"
+    assert snapshot.opportunity_analysis.detail_mode_yield[0].detail_mode == "partial"
+    assert snapshot.opportunity_analysis.detail_mode_yield[0].market_counts == {
+        "football_result_double_chance": 1
+    }
     assert snapshot.opportunity_analysis.rules[0].rule == "same_line_arbitrage"
     assert snapshot.event_split_diagnostics.split_candidate_count == 1
     assert snapshot.event_split_diagnostics.sports[0].sport == "football"
@@ -412,6 +428,7 @@ def test_opportunity_analysis_benchmark_defaults_and_serialization():
     assert payload["loaded_offer_count"] == 0
     assert payload["candidate_pair_count"] == 0
     assert payload["rules"] == []
+    assert payload["detail_mode_yield"] == []
 
 
 def test_event_resolver_extraction_benchmark_defaults_and_serialization():

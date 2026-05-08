@@ -814,6 +814,16 @@ class OpportunityAnalysisRuleBenchmarkOut(BaseModel):
     opportunity_count: int = 0
 
 
+class OpportunityDetailModeYieldOut(BaseModel):
+    """Opportunity yield for one detail-mode-capable bookmaker."""
+
+    bookmaker_id: str
+    detail_mode: Optional[ScraperDetailMode] = None
+    opportunity_count: int = 0
+    opportunity_leg_count: int = 0
+    market_counts: dict[str, int] = Field(default_factory=dict)
+
+
 class OpportunityAnalysisBenchmarkOut(BaseModel):
     """Subphase metrics for canonical opportunity analysis."""
 
@@ -833,6 +843,7 @@ class OpportunityAnalysisBenchmarkOut(BaseModel):
     publishable_candidate_count: int = 0
     opportunity_count: int = 0
     rules: list[OpportunityAnalysisRuleBenchmarkOut] = Field(default_factory=list)
+    detail_mode_yield: list[OpportunityDetailModeYieldOut] = Field(default_factory=list)
 
 
 class ScraperBenchmarkOut(BaseModel):
