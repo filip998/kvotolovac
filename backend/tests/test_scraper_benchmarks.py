@@ -522,6 +522,11 @@ def test_auto_resolution_rerun_benchmark_defaults_and_serialization():
     payload = metrics.model_dump()
 
     assert payload["rerun_performed"] is False
+    assert payload["rerun_skipped"] is False
+    assert payload["decision"] == "not_needed"
+    assert payload["decision_reason"] == ""
+    assert payload["estimated_affected_row_count"] == 0
+    assert payload["affected_row_rerun_threshold"] == 0
     assert payload["reasons"] == []
     assert payload["team_review_cases_seen_count"] == 0
     assert payload["aliases_requested_count"] == 0

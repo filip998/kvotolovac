@@ -1790,7 +1790,7 @@ async def test_team_review_endpoint_lists_auto_approved_alias_audit_rows(
     approved_resp = await client.get("/api/v1/team-review/cases?status=approved")
 
     assert trigger_resp.status_code == 200
-    assert trigger_resp.json()["odds_scraped"] == 3
+    assert trigger_resp.json()["odds_scraped"] == 1
     assert approved_resp.status_code == 200
     assert len(approved_resp.json()) == 2
     assert {case["bookmaker_id"] for case in approved_resp.json()} == {"meridian", "maxbet"}

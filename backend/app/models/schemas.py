@@ -907,10 +907,24 @@ class AutoResolutionRerunBatchCountsOut(BaseModel):
     team_review_cases: int = 0
 
 
+AutoResolutionRerunDecision = Literal[
+    "not_needed",
+    "performed_canonical_merge",
+    "performed_alias_yield_met",
+    "skipped_alias_low_yield",
+    "skipped_no_registry_change",
+]
+
+
 class AutoResolutionRerunBenchmarkOut(BaseModel):
     """Same-cycle auto-resolution rerun trigger and yield metrics."""
 
     rerun_performed: bool = False
+    rerun_skipped: bool = False
+    decision: AutoResolutionRerunDecision = "not_needed"
+    decision_reason: str = ""
+    estimated_affected_row_count: int = 0
+    affected_row_rerun_threshold: int = 0
     reasons: list[str] = Field(default_factory=list)
     team_review_cases_seen_count: int = 0
     auto_review_cases_approved_count: int = 0

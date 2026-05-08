@@ -112,6 +112,15 @@ FOOTBALL_FORMAT_ALIAS_AFFIX_TOKENS = frozenset(
 )
 FOOTBALL_FORMAT_ALIAS_PAGE_SIZE = 1000
 _DETAIL_MODE_BOOKMAKERS = ("betole", "merkurxtip", "pinnbet", "soccerbet")
+AUTO_RESOLUTION_RERUN_MIN_ALIAS_AFFECTED_ROWS = 10
+_TEAM_RESOLUTION_UNRESOLVED_REASONS = frozenset(
+    {
+        "unresolved_home_team",
+        "unresolved_away_team",
+        "no_canonical_matchup_for_team_at_slot",
+        "ambiguous_multiple_matchups_for_team_at_slot",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -144,6 +153,16 @@ class _NormalizedPipelineBatch:
     unresolved_odds: list[UnresolvedOddsDiagnostic] = field(default_factory=list)
     team_review_cases: list[TeamReviewDiagnostic] = field(default_factory=list)
     football_event_resolutions: FootballEventResolutionMap = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _AutoResolutionRerunDecision:
+    should_rerun: bool
+    skipped: bool
+    decision: str
+    reason: str
+    estimated_affected_row_count: int = 0
+    affected_row_rerun_threshold: int = 0
 
 
 def _auto_resolution_batch_counts(
@@ -200,6 +219,202 @@ def _auto_resolution_rerun_reasons(
     if not reasons and (same_time_auto_reviews or anchored_auto_reviews):
         reasons.append("auto_review_cases")
     return reasons
+
+
+def _auto_resolution_alias_keys(
+    applied_auto_aliases: list[tuple[str, str, str]],
+) -> set[tuple[str, str, str]]:
+    return {
+        (bookmaker_id, sport, normalize_identity_text(raw_team_name))
+        for bookmaker_id, raw_team_name, sport in applied_auto_aliases
+    }
+
+
+def _raw_team_row_matches_alias(
+    *,
+    bookmaker_id: str,
+    sport: str,
+    home_team: str,
+    away_team: str,
+    alias_keys: set[tuple[str, str, str]],
+) -> bool:
+    if not alias_keys:
+        return False
+    return (
+        bookmaker_id,
+        sport,
+        normalize_identity_text(home_team),
+    ) in alias_keys or (
+        bookmaker_id,
+        sport,
+        normalize_identity_text(away_team),
+    ) in alias_keys
+
+
+def _alias_affected_raw_row_count(
+    raw_odds: list[RawOddsData],
+    raw_outcome_offers: list[RawOutcomeOffer],
+    applied_auto_aliases: list[tuple[str, str, str]],
+) -> int:
+    alias_keys = _auto_resolution_alias_keys(applied_auto_aliases)
+    if not alias_keys:
+        return 0
+    affected_count = 0
+    for row in raw_odds:
+        if _raw_team_row_matches_alias(
+            bookmaker_id=row.bookmaker_id,
+            sport=row.sport,
+            home_team=row.home_team,
+            away_team=row.away_team,
+            alias_keys=alias_keys,
+        ):
+            affected_count += 1
+    for row in raw_outcome_offers:
+        if _raw_team_row_matches_alias(
+            bookmaker_id=row.bookmaker_id,
+            sport=row.sport,
+            home_team=row.home_team,
+            away_team=row.away_team,
+            alias_keys=alias_keys,
+        ):
+            affected_count += 1
+    return affected_count
+
+
+def _approved_review_keys(
+    auto_approved_team_reviews: list[TeamReviewDiagnostic],
+) -> set[tuple[str, str, str, str | None]]:
+    return {
+        (
+            case.bookmaker_id,
+            case.sport,
+            normalize_identity_text(case.raw_team_name),
+            case.start_time,
+        )
+        for case in auto_approved_team_reviews
+    }
+
+
+def _filter_auto_approved_pending_review_cases(
+    team_review_cases: list[TeamReviewDiagnostic],
+    *,
+    auto_approved_team_reviews: list[TeamReviewDiagnostic],
+) -> list[TeamReviewDiagnostic]:
+    approved_keys = _approved_review_keys(auto_approved_team_reviews)
+    if not approved_keys:
+        return team_review_cases
+    return [
+        case
+        for case in team_review_cases
+        if (
+            case.bookmaker_id,
+            case.sport,
+            normalize_identity_text(case.raw_team_name),
+            case.start_time,
+        )
+        not in approved_keys
+    ]
+
+
+def _filter_alias_resolved_unresolved_odds(
+    unresolved_odds: list[UnresolvedOddsDiagnostic],
+    *,
+    applied_auto_aliases: list[tuple[str, str, str]],
+) -> list[UnresolvedOddsDiagnostic]:
+    alias_keys = _auto_resolution_alias_keys(applied_auto_aliases)
+    if not alias_keys:
+        return unresolved_odds
+    return [
+        row
+        for row in unresolved_odds
+        if row.reason_code not in _TEAM_RESOLUTION_UNRESOLVED_REASONS
+        or (
+            row.bookmaker_id,
+            row.sport,
+            normalize_identity_text(row.raw_team_name),
+        )
+        not in alias_keys
+    ]
+
+
+def _filter_skipped_auto_resolution_diagnostics(
+    batch: _NormalizedPipelineBatch,
+    *,
+    auto_approved_team_reviews: list[TeamReviewDiagnostic],
+    applied_auto_aliases: list[tuple[str, str, str]],
+) -> _NormalizedPipelineBatch:
+    return _NormalizedPipelineBatch(
+        odds=batch.odds,
+        outcome_offers=batch.outcome_offers,
+        unresolved_odds=_filter_alias_resolved_unresolved_odds(
+            batch.unresolved_odds,
+            applied_auto_aliases=applied_auto_aliases,
+        ),
+        team_review_cases=_filter_auto_approved_pending_review_cases(
+            batch.team_review_cases,
+            auto_approved_team_reviews=auto_approved_team_reviews,
+        ),
+        football_event_resolutions=batch.football_event_resolutions,
+    )
+
+
+def _auto_resolution_rerun_decision(
+    *,
+    auto_approved_team_reviews: list[TeamReviewDiagnostic],
+    applied_auto_aliases: list[tuple[str, str, str]],
+    applied_auto_merges: list[tuple[int, int]],
+    estimated_affected_row_count: int,
+    alias_affected_row_rerun_threshold: int | None = None,
+) -> _AutoResolutionRerunDecision:
+    threshold = (
+        AUTO_RESOLUTION_RERUN_MIN_ALIAS_AFFECTED_ROWS
+        if alias_affected_row_rerun_threshold is None
+        else alias_affected_row_rerun_threshold
+    )
+    if applied_auto_merges:
+        return _AutoResolutionRerunDecision(
+            should_rerun=True,
+            skipped=False,
+            decision="performed_canonical_merge",
+            reason="canonical merge applied; rerun remains conservative",
+            estimated_affected_row_count=estimated_affected_row_count,
+            affected_row_rerun_threshold=threshold,
+        )
+    if applied_auto_aliases:
+        if estimated_affected_row_count >= threshold:
+            return _AutoResolutionRerunDecision(
+                should_rerun=True,
+                skipped=False,
+                decision="performed_alias_yield_met",
+                reason="applied aliases affect enough current-cycle raw rows",
+                estimated_affected_row_count=estimated_affected_row_count,
+                affected_row_rerun_threshold=threshold,
+            )
+        return _AutoResolutionRerunDecision(
+            should_rerun=False,
+            skipped=True,
+            decision="skipped_alias_low_yield",
+            reason="applied aliases affect too few current-cycle raw rows",
+            estimated_affected_row_count=estimated_affected_row_count,
+            affected_row_rerun_threshold=threshold,
+        )
+    if auto_approved_team_reviews:
+        return _AutoResolutionRerunDecision(
+            should_rerun=False,
+            skipped=True,
+            decision="skipped_no_registry_change",
+            reason="approved audit rows did not apply aliases or canonical merges",
+            estimated_affected_row_count=estimated_affected_row_count,
+            affected_row_rerun_threshold=threshold,
+        )
+    return _AutoResolutionRerunDecision(
+        should_rerun=False,
+        skipped=False,
+        decision="not_needed",
+        reason="no same-cycle auto-resolution changes",
+        estimated_affected_row_count=estimated_affected_row_count,
+        affected_row_rerun_threshold=threshold,
+    )
 
 
 def _is_auto_alias_candidate(case) -> bool:
@@ -1655,7 +1870,18 @@ class Scheduler:
                     "team_auto_resolution",
                     int((time.perf_counter() - team_auto_resolution_started_at) * 1000),
                 )
-                if auto_approved_team_reviews or applied_auto_merges:
+                estimated_affected_row_count = _alias_affected_raw_row_count(
+                    all_raw,
+                    all_raw_outcome_offers,
+                    applied_auto_aliases,
+                )
+                rerun_decision = _auto_resolution_rerun_decision(
+                    auto_approved_team_reviews=auto_approved_team_reviews,
+                    applied_auto_aliases=applied_auto_aliases,
+                    applied_auto_merges=applied_auto_merges,
+                    estimated_affected_row_count=estimated_affected_row_count,
+                )
+                if rerun_decision.should_rerun:
                     full_normalized_batch = _normalize_pipeline_batch(
                         all_raw,
                         all_raw_outcome_offers,
@@ -1674,6 +1900,16 @@ class Scheduler:
                     unresolved_odds = normalized_batch.unresolved_odds
                     team_review_cases = normalized_batch.team_review_cases
                 else:
+                    if rerun_decision.skipped:
+                        normalized_batch = _filter_skipped_auto_resolution_diagnostics(
+                            normalized_batch,
+                            auto_approved_team_reviews=auto_approved_team_reviews,
+                            applied_auto_aliases=applied_auto_aliases,
+                        )
+                        normalized = normalized_batch.odds
+                        normalized_outcome_offers = normalized_batch.outcome_offers
+                        unresolved_odds = normalized_batch.unresolved_odds
+                        team_review_cases = normalized_batch.team_review_cases
                     log_unresolved_shared_platform_diagnostics(unresolved_odds)
                 auto_resolution_after_counts = _auto_resolution_batch_counts(
                     normalized_batch
@@ -1681,8 +1917,15 @@ class Scheduler:
                 try:
                     benchmark_recorder.record_auto_resolution_rerun(
                         AutoResolutionRerunBenchmarkOut(
-                            rerun_performed=bool(
-                                auto_approved_team_reviews or applied_auto_merges
+                            rerun_performed=rerun_decision.should_rerun,
+                            rerun_skipped=rerun_decision.skipped,
+                            decision=rerun_decision.decision,
+                            decision_reason=rerun_decision.reason,
+                            estimated_affected_row_count=(
+                                rerun_decision.estimated_affected_row_count
+                            ),
+                            affected_row_rerun_threshold=(
+                                rerun_decision.affected_row_rerun_threshold
                             ),
                             reasons=_auto_resolution_rerun_reasons(
                                 same_time_auto_reviews=same_time_auto_reviews,
