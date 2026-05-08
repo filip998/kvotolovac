@@ -114,6 +114,7 @@ FOOTBALL_FORMAT_ALIAS_AFFIX_TOKENS = frozenset(
 FOOTBALL_FORMAT_ALIAS_PAGE_SIZE = 1000
 _DETAIL_MODE_BOOKMAKERS = ("betole", "merkurxtip", "pinnbet", "soccerbet")
 AUTO_RESOLUTION_RERUN_MIN_ALIAS_AFFECTED_ROWS = 10
+AUTO_RESOLUTION_RERUN_MIN_MERGE_AFFECTED_ROWS = 10
 _TEAM_RESOLUTION_UNRESOLVED_REASONS = frozenset(
     {
         "unresolved_home_team",
@@ -164,6 +165,14 @@ class _AutoResolutionRerunDecision:
     reason: str
     estimated_affected_row_count: int = 0
     affected_row_rerun_threshold: int = 0
+    merge_affected_row_count: int = 0
+    merge_affected_row_rerun_threshold: int = 0
+
+
+@dataclass(frozen=True)
+class _AutoMergeApplyResult:
+    applied_pairings: list[tuple[int, int]]
+    display_names: dict[tuple[int, int], tuple[str, str]]
 
 
 def _auto_resolution_batch_counts(
@@ -338,12 +347,159 @@ def _filter_alias_resolved_unresolved_odds(
     ]
 
 
+def _merge_source_id_set(
+    applied_auto_merges: list[tuple[int, int]],
+) -> set[int]:
+    return {source_id for source_id, _ in applied_auto_merges}
+
+
+def _merge_source_name_set(
+    applied_auto_merge_display_names: dict[
+        tuple[int, int], tuple[str, str]
+    ],
+) -> set[str]:
+    return {
+        source_name
+        for source_name, _ in applied_auto_merge_display_names.values()
+        if source_name
+    }
+
+
+def _team_review_case_references_merged_team(
+    case: TeamReviewDiagnostic,
+    *,
+    source_ids: set[int],
+    source_names: set[str],
+) -> bool:
+    """Return True when *case* references a canonical team that was merged away.
+
+    Mirrors the five reference paths that ``_reassign_pending_team_review_cases``
+    rewrites for already-persisted cases. Current-cycle in-memory cases never
+    make it through that DB-level rewrite, so we must filter them ourselves on
+    the merge-skip path before they land in the snapshot.
+    """
+
+    if case.suggested_team_id is not None and case.suggested_team_id in source_ids:
+        return True
+    if case.suggested_team_name and case.suggested_team_name in source_names:
+        return True
+    if case.canonical_home_team and case.canonical_home_team in source_names:
+        return True
+    if case.canonical_away_team and case.canonical_away_team in source_names:
+        return True
+    for candidate in case.candidate_teams or []:
+        candidate_team_id = getattr(candidate, "team_id", None)
+        candidate_team_name = getattr(candidate, "team_name", None)
+        if candidate_team_id is not None and candidate_team_id in source_ids:
+            return True
+        if candidate_team_name and candidate_team_name in source_names:
+            return True
+    return False
+
+
+def _drop_team_review_cases_referencing_merged_teams(
+    team_review_cases: list[TeamReviewDiagnostic],
+    *,
+    applied_auto_merges: list[tuple[int, int]],
+    applied_auto_merge_display_names: dict[
+        tuple[int, int], tuple[str, str]
+    ],
+) -> list[TeamReviewDiagnostic]:
+    if not applied_auto_merges:
+        return team_review_cases
+    source_ids = _merge_source_id_set(applied_auto_merges)
+    source_names = _merge_source_name_set(applied_auto_merge_display_names)
+    if not source_ids and not source_names:
+        return team_review_cases
+    return [
+        case
+        for case in team_review_cases
+        if not _team_review_case_references_merged_team(
+            case,
+            source_ids=source_ids,
+            source_names=source_names,
+        )
+    ]
+
+
+def _merge_affected_yield_estimate(
+    batch: _NormalizedPipelineBatch,
+    *,
+    applied_auto_merges: list[tuple[int, int]],
+    applied_auto_merge_display_names: dict[
+        tuple[int, int], tuple[str, str]
+    ],
+) -> int:
+    """Estimate how many current-cycle rows the applied merges directly impact.
+
+    Counts:
+    - normalized odds and outcome offers whose ``home_team_id`` or
+      ``away_team_id`` is one of the merged-from canonical ids (deduplicated
+      per row);
+    - first-pass team review cases that reference a merged-from canonical team
+      via any of the same five paths that ``_reassign_pending_team_review_cases``
+      rewrites for already-persisted cases.
+
+    Both signals matter for the rerun threshold: a low count means the merge
+    cannot pollute the persisted snapshot in this cycle, so a second
+    normalization pass is unnecessary.
+    """
+
+    if not applied_auto_merges:
+        return 0
+    source_ids = _merge_source_id_set(applied_auto_merges)
+    source_names = _merge_source_name_set(applied_auto_merge_display_names)
+    if not source_ids and not source_names:
+        return 0
+
+    affected = 0
+    for row in batch.odds:
+        if (
+            row.home_team_id in source_ids
+            or row.away_team_id in source_ids
+        ):
+            affected += 1
+    for offer in batch.outcome_offers:
+        if (
+            offer.home_team_id in source_ids
+            or offer.away_team_id in source_ids
+        ):
+            affected += 1
+    for case in batch.team_review_cases:
+        if _team_review_case_references_merged_team(
+            case,
+            source_ids=source_ids,
+            source_names=source_names,
+        ):
+            affected += 1
+    return affected
+
+
 def _filter_skipped_auto_resolution_diagnostics(
     batch: _NormalizedPipelineBatch,
     *,
     auto_approved_team_reviews: list[TeamReviewDiagnostic],
     applied_auto_aliases: list[tuple[str, str, str]],
+    applied_auto_merges: list[tuple[int, int]] | None = None,
+    applied_auto_merge_display_names: dict[
+        tuple[int, int], tuple[str, str]
+    ]
+    | None = None,
 ) -> _NormalizedPipelineBatch:
+    cleaned_team_review_cases = _filter_auto_approved_pending_review_cases(
+        batch.team_review_cases,
+        auto_approved_team_reviews=auto_approved_team_reviews,
+    )
+    if applied_auto_merges:
+        cleaned_team_review_cases = (
+            _drop_team_review_cases_referencing_merged_teams(
+                cleaned_team_review_cases,
+                applied_auto_merges=applied_auto_merges,
+                applied_auto_merge_display_names=(
+                    applied_auto_merge_display_names or {}
+                ),
+            )
+        )
     return _NormalizedPipelineBatch(
         odds=batch.odds,
         outcome_offers=batch.outcome_offers,
@@ -351,10 +507,7 @@ def _filter_skipped_auto_resolution_diagnostics(
             batch.unresolved_odds,
             applied_auto_aliases=applied_auto_aliases,
         ),
-        team_review_cases=_filter_auto_approved_pending_review_cases(
-            batch.team_review_cases,
-            auto_approved_team_reviews=auto_approved_team_reviews,
-        ),
+        team_review_cases=cleaned_team_review_cases,
         football_event_resolutions=batch.football_event_resolutions,
     )
 
@@ -365,39 +518,73 @@ def _auto_resolution_rerun_decision(
     applied_auto_aliases: list[tuple[str, str, str]],
     applied_auto_merges: list[tuple[int, int]],
     estimated_affected_row_count: int,
+    merge_affected_row_count: int = 0,
     alias_affected_row_rerun_threshold: int | None = None,
+    merge_affected_row_rerun_threshold: int | None = None,
 ) -> _AutoResolutionRerunDecision:
-    threshold = (
+    alias_threshold = (
         AUTO_RESOLUTION_RERUN_MIN_ALIAS_AFFECTED_ROWS
         if alias_affected_row_rerun_threshold is None
         else alias_affected_row_rerun_threshold
     )
-    if applied_auto_merges:
+    merge_threshold = (
+        AUTO_RESOLUTION_RERUN_MIN_MERGE_AFFECTED_ROWS
+        if merge_affected_row_rerun_threshold is None
+        else merge_affected_row_rerun_threshold
+    )
+    merges_meet = bool(applied_auto_merges) and (
+        merge_affected_row_count >= merge_threshold
+    )
+    aliases_meet = bool(applied_auto_aliases) and (
+        estimated_affected_row_count >= alias_threshold
+    )
+    if merges_meet:
         return _AutoResolutionRerunDecision(
             should_rerun=True,
             skipped=False,
-            decision="performed_canonical_merge",
-            reason="canonical merge applied; rerun remains conservative",
+            decision="performed_canonical_merge_yield_met",
+            reason=(
+                "applied canonical merges affect enough current-cycle rows"
+            ),
             estimated_affected_row_count=estimated_affected_row_count,
-            affected_row_rerun_threshold=threshold,
+            affected_row_rerun_threshold=alias_threshold,
+            merge_affected_row_count=merge_affected_row_count,
+            merge_affected_row_rerun_threshold=merge_threshold,
+        )
+    if aliases_meet:
+        return _AutoResolutionRerunDecision(
+            should_rerun=True,
+            skipped=False,
+            decision="performed_alias_yield_met",
+            reason="applied aliases affect enough current-cycle raw rows",
+            estimated_affected_row_count=estimated_affected_row_count,
+            affected_row_rerun_threshold=alias_threshold,
+            merge_affected_row_count=merge_affected_row_count,
+            merge_affected_row_rerun_threshold=merge_threshold,
+        )
+    if applied_auto_merges:
+        return _AutoResolutionRerunDecision(
+            should_rerun=False,
+            skipped=True,
+            decision="skipped_canonical_merge_low_yield",
+            reason=(
+                "applied canonical merges affect too few current-cycle rows"
+            ),
+            estimated_affected_row_count=estimated_affected_row_count,
+            affected_row_rerun_threshold=alias_threshold,
+            merge_affected_row_count=merge_affected_row_count,
+            merge_affected_row_rerun_threshold=merge_threshold,
         )
     if applied_auto_aliases:
-        if estimated_affected_row_count >= threshold:
-            return _AutoResolutionRerunDecision(
-                should_rerun=True,
-                skipped=False,
-                decision="performed_alias_yield_met",
-                reason="applied aliases affect enough current-cycle raw rows",
-                estimated_affected_row_count=estimated_affected_row_count,
-                affected_row_rerun_threshold=threshold,
-            )
         return _AutoResolutionRerunDecision(
             should_rerun=False,
             skipped=True,
             decision="skipped_alias_low_yield",
             reason="applied aliases affect too few current-cycle raw rows",
             estimated_affected_row_count=estimated_affected_row_count,
-            affected_row_rerun_threshold=threshold,
+            affected_row_rerun_threshold=alias_threshold,
+            merge_affected_row_count=merge_affected_row_count,
+            merge_affected_row_rerun_threshold=merge_threshold,
         )
     if auto_approved_team_reviews:
         return _AutoResolutionRerunDecision(
@@ -406,7 +593,9 @@ def _auto_resolution_rerun_decision(
             decision="skipped_no_registry_change",
             reason="approved audit rows did not apply aliases or canonical merges",
             estimated_affected_row_count=estimated_affected_row_count,
-            affected_row_rerun_threshold=threshold,
+            affected_row_rerun_threshold=alias_threshold,
+            merge_affected_row_count=merge_affected_row_count,
+            merge_affected_row_rerun_threshold=merge_threshold,
         )
     return _AutoResolutionRerunDecision(
         should_rerun=False,
@@ -414,7 +603,9 @@ def _auto_resolution_rerun_decision(
         decision="not_needed",
         reason="no same-cycle auto-resolution changes",
         estimated_affected_row_count=estimated_affected_row_count,
-        affected_row_rerun_threshold=threshold,
+        affected_row_rerun_threshold=alias_threshold,
+        merge_affected_row_count=merge_affected_row_count,
+        merge_affected_row_rerun_threshold=merge_threshold,
     )
 
 
@@ -1384,8 +1575,9 @@ class Scheduler:
     async def _apply_canonical_merges(
         self,
         pending_merge_pairings: list[tuple[int, int]],
-    ) -> list[tuple[int, int]]:
+    ) -> _AutoMergeApplyResult:
         applied_pairings: list[tuple[int, int]] = []
+        display_names: dict[tuple[int, int], tuple[str, str]] = {}
         normalized_pairings, conflicts = _normalize_merge_pairings(pending_merge_pairings)
         for source_team_id in sorted(conflicts):
             logger.warning(
@@ -1410,14 +1602,22 @@ class Scheduler:
                     source_team_id=source_team.id,
                     target_team_id=target_team.id,
                 )
-                applied_pairings.append((source_team.id, target_team.id))
+                pairing = (source_team.id, target_team.id)
+                applied_pairings.append(pairing)
+                display_names[pairing] = (
+                    source_team.display_name,
+                    target_team.display_name,
+                )
             except ValueError:
                 logger.exception(
                     "Failed auto-merging canonical team %s into %s",
                     source_team.id,
                     target_team.id,
                 )
-        return applied_pairings
+        return _AutoMergeApplyResult(
+            applied_pairings=applied_pairings,
+            display_names=display_names,
+        )
 
     async def start(self) -> None:
         if self._running:
@@ -1835,6 +2035,9 @@ class Scheduler:
             team_review_cases_seen_count = len(team_review_cases)
             applied_auto_aliases: list[tuple[str, str, str]] = []
             applied_auto_merges: list[tuple[int, int]] = []
+            applied_auto_merge_display_names: dict[
+                tuple[int, int], tuple[str, str]
+            ] = {}
             auto_approved_team_review_case_ids: list[int] = []
             try:
                 team_auto_resolution_started_at = time.perf_counter()
@@ -1864,8 +2067,12 @@ class Scheduler:
                     *anchored_pending_auto_merges,
                 ]
                 if pending_auto_merges:
-                    applied_auto_merges = await self._apply_canonical_merges(
+                    merge_apply_result = await self._apply_canonical_merges(
                         pending_auto_merges
+                    )
+                    applied_auto_merges = merge_apply_result.applied_pairings
+                    applied_auto_merge_display_names = (
+                        merge_apply_result.display_names
                     )
                 benchmark_recorder.record_phase_duration(
                     "team_auto_resolution",
@@ -1876,11 +2083,19 @@ class Scheduler:
                     all_raw_outcome_offers,
                     applied_auto_aliases,
                 )
+                merge_affected_row_count = _merge_affected_yield_estimate(
+                    normalized_batch,
+                    applied_auto_merges=applied_auto_merges,
+                    applied_auto_merge_display_names=(
+                        applied_auto_merge_display_names
+                    ),
+                )
                 rerun_decision = _auto_resolution_rerun_decision(
                     auto_approved_team_reviews=auto_approved_team_reviews,
                     applied_auto_aliases=applied_auto_aliases,
                     applied_auto_merges=applied_auto_merges,
                     estimated_affected_row_count=estimated_affected_row_count,
+                    merge_affected_row_count=merge_affected_row_count,
                 )
                 if rerun_decision.should_rerun:
                     full_normalized_batch = _normalize_pipeline_batch(
@@ -1906,6 +2121,10 @@ class Scheduler:
                             normalized_batch,
                             auto_approved_team_reviews=auto_approved_team_reviews,
                             applied_auto_aliases=applied_auto_aliases,
+                            applied_auto_merges=applied_auto_merges,
+                            applied_auto_merge_display_names=(
+                                applied_auto_merge_display_names
+                            ),
                         )
                         normalized = normalized_batch.odds
                         normalized_outcome_offers = normalized_batch.outcome_offers
@@ -1927,6 +2146,12 @@ class Scheduler:
                             ),
                             affected_row_rerun_threshold=(
                                 rerun_decision.affected_row_rerun_threshold
+                            ),
+                            merge_affected_row_count=(
+                                rerun_decision.merge_affected_row_count
+                            ),
+                            merge_affected_row_rerun_threshold=(
+                                rerun_decision.merge_affected_row_rerun_threshold
                             ),
                             reasons=_auto_resolution_rerun_reasons(
                                 same_time_auto_reviews=same_time_auto_reviews,

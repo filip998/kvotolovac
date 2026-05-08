@@ -583,6 +583,8 @@ def test_auto_resolution_rerun_benchmark_defaults_and_serialization():
     assert payload["decision_reason"] == ""
     assert payload["estimated_affected_row_count"] == 0
     assert payload["affected_row_rerun_threshold"] == 0
+    assert payload["merge_affected_row_count"] == 0
+    assert payload["merge_affected_row_rerun_threshold"] == 0
     assert payload["reasons"] == []
     assert payload["team_review_cases_seen_count"] == 0
     assert payload["aliases_requested_count"] == 0

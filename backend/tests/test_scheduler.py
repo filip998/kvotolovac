@@ -14,6 +14,7 @@ from app.services import scraper_benchmarks
 from app.database import get_db
 from app.config import settings
 from app.models.schemas import (
+    AutoResolutionRerunBenchmarkOut,
     NormalizedOdds,
     NormalizedOutcomeOffer,
     OpportunityLeg,
@@ -28,11 +29,19 @@ from app.scrapers.base import BaseScraper, ScraperCapability
 from app.services.opportunity_analyzer import Opportunity
 from app.services.scheduler import (
     AUTO_RESOLUTION_RERUN_MIN_ALIAS_AFFECTED_ROWS,
+    AUTO_RESOLUTION_RERUN_MIN_MERGE_AFFECTED_ROWS,
     Scheduler,
     _alias_affected_raw_row_count,
+    _AutoMergeApplyResult,
+    _AutoResolutionRerunDecision,
+    _auto_resolution_rerun_decision,
     _detail_mode_opportunity_yield,
+    _drop_team_review_cases_referencing_merged_teams,
+    _merge_affected_yield_estimate,
     _normalize_merge_pairings,
+    _NormalizedPipelineBatch,
     _runtime_detail_modes,
+    _team_review_case_references_merged_team,
 )
 from app.services.normalizer import normalize_team_name
 from app.services.notifications import (
@@ -419,6 +428,324 @@ def test_alias_affected_raw_row_count_counts_matching_rows_once():
     )
 
     assert count == 5
+
+
+def _team_review_case_for_test(
+    *,
+    suggested_team_id: int | None = None,
+    suggested_team_name: str | None = None,
+    canonical_home_team: str | None = None,
+    canonical_away_team: str | None = None,
+    candidate_teams: list[dict] | None = None,
+) -> TeamReviewDiagnostic:
+    return TeamReviewDiagnostic(
+        bookmaker_id="book-a",
+        raw_league_id="VTB Liga",
+        normalized_raw_league_id="vtb liga",
+        sport="basketball",
+        raw_team_name="Raw Team",
+        normalized_raw_team_name="raw team",
+        suggested_team_id=suggested_team_id,
+        suggested_team_name=suggested_team_name,
+        start_time="2030-01-01T20:00:00+00:00",
+        review_kind="candidate_search",
+        reason_code="candidate_team_search",
+        canonical_home_team=canonical_home_team,
+        canonical_away_team=canonical_away_team,
+        candidate_teams=candidate_teams or [],
+    )
+
+
+def _normalized_odds_for_test(
+    *,
+    home_team_id: int,
+    away_team_id: int,
+    bookmaker_id: str = "book-a",
+) -> NormalizedOdds:
+    return NormalizedOdds(
+        match_id=f"match-{home_team_id}-{away_team_id}-{bookmaker_id}",
+        bookmaker_id=bookmaker_id,
+        league_id="vtb-liga",
+        sport="basketball",
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        home_team="Home",
+        away_team="Away",
+        market_type="player_points",
+        player_name="Player A",
+        threshold=10.5,
+        over_odds=1.9,
+        under_odds=1.9,
+        start_time="2030-01-01T20:00:00+00:00",
+    )
+
+
+def _normalized_outcome_for_test(
+    *,
+    home_team_id: int,
+    away_team_id: int,
+    bookmaker_id: str = "book-a",
+) -> NormalizedOutcomeOffer:
+    return NormalizedOutcomeOffer(
+        match_id=f"outcome-{home_team_id}-{away_team_id}-{bookmaker_id}",
+        bookmaker_id=bookmaker_id,
+        league_id="vtb-liga",
+        sport="basketball",
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        home_team="Home",
+        away_team="Away",
+        market_type="football_total_goals",
+        outcome_code="over",
+        odds=1.85,
+        line=2.5,
+        start_time="2030-01-01T20:00:00+00:00",
+    )
+
+
+def test_team_review_case_references_merged_team_detects_each_field():
+    cases = {
+        "suggested_team_id": _team_review_case_for_test(suggested_team_id=11),
+        "suggested_team_name": _team_review_case_for_test(
+            suggested_team_name="Source Name"
+        ),
+        "canonical_home_team": _team_review_case_for_test(
+            canonical_home_team="Source Name"
+        ),
+        "canonical_away_team": _team_review_case_for_test(
+            canonical_away_team="Source Name"
+        ),
+        "candidate_team_id": _team_review_case_for_test(
+            candidate_teams=[
+                {"team_id": 11, "team_name": "Other"},
+            ]
+        ),
+        "candidate_team_name": _team_review_case_for_test(
+            candidate_teams=[
+                {"team_id": 99, "team_name": "Source Name"},
+            ]
+        ),
+    }
+    for label, case in cases.items():
+        assert _team_review_case_references_merged_team(
+            case,
+            source_ids={11},
+            source_names={"Source Name"},
+        ), label
+
+
+def test_team_review_case_references_merged_team_ignores_unrelated_cases():
+    case = _team_review_case_for_test(
+        suggested_team_id=22,
+        suggested_team_name="Other Name",
+        canonical_home_team="Other Name",
+        canonical_away_team="Another",
+        candidate_teams=[{"team_id": 33, "team_name": "Yet Another"}],
+    )
+
+    assert not _team_review_case_references_merged_team(
+        case,
+        source_ids={11},
+        source_names={"Source Name"},
+    )
+
+
+def test_drop_team_review_cases_referencing_merged_teams_filters_correctly():
+    keep = _team_review_case_for_test(
+        suggested_team_id=42,
+        suggested_team_name="Keep Name",
+    )
+    drop_by_id = _team_review_case_for_test(suggested_team_id=11)
+    drop_by_candidate_name = _team_review_case_for_test(
+        candidate_teams=[
+            {"team_id": 99, "team_name": "Source Name"},
+            {"team_id": 22, "team_name": "Keep Name"},
+        ]
+    )
+
+    filtered = _drop_team_review_cases_referencing_merged_teams(
+        [keep, drop_by_id, drop_by_candidate_name],
+        applied_auto_merges=[(11, 12), (44, 45)],
+        applied_auto_merge_display_names={
+            (11, 12): ("Source Name", "Target Name"),
+            (44, 45): ("Other Source", "Other Target"),
+        },
+    )
+
+    assert filtered == [keep]
+
+
+def test_drop_team_review_cases_no_op_without_applied_merges():
+    case = _team_review_case_for_test(suggested_team_id=11)
+
+    assert _drop_team_review_cases_referencing_merged_teams(
+        [case],
+        applied_auto_merges=[],
+        applied_auto_merge_display_names={},
+    ) == [case]
+
+
+def test_merge_affected_yield_estimate_counts_unique_normalized_rows_and_review_cases():
+    batch = _NormalizedPipelineBatch(
+        odds=[
+            _normalized_odds_for_test(home_team_id=11, away_team_id=12),
+            _normalized_odds_for_test(home_team_id=11, away_team_id=11),  # dedup
+            _normalized_odds_for_test(home_team_id=99, away_team_id=11),
+            _normalized_odds_for_test(home_team_id=22, away_team_id=33),  # ignore
+        ],
+        outcome_offers=[
+            _normalized_outcome_for_test(home_team_id=22, away_team_id=11),
+            _normalized_outcome_for_test(home_team_id=99, away_team_id=98),  # ignore
+        ],
+        unresolved_odds=[],
+        team_review_cases=[
+            _team_review_case_for_test(suggested_team_id=11),
+            _team_review_case_for_test(canonical_home_team="Source Name"),
+            _team_review_case_for_test(canonical_home_team="Unrelated"),
+        ],
+    )
+
+    count = _merge_affected_yield_estimate(
+        batch,
+        applied_auto_merges=[(11, 12)],
+        applied_auto_merge_display_names={
+            (11, 12): ("Source Name", "Target Name"),
+        },
+    )
+
+    # 3 odds rows + 1 outcome offer + 2 review cases.
+    assert count == 6
+
+
+def test_merge_affected_yield_estimate_returns_zero_without_merges():
+    batch = _NormalizedPipelineBatch(
+        odds=[_normalized_odds_for_test(home_team_id=11, away_team_id=12)],
+        outcome_offers=[],
+        unresolved_odds=[],
+        team_review_cases=[
+            _team_review_case_for_test(suggested_team_id=11),
+        ],
+    )
+
+    assert (
+        _merge_affected_yield_estimate(
+            batch,
+            applied_auto_merges=[],
+            applied_auto_merge_display_names={},
+        )
+        == 0
+    )
+
+
+def _decision_args(**overrides):
+    base: dict = dict(
+        auto_approved_team_reviews=[],
+        applied_auto_aliases=[],
+        applied_auto_merges=[],
+        estimated_affected_row_count=0,
+        merge_affected_row_count=0,
+    )
+    base.update(overrides)
+    return base
+
+
+def test_auto_resolution_rerun_decision_merge_yield_met_reruns():
+    decision = _auto_resolution_rerun_decision(
+        **_decision_args(
+            applied_auto_merges=[(11, 12)],
+            merge_affected_row_count=AUTO_RESOLUTION_RERUN_MIN_MERGE_AFFECTED_ROWS,
+        )
+    )
+
+    assert decision.should_rerun is True
+    assert decision.skipped is False
+    assert decision.decision == "performed_canonical_merge_yield_met"
+    assert decision.merge_affected_row_count == (
+        AUTO_RESOLUTION_RERUN_MIN_MERGE_AFFECTED_ROWS
+    )
+
+
+def test_auto_resolution_rerun_decision_merge_below_threshold_skips():
+    decision = _auto_resolution_rerun_decision(
+        **_decision_args(
+            applied_auto_merges=[(11, 12)],
+            merge_affected_row_count=(
+                AUTO_RESOLUTION_RERUN_MIN_MERGE_AFFECTED_ROWS - 1
+            ),
+        )
+    )
+
+    assert decision.should_rerun is False
+    assert decision.skipped is True
+    assert decision.decision == "skipped_canonical_merge_low_yield"
+
+
+def test_auto_resolution_rerun_decision_alias_meets_when_merge_below():
+    decision = _auto_resolution_rerun_decision(
+        **_decision_args(
+            applied_auto_aliases=[("book-a", "Alias", "basketball")],
+            applied_auto_merges=[(11, 12)],
+            estimated_affected_row_count=AUTO_RESOLUTION_RERUN_MIN_ALIAS_AFFECTED_ROWS,
+            merge_affected_row_count=0,
+        )
+    )
+
+    assert decision.should_rerun is True
+    assert decision.decision == "performed_alias_yield_met"
+
+
+def test_auto_resolution_rerun_decision_merge_takes_precedence_when_both_meet():
+    decision = _auto_resolution_rerun_decision(
+        **_decision_args(
+            applied_auto_aliases=[("book-a", "Alias", "basketball")],
+            applied_auto_merges=[(11, 12)],
+            estimated_affected_row_count=AUTO_RESOLUTION_RERUN_MIN_ALIAS_AFFECTED_ROWS,
+            merge_affected_row_count=(
+                AUTO_RESOLUTION_RERUN_MIN_MERGE_AFFECTED_ROWS
+            ),
+        )
+    )
+
+    assert decision.should_rerun is True
+    assert decision.decision == "performed_canonical_merge_yield_met"
+
+
+def test_auto_resolution_rerun_decision_both_below_skips_with_merge_label():
+    decision = _auto_resolution_rerun_decision(
+        **_decision_args(
+            applied_auto_aliases=[("book-a", "Alias", "basketball")],
+            applied_auto_merges=[(11, 12)],
+            estimated_affected_row_count=(
+                AUTO_RESOLUTION_RERUN_MIN_ALIAS_AFFECTED_ROWS - 1
+            ),
+            merge_affected_row_count=(
+                AUTO_RESOLUTION_RERUN_MIN_MERGE_AFFECTED_ROWS - 1
+            ),
+        )
+    )
+
+    assert decision.should_rerun is False
+    assert decision.skipped is True
+    assert decision.decision == "skipped_canonical_merge_low_yield"
+
+
+def test_auto_resolution_rerun_benchmark_parses_legacy_decision_value():
+    legacy_payload = {
+        "rerun_performed": True,
+        "rerun_skipped": False,
+        "decision": "performed_canonical_merge",
+        "decision_reason": "canonical merge applied; rerun remains conservative",
+        "estimated_affected_row_count": 0,
+        "affected_row_rerun_threshold": 10,
+        "reasons": ["canonical_merges"],
+        "applied_merge_count": 2,
+    }
+
+    metrics = AutoResolutionRerunBenchmarkOut.model_validate(legacy_payload)
+
+    assert metrics.decision == "performed_canonical_merge"
+    assert metrics.merge_affected_row_count == 0
+    assert metrics.merge_affected_row_rerun_threshold == 0
 
 
 def test_scraper_capabilities_unify_threshold_and_outcome_lanes():
@@ -2623,7 +2950,12 @@ async def test_scheduler_run_cycle_auto_merges_same_time_both_sides_when_strong_
     approved_cases = await odds_store.get_team_review_cases(status="approved")
     metrics = _latest_auto_resolution_rerun_benchmark()
 
-    assert result["matches_scraped"] == 1
+    # Skipped rerun deliberately keeps first-pass match identity for this cycle:
+    # book-c rows resolve to the (now-inactive) source canonical IDs, while
+    # book-a/b rows already resolved to the target canonical IDs. They will
+    # collapse to a single canonical match on the next cycle when the merged
+    # registry re-resolves them.
+    assert result["matches_scraped"] == 2
     assert result["odds_scraped"] == 3
     assert {case.review_kind for case in approved_cases} == {
         "auto_canonical_merge_suggestion"
@@ -2632,9 +2964,9 @@ async def test_scheduler_run_cycle_auto_merges_same_time_both_sides_when_strong_
     assert get_canonical_team(source_away.team_id) is None
     assert get_canonical_team(source_home.team_id, follow_merge=True).id == target_home.team_id
     assert get_canonical_team(source_away.team_id, follow_merge=True).id == target_away.team_id
-    assert metrics.rerun_performed is True
-    assert metrics.rerun_skipped is False
-    assert metrics.decision == "performed_canonical_merge"
+    assert metrics.rerun_performed is False
+    assert metrics.rerun_skipped is True
+    assert metrics.decision == "skipped_canonical_merge_low_yield"
     assert metrics.reasons == ["canonical_merges"]
     assert metrics.same_time_auto_review_count == 2
     assert metrics.anchored_auto_review_count == 0
@@ -2643,6 +2975,23 @@ async def test_scheduler_run_cycle_auto_merges_same_time_both_sides_when_strong_
     assert metrics.anchored_pending_merge_count == 0
     assert metrics.pending_merge_count == 2
     assert metrics.applied_merge_count == 2
+    assert metrics.merge_affected_row_rerun_threshold > 0
+    assert (
+        metrics.merge_affected_row_count
+        < metrics.merge_affected_row_rerun_threshold
+    )
+
+    pending_cases = await odds_store.get_team_review_cases(status="pending")
+    source_names = {source_home.team_name, source_away.team_name}
+    source_ids = {source_home.team_id, source_away.team_id}
+    for case in pending_cases:
+        assert case.suggested_team_id not in source_ids, case
+        assert case.suggested_team_name not in source_names, case
+        assert case.canonical_home_team not in source_names, case
+        assert case.canonical_away_team not in source_names, case
+        for candidate in case.candidate_teams or []:
+            assert candidate.team_id not in source_ids, case
+            assert candidate.team_name not in source_names, case
 
 
 @pytest.mark.asyncio
@@ -2656,7 +3005,7 @@ async def test_scheduler_skips_rerun_when_approved_merge_applies_no_registry_cha
 
     async def no_applied_merges(self, pending_merge_pairings):
         assert pending_merge_pairings
-        return []
+        return _AutoMergeApplyResult(applied_pairings=[], display_names={})
 
     monkeypatch.setattr(Scheduler, "_apply_canonical_merges", no_applied_merges)
     _register_test_scrapers(
@@ -2808,13 +3157,14 @@ async def test_scheduler_auto_resolution_benchmark_records_multiple_rerun_reason
     assert get_canonical_team(source_home.team_id, follow_merge=True).id == target_home.team_id
     assert get_canonical_team(source_away.team_id, follow_merge=True).id == target_away.team_id
     assert set(metrics.reasons) == {"auto_aliases", "canonical_merges"}
-    assert metrics.rerun_performed is True
-    assert metrics.rerun_skipped is False
-    assert metrics.decision == "performed_canonical_merge"
+    assert metrics.rerun_performed is False
+    assert metrics.rerun_skipped is True
+    assert metrics.decision == "skipped_canonical_merge_low_yield"
     assert metrics.same_time_auto_review_count == 2
     assert metrics.anchored_auto_review_count >= 1
     assert metrics.aliases_applied_count >= 1
     assert metrics.applied_merge_count == 2
+    assert metrics.merge_affected_row_rerun_threshold > 0
 
 
 @pytest.mark.asyncio
@@ -3340,10 +3690,16 @@ async def test_auto_apply_contextual_merge_allows_very_high_team_evidence():
     assert approved_cases[0].confidence == "very_high"
     assert approved_cases[0].status == "approved"
 
-    applied_pairings = await scheduler._apply_canonical_merges(pending_merge_pairings)
+    apply_result = await scheduler._apply_canonical_merges(pending_merge_pairings)
     merged_runner_up = get_canonical_team(runner_up.team_id, follow_merge=True)
 
-    assert applied_pairings == [(runner_up.team_id, winner.team_id)]
+    assert apply_result.applied_pairings == [(runner_up.team_id, winner.team_id)]
+    assert apply_result.display_names == {
+        (runner_up.team_id, winner.team_id): (
+            runner_up.team_name,
+            winner.team_name,
+        )
+    }
     assert get_canonical_team(runner_up.team_id) is None
     assert merged_runner_up is not None
     assert merged_runner_up.id == winner.team_id
