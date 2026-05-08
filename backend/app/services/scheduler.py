@@ -14,6 +14,7 @@ from ..models.schemas import (
     NormalizedOdds,
     NormalizedOutcomeOffer,
     OpportunityAnalysisBenchmarkOut,
+    OpportunityDetailModeYieldOut,
     RawOddsData,
     RawOutcomeOffer,
     ScrapeRuntimeSettings,
@@ -108,6 +109,7 @@ FOOTBALL_FORMAT_ALIAS_AFFIX_TOKENS = frozenset(
     }
 )
 FOOTBALL_FORMAT_ALIAS_PAGE_SIZE = 1000
+_DETAIL_MODE_BOOKMAKERS = ("betole", "merkurxtip", "pinnbet", "soccerbet")
 
 
 @dataclass(frozen=True)
@@ -266,6 +268,54 @@ def _runtime_detail_mode_for_scraper(
     if bookmaker_id == "betole":
         return runtime_settings.betole_detail_mode
     return None
+
+
+def _runtime_detail_modes(
+    runtime_settings: ScrapeRuntimeSettings,
+) -> dict[str, DetailMode]:
+    enabled_bookmakers = set(runtime_settings.enabled_bookmakers)
+    return {
+        bookmaker_id: detail_mode
+        for bookmaker_id in _DETAIL_MODE_BOOKMAKERS
+        if bookmaker_id in enabled_bookmakers
+        if (detail_mode := _runtime_detail_mode_for_scraper(bookmaker_id, runtime_settings))
+        is not None
+    }
+
+
+def _detail_mode_opportunity_yield(
+    opportunities: list | tuple,
+    *,
+    detail_modes: dict[str, DetailMode],
+) -> list[OpportunityDetailModeYieldOut]:
+    opportunity_counts: dict[str, int] = defaultdict(int)
+    opportunity_leg_counts: dict[str, int] = defaultdict(int)
+    market_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+    for opportunity in opportunities:
+        leg_bookmakers: set[str] = set()
+        for leg in getattr(opportunity, "legs", ()):
+            bookmaker_id = getattr(leg, "bookmaker_id", None)
+            if bookmaker_id not in detail_modes:
+                continue
+            opportunity_leg_counts[bookmaker_id] += 1
+            leg_bookmakers.add(bookmaker_id)
+
+        market_type = str(getattr(opportunity, "market_type", "") or "unknown")
+        for bookmaker_id in leg_bookmakers:
+            opportunity_counts[bookmaker_id] += 1
+            market_counts[bookmaker_id][market_type] += 1
+
+    return [
+        OpportunityDetailModeYieldOut(
+            bookmaker_id=bookmaker_id,
+            detail_mode=detail_mode,
+            opportunity_count=opportunity_counts.get(bookmaker_id, 0),
+            opportunity_leg_count=opportunity_leg_counts.get(bookmaker_id, 0),
+            market_counts=dict(sorted(market_counts.get(bookmaker_id, {}).items())),
+        )
+        for bookmaker_id, detail_mode in sorted(detail_modes.items())
+    ]
 
 
 def _filter_normalized_pipeline_batch_by_market_allowlist(
@@ -1628,10 +1678,16 @@ class Scheduler:
                     "analyze_opportunities",
                     int((time.perf_counter() - analyze_started_at) * 1000),
                 )
-                benchmark_recorder.record_opportunity_analysis(
-                    canonical_analysis.benchmark
-                )
                 opportunities = list(canonical_analysis.opportunities)
+                opportunity_benchmark = canonical_analysis.benchmark.model_copy(
+                    update={
+                        "detail_mode_yield": _detail_mode_opportunity_yield(
+                            opportunities,
+                            detail_modes=_runtime_detail_modes(runtime_settings),
+                        )
+                    }
+                )
+                benchmark_recorder.record_opportunity_analysis(opportunity_benchmark)
 
                 publish_opportunities_started_at = time.perf_counter()
                 if not canonical_analysis_failed:

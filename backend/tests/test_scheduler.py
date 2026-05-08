@@ -25,7 +25,12 @@ from app.models.schemas import (
 )
 from app.scrapers.base import BaseScraper, ScraperCapability
 from app.services.opportunity_analyzer import Opportunity
-from app.services.scheduler import Scheduler, _normalize_merge_pairings
+from app.services.scheduler import (
+    Scheduler,
+    _detail_mode_opportunity_yield,
+    _normalize_merge_pairings,
+    _runtime_detail_modes,
+)
 from app.services.normalizer import normalize_team_name
 from app.services.notifications import (
     InAppNotificationProvider,
@@ -46,6 +51,103 @@ from app.store import odds_store
 
 
 _UNSET = object()
+
+
+def _opportunity_leg(
+    bookmaker_id: str,
+    *,
+    market_type: str = "football_result",
+    outcome_code: str = "home",
+) -> OpportunityLeg:
+    return OpportunityLeg(
+        bookmaker_id=bookmaker_id,
+        market_type=market_type,
+        outcome_code=outcome_code,
+        odds=2.0,
+    )
+
+
+def test_runtime_detail_modes_only_includes_enabled_detail_mode_bookmakers():
+    runtime_settings = ScrapeRuntimeSettings(
+        enabled_bookmakers=["betole", "pinnbet", "mozzart"],
+        enabled_sports=["football"],
+        betole_detail_mode="partial",
+        pinnbet_detail_mode="full",
+    )
+
+    assert _runtime_detail_modes(runtime_settings) == {
+        "betole": "partial",
+        "pinnbet": "full",
+    }
+
+
+def test_detail_mode_opportunity_yield_counts_market_involvement():
+    opportunities = [
+        Opportunity(
+            sport="football",
+            match_id="match-1",
+            opportunity_type="complementary_outcomes",
+            market_type="football_result_double_chance",
+            line=None,
+            profit_margin=0.02,
+            middle_profit_margin=None,
+            legs=[
+                _opportunity_leg("betole", market_type="football_result"),
+                _opportunity_leg(
+                    "other",
+                    market_type="football_double_chance",
+                    outcome_code="draw_or_away",
+                ),
+            ],
+        ),
+        Opportunity(
+            sport="football",
+            match_id="match-2",
+            opportunity_type="same_line_arbitrage",
+            market_type="football_total_goals",
+            line=2.5,
+            profit_margin=0.01,
+            middle_profit_margin=None,
+            legs=[
+                _opportunity_leg("betole", market_type="football_total_goals"),
+                _opportunity_leg(
+                    "pinnbet",
+                    market_type="football_total_goals",
+                    outcome_code="under",
+                ),
+            ],
+        ),
+    ]
+
+    rows = _detail_mode_opportunity_yield(
+        opportunities,
+        detail_modes={"betole": "partial", "pinnbet": "full"},
+    )
+    by_bookmaker = {row.bookmaker_id: row for row in rows}
+
+    assert by_bookmaker["betole"].detail_mode == "partial"
+    assert by_bookmaker["betole"].opportunity_count == 2
+    assert by_bookmaker["betole"].opportunity_leg_count == 2
+    assert by_bookmaker["betole"].market_counts == {
+        "football_result_double_chance": 1,
+        "football_total_goals": 1,
+    }
+    assert by_bookmaker["pinnbet"].detail_mode == "full"
+    assert by_bookmaker["pinnbet"].opportunity_count == 1
+    assert by_bookmaker["pinnbet"].opportunity_leg_count == 1
+    assert by_bookmaker["pinnbet"].market_counts == {"football_total_goals": 1}
+
+
+def test_detail_mode_opportunity_yield_emits_zero_rows_without_opportunities():
+    rows = _detail_mode_opportunity_yield(
+        (),
+        detail_modes={"betole": "partial", "pinnbet": "partial"},
+    )
+
+    assert [row.bookmaker_id for row in rows] == ["betole", "pinnbet"]
+    assert all(row.opportunity_count == 0 for row in rows)
+    assert all(row.opportunity_leg_count == 0 for row in rows)
+    assert all(row.market_counts == {} for row in rows)
 
 
 def _raw_odds(
