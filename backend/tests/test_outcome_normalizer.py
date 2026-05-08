@@ -98,6 +98,21 @@ def test_cross_book_football_autocreate_reports_multiple_batch_created_teams(tea
     assert review_cases == []
     assert benchmark.auto_created_football_team_count == 2
     assert {"Batch Home FC", "Batch Away FC"} <= _canonical_team_names()
+    assert len(benchmark.run_details) == 1
+    assert benchmark.run_details[0].raw_outcome_offer_count == 2
+    assert benchmark.run_details[0].event_resolution_offer_count == 2
+    assert benchmark.event_resolution_offer_count == 2
+    assert benchmark.direct_resolution_attempt_count == 0
+    assert benchmark.row_iteration_ms <= benchmark.row_normalization_ms
+    assert {
+        row.bookmaker_id: row.raw_rows for row in benchmark.bookmakers
+    } == {"balkanbet": 1, "maxbet": 1}
+    assert {
+        row.bookmaker_id: row.event_resolution_rows for row in benchmark.bookmakers
+    } == {"balkanbet": 1, "maxbet": 1}
+    assert benchmark.top_football_event_buckets
+    assert benchmark.top_football_event_buckets[0].event_count == 2
+    assert benchmark.top_football_event_buckets[0].candidate_pair_count == 1
 
 
 def test_football_event_resolution_benchmark_counts_pair_and_fuzzy_work(team_registry_file):
@@ -295,6 +310,9 @@ def test_outcome_benchmark_distinguishes_football_alias_misses_from_unknowns(
     assert benchmark.football_team_review_unknown_count == 1
     assert benchmark.football_team_review_global_alias_miss_count == 1
     assert benchmark.football_team_review_same_slot_alias_miss_count == 0
+    assert benchmark.direct_resolution_attempt_count == 1
+    assert benchmark.skipped_unresolved_row_count == 1
+    assert benchmark.unresolved_context_ms >= 0
 
 
 def test_reversed_football_event_swaps_orientation_sensitive_outcomes(team_registry_file):

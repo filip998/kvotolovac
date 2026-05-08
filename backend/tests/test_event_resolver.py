@@ -1738,6 +1738,13 @@ async def test_event_resolver_persists_football_outcome_candidates(team_registry
     assert event.sport == "football"
     assert {member.source_home_team for member in event.members} == {"Arsenal"}
     assert {member.source_away_team for member in event.members} == {"Chelsea"}
+    assert result.benchmark is not None
+    assert result.benchmark.top_source_match_slots
+    source_slot = result.benchmark.top_source_match_slots[0]
+    assert source_slot.sport == "football"
+    assert source_slot.lookup_count >= 1
+    assert source_slot.source_count >= source_slot.lookup_count
+    assert result.benchmark.source_match_max_sources_per_lookup >= 1
 
 
 @pytest.mark.asyncio

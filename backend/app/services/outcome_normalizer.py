@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import re
 import time
@@ -11,6 +11,9 @@ from rapidfuzz import fuzz
 from ..models.schemas import (
     NormalizedOutcomeOffer,
     OutcomeNormalizationBenchmarkOut,
+    OutcomeNormalizationBookmakerBenchmarkOut,
+    OutcomeNormalizationRunBenchmarkOut,
+    OutcomeFootballEventBucketBenchmarkOut,
     RawOddsData,
     RawOutcomeOffer,
     TeamReviewDiagnostic,
@@ -144,6 +147,11 @@ class _FootballEventResolutionStats:
     football_event_pair_ranking_ms: int = 0
     football_event_slot_lookup_ms: int = 0
     football_event_slot_mutation_ms: int = 0
+    football_event_time_slot_count: int = 0
+    football_event_max_events_per_slot: int = 0
+    top_football_event_buckets: list[OutcomeFootballEventBucketBenchmarkOut] = field(
+        default_factory=list
+    )
 
 
 class _OutcomeTextCache:
@@ -796,6 +804,37 @@ def _rank_event_pairs(
     events_by_slot: dict[tuple[str, str], list[_OutcomeEvent]] = defaultdict(list)
     for event in events:
         events_by_slot[(event.sport, event.start_time)].append(event)
+    if stats is not None:
+        bucket_rows: list[OutcomeFootballEventBucketBenchmarkOut] = []
+        for (sport, start_time), slot_events in events_by_slot.items():
+            bookmaker_counts = Counter(event.bookmaker_id for event in slot_events)
+            total_pairs = len(slot_events) * (len(slot_events) - 1) // 2
+            same_bookmaker_pairs = sum(
+                count * (count - 1) // 2 for count in bookmaker_counts.values()
+            )
+            bucket_rows.append(
+                OutcomeFootballEventBucketBenchmarkOut(
+                    sport=sport,
+                    start_time=start_time,
+                    event_count=len(slot_events),
+                    bookmaker_count=len(bookmaker_counts),
+                    candidate_pair_count=total_pairs - same_bookmaker_pairs,
+                )
+            )
+        stats.football_event_time_slot_count = len(events_by_slot)
+        stats.football_event_max_events_per_slot = max(
+            (row.event_count for row in bucket_rows),
+            default=0,
+        )
+        stats.top_football_event_buckets = sorted(
+            bucket_rows,
+            key=lambda row: (
+                row.candidate_pair_count,
+                row.event_count,
+                row.start_time,
+            ),
+            reverse=True,
+        )[:20]
 
     accepted: list[_OutcomeEventPair] = []
     for events in events_by_slot.values():
@@ -1189,6 +1228,7 @@ def _normalized_offer_from_resolution(
 def normalize_outcome_offers_with_context(
     raw_list: list[RawOutcomeOffer],
 ) -> OutcomeNormalizationResult:
+    normalization_started_at = time.perf_counter()
     autocreate_started_at = time.perf_counter()
     auto_created_team_count = _autocreate_cross_book_football_teams(raw_list)
     auto_create_football_teams_ms = _elapsed_ms(autocreate_started_at)
@@ -1209,21 +1249,56 @@ def normalize_outcome_offers_with_context(
         if (event_key := _event_key_from_raw(raw)) is None
         or event_key not in event_resolutions
     ]
+    team_review_proxy_rows = _team_review_proxy_rows(unresolved_event_rows)
+    team_review_proxy_started_at = time.perf_counter()
     _, _, team_review_cases = normalize_odds_with_diagnostics(
-        _team_review_proxy_rows(unresolved_event_rows),
+        team_review_proxy_rows,
         log_unresolved_shared_platform=False,
     )
+    team_review_proxy_ms = _elapsed_ms(team_review_proxy_started_at)
 
     normalized: list[NormalizedOutcomeOffer] = []
     unresolved: list[UnresolvedOddsDiagnostic] = []
     seen_unresolved: set[tuple[str, str, str, str | None, str]] = set()
 
+    raw_rows_by_bookmaker = Counter(raw.bookmaker_id for raw in raw_list)
+    normalized_rows_by_bookmaker: Counter[str] = Counter()
+    event_resolution_rows_by_bookmaker: Counter[str] = Counter()
+    direct_resolution_rows_by_bookmaker: Counter[str] = Counter()
+    skipped_unresolved_rows_by_bookmaker: Counter[str] = Counter()
+    unresolved_diagnostics_by_bookmaker: Counter[str] = Counter()
+    missing_start_rows_by_bookmaker: Counter[str] = Counter()
+    unsupported_reversed_rows_by_bookmaker: Counter[str] = Counter()
+
+    missing_start_time_count = 0
+    event_resolution_offer_count = 0
+    direct_resolution_attempt_count = 0
+    direct_resolution_success_count = 0
+    skipped_unresolved_row_count = 0
+    unsupported_reversed_offer_count = 0
+    league_resolution_seconds = 0.0
+    event_resolution_offer_build_seconds = 0.0
+    direct_team_resolution_seconds = 0.0
+    unresolved_context_seconds = 0.0
+    direct_offer_build_seconds = 0.0
+    row_iteration_started_at = time.perf_counter()
     for raw in raw_list:
+        league_started_at = time.perf_counter()
         direct_league = resolve_league(raw.league_id, raw.bookmaker_id)
+        league_resolution_seconds += time.perf_counter() - league_started_at
         if raw.start_time is None:
-            key = (raw.bookmaker_id, raw.raw_label or raw.market_type, raw.home_team, raw.start_time, "missing_start_time")
+            missing_start_time_count += 1
+            missing_start_rows_by_bookmaker[raw.bookmaker_id] += 1
+            key = (
+                raw.bookmaker_id,
+                raw.raw_label or raw.market_type,
+                raw.home_team,
+                raw.start_time,
+                "missing_start_time",
+            )
             if key not in seen_unresolved:
                 seen_unresolved.add(key)
+                unresolved_diagnostics_by_bookmaker[raw.bookmaker_id] += 1
                 unresolved.append(
                     _unresolved_team_diagnostic(
                         raw,
@@ -1236,15 +1311,27 @@ def normalize_outcome_offers_with_context(
         event_key = _event_key_from_raw(raw)
         event_resolution = event_resolutions.get(event_key) if event_key is not None else None
         if event_resolution is not None:
+            offer_started_at = time.perf_counter()
             normalized_offer = _normalized_offer_from_resolution(
                 raw,
                 league_id=direct_league.league_id,
                 resolution=event_resolution,
             )
+            event_resolution_offer_build_seconds += (
+                time.perf_counter() - offer_started_at
+            )
             if normalized_offer is not None:
                 normalized.append(normalized_offer)
+                event_resolution_offer_count += 1
+                normalized_rows_by_bookmaker[raw.bookmaker_id] += 1
+                event_resolution_rows_by_bookmaker[raw.bookmaker_id] += 1
+            else:
+                unsupported_reversed_offer_count += 1
+                unsupported_reversed_rows_by_bookmaker[raw.bookmaker_id] += 1
             continue
 
+        direct_resolution_attempt_count += 1
+        team_resolution_started_at = time.perf_counter()
         home_resolution = resolve_team_name(
             raw.home_team,
             bookmaker_id=raw.bookmaker_id,
@@ -1255,9 +1342,13 @@ def normalize_outcome_offers_with_context(
             bookmaker_id=raw.bookmaker_id,
             sport=raw.sport,
         )
+        direct_team_resolution_seconds += (
+            time.perf_counter() - team_resolution_started_at
+        )
 
         if home_resolution.team_id is None or away_resolution.team_id is None:
             if home_resolution.team_id is None:
+                context_started_at = time.perf_counter()
                 (
                     candidate_count,
                     candidate_matchups,
@@ -1270,6 +1361,7 @@ def normalize_outcome_offers_with_context(
                     away_resolution=away_resolution,
                     event_slots_by_time=event_slots_by_time,
                 )
+                unresolved_context_seconds += time.perf_counter() - context_started_at
                 key = _unresolved_outcome_key(
                     raw,
                     raw_team_name=raw.home_team,
@@ -1277,6 +1369,7 @@ def normalize_outcome_offers_with_context(
                 )
                 if key not in seen_unresolved:
                     seen_unresolved.add(key)
+                    unresolved_diagnostics_by_bookmaker[raw.bookmaker_id] += 1
                     unresolved.append(
                         _unresolved_team_diagnostic(
                             raw,
@@ -1288,6 +1381,7 @@ def normalize_outcome_offers_with_context(
                         )
                     )
             if away_resolution.team_id is None:
+                context_started_at = time.perf_counter()
                 (
                     candidate_count,
                     candidate_matchups,
@@ -1300,6 +1394,7 @@ def normalize_outcome_offers_with_context(
                     away_resolution=away_resolution,
                     event_slots_by_time=event_slots_by_time,
                 )
+                unresolved_context_seconds += time.perf_counter() - context_started_at
                 key = _unresolved_outcome_key(
                     raw,
                     raw_team_name=raw.away_team,
@@ -1307,6 +1402,7 @@ def normalize_outcome_offers_with_context(
                 )
                 if key not in seen_unresolved:
                     seen_unresolved.add(key)
+                    unresolved_diagnostics_by_bookmaker[raw.bookmaker_id] += 1
                     unresolved.append(
                         _unresolved_team_diagnostic(
                             raw,
@@ -1317,6 +1413,8 @@ def normalize_outcome_offers_with_context(
                             available_matchups_same_slot=available_matchups,
                         )
                     )
+            skipped_unresolved_row_count += 1
+            skipped_unresolved_rows_by_bookmaker[raw.bookmaker_id] += 1
             continue
 
         match_id = generate_match_id(
@@ -1325,6 +1423,7 @@ def normalize_outcome_offers_with_context(
             raw.start_time,
             raw.sport,
         )
+        direct_offer_started_at = time.perf_counter()
         normalized.append(
             NormalizedOutcomeOffer(
                 match_id=match_id,
@@ -1344,6 +1443,12 @@ def normalize_outcome_offers_with_context(
                 start_time=raw.start_time,
             )
         )
+        direct_offer_build_seconds += time.perf_counter() - direct_offer_started_at
+        direct_resolution_success_count += 1
+        normalized_rows_by_bookmaker[raw.bookmaker_id] += 1
+        direct_resolution_rows_by_bookmaker[raw.bookmaker_id] += 1
+
+    row_iteration_ms = _elapsed_ms(row_iteration_started_at)
 
     football_team_review_cases = [
         case for case in team_review_cases if case.sport == "football"
@@ -1353,6 +1458,66 @@ def normalize_outcome_offers_with_context(
         for case in football_team_review_cases
         if case.suggested_team_id is not None and case.confidence != "low"
     ]
+    row_normalization_ms = _elapsed_ms(row_normalization_started_at)
+    wall_ms = _elapsed_ms(normalization_started_at)
+    bookmaker_rows = [
+        OutcomeNormalizationBookmakerBenchmarkOut(
+            bookmaker_id=bookmaker_id,
+            raw_rows=raw_rows_by_bookmaker[bookmaker_id],
+            normalized_rows=normalized_rows_by_bookmaker[bookmaker_id],
+            event_resolution_rows=event_resolution_rows_by_bookmaker[bookmaker_id],
+            direct_resolution_rows=direct_resolution_rows_by_bookmaker[bookmaker_id],
+            skipped_unresolved_rows=skipped_unresolved_rows_by_bookmaker[bookmaker_id],
+            unresolved_diagnostic_count=unresolved_diagnostics_by_bookmaker[
+                bookmaker_id
+            ],
+            missing_start_time_rows=missing_start_rows_by_bookmaker[bookmaker_id],
+            unsupported_reversed_rows=unsupported_reversed_rows_by_bookmaker[
+                bookmaker_id
+            ],
+        )
+        for bookmaker_id in sorted(raw_rows_by_bookmaker)
+    ]
+    run_detail = OutcomeNormalizationRunBenchmarkOut(
+        run_index=1,
+        wall_ms=wall_ms,
+        raw_outcome_offer_count=len(raw_list),
+        normalized_outcome_offer_count=len(normalized),
+        unresolved_outcome_offer_count=len(unresolved),
+        football_unique_event_count=football_resolution_stats.football_unique_event_count,
+        football_event_pair_candidate_count=(
+            football_resolution_stats.football_event_pair_candidate_count
+        ),
+        football_event_fuzzy_score_count=(
+            football_resolution_stats.football_event_fuzzy_score_count
+        ),
+        football_team_review_case_count=len(football_team_review_cases),
+        auto_create_football_teams_ms=auto_create_football_teams_ms,
+        football_event_resolution_ms=football_event_resolution_ms,
+        football_event_pair_ranking_ms=(
+            football_resolution_stats.football_event_pair_ranking_ms
+        ),
+        football_event_slot_lookup_ms=(
+            football_resolution_stats.football_event_slot_lookup_ms
+        ),
+        row_normalization_ms=row_normalization_ms,
+        team_review_proxy_rows=len(team_review_proxy_rows),
+        team_review_proxy_ms=team_review_proxy_ms,
+        row_iteration_ms=row_iteration_ms,
+        missing_start_time_count=missing_start_time_count,
+        event_resolution_offer_count=event_resolution_offer_count,
+        direct_resolution_attempt_count=direct_resolution_attempt_count,
+        direct_resolution_success_count=direct_resolution_success_count,
+        skipped_unresolved_row_count=skipped_unresolved_row_count,
+        unsupported_reversed_offer_count=unsupported_reversed_offer_count,
+        league_resolution_ms=int(league_resolution_seconds * 1000),
+        event_resolution_offer_build_ms=int(
+            event_resolution_offer_build_seconds * 1000
+        ),
+        direct_team_resolution_ms=int(direct_team_resolution_seconds * 1000),
+        unresolved_context_ms=int(unresolved_context_seconds * 1000),
+        direct_offer_build_ms=int(direct_offer_build_seconds * 1000),
+    )
     benchmark = OutcomeNormalizationBenchmarkOut(
         runs=1,
         raw_outcome_offer_count=len(raw_list),
@@ -1395,7 +1560,34 @@ def normalize_outcome_offers_with_context(
         football_event_slot_mutation_ms=(
             football_resolution_stats.football_event_slot_mutation_ms
         ),
-        row_normalization_ms=_elapsed_ms(row_normalization_started_at),
+        row_normalization_ms=row_normalization_ms,
+        team_review_proxy_rows=len(team_review_proxy_rows),
+        team_review_proxy_ms=team_review_proxy_ms,
+        row_iteration_ms=row_iteration_ms,
+        missing_start_time_count=missing_start_time_count,
+        event_resolution_offer_count=event_resolution_offer_count,
+        direct_resolution_attempt_count=direct_resolution_attempt_count,
+        direct_resolution_success_count=direct_resolution_success_count,
+        skipped_unresolved_row_count=skipped_unresolved_row_count,
+        unsupported_reversed_offer_count=unsupported_reversed_offer_count,
+        league_resolution_ms=int(league_resolution_seconds * 1000),
+        event_resolution_offer_build_ms=int(
+            event_resolution_offer_build_seconds * 1000
+        ),
+        direct_team_resolution_ms=int(direct_team_resolution_seconds * 1000),
+        unresolved_context_ms=int(unresolved_context_seconds * 1000),
+        direct_offer_build_ms=int(direct_offer_build_seconds * 1000),
+        football_event_time_slot_count=(
+            football_resolution_stats.football_event_time_slot_count
+        ),
+        football_event_max_events_per_slot=(
+            football_resolution_stats.football_event_max_events_per_slot
+        ),
+        run_details=[run_detail],
+        bookmakers=bookmaker_rows,
+        top_football_event_buckets=(
+            football_resolution_stats.top_football_event_buckets
+        ),
     )
 
     return OutcomeNormalizationResult(

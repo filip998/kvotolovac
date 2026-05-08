@@ -740,6 +740,63 @@ class SportBenchmarkOut(BaseModel):
     match_rate: float = 0.0
 
 
+class OutcomeFootballEventBucketBenchmarkOut(BaseModel):
+    """Top football event-resolution time buckets for outcome normalization."""
+
+    sport: str
+    start_time: str
+    event_count: int = 0
+    bookmaker_count: int = 0
+    candidate_pair_count: int = 0
+
+
+class OutcomeNormalizationBookmakerBenchmarkOut(BaseModel):
+    """Per-bookmaker row counters for one outcome-normalization pass."""
+
+    bookmaker_id: str
+    raw_rows: int = 0
+    normalized_rows: int = 0
+    event_resolution_rows: int = 0
+    direct_resolution_rows: int = 0
+    skipped_unresolved_rows: int = 0
+    unresolved_diagnostic_count: int = 0
+    missing_start_time_rows: int = 0
+    unsupported_reversed_rows: int = 0
+
+
+class OutcomeNormalizationRunBenchmarkOut(BaseModel):
+    """Per-pass outcome-normalization counters and timings."""
+
+    run_index: int = 0
+    wall_ms: int = 0
+    raw_outcome_offer_count: int = 0
+    normalized_outcome_offer_count: int = 0
+    unresolved_outcome_offer_count: int = 0
+    football_unique_event_count: int = 0
+    football_event_pair_candidate_count: int = 0
+    football_event_fuzzy_score_count: int = 0
+    football_team_review_case_count: int = 0
+    auto_create_football_teams_ms: int = 0
+    football_event_resolution_ms: int = 0
+    football_event_pair_ranking_ms: int = 0
+    football_event_slot_lookup_ms: int = 0
+    row_normalization_ms: int = 0
+    team_review_proxy_rows: int = 0
+    team_review_proxy_ms: int = 0
+    row_iteration_ms: int = 0
+    missing_start_time_count: int = 0
+    event_resolution_offer_count: int = 0
+    direct_resolution_attempt_count: int = 0
+    direct_resolution_success_count: int = 0
+    skipped_unresolved_row_count: int = 0
+    unsupported_reversed_offer_count: int = 0
+    league_resolution_ms: int = 0
+    event_resolution_offer_build_ms: int = 0
+    direct_team_resolution_ms: int = 0
+    unresolved_context_ms: int = 0
+    direct_offer_build_ms: int = 0
+
+
 class OutcomeNormalizationBenchmarkOut(BaseModel):
     """Subphase metrics for football outcome-offer normalization."""
 
@@ -762,6 +819,42 @@ class OutcomeNormalizationBenchmarkOut(BaseModel):
     football_event_slot_lookup_ms: int = 0
     football_event_slot_mutation_ms: int = 0
     row_normalization_ms: int = 0
+    team_review_proxy_rows: int = 0
+    team_review_proxy_ms: int = 0
+    row_iteration_ms: int = 0
+    missing_start_time_count: int = 0
+    event_resolution_offer_count: int = 0
+    direct_resolution_attempt_count: int = 0
+    direct_resolution_success_count: int = 0
+    skipped_unresolved_row_count: int = 0
+    unsupported_reversed_offer_count: int = 0
+    league_resolution_ms: int = 0
+    event_resolution_offer_build_ms: int = 0
+    direct_team_resolution_ms: int = 0
+    unresolved_context_ms: int = 0
+    direct_offer_build_ms: int = 0
+    football_event_time_slot_count: int = 0
+    football_event_max_events_per_slot: int = 0
+    run_details: list[OutcomeNormalizationRunBenchmarkOut] = Field(
+        default_factory=list
+    )
+    bookmakers: list[OutcomeNormalizationBookmakerBenchmarkOut] = Field(
+        default_factory=list
+    )
+    top_football_event_buckets: list[OutcomeFootballEventBucketBenchmarkOut] = Field(
+        default_factory=list
+    )
+
+
+class EventResolverSourceMatchSlotBenchmarkOut(BaseModel):
+    """Top raw-source slots scanned while matching normalized event candidates."""
+
+    bookmaker_id: str
+    sport: str
+    start_time: str
+    lookup_count: int = 0
+    source_count: int = 0
+    average_sources_per_lookup: float = 0.0
 
 
 class EventResolverBenchmarkOut(BaseModel):
@@ -788,6 +881,8 @@ class EventResolverBenchmarkOut(BaseModel):
     stored_outcome_match_bookmaker_count: int = 0
     source_match_lookup_count: int = 0
     source_match_source_count: int = 0
+    source_match_max_sources_per_lookup: int = 0
+    source_match_truncated_slot_count: int = 0
     football_raw_candidate_count: int = 0
     candidate_count: int = 0
     exact_group_count: int = 0
@@ -798,6 +893,9 @@ class EventResolverBenchmarkOut(BaseModel):
     persisted_resolved_event_count: int = 0
     persisted_member_count: int = 0
     persisted_review_case_count: int = 0
+    top_source_match_slots: list[EventResolverSourceMatchSlotBenchmarkOut] = Field(
+        default_factory=list
+    )
 
 
 class OpportunityAnalysisRuleBenchmarkOut(BaseModel):

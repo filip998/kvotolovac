@@ -19,6 +19,7 @@ from app.models.schemas import (
     OpportunityDetailModeYieldOut,
     OpportunityAnalysisBenchmarkOut,
     OpportunityAnalysisRuleBenchmarkOut,
+    OutcomeNormalizationBenchmarkOut,
     ScrapeRuntimeSettings,
 )
 from app.scrapers.mock_scraper import MockScraper
@@ -99,6 +100,13 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert body["event_split_diagnostics"]["overmerge_candidate_count"] >= 0
     assert isinstance(body["event_split_diagnostics"]["sports"], list)
     assert isinstance(body["sports"], list)
+    assert isinstance(body["outcome_normalization"]["run_details"], list)
+    assert isinstance(body["outcome_normalization"]["bookmakers"], list)
+    assert isinstance(
+        body["outcome_normalization"]["top_football_event_buckets"],
+        list,
+    )
+    assert isinstance(body["event_resolver"]["top_source_match_slots"], list)
     if body["event_coverage"]:
         coverage_row = body["event_coverage"][0]
         assert coverage_row["bookmaker_id"]
@@ -446,4 +454,22 @@ def test_event_resolver_extraction_benchmark_defaults_and_serialization():
     assert payload["normalized_outcome_candidates_emitted"] == 0
     assert payload["source_match_lookup_count"] == 0
     assert payload["source_match_source_count"] == 0
+    assert payload["source_match_max_sources_per_lookup"] == 0
+    assert payload["source_match_truncated_slot_count"] == 0
+    assert payload["top_source_match_slots"] == []
     assert payload["football_raw_candidate_count"] == 0
+
+
+def test_outcome_normalization_benchmark_defaults_and_serialization():
+    metrics = OutcomeNormalizationBenchmarkOut()
+
+    payload = metrics.model_dump()
+
+    assert payload["runs"] == 0
+    assert payload["team_review_proxy_rows"] == 0
+    assert payload["row_iteration_ms"] == 0
+    assert payload["event_resolution_offer_count"] == 0
+    assert payload["football_event_time_slot_count"] == 0
+    assert payload["run_details"] == []
+    assert payload["bookmakers"] == []
+    assert payload["top_football_event_buckets"] == []

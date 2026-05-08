@@ -19,6 +19,7 @@ from ..models.schemas import (
     BenchmarkSplitSportDiagnosticsOut,
     BenchmarkSplitWeakestMemberPairOut,
     EventResolverBenchmarkOut,
+    EventResolverSourceMatchSlotBenchmarkOut,
     EventReviewCaseIn,
     NormalizedOdds,
     NormalizedOutcomeOffer,
@@ -538,6 +539,13 @@ class _EventCandidateExtractionStats:
     stored_outcome_match_bookmaker_count: int = 0
     source_match_lookup_count: int = 0
     source_match_source_count: int = 0
+    source_match_max_sources_per_lookup: int = 0
+    source_match_slot_lookup_counts: Counter[tuple[str, str, str]] = field(
+        default_factory=Counter
+    )
+    source_match_slot_source_counts: Counter[tuple[str, str, str]] = field(
+        default_factory=Counter
+    )
     football_raw_candidate_count: int = 0
     football_raw_resolution_candidates_ms: int = 0
     reused_football_event_resolution_count: int = 0
@@ -1678,13 +1686,17 @@ def _best_source(
     stats: _EventCandidateExtractionStats | None = None,
 ) -> _RawEventSource | None:
     started_at = time.perf_counter()
-    sources = sources_by_slot.get(
-        (candidate.bookmaker_id, candidate.sport, candidate.start_time),
-        [],
-    )
+    slot_key = (candidate.bookmaker_id, candidate.sport, candidate.start_time)
+    sources = sources_by_slot.get(slot_key, [])
     if stats is not None:
         stats.source_match_lookup_count += 1
         stats.source_match_source_count += len(sources)
+        stats.source_match_max_sources_per_lookup = max(
+            stats.source_match_max_sources_per_lookup,
+            len(sources),
+        )
+        stats.source_match_slot_lookup_counts[slot_key] += 1
+        stats.source_match_slot_source_counts[slot_key] += len(sources)
     try:
         best: _RawEventSource | None = None
         best_score = 0.0
@@ -2788,6 +2800,42 @@ async def resolve_and_persist_events(
         snapshot_id=snapshot_id,
     )
     persist_event_resolution_groups_ms = _elapsed_ms(persistence_started_at)
+    source_match_slot_rows = [
+        EventResolverSourceMatchSlotBenchmarkOut(
+            bookmaker_id=bookmaker_id,
+            sport=sport,
+            start_time=start_time,
+            lookup_count=lookup_count,
+            source_count=extraction_stats.source_match_slot_source_counts[
+                (bookmaker_id, sport, start_time)
+            ],
+            average_sources_per_lookup=round(
+                extraction_stats.source_match_slot_source_counts[
+                    (bookmaker_id, sport, start_time)
+                ]
+                / lookup_count,
+                4,
+            )
+            if lookup_count
+            else 0.0,
+        )
+        for (
+            bookmaker_id,
+            sport,
+            start_time,
+        ), lookup_count in extraction_stats.source_match_slot_lookup_counts.items()
+    ]
+    source_match_slot_rows = sorted(
+        source_match_slot_rows,
+        key=lambda row: (
+            row.source_count,
+            row.lookup_count,
+            row.bookmaker_id,
+            row.sport,
+            row.start_time,
+        ),
+        reverse=True,
+    )
     benchmark = EventResolverBenchmarkOut(
         extract_event_candidates_ms=extract_event_candidates_ms,
         extract_raw_odds_sources_ms=extraction_stats.extract_raw_odds_sources_ms,
@@ -2830,6 +2878,10 @@ async def resolve_and_persist_events(
         ),
         source_match_lookup_count=extraction_stats.source_match_lookup_count,
         source_match_source_count=extraction_stats.source_match_source_count,
+        source_match_max_sources_per_lookup=(
+            extraction_stats.source_match_max_sources_per_lookup
+        ),
+        source_match_truncated_slot_count=max(0, len(source_match_slot_rows) - 20),
         football_raw_candidate_count=extraction_stats.football_raw_candidate_count,
         candidate_count=len(candidates),
         exact_group_count=group_stats.exact_group_count,
@@ -2840,6 +2892,7 @@ async def resolve_and_persist_events(
         persisted_resolved_event_count=result.resolved_events,
         persisted_member_count=result.resolved_event_members,
         persisted_review_case_count=result.review_cases,
+        top_source_match_slots=source_match_slot_rows[:20],
     )
     logger.info(
         "Resolved %d source-event candidates into %d events (%d members, %d review cases)",

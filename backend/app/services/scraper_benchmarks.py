@@ -184,6 +184,13 @@ def _merge_outcome_metrics(
     current: OutcomeNormalizationBenchmarkOut,
     update: OutcomeNormalizationBenchmarkOut,
 ) -> OutcomeNormalizationBenchmarkOut:
+    run_details = [
+        row.model_copy(update={"run_index": index})
+        for index, row in enumerate(
+            [*current.run_details, *update.run_details],
+            start=1,
+        )
+    ]
     return OutcomeNormalizationBenchmarkOut(
         runs=current.runs + update.runs,
         raw_outcome_offer_count=update.raw_outcome_offer_count,
@@ -232,6 +239,40 @@ def _merge_outcome_metrics(
         row_normalization_ms=(
             current.row_normalization_ms + update.row_normalization_ms
         ),
+        team_review_proxy_rows=update.team_review_proxy_rows,
+        team_review_proxy_ms=(
+            current.team_review_proxy_ms + update.team_review_proxy_ms
+        ),
+        row_iteration_ms=current.row_iteration_ms + update.row_iteration_ms,
+        missing_start_time_count=update.missing_start_time_count,
+        event_resolution_offer_count=update.event_resolution_offer_count,
+        direct_resolution_attempt_count=update.direct_resolution_attempt_count,
+        direct_resolution_success_count=update.direct_resolution_success_count,
+        skipped_unresolved_row_count=update.skipped_unresolved_row_count,
+        unsupported_reversed_offer_count=update.unsupported_reversed_offer_count,
+        league_resolution_ms=(
+            current.league_resolution_ms + update.league_resolution_ms
+        ),
+        event_resolution_offer_build_ms=(
+            current.event_resolution_offer_build_ms
+            + update.event_resolution_offer_build_ms
+        ),
+        direct_team_resolution_ms=(
+            current.direct_team_resolution_ms + update.direct_team_resolution_ms
+        ),
+        unresolved_context_ms=(
+            current.unresolved_context_ms + update.unresolved_context_ms
+        ),
+        direct_offer_build_ms=(
+            current.direct_offer_build_ms + update.direct_offer_build_ms
+        ),
+        football_event_time_slot_count=update.football_event_time_slot_count,
+        football_event_max_events_per_slot=(
+            update.football_event_max_events_per_slot
+        ),
+        run_details=run_details,
+        bookmakers=update.bookmakers,
+        top_football_event_buckets=update.top_football_event_buckets,
     )
 
 
