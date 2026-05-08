@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 
 from ..config import settings
 from ..models.schemas import (
+    AutoResolutionRerunBenchmarkOut,
     BenchmarkEventCoverageOut,
     BenchmarkRuntimeMetadataOut,
     BenchmarkSplitDiagnosticsOut,
@@ -351,6 +352,7 @@ class CycleBenchmarkRecorder:
         self._phase_durations_ms: dict[str, int] = {}
         self._outcome_normalization = OutcomeNormalizationBenchmarkOut()
         self._event_resolver = EventResolverBenchmarkOut()
+        self._auto_resolution_rerun = AutoResolutionRerunBenchmarkOut()
         self._opportunity_analysis = OpportunityAnalysisBenchmarkOut()
         self._event_split_diagnostics = BenchmarkSplitDiagnosticsOut()
 
@@ -420,6 +422,12 @@ class CycleBenchmarkRecorder:
     def record_event_resolver(self, metrics: EventResolverBenchmarkOut) -> None:
         with self._lock:
             self._event_resolver = metrics
+
+    def record_auto_resolution_rerun(
+        self, metrics: AutoResolutionRerunBenchmarkOut
+    ) -> None:
+        with self._lock:
+            self._auto_resolution_rerun = metrics
 
     def record_opportunity_analysis(
         self, metrics: OpportunityAnalysisBenchmarkOut
@@ -652,6 +660,7 @@ class CycleBenchmarkRecorder:
                 phase_durations_ms=dict(sorted(self._phase_durations_ms.items())),
                 outcome_normalization=self._outcome_normalization,
                 event_resolver=self._event_resolver,
+                auto_resolution_rerun=self._auto_resolution_rerun,
                 opportunity_analysis=self._opportunity_analysis,
                 event_coverage=sorted(
                     coverage_rows,

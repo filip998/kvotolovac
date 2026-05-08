@@ -10,6 +10,7 @@ import pytest
 
 import app.services.runtime_settings as runtime_settings_service
 import app.services.scheduler as scheduler_service
+from app.services import scraper_benchmarks
 from app.database import get_db
 from app.config import settings
 from app.models.schemas import (
@@ -221,6 +222,12 @@ def _register_test_scrapers(*scrapers: BaseScraper) -> None:
     registry._scrapers.clear()
     for scraper in scrapers:
         registry.register(scraper)
+
+
+def _latest_auto_resolution_rerun_benchmark():
+    snapshot = scraper_benchmarks.recorder.latest()
+    assert snapshot is not None
+    return snapshot.auto_resolution_rerun
 
 
 class StubScraper(BaseScraper):
@@ -530,6 +537,29 @@ async def test_scheduler_run_cycle():
     assert result["opportunities_found"] > 0
     assert "notifications_sent" in result
     assert isinstance(result["notifications_sent"], int)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_records_auto_resolution_rerun_benchmark_without_rerun():
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={"euroleague": [_raw_odds("alpha", 18.5)]},
+        )
+    )
+
+    await Scheduler(interval_minutes=1).run_cycle()
+    metrics = _latest_auto_resolution_rerun_benchmark()
+
+    assert metrics.rerun_performed is False
+    assert metrics.reasons == []
+    assert metrics.team_review_cases_seen_count == 0
+    assert metrics.auto_review_cases_approved_count == 0
+    assert metrics.before == metrics.after
+    assert metrics.delta.normalized_threshold_odds == 0
+    assert metrics.delta.normalized_outcome_offers == 0
+    assert metrics.delta.unresolved_diagnostics == 0
+    assert metrics.delta.team_review_cases == 0
 
 
 @pytest.mark.asyncio
@@ -2318,6 +2348,7 @@ async def test_scheduler_run_cycle_auto_saves_anchored_alias_same_scrape():
 
     result = await Scheduler(interval_minutes=1).run_cycle()
     approved_cases = await odds_store.get_team_review_cases(status="approved")
+    metrics = _latest_auto_resolution_rerun_benchmark()
 
     assert result["matches_scraped"] == 1
     assert result["odds_scraped"] == 2
@@ -2328,6 +2359,18 @@ async def test_scheduler_run_cycle_auto_saves_anchored_alias_same_scrape():
         normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian")
         == "Rilski Sportist"
     )
+    assert metrics.rerun_performed is True
+    assert metrics.reasons == ["auto_aliases"]
+    assert metrics.team_review_cases_seen_count >= 1
+    assert metrics.auto_review_cases_approved_count == 1
+    assert metrics.same_time_auto_review_count == 0
+    assert metrics.anchored_auto_review_count == 1
+    assert metrics.aliases_requested_count == 1
+    assert metrics.aliases_applied_count == 1
+    assert metrics.pending_merge_count == 0
+    assert metrics.applied_merge_count == 0
+    assert metrics.before.normalized_threshold_odds >= 1
+    assert metrics.after.normalized_threshold_odds >= metrics.before.normalized_threshold_odds
 
 
 @pytest.mark.asyncio
@@ -2481,6 +2524,7 @@ async def test_scheduler_run_cycle_auto_merges_same_time_both_sides_when_strong_
 
     result = await Scheduler(interval_minutes=1).run_cycle()
     approved_cases = await odds_store.get_team_review_cases(status="approved")
+    metrics = _latest_auto_resolution_rerun_benchmark()
 
     assert result["matches_scraped"] == 1
     assert result["odds_scraped"] == 3
@@ -2491,6 +2535,108 @@ async def test_scheduler_run_cycle_auto_merges_same_time_both_sides_when_strong_
     assert get_canonical_team(source_away.team_id) is None
     assert get_canonical_team(source_home.team_id, follow_merge=True).id == target_home.team_id
     assert get_canonical_team(source_away.team_id, follow_merge=True).id == target_away.team_id
+    assert metrics.rerun_performed is True
+    assert metrics.reasons == ["canonical_merges"]
+    assert metrics.same_time_auto_review_count == 2
+    assert metrics.anchored_auto_review_count == 0
+    assert metrics.aliases_applied_count == 0
+    assert metrics.same_time_pending_merge_count == 2
+    assert metrics.anchored_pending_merge_count == 0
+    assert metrics.pending_merge_count == 2
+    assert metrics.applied_merge_count == 2
+
+
+@pytest.mark.asyncio
+async def test_scheduler_auto_resolution_benchmark_records_multiple_rerun_reasons():
+    source_home = create_canonical_team(display_name="Novosibirsk")
+    source_away = create_canonical_team(display_name="Chelyabinsk")
+    target_home = create_canonical_team(display_name="BC Novosibirsk")
+    target_away = create_canonical_team(display_name="BC Chelyabinsk")
+
+    rilski_anchor_time = "2030-01-01T21:00:00+00:00"
+    _register_test_scrapers(
+        StubScraper(
+            "book-a",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-a",
+                        "BC Novosibirsk",
+                        away_team="BC Chelyabinsk",
+                        league_id="VTB Liga",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "book-b",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-b",
+                        "BC Novosibirsk",
+                        away_team="BC Chelyabinsk",
+                        league_id="VTB Liga",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "book-c",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-c",
+                        "Novosibirsk",
+                        away_team="Chelyabinsk",
+                        league_id="VTB Liga",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "mozzart",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "mozzart",
+                        "Rilski Sportist",
+                    ).model_copy(update={"start_time": rilski_anchor_time})
+                ]
+            },
+        ),
+        StubScraper(
+            "meridian",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "meridian",
+                        "Rilski Sport.",
+                        league_id="NBL",
+                    ).model_copy(update={"start_time": rilski_anchor_time})
+                ]
+            },
+        ),
+    )
+
+    await Scheduler(interval_minutes=1).run_cycle()
+    metrics = _latest_auto_resolution_rerun_benchmark()
+
+    assert get_canonical_team(source_home.team_id) is None
+    assert get_canonical_team(source_away.team_id) is None
+    assert get_canonical_team(source_home.team_id, follow_merge=True).id == target_home.team_id
+    assert get_canonical_team(source_away.team_id, follow_merge=True).id == target_away.team_id
+    assert set(metrics.reasons) == {"auto_aliases", "canonical_merges"}
+    assert metrics.rerun_performed is True
+    assert metrics.same_time_auto_review_count == 2
+    assert metrics.anchored_auto_review_count >= 1
+    assert metrics.aliases_applied_count >= 1
+    assert metrics.applied_merge_count == 2
 
 
 @pytest.mark.asyncio

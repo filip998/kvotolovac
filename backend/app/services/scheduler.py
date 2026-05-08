@@ -10,6 +10,8 @@ from datetime import datetime
 
 from ..config import settings
 from ..models.schemas import (
+    AutoResolutionRerunBatchCountsOut,
+    AutoResolutionRerunBenchmarkOut,
     BenchmarkEventCoverageOut,
     NormalizedOdds,
     NormalizedOutcomeOffer,
@@ -142,6 +144,62 @@ class _NormalizedPipelineBatch:
     unresolved_odds: list[UnresolvedOddsDiagnostic] = field(default_factory=list)
     team_review_cases: list[TeamReviewDiagnostic] = field(default_factory=list)
     football_event_resolutions: FootballEventResolutionMap = field(default_factory=dict)
+
+
+def _auto_resolution_batch_counts(
+    batch: _NormalizedPipelineBatch,
+) -> AutoResolutionRerunBatchCountsOut:
+    return AutoResolutionRerunBatchCountsOut(
+        normalized_threshold_odds=len(batch.odds),
+        normalized_outcome_offers=len(batch.outcome_offers),
+        unresolved_diagnostics=len(batch.unresolved_odds),
+        team_review_cases=len(batch.team_review_cases),
+    )
+
+
+def _auto_resolution_count_delta(
+    before: AutoResolutionRerunBatchCountsOut,
+    after: AutoResolutionRerunBatchCountsOut,
+) -> AutoResolutionRerunBatchCountsOut:
+    return AutoResolutionRerunBatchCountsOut(
+        normalized_threshold_odds=(
+            after.normalized_threshold_odds - before.normalized_threshold_odds
+        ),
+        normalized_outcome_offers=(
+            after.normalized_outcome_offers - before.normalized_outcome_offers
+        ),
+        unresolved_diagnostics=(
+            after.unresolved_diagnostics - before.unresolved_diagnostics
+        ),
+        team_review_cases=after.team_review_cases - before.team_review_cases,
+    )
+
+
+def _auto_resolution_rerun_reasons(
+    *,
+    same_time_auto_reviews: list[TeamReviewDiagnostic],
+    anchored_auto_reviews: list[TeamReviewDiagnostic],
+    applied_auto_aliases: list[tuple[str, str, str]],
+    pending_auto_merges: list[tuple[int, int]],
+    applied_auto_merges: list[tuple[int, int]],
+) -> list[str]:
+    reasons: list[str] = []
+    if applied_auto_aliases or any(
+        case.review_kind == AUTO_ALIAS_REVIEW_KIND for case in anchored_auto_reviews
+    ):
+        reasons.append("auto_aliases")
+    if (
+        pending_auto_merges
+        or applied_auto_merges
+        or any(
+            case.review_kind == AUTO_CANONICAL_MERGE_REVIEW_KIND
+            for case in [*same_time_auto_reviews, *anchored_auto_reviews]
+        )
+    ):
+        reasons.append("canonical_merges")
+    if not reasons and (same_time_auto_reviews or anchored_auto_reviews):
+        reasons.append("auto_review_cases")
+    return reasons
 
 
 def _is_auto_alias_candidate(case) -> bool:
@@ -1555,6 +1613,10 @@ class Scheduler:
             normalized_outcome_offers = normalized_batch.outcome_offers
             unresolved_odds = normalized_batch.unresolved_odds
             team_review_cases = normalized_batch.team_review_cases
+            auto_resolution_before_counts = _auto_resolution_batch_counts(
+                normalized_batch
+            )
+            team_review_cases_seen_count = len(team_review_cases)
             applied_auto_aliases: list[tuple[str, str, str]] = []
             applied_auto_merges: list[tuple[int, int]] = []
             auto_approved_team_review_case_ids: list[int] = []
@@ -1565,20 +1627,25 @@ class Scheduler:
                     same_time_auto_merges,
                 ) = await self._same_time_canonical_merge_candidates(all_raw)
                 (
-                    auto_approved_team_reviews,
+                    anchored_auto_reviews,
                     applied_auto_aliases,
-                    pending_auto_merges,
+                    anchored_pending_auto_merges,
                 ) = await self._auto_apply_anchored_aliases(
                     team_review_cases,
                     all_raw,
                 )
+                aliases_requested_count = sum(
+                    len(self._build_case_alias_requests(case, all_raw))
+                    for case in anchored_auto_reviews
+                    if case.review_kind == AUTO_ALIAS_REVIEW_KIND
+                )
                 auto_approved_team_reviews = [
                     *same_time_auto_reviews,
-                    *auto_approved_team_reviews,
+                    *anchored_auto_reviews,
                 ]
                 pending_auto_merges = [
                     *same_time_auto_merges,
-                    *pending_auto_merges,
+                    *anchored_pending_auto_merges,
                 ]
                 if pending_auto_merges:
                     applied_auto_merges = await self._apply_canonical_merges(
@@ -1608,6 +1675,48 @@ class Scheduler:
                     team_review_cases = normalized_batch.team_review_cases
                 else:
                     log_unresolved_shared_platform_diagnostics(unresolved_odds)
+                auto_resolution_after_counts = _auto_resolution_batch_counts(
+                    normalized_batch
+                )
+                try:
+                    benchmark_recorder.record_auto_resolution_rerun(
+                        AutoResolutionRerunBenchmarkOut(
+                            rerun_performed=bool(
+                                auto_approved_team_reviews or applied_auto_merges
+                            ),
+                            reasons=_auto_resolution_rerun_reasons(
+                                same_time_auto_reviews=same_time_auto_reviews,
+                                anchored_auto_reviews=anchored_auto_reviews,
+                                applied_auto_aliases=applied_auto_aliases,
+                                pending_auto_merges=pending_auto_merges,
+                                applied_auto_merges=applied_auto_merges,
+                            ),
+                            team_review_cases_seen_count=team_review_cases_seen_count,
+                            auto_review_cases_approved_count=(
+                                len(auto_approved_team_reviews)
+                            ),
+                            same_time_auto_review_count=len(same_time_auto_reviews),
+                            anchored_auto_review_count=len(anchored_auto_reviews),
+                            aliases_requested_count=aliases_requested_count,
+                            aliases_applied_count=len(applied_auto_aliases),
+                            same_time_pending_merge_count=len(same_time_auto_merges),
+                            anchored_pending_merge_count=(
+                                len(anchored_pending_auto_merges)
+                            ),
+                            pending_merge_count=len(pending_auto_merges),
+                            applied_merge_count=len(applied_auto_merges),
+                            before=auto_resolution_before_counts,
+                            after=auto_resolution_after_counts,
+                            delta=_auto_resolution_count_delta(
+                                auto_resolution_before_counts,
+                                auto_resolution_after_counts,
+                            ),
+                        )
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed recording auto-resolution rerun benchmark metrics"
+                    )
 
                 self._scan_phase = "storing"
                 cycle_scraped_at = datetime.utcnow().isoformat()

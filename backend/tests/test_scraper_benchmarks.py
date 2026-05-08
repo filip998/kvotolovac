@@ -10,6 +10,8 @@ from app.config import settings
 from app.database import close_db, init_db
 from app.main import app
 from app.models.schemas import (
+    AutoResolutionRerunBatchCountsOut,
+    AutoResolutionRerunBenchmarkOut,
     BenchmarkEventCoverageOut,
     BenchmarkSplitClusterOut,
     BenchmarkSplitDiagnosticsOut,
@@ -107,6 +109,10 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
         list,
     )
     assert isinstance(body["event_resolver"]["top_source_match_slots"], list)
+    assert body["auto_resolution_rerun"]["rerun_performed"] in {True, False}
+    assert isinstance(body["auto_resolution_rerun"]["reasons"], list)
+    assert body["auto_resolution_rerun"]["before"]["normalized_threshold_odds"] >= 0
+    assert body["auto_resolution_rerun"]["after"]["normalized_threshold_odds"] >= 0
     if body["event_coverage"]:
         coverage_row = body["event_coverage"][0]
         assert coverage_row["bookmaker_id"]
@@ -146,6 +152,7 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert parsed["phase_durations_ms"]
     assert "outcome_normalization" in parsed
     assert "event_resolver" in parsed
+    assert "auto_resolution_rerun" in parsed
     assert "opportunity_analysis" in parsed
     assert "event_coverage" in parsed
     assert "event_split_diagnostics" in parsed
@@ -348,6 +355,34 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
             ],
         )
     )
+    scraper_benchmarks.recorder.record_auto_resolution_rerun(
+        AutoResolutionRerunBenchmarkOut(
+            rerun_performed=True,
+            reasons=["auto_aliases"],
+            team_review_cases_seen_count=2,
+            auto_review_cases_approved_count=1,
+            anchored_auto_review_count=1,
+            aliases_requested_count=1,
+            aliases_applied_count=1,
+            before=AutoResolutionRerunBatchCountsOut(
+                normalized_threshold_odds=10,
+                normalized_outcome_offers=4,
+                unresolved_diagnostics=3,
+                team_review_cases=2,
+            ),
+            after=AutoResolutionRerunBatchCountsOut(
+                normalized_threshold_odds=11,
+                normalized_outcome_offers=4,
+                unresolved_diagnostics=2,
+                team_review_cases=1,
+            ),
+            delta=AutoResolutionRerunBatchCountsOut(
+                normalized_threshold_odds=1,
+                unresolved_diagnostics=-1,
+                team_review_cases=-1,
+            ),
+        )
+    )
 
     snapshot = scraper_benchmarks.recorder.publish(
         matches_per_bookmaker={"betole": 3},
@@ -410,6 +445,12 @@ def test_http_request_aggregates_and_metadata_are_persisted_without_secrets(
     }
     assert snapshot.opportunity_analysis.rules[0].rule == "same_line_arbitrage"
     assert snapshot.event_split_diagnostics.split_candidate_count == 1
+    assert snapshot.auto_resolution_rerun.rerun_performed is True
+    assert snapshot.auto_resolution_rerun.reasons == ["auto_aliases"]
+    assert (
+        snapshot.auto_resolution_rerun.before.normalized_threshold_odds == 10
+    )
+    assert snapshot.auto_resolution_rerun.delta.unresolved_diagnostics == -1
     assert snapshot.event_split_diagnostics.sports[0].sport == "football"
     assert (
         snapshot.event_split_diagnostics.top_split_candidates[0].events[
@@ -473,3 +514,20 @@ def test_outcome_normalization_benchmark_defaults_and_serialization():
     assert payload["run_details"] == []
     assert payload["bookmakers"] == []
     assert payload["top_football_event_buckets"] == []
+
+
+def test_auto_resolution_rerun_benchmark_defaults_and_serialization():
+    metrics = AutoResolutionRerunBenchmarkOut()
+
+    payload = metrics.model_dump()
+
+    assert payload["rerun_performed"] is False
+    assert payload["reasons"] == []
+    assert payload["team_review_cases_seen_count"] == 0
+    assert payload["aliases_requested_count"] == 0
+    assert payload["aliases_applied_count"] == 0
+    assert payload["pending_merge_count"] == 0
+    assert payload["applied_merge_count"] == 0
+    assert payload["before"]["normalized_threshold_odds"] == 0
+    assert payload["after"]["normalized_outcome_offers"] == 0
+    assert payload["delta"]["unresolved_diagnostics"] == 0

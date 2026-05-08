@@ -898,6 +898,41 @@ class EventResolverBenchmarkOut(BaseModel):
     )
 
 
+class AutoResolutionRerunBatchCountsOut(BaseModel):
+    """Normalized row counts captured before/after same-cycle auto-resolution."""
+
+    normalized_threshold_odds: int = 0
+    normalized_outcome_offers: int = 0
+    unresolved_diagnostics: int = 0
+    team_review_cases: int = 0
+
+
+class AutoResolutionRerunBenchmarkOut(BaseModel):
+    """Same-cycle auto-resolution rerun trigger and yield metrics."""
+
+    rerun_performed: bool = False
+    reasons: list[str] = Field(default_factory=list)
+    team_review_cases_seen_count: int = 0
+    auto_review_cases_approved_count: int = 0
+    same_time_auto_review_count: int = 0
+    anchored_auto_review_count: int = 0
+    aliases_requested_count: int = 0
+    aliases_applied_count: int = 0
+    same_time_pending_merge_count: int = 0
+    anchored_pending_merge_count: int = 0
+    pending_merge_count: int = 0
+    applied_merge_count: int = 0
+    before: AutoResolutionRerunBatchCountsOut = Field(
+        default_factory=AutoResolutionRerunBatchCountsOut
+    )
+    after: AutoResolutionRerunBatchCountsOut = Field(
+        default_factory=AutoResolutionRerunBatchCountsOut
+    )
+    delta: AutoResolutionRerunBatchCountsOut = Field(
+        default_factory=AutoResolutionRerunBatchCountsOut
+    )
+
+
 class OpportunityAnalysisRuleBenchmarkOut(BaseModel):
     """Per-rule opportunity-analysis counters for one sport/market bucket."""
 
@@ -977,6 +1012,9 @@ class CycleBenchmarkOut(BaseModel):
     )
     event_resolver: EventResolverBenchmarkOut = Field(
         default_factory=EventResolverBenchmarkOut
+    )
+    auto_resolution_rerun: AutoResolutionRerunBenchmarkOut = Field(
+        default_factory=AutoResolutionRerunBenchmarkOut
     )
     opportunity_analysis: OpportunityAnalysisBenchmarkOut = Field(
         default_factory=OpportunityAnalysisBenchmarkOut
