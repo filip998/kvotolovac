@@ -202,6 +202,14 @@ def _merge_outcome_metrics(
             update.football_event_pair_candidate_count
         ),
         football_event_fuzzy_score_count=update.football_event_fuzzy_score_count,
+        football_event_canonical_conflict_skip_count=(
+            current.football_event_canonical_conflict_skip_count
+            + update.football_event_canonical_conflict_skip_count
+        ),
+        football_event_canonical_conflict_fuzzy_score_avoided_count=(
+            current.football_event_canonical_conflict_fuzzy_score_avoided_count
+            + update.football_event_canonical_conflict_fuzzy_score_avoided_count
+        ),
         auto_created_football_team_count=(
             current.auto_created_football_team_count
             + update.auto_created_football_team_count

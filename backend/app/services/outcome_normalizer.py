@@ -145,6 +145,8 @@ class _FootballEventResolutionStats:
     football_unique_event_count: int = 0
     football_event_pair_candidate_count: int = 0
     football_event_fuzzy_score_count: int = 0
+    football_event_canonical_conflict_skip_count: int = 0
+    football_event_canonical_conflict_fuzzy_score_avoided_count: int = 0
     football_event_pair_ranking_ms: int = 0
     football_event_slot_lookup_ms: int = 0
     football_event_slot_mutation_ms: int = 0
@@ -506,6 +508,75 @@ def _pair_candidates(
     return pair
 
 
+def _slot_team_ids(
+    resolution: _OutcomeEventResolution,
+) -> frozenset[int]:
+    return frozenset((resolution.slot.home_team_id, resolution.slot.away_team_id))
+
+
+def _has_significant_token_overlap(
+    left_name: str,
+    right_name: str,
+    *,
+    sport: str,
+    text_cache: _OutcomeTextCache,
+) -> bool:
+    left_tokens = text_cache.significant_tokens(left_name, sport=sport)
+    right_tokens = text_cache.significant_tokens(right_name, sport=sport)
+    if not left_tokens or not right_tokens:
+        return True
+    return bool(left_tokens & right_tokens)
+
+
+def _event_pair_has_plausible_text_overlap(
+    left: _OutcomeEvent,
+    right: _OutcomeEvent,
+    *,
+    text_cache: _OutcomeTextCache,
+) -> bool:
+    return any(
+        _has_significant_token_overlap(
+            left_name,
+            right_name,
+            sport=left.sport,
+            text_cache=text_cache,
+        )
+        for left_name, right_name in (
+            (left.home_team, right.home_team),
+            (left.away_team, right.away_team),
+            (left.home_team, right.away_team),
+            (left.away_team, right.home_team),
+        )
+    )
+
+
+def _should_skip_disjoint_canonical_slots(
+    left: _OutcomeEvent,
+    right: _OutcomeEvent,
+    *,
+    left_resolution: _OutcomeEventResolution | None,
+    right_resolution: _OutcomeEventResolution | None,
+    slot_bookmaker_support: dict[frozenset[int], set[str]],
+    text_cache: _OutcomeTextCache,
+) -> bool:
+    if left_resolution is None or right_resolution is None:
+        return False
+    left_ids = _slot_team_ids(left_resolution)
+    right_ids = _slot_team_ids(right_resolution)
+    if not left_ids.isdisjoint(right_ids):
+        return False
+    if (
+        len(slot_bookmaker_support.get(left_ids, set())) < 2
+        or len(slot_bookmaker_support.get(right_ids, set())) < 2
+    ):
+        return False
+    return not _event_pair_has_plausible_text_overlap(
+        left,
+        right,
+        text_cache=text_cache,
+    )
+
+
 def _is_auto_event_match_candidate(pair: _OutcomeEventPair) -> bool:
     if pair.score < _FOOTBALL_AUTO_MATCH_AVG_THRESHOLD:
         return False
@@ -840,10 +911,37 @@ def _rank_event_pairs(
     accepted: list[_OutcomeEventPair] = []
     for events in events_by_slot.values():
         text_cache = _OutcomeTextCache(stats)
+        resolution_by_event = (
+            {event: resolutions.get(_event_key(event)) for event in events}
+            if resolutions is not None
+            else {}
+        )
+        slot_bookmaker_support: dict[frozenset[int], set[str]] = defaultdict(set)
+        for event, resolution in resolution_by_event.items():
+            if resolution is not None:
+                slot_bookmaker_support[_slot_team_ids(resolution)].add(
+                    event.bookmaker_id
+                )
         all_pairs: list[_OutcomeEventPair] = []
         candidates_by_event: dict[_OutcomeEvent, list[_OutcomeEventPair]] = defaultdict(list)
         for idx, left in enumerate(events):
             for right in events[idx + 1 :]:
+                if left.bookmaker_id == right.bookmaker_id:
+                    continue
+                if _should_skip_disjoint_canonical_slots(
+                    left,
+                    right,
+                    left_resolution=resolution_by_event.get(left),
+                    right_resolution=resolution_by_event.get(right),
+                    slot_bookmaker_support=slot_bookmaker_support,
+                    text_cache=text_cache,
+                ):
+                    if stats is not None:
+                        stats.football_event_canonical_conflict_skip_count += 1
+                        stats.football_event_canonical_conflict_fuzzy_score_avoided_count += (
+                            4
+                        )
+                    continue
                 pair = _pair_candidates(left, right, text_cache=text_cache, stats=stats)
                 if pair is None:
                     continue
@@ -1493,6 +1591,13 @@ def normalize_outcome_offers_with_context(
         football_event_fuzzy_score_count=(
             football_resolution_stats.football_event_fuzzy_score_count
         ),
+        football_event_canonical_conflict_skip_count=(
+            football_resolution_stats.football_event_canonical_conflict_skip_count
+        ),
+        football_event_canonical_conflict_fuzzy_score_avoided_count=(
+            football_resolution_stats
+            .football_event_canonical_conflict_fuzzy_score_avoided_count
+        ),
         football_team_review_case_count=len(football_team_review_cases),
         auto_create_football_teams_ms=auto_create_football_teams_ms,
         football_event_resolution_ms=football_event_resolution_ms,
@@ -1568,6 +1673,13 @@ def normalize_outcome_offers_with_context(
         ),
         football_event_fuzzy_score_count=(
             football_resolution_stats.football_event_fuzzy_score_count
+        ),
+        football_event_canonical_conflict_skip_count=(
+            football_resolution_stats.football_event_canonical_conflict_skip_count
+        ),
+        football_event_canonical_conflict_fuzzy_score_avoided_count=(
+            football_resolution_stats
+            .football_event_canonical_conflict_fuzzy_score_avoided_count
         ),
         auto_created_football_team_count=auto_created_team_count,
         football_team_review_case_count=len(football_team_review_cases),

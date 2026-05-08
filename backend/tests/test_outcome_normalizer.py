@@ -243,6 +243,67 @@ def test_football_event_resolution_benchmark_counts_pair_and_fuzzy_work(team_reg
     assert stats.football_event_fuzzy_score_count >= 1
 
 
+def test_football_event_resolution_skips_supported_disjoint_canonical_slots(
+    team_registry_file,
+):
+    for name in ("Team Alpha", "Team Beta", "Team Gamma", "Team Delta"):
+        create_canonical_team(display_name=name, sport="football")
+    raw = [
+        _offer("book-a", "Team Alpha", "Team Beta", outcome_code="over"),
+        _offer("book-b", "Team Alpha", "Team Beta", outcome_code="under"),
+        _offer("book-c", "Team Gamma", "Team Delta", outcome_code="over"),
+        _offer("book-d", "Team Gamma", "Team Delta", outcome_code="under"),
+    ]
+    stats = _FootballEventResolutionStats()
+
+    _build_football_event_resolutions(raw, stats=stats)
+
+    assert stats.football_event_canonical_conflict_skip_count == 4
+    assert stats.football_event_canonical_conflict_fuzzy_score_avoided_count == 16
+    assert stats.football_event_pair_candidate_count == 2
+
+
+def test_football_event_resolution_keeps_singleton_disjoint_slots_for_repair(
+    team_registry_file,
+):
+    for name in ("Basket Sibirsk", "Blec Sybirsk", "CSKA Moscow", "CSKA Moskva"):
+        create_canonical_team(display_name=name, sport="football")
+    raw = [
+        _offer("maxbet", "Basket Sibirsk", "CSKA Moscow", outcome_code="over"),
+        _offer("balkanbet", "Blec Sybirsk", "CSKA Moskva", outcome_code="under"),
+    ]
+    stats = _FootballEventResolutionStats()
+
+    _build_football_event_resolutions(raw, stats=stats)
+
+    assert stats.football_event_canonical_conflict_skip_count == 0
+    assert stats.football_event_pair_candidate_count == 1
+
+
+def test_football_event_resolution_keeps_text_overlap_disjoint_slots(
+    team_registry_file,
+):
+    for name in (
+        "Sao Jose Campos",
+        "Santo Andre",
+        "Sao Jose Wom.",
+        "Santo Andre Wom.",
+    ):
+        create_canonical_team(display_name=name, sport="football")
+    raw = [
+        _offer("book-a", "Sao Jose Campos", "Santo Andre", outcome_code="over"),
+        _offer("book-b", "Sao Jose Campos", "Santo Andre", outcome_code="under"),
+        _offer("book-c", "Sao Jose Wom.", "Santo Andre Wom.", outcome_code="over"),
+        _offer("book-d", "Sao Jose Wom.", "Santo Andre Wom.", outcome_code="under"),
+    ]
+    stats = _FootballEventResolutionStats()
+
+    _build_football_event_resolutions(raw, stats=stats)
+
+    assert stats.football_event_canonical_conflict_skip_count == 0
+    assert stats.football_event_pair_candidate_count >= 4
+
+
 def test_one_strong_football_team_matches_event_without_alias_write(team_registry_file):
     basket = create_canonical_team(display_name="Basket Sibirsk", sport="football")
     cska = create_canonical_team(display_name="CSKA Moscow", sport="football")
