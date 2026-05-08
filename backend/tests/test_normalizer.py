@@ -1374,6 +1374,79 @@ def test_normalize_odds_full_pipeline():
     assert normalized[1].away_team == "Crvena Zvezda"
 
 
+def test_normalize_odds_resolves_reviewed_basketball_split_aliases_to_same_match():
+    start_time = "2026-05-08T07:30:00+00:00"
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="nbl",
+            home_team="Franklin",
+            away_team="Nelson",
+            market_type="moneyline",
+            threshold=0.0,
+            home_odds=1.75,
+            away_odds=2.05,
+            start_time=start_time,
+        ),
+        RawOddsData(
+            bookmaker_id="superbet",
+            league_id="nbl",
+            home_team="Franklin Bulls",
+            away_team="Nelson Giants",
+            market_type="moneyline",
+            threshold=0.0,
+            home_odds=1.80,
+            away_odds=2.00,
+            start_time=start_time,
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert len(normalized) == 2
+    assert {offer.home_team for offer in normalized} == {"Franklin Bulls"}
+    assert {offer.away_team for offer in normalized} == {"Nelson Giants"}
+    assert len({offer.match_id for offer in normalized}) == 1
+
+
+def test_normalize_odds_keeps_basketball_conflicting_opponent_split_separate(
+    team_registry_file,
+):
+    start_time = "2026-05-08T16:00:00+00:00"
+    for team in ("Bnei Herzliya", "Elitzur Yavne", "Ironi Kiryat Ata"):
+        create_canonical_team(display_name=team, sport="basketball")
+
+    raw = [
+        RawOddsData(
+            bookmaker_id="mozzart",
+            league_id="israel",
+            home_team="Bnei Herzliya",
+            away_team="Elitzur Yavne",
+            market_type="moneyline",
+            threshold=0.0,
+            home_odds=1.75,
+            away_odds=2.05,
+            start_time=start_time,
+        ),
+        RawOddsData(
+            bookmaker_id="superbet",
+            league_id="israel",
+            home_team="Bnei Herzliya",
+            away_team="Ironi Kiryat Ata",
+            market_type="moneyline",
+            threshold=0.0,
+            home_odds=1.80,
+            away_odds=2.00,
+            start_time=start_time,
+        ),
+    ]
+
+    normalized = normalize_odds(raw)
+
+    assert len(normalized) == 2
+    assert len({offer.match_id for offer in normalized}) == 2
+
+
 def test_normalize_odds_resolves_shared_platform_matchups_and_aliases():
     raw = [
         RawOddsData(

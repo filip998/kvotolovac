@@ -809,6 +809,10 @@ def test_split_diagnostic_classification_fixture_uses_review_vocabulary():
     assert {
         "oakleigh_dandenong_conflict",
         "franklin_nelson_alias",
+        "vechta_rostock_alias",
+        "bonn_trier_alias",
+        "mikawa_ryukyu_alias",
+        "cluj_buducnost_alias",
         "aue_duisburg_alias",
         "dortmund_frankfurt_overmerge",
         "cividale_rieti_overmerge",
