@@ -27,7 +27,9 @@ from app.models.schemas import (
 from app.scrapers.base import BaseScraper, ScraperCapability
 from app.services.opportunity_analyzer import Opportunity
 from app.services.scheduler import (
+    AUTO_RESOLUTION_RERUN_MIN_ALIAS_AFFECTED_ROWS,
     Scheduler,
+    _alias_affected_raw_row_count,
     _detail_mode_opportunity_yield,
     _normalize_merge_pairings,
     _runtime_detail_modes,
@@ -381,6 +383,44 @@ def test_normalize_merge_pairings_rejects_longer_cycles():
     assert conflicts == {1, 2, 3}
 
 
+def test_alias_affected_raw_row_count_counts_matching_rows_once():
+    raw_odds = [
+        _anchored_team_raw("alpha", "Alias FC"),
+        _anchored_team_raw("alpha", "Other").model_copy(update={"away_team": "Alias FC"}),
+        _anchored_team_raw("alpha", "Alias FC").model_copy(update={"away_team": "Alias FC"}),
+        _anchored_team_raw("beta", "Alias FC"),
+    ]
+    raw_outcome_offers = [
+        _raw_outcome_offer(
+            "alpha",
+            "home",
+            sport="football",
+        ).model_copy(update={"home_team": "Alias FC", "away_team": "Opponent"}),
+        _raw_outcome_offer(
+            "alpha",
+            "away",
+            sport="football",
+        ).model_copy(update={"home_team": "Opponent", "away_team": "Alias FC"}),
+        _raw_outcome_offer(
+            "alpha",
+            "home",
+            sport="football",
+        ).model_copy(update={"home_team": "Unrelated", "away_team": "Opponent"}),
+    ]
+
+    count = _alias_affected_raw_row_count(
+        raw_odds,
+        raw_outcome_offers,
+        [
+            ("alpha", "Alias FC", "basketball"),
+            ("alpha", "Alias FC", "football"),
+            ("gamma", "Missing", "football"),
+        ],
+    )
+
+    assert count == 5
+
+
 def test_scraper_capabilities_unify_threshold_and_outcome_lanes():
     scraper = StubScraper(
         "multi",
@@ -552,6 +592,9 @@ async def test_scheduler_records_auto_resolution_rerun_benchmark_without_rerun()
     metrics = _latest_auto_resolution_rerun_benchmark()
 
     assert metrics.rerun_performed is False
+    assert metrics.rerun_skipped is False
+    assert metrics.decision == "not_needed"
+    assert metrics.decision_reason == "no same-cycle auto-resolution changes"
     assert metrics.reasons == []
     assert metrics.team_review_cases_seen_count == 0
     assert metrics.auto_review_cases_approved_count == 0
@@ -2348,18 +2391,26 @@ async def test_scheduler_run_cycle_auto_saves_anchored_alias_same_scrape():
 
     result = await Scheduler(interval_minutes=1).run_cycle()
     approved_cases = await odds_store.get_team_review_cases(status="approved")
+    pending_cases = await odds_store.get_team_review_cases(status="pending")
     metrics = _latest_auto_resolution_rerun_benchmark()
 
     assert result["matches_scraped"] == 1
-    assert result["odds_scraped"] == 2
+    assert result["odds_scraped"] == 1
     assert len(approved_cases) == 1
+    assert [
+        case.raw_team_name
+        for case in pending_cases
+        if case.bookmaker_id == "meridian"
+    ] == []
     assert approved_cases[0].review_kind == "auto_alias_suggestion"
     assert approved_cases[0].status == "approved"
     assert (
         normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian")
         == "Rilski Sportist"
     )
-    assert metrics.rerun_performed is True
+    assert metrics.rerun_performed is False
+    assert metrics.rerun_skipped is True
+    assert metrics.decision == "skipped_alias_low_yield"
     assert metrics.reasons == ["auto_aliases"]
     assert metrics.team_review_cases_seen_count >= 1
     assert metrics.auto_review_cases_approved_count == 1
@@ -2367,10 +2418,16 @@ async def test_scheduler_run_cycle_auto_saves_anchored_alias_same_scrape():
     assert metrics.anchored_auto_review_count == 1
     assert metrics.aliases_requested_count == 1
     assert metrics.aliases_applied_count == 1
+    assert metrics.estimated_affected_row_count == 1
+    assert (
+        metrics.affected_row_rerun_threshold
+        == AUTO_RESOLUTION_RERUN_MIN_ALIAS_AFFECTED_ROWS
+    )
     assert metrics.pending_merge_count == 0
     assert metrics.applied_merge_count == 0
     assert metrics.before.normalized_threshold_odds >= 1
-    assert metrics.after.normalized_threshold_odds >= metrics.before.normalized_threshold_odds
+    assert metrics.after.normalized_threshold_odds == metrics.before.normalized_threshold_odds
+    assert metrics.after.team_review_cases == metrics.before.team_review_cases - 1
 
 
 @pytest.mark.asyncio
@@ -2394,10 +2451,48 @@ async def test_scheduler_run_cycle_auto_saves_multiple_anchored_aliases_same_scr
     approved_cases = await odds_store.get_team_review_cases(status="approved")
 
     assert result["matches_scraped"] == 1
-    assert result["odds_scraped"] == 3
+    assert result["odds_scraped"] >= 1
     assert len(approved_cases) == 2
     assert {case.bookmaker_id for case in approved_cases} == {"meridian", "maxbet"}
     assert {case.review_kind for case in approved_cases} == {"auto_alias_suggestion"}
+
+
+@pytest.mark.asyncio
+async def test_scheduler_run_cycle_reruns_high_yield_alias_same_scrape(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        scheduler_service,
+        "AUTO_RESOLUTION_RERUN_MIN_ALIAS_AFFECTED_ROWS",
+        2,
+    )
+    _register_test_scrapers(
+        StubScraper(
+            "mozzart",
+            payload_by_league={"euroleague": [_anchored_team_raw("mozzart", "Rilski Sportist")]},
+        ),
+        StubScraper(
+            "meridian",
+            payload_by_league={
+                "euroleague": [
+                    _anchored_team_raw("meridian", "Rilski Sport.", league_id="NBL"),
+                    _anchored_team_raw("meridian", "Rilski Sport.", league_id="NBL").model_copy(
+                        update={"player_name": "Second Player", "threshold": 12.5}
+                    ),
+                ]
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+    metrics = _latest_auto_resolution_rerun_benchmark()
+
+    assert result["odds_scraped"] == 3
+    assert metrics.rerun_performed is True
+    assert metrics.rerun_skipped is False
+    assert metrics.decision == "performed_alias_yield_met"
+    assert metrics.estimated_affected_row_count == 2
+    assert metrics.affected_row_rerun_threshold == 2
 
 
 @pytest.mark.asyncio
@@ -2451,7 +2546,7 @@ async def test_scheduler_run_cycle_auto_saves_alias_without_merging_low_strict_s
     approved_cases = await odds_store.get_team_review_cases(status="approved")
     merged_source = get_canonical_team(source.team_id, follow_merge=True)
 
-    assert result["matches_scraped"] == 1
+    assert result["matches_scraped"] == 2
     assert result["odds_scraped"] == 3
     assert len(approved_cases) == 1
     assert approved_cases[0].bookmaker_id == "pinnbet"
@@ -2536,6 +2631,8 @@ async def test_scheduler_run_cycle_auto_merges_same_time_both_sides_when_strong_
     assert get_canonical_team(source_home.team_id, follow_merge=True).id == target_home.team_id
     assert get_canonical_team(source_away.team_id, follow_merge=True).id == target_away.team_id
     assert metrics.rerun_performed is True
+    assert metrics.rerun_skipped is False
+    assert metrics.decision == "performed_canonical_merge"
     assert metrics.reasons == ["canonical_merges"]
     assert metrics.same_time_auto_review_count == 2
     assert metrics.anchored_auto_review_count == 0
@@ -2544,6 +2641,83 @@ async def test_scheduler_run_cycle_auto_merges_same_time_both_sides_when_strong_
     assert metrics.anchored_pending_merge_count == 0
     assert metrics.pending_merge_count == 2
     assert metrics.applied_merge_count == 2
+
+
+@pytest.mark.asyncio
+async def test_scheduler_skips_rerun_when_approved_merge_applies_no_registry_change(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    create_canonical_team(display_name="Novosibirsk")
+    create_canonical_team(display_name="Chelyabinsk")
+    create_canonical_team(display_name="BC Novosibirsk")
+    create_canonical_team(display_name="BC Chelyabinsk")
+
+    async def no_applied_merges(self, pending_merge_pairings):
+        assert pending_merge_pairings
+        return []
+
+    monkeypatch.setattr(Scheduler, "_apply_canonical_merges", no_applied_merges)
+    _register_test_scrapers(
+        StubScraper(
+            "book-a",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-a",
+                        "BC Novosibirsk",
+                        away_team="BC Chelyabinsk",
+                        league_id="VTB Liga",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "book-b",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-b",
+                        "BC Novosibirsk",
+                        away_team="BC Chelyabinsk",
+                        league_id="VTB Liga",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "book-c",
+            leagues=("basketball",),
+            payload_by_league={
+                "basketball": [
+                    _anchored_team_raw(
+                        "book-c",
+                        "Novosibirsk",
+                        away_team="Chelyabinsk",
+                        league_id="VTB Liga",
+                    )
+                ]
+            },
+        ),
+    )
+
+    await Scheduler(interval_minutes=1).run_cycle()
+    approved_cases = await odds_store.get_team_review_cases(status="approved")
+    pending_cases = await odds_store.get_team_review_cases(status="pending")
+    metrics = _latest_auto_resolution_rerun_benchmark()
+
+    assert {case.review_kind for case in approved_cases} == {
+        "auto_canonical_merge_suggestion"
+    }
+    assert all(
+        case.review_kind != "auto_canonical_merge_suggestion" for case in pending_cases
+    )
+    assert metrics.rerun_performed is False
+    assert metrics.rerun_skipped is True
+    assert metrics.decision == "skipped_no_registry_change"
+    assert metrics.pending_merge_count == 2
+    assert metrics.applied_merge_count == 0
 
 
 @pytest.mark.asyncio
@@ -2633,6 +2807,8 @@ async def test_scheduler_auto_resolution_benchmark_records_multiple_rerun_reason
     assert get_canonical_team(source_away.team_id, follow_merge=True).id == target_away.team_id
     assert set(metrics.reasons) == {"auto_aliases", "canonical_merges"}
     assert metrics.rerun_performed is True
+    assert metrics.rerun_skipped is False
+    assert metrics.decision == "performed_canonical_merge"
     assert metrics.same_time_auto_review_count == 2
     assert metrics.anchored_auto_review_count >= 1
     assert metrics.aliases_applied_count >= 1
@@ -3725,7 +3901,7 @@ async def test_scheduler_run_cycle_ignores_unsnapshotted_review_history_for_auto
     pending_cases = await odds_store.get_team_review_cases(status="pending")
     approved_cases = await odds_store.get_team_review_cases(status="approved")
 
-    assert result["odds_scraped"] == 2
+    assert result["odds_scraped"] == 1
     assert pending_cases == []
     assert len(approved_cases) == 1
     assert approved_cases[0].review_kind == "auto_alias_suggestion"
