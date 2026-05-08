@@ -34,6 +34,7 @@ from ..models.schemas import (
     HttpTimingBenchmarkOut,
     OpportunityAnalysisBenchmarkOut,
     OutcomeNormalizationBenchmarkOut,
+    PersistenceBenchmarkOut,
     ScrapeRuntimeSettings,
     ScraperBenchmarkOut,
     ScraperRequestBenchmarkOut,
@@ -413,6 +414,7 @@ class CycleBenchmarkRecorder:
         self._outcome_normalization = OutcomeNormalizationBenchmarkOut()
         self._event_resolver = EventResolverBenchmarkOut()
         self._auto_resolution_rerun = AutoResolutionRerunBenchmarkOut()
+        self._persistence = PersistenceBenchmarkOut()
         self._opportunity_analysis = OpportunityAnalysisBenchmarkOut()
         self._event_split_diagnostics = BenchmarkSplitDiagnosticsOut()
 
@@ -488,6 +490,10 @@ class CycleBenchmarkRecorder:
     ) -> None:
         with self._lock:
             self._auto_resolution_rerun = metrics
+
+    def record_persistence(self, metrics: PersistenceBenchmarkOut) -> None:
+        with self._lock:
+            self._persistence = metrics
 
     def record_opportunity_analysis(
         self, metrics: OpportunityAnalysisBenchmarkOut
@@ -721,6 +727,7 @@ class CycleBenchmarkRecorder:
                 outcome_normalization=self._outcome_normalization,
                 event_resolver=self._event_resolver,
                 auto_resolution_rerun=self._auto_resolution_rerun,
+                persistence=self._persistence,
                 opportunity_analysis=self._opportunity_analysis,
                 event_coverage=sorted(
                     coverage_rows,

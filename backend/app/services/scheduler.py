@@ -17,6 +17,7 @@ from ..models.schemas import (
     NormalizedOutcomeOffer,
     OpportunityAnalysisBenchmarkOut,
     OpportunityDetailModeYieldOut,
+    PersistenceBenchmarkOut,
     RawOddsData,
     RawOutcomeOffer,
     ScrapeRuntimeSettings,
@@ -1980,6 +1981,9 @@ class Scheduler:
                         "auto_approved_team_review_case_ids"
                     ]
                 )
+                persistence_benchmark = persisted_snapshot.get("benchmark")
+                if isinstance(persistence_benchmark, PersistenceBenchmarkOut):
+                    benchmark_recorder.record_persistence(persistence_benchmark)
                 benchmark_recorder.record_phase_duration(
                     "persist_snapshot",
                     int((time.perf_counter() - persist_snapshot_started_at) * 1000),
