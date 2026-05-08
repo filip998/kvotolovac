@@ -179,9 +179,24 @@ def _merge_outcome_metrics(
         normalized_outcome_offer_count=update.normalized_outcome_offer_count,
         unresolved_outcome_offer_count=update.unresolved_outcome_offer_count,
         football_unique_event_count=update.football_unique_event_count,
+        football_event_pair_candidate_count=(
+            update.football_event_pair_candidate_count
+        ),
+        football_event_fuzzy_score_count=update.football_event_fuzzy_score_count,
         auto_created_football_team_count=(
             current.auto_created_football_team_count
             + update.auto_created_football_team_count
+        ),
+        football_team_review_case_count=update.football_team_review_case_count,
+        football_team_review_alias_miss_count=(
+            update.football_team_review_alias_miss_count
+        ),
+        football_team_review_unknown_count=update.football_team_review_unknown_count,
+        football_team_review_same_slot_alias_miss_count=(
+            update.football_team_review_same_slot_alias_miss_count
+        ),
+        football_team_review_global_alias_miss_count=(
+            update.football_team_review_global_alias_miss_count
         ),
         auto_create_football_teams_ms=(
             current.auto_create_football_teams_ms

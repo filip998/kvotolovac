@@ -1345,6 +1345,14 @@ def normalize_outcome_offers_with_context(
             )
         )
 
+    football_team_review_cases = [
+        case for case in team_review_cases if case.sport == "football"
+    ]
+    football_team_review_alias_misses = [
+        case
+        for case in football_team_review_cases
+        if case.suggested_team_id is not None and case.confidence != "low"
+    ]
     benchmark = OutcomeNormalizationBenchmarkOut(
         runs=1,
         raw_outcome_offer_count=len(raw_list),
@@ -1360,6 +1368,22 @@ def normalize_outcome_offers_with_context(
             football_resolution_stats.football_event_fuzzy_score_count
         ),
         auto_created_football_team_count=auto_created_team_count,
+        football_team_review_case_count=len(football_team_review_cases),
+        football_team_review_alias_miss_count=len(football_team_review_alias_misses),
+        football_team_review_unknown_count=(
+            len(football_team_review_cases)
+            - len(football_team_review_alias_misses)
+        ),
+        football_team_review_same_slot_alias_miss_count=sum(
+            1
+            for case in football_team_review_alias_misses
+            if case.reason_code == "candidate_team_match_same_start_time"
+        ),
+        football_team_review_global_alias_miss_count=sum(
+            1
+            for case in football_team_review_alias_misses
+            if case.reason_code == "candidate_team_search"
+        ),
         auto_create_football_teams_ms=auto_create_football_teams_ms,
         football_event_resolution_ms=football_event_resolution_ms,
         football_event_pair_ranking_ms=(

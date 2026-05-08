@@ -750,6 +750,11 @@ class OutcomeNormalizationBenchmarkOut(BaseModel):
     football_event_pair_candidate_count: int = 0
     football_event_fuzzy_score_count: int = 0
     auto_created_football_team_count: int = 0
+    football_team_review_case_count: int = 0
+    football_team_review_alias_miss_count: int = 0
+    football_team_review_unknown_count: int = 0
+    football_team_review_same_slot_alias_miss_count: int = 0
+    football_team_review_global_alias_miss_count: int = 0
     auto_create_football_teams_ms: int = 0
     football_event_resolution_ms: int = 0
     football_event_pair_ranking_ms: int = 0

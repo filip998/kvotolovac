@@ -52,6 +52,7 @@ from ..services.event_resolver import (
 )
 from ..services.outcome_normalizer import (
     FootballEventResolutionMap,
+    _same_team_context,
     normalize_outcome_offers_with_context,
 )
 from ..services.notifications import (
@@ -74,6 +75,7 @@ from ..services.team_registry import (
     CircularAliasError,
     forget_team_alias,
     get_canonical_team,
+    list_canonical_teams,
     merge_canonical_teams,
     remember_team_alias,
     unmerge_canonical_team,
@@ -87,6 +89,25 @@ logger = logging.getLogger(__name__)
 AUTO_ALIAS_REVIEW_KIND = "auto_alias_suggestion"
 AUTO_CANONICAL_MERGE_REVIEW_KIND = "auto_canonical_merge_suggestion"
 SAME_TIME_MIN_TARGET_SUPPORT = 2
+FOOTBALL_FORMAT_ALIAS_AFFIX_TOKENS = frozenset(
+    {
+        "afc",
+        "bk",
+        "cd",
+        "cf",
+        "cr",
+        "ec",
+        "fc",
+        "fk",
+        "if",
+        "nk",
+        "pfc",
+        "sc",
+        "sfc",
+        "sk",
+    }
+)
+FOOTBALL_FORMAT_ALIAS_PAGE_SIZE = 1000
 
 
 @dataclass(frozen=True)
@@ -134,6 +155,73 @@ def _is_auto_alias_candidate(case) -> bool:
         and case.similarity_score is not None
         and case.similarity_score >= ANCHORED_AUTO_APPLY_THRESHOLD
     )
+
+
+def _football_format_alias_key(team_name: str | None) -> tuple[str, ...]:
+    return tuple(
+        token
+        for token in normalize_identity_text(team_name).split()
+        if token not in FOOTBALL_FORMAT_ALIAS_AFFIX_TOKENS
+    )
+
+
+def _unique_football_format_alias_team_id(
+    format_key: tuple[str, ...],
+    *,
+    sport: str,
+) -> int | None:
+    if not format_key:
+        return None
+
+    matching_team_ids: set[int] = set()
+    offset = 0
+    while True:
+        teams = list_canonical_teams(
+            sport=sport,
+            limit=FOOTBALL_FORMAT_ALIAS_PAGE_SIZE,
+            offset=offset,
+        )
+        if not teams:
+            break
+        for team in teams:
+            if _football_format_alias_key(team.display_name) == format_key:
+                matching_team_ids.add(team.id)
+            for alias in team.aliases:
+                if _football_format_alias_key(alias) == format_key:
+                    matching_team_ids.add(team.id)
+        if len(teams) < FOOTBALL_FORMAT_ALIAS_PAGE_SIZE:
+            break
+        offset += FOOTBALL_FORMAT_ALIAS_PAGE_SIZE
+    if len(matching_team_ids) != 1:
+        return None
+    return next(iter(matching_team_ids))
+
+
+def _is_auto_football_format_alias_candidate(case) -> bool:
+    if (
+        case.sport != "football"
+        or case.review_kind not in {"alias_suggestion", "candidate_search"}
+        or case.suggested_team_id is None
+        or case.suggested_team_name is None
+        or case.similarity_score != 100
+        or not _same_team_context(
+            case.raw_team_name,
+            case.suggested_team_name,
+            sport=case.sport,
+        )
+    ):
+        return False
+
+    raw_format_key = _football_format_alias_key(case.raw_team_name)
+    suggested_format_key = _football_format_alias_key(case.suggested_team_name)
+    if raw_format_key != suggested_format_key:
+        return False
+
+    unique_team_id = _unique_football_format_alias_team_id(
+        raw_format_key,
+        sport=case.sport,
+    )
+    return unique_team_id == case.suggested_team_id
 
 
 def _enabled_scraper_capabilities(
@@ -765,8 +853,15 @@ class Scheduler:
         try:
             for case in team_review_cases:
                 is_auto_alias_candidate = _is_auto_alias_candidate(case)
+                is_format_alias_candidate = (
+                    _is_auto_football_format_alias_candidate(case)
+                )
                 contextual_merge_source_ids = _contextual_merge_source_ids(case)
-                if not is_auto_alias_candidate and not contextual_merge_source_ids:
+                if (
+                    not is_auto_alias_candidate
+                    and not is_format_alias_candidate
+                    and not contextual_merge_source_ids
+                ):
                     continue
 
                 _, has_declined = await odds_store.get_team_review_case_history_summary(
@@ -781,6 +876,7 @@ class Scheduler:
                     continue
                 if (
                     is_auto_alias_candidate
+                    and not is_format_alias_candidate
                     and case.suggested_team_name is not None
                     and _is_unsafe_compound_subset_match(
                         case.raw_team_name,
@@ -789,7 +885,7 @@ class Scheduler:
                 ):
                     continue
 
-                if not is_auto_alias_candidate:
+                if not is_auto_alias_candidate and not is_format_alias_candidate:
                     evidence = list(case.evidence)
                     evidence.append(
                         "Auto-approved canonical merge from exact event context "
@@ -879,10 +975,17 @@ class Scheduler:
 
                 applied_aliases.extend(case_applied_aliases)
                 evidence = list(case.evidence)
-                evidence.append(
-                    "Auto-approved in the same scrape after anchored fuzzy match "
-                    f"(score {case.similarity_score:g}, threshold {ANCHORED_AUTO_APPLY_THRESHOLD})"
-                )
+                if is_format_alias_candidate and not is_auto_alias_candidate:
+                    evidence.append(
+                        "Auto-approved format-only football alias without event-slot "
+                        "anchoring after exact stripped-affix match "
+                        f"(score {case.similarity_score:g})"
+                    )
+                else:
+                    evidence.append(
+                        "Auto-approved in the same scrape after anchored fuzzy match "
+                        f"(score {case.similarity_score:g}, threshold {ANCHORED_AUTO_APPLY_THRESHOLD})"
+                    )
                 merge_source_ids = _candidate_merge_source_ids(case) | contextual_merge_source_ids
                 if merge_source_ids:
                     evidence.append(

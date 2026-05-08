@@ -4,6 +4,7 @@ import asyncio
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -2572,6 +2573,206 @@ async def test_auto_apply_anchored_aliases_skips_declined_history(
     assert applied_aliases == []
     assert pending_merge_pairings == []
     assert normalize_team_name("Rilski Sport.", "bulgaria_nbl", "meridian") == "Rilski Sport."
+
+
+@pytest.mark.asyncio
+async def test_auto_apply_anchored_aliases_saves_football_format_alias():
+    target = create_canonical_team(display_name="Municipal Limeno", sport="football")
+    scheduler = Scheduler(interval_minutes=1)
+    cases = [
+        TeamReviewDiagnostic(
+            bookmaker_id="admiralbet",
+            raw_league_id="El Salvador",
+            normalized_raw_league_id="el salvador",
+            sport="football",
+            raw_team_name="CD Municipal Limeno",
+            normalized_raw_team_name="CD Municipal Limeno",
+            suggested_team_id=target.team_id,
+            suggested_team_name=target.team_name,
+            start_time="2030-01-01T20:00:00+00:00",
+            review_kind="candidate_search",
+            reason_code="candidate_team_search",
+            confidence="medium",
+            similarity_score=100,
+        )
+    ]
+
+    approved_cases, applied_aliases, pending_merge_pairings = (
+        await scheduler._auto_apply_anchored_aliases(cases)
+    )
+
+    alias = resolve_team_alias(
+        "CD Municipal Limeno",
+        bookmaker_id="admiralbet",
+        sport="football",
+    )
+    assert alias is not None
+    assert alias.team_id == target.team_id
+    assert applied_aliases == [("admiralbet", "CD Municipal Limeno", "football")]
+    assert pending_merge_pairings == []
+    assert approved_cases[0].review_kind == "auto_alias_suggestion"
+    assert any("format-only football alias" in item for item in approved_cases[0].evidence)
+
+
+@pytest.mark.asyncio
+async def test_auto_apply_anchored_aliases_rejects_football_format_alias_collision():
+    target = create_canonical_team(display_name="Municipal Limeno", sport="football")
+    create_canonical_team(display_name="CD Municipal Limeno", sport="football")
+    scheduler = Scheduler(interval_minutes=1)
+    cases = [
+        TeamReviewDiagnostic(
+            bookmaker_id="admiralbet",
+            raw_league_id="El Salvador",
+            normalized_raw_league_id="el salvador",
+            sport="football",
+            raw_team_name="CD Municipal Limeno",
+            normalized_raw_team_name="CD Municipal Limeno",
+            suggested_team_id=target.team_id,
+            suggested_team_name=target.team_name,
+            start_time="2030-01-01T20:00:00+00:00",
+            review_kind="candidate_search",
+            reason_code="candidate_team_search",
+            confidence="medium",
+            similarity_score=100,
+        )
+    ]
+
+    approved_cases, applied_aliases, pending_merge_pairings = (
+        await scheduler._auto_apply_anchored_aliases(cases)
+    )
+
+    assert approved_cases == []
+    assert applied_aliases == []
+    assert pending_merge_pairings == []
+    existing_resolution = resolve_team_alias(
+        "CD Municipal Limeno",
+        bookmaker_id="admiralbet",
+        sport="football",
+    )
+    assert existing_resolution is not None
+    assert existing_resolution.source == "canonical"
+
+
+def test_football_format_alias_uniqueness_scans_all_pages(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(scheduler_service, "FOOTBALL_FORMAT_ALIAS_PAGE_SIZE", 1)
+
+    def paged_canonical_teams(*, sport: str, limit: int, offset: int, **kwargs):
+        assert sport == "football"
+        assert limit == 1
+        pages = {
+            0: [
+                SimpleNamespace(
+                    id=1,
+                    display_name="Municipal Limeno",
+                    aliases=(),
+                )
+            ],
+            1: [
+                SimpleNamespace(
+                    id=2,
+                    display_name="CD Municipal Limeno",
+                    aliases=(),
+                )
+            ],
+        }
+        return pages.get(offset, [])
+
+    monkeypatch.setattr(
+        scheduler_service,
+        "list_canonical_teams",
+        paged_canonical_teams,
+    )
+
+    assert (
+        scheduler_service._unique_football_format_alias_team_id(
+            ("municipal", "limeno"),
+            sport="football",
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_apply_anchored_aliases_rejects_football_gender_mismatch():
+    target = create_canonical_team(display_name="Club America W", sport="football")
+    scheduler = Scheduler(interval_minutes=1)
+    cases = [
+        TeamReviewDiagnostic(
+            bookmaker_id="balkanbet",
+            raw_league_id="Mexico",
+            normalized_raw_league_id="mexico",
+            sport="football",
+            raw_team_name="Club America",
+            normalized_raw_team_name="Club America",
+            suggested_team_id=target.team_id,
+            suggested_team_name=target.team_name,
+            start_time="2030-01-01T20:00:00+00:00",
+            review_kind="candidate_search",
+            reason_code="candidate_team_search",
+            confidence="medium",
+            similarity_score=100,
+        )
+    ]
+
+    approved_cases, applied_aliases, pending_merge_pairings = (
+        await scheduler._auto_apply_anchored_aliases(cases)
+    )
+
+    assert approved_cases == []
+    assert applied_aliases == []
+    assert pending_merge_pairings == []
+    assert (
+        resolve_team_alias(
+            "Club America",
+            bookmaker_id="balkanbet",
+            sport="football",
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_apply_anchored_aliases_rejects_non_format_subset_alias():
+    target = create_canonical_team(
+        display_name="Chayka Peschanokopskoye",
+        sport="football",
+    )
+    scheduler = Scheduler(interval_minutes=1)
+    cases = [
+        TeamReviewDiagnostic(
+            bookmaker_id="365",
+            raw_league_id="Russia",
+            normalized_raw_league_id="russia",
+            sport="football",
+            raw_team_name="Chayka",
+            normalized_raw_team_name="Chayka",
+            suggested_team_id=target.team_id,
+            suggested_team_name=target.team_name,
+            start_time="2030-01-01T20:00:00+00:00",
+            review_kind="candidate_search",
+            reason_code="candidate_team_search",
+            confidence="medium",
+            similarity_score=100,
+        )
+    ]
+
+    approved_cases, applied_aliases, pending_merge_pairings = (
+        await scheduler._auto_apply_anchored_aliases(cases)
+    )
+
+    assert approved_cases == []
+    assert applied_aliases == []
+    assert pending_merge_pairings == []
+    assert (
+        resolve_team_alias(
+            "Chayka",
+            bookmaker_id="365",
+            sport="football",
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio

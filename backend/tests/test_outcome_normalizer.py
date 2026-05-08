@@ -267,6 +267,36 @@ def test_football_unresolved_team_dedupes_across_outcome_markets(team_registry_f
     ] == [("Unknown Home", "unresolved_home_team")]
 
 
+def test_outcome_benchmark_distinguishes_football_alias_misses_from_unknowns(
+    team_registry_file,
+):
+    create_canonical_team(display_name="Municipal Limeno", sport="football")
+    raw = [
+        _offer(
+            "admiralbet",
+            "CD Municipal Limeno",
+            "Completely New Opponent",
+            market_type="football_result",
+            outcome_code="home",
+        )
+    ]
+
+    _normalized, unresolved, review_cases, benchmark = (
+        normalize_outcome_offers_with_benchmark(raw)
+    )
+
+    assert len(unresolved) == 2
+    assert {case.raw_team_name for case in review_cases} == {
+        "CD Municipal Limeno",
+        "Completely New Opponent",
+    }
+    assert benchmark.football_team_review_case_count == 2
+    assert benchmark.football_team_review_alias_miss_count == 1
+    assert benchmark.football_team_review_unknown_count == 1
+    assert benchmark.football_team_review_global_alias_miss_count == 1
+    assert benchmark.football_team_review_same_slot_alias_miss_count == 0
+
+
 def test_reversed_football_event_swaps_orientation_sensitive_outcomes(team_registry_file):
     home = create_canonical_team(display_name="Team Alpha", sport="football")
     away = create_canonical_team(display_name="Team Beta", sport="football")
