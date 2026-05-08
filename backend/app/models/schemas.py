@@ -775,6 +775,8 @@ class OutcomeNormalizationRunBenchmarkOut(BaseModel):
     football_unique_event_count: int = 0
     football_event_pair_candidate_count: int = 0
     football_event_fuzzy_score_count: int = 0
+    football_event_canonical_conflict_skip_count: int = 0
+    football_event_canonical_conflict_fuzzy_score_avoided_count: int = 0
     football_team_review_case_count: int = 0
     auto_create_football_teams_ms: int = 0
     football_event_resolution_ms: int = 0
@@ -820,6 +822,8 @@ class OutcomeNormalizationBenchmarkOut(BaseModel):
     football_unique_event_count: int = 0
     football_event_pair_candidate_count: int = 0
     football_event_fuzzy_score_count: int = 0
+    football_event_canonical_conflict_skip_count: int = 0
+    football_event_canonical_conflict_fuzzy_score_avoided_count: int = 0
     auto_created_football_team_count: int = 0
     football_team_review_case_count: int = 0
     football_team_review_alias_miss_count: int = 0
