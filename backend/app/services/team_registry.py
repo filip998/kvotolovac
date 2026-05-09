@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, process
 
 from ..config import settings
 from .team_seed_data import SPORT_ALIAS_SEEDS
@@ -519,6 +519,7 @@ def clear_team_registry_cache(*, reset_bootstrap: bool = True) -> None:
         _schema_db_path = None
     _find_resolution_by_exact_alias_cached.cache_clear()
     _load_team_search_rows.cache_clear()
+    _load_team_review_search_choices.cache_clear()
     _load_canonical_team_list_rows.cache_clear()
 
 
@@ -808,6 +809,51 @@ def _load_canonical_team_list_rows(
     )
 
 
+@lru_cache(maxsize=16)
+def _load_team_review_search_choices(
+    db_path: str,
+    sport: str,
+) -> tuple[tuple[int, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Flatten the canonical-team rows into parallel arrays optimised for
+    ``rapidfuzz.process.extract``.
+
+    Built on top of :func:`_load_team_search_rows`, so row order matches it
+    exactly: for each team, the canonical ``team_name`` row comes first, then
+    aliases in the existing sorted order. Preserving that order is what makes
+    "team_name wins same-team ties" hold for callers that aggregate per
+    ``team_id`` in original-flat-index order.
+
+    Returns four parallel tuples of equal length:
+
+    - ``team_ids[i]``           — owning team for row ``i``
+    - ``team_names[i]``         — canonical display name of that team (same value
+      repeats across all of that team's rows)
+    - ``candidate_values[i]``   — the original string for this row (team_name or
+      alias)
+    - ``normalized_choices[i]`` — ``normalize_identity_text(candidate_values[i])``
+      pre-computed once so ``process.extract`` sees pre-normalised input
+
+    Cache invalidation is wired into :func:`clear_team_registry_cache`.
+    """
+    del db_path
+    team_ids: list[int] = []
+    team_names: list[str] = []
+    candidate_values: list[str] = []
+    normalized_choices: list[str] = []
+    for team_id, team_name, aliases in _load_team_search_rows(settings.db_path, sport):
+        for candidate_value in (team_name, *aliases):
+            team_ids.append(team_id)
+            team_names.append(team_name)
+            candidate_values.append(candidate_value)
+            normalized_choices.append(normalize_identity_text(candidate_value))
+    return (
+        tuple(team_ids),
+        tuple(team_names),
+        tuple(candidate_values),
+        tuple(normalized_choices),
+    )
+
+
 def search_canonical_team_candidates(
     raw_team_name: str,
     *,
@@ -819,38 +865,70 @@ def search_canonical_team_candidates(
     if not raw_key:
         return []
 
-    candidates: list[CanonicalTeamCandidate] = []
-    for team_id, team_name, aliases in _load_team_search_rows(settings.db_path, sport):
-        best_score = 0.0
-        best_alias: str | None = None
-        for candidate_value in (team_name, *aliases):
-            candidate_key = normalize_identity_text(candidate_value)
-            if not candidate_key or candidate_key == raw_key:
-                continue
-            score = float(
-                max(
-                    fuzz.token_set_ratio(raw_key, candidate_key),
-                    fuzz.partial_ratio(raw_key, candidate_key),
-                )
-            )
-            if score > best_score:
-                best_score = score
-                best_alias = candidate_value
-        if best_score <= 0:
+    team_ids, team_names, candidate_values, normalized_choices = (
+        _load_team_review_search_choices(settings.db_path, sport)
+    )
+    if not team_ids:
+        return []
+
+    row_count = len(normalized_choices)
+    score_a = [0.0] * row_count
+    score_b = [0.0] * row_count
+    for _choice, score, idx in process.extract(
+        raw_key,
+        normalized_choices,
+        scorer=fuzz.token_set_ratio,
+        limit=row_count,
+        score_cutoff=0.0,
+    ):
+        score_a[idx] = float(score)
+    for _choice, score, idx in process.extract(
+        raw_key,
+        normalized_choices,
+        scorer=fuzz.partial_ratio,
+        limit=row_count,
+        score_cutoff=0.0,
+    ):
+        score_b[idx] = float(score)
+
+    best_by_team: dict[int, tuple[float, int]] = {}
+    for idx in range(row_count):
+        normalized = normalized_choices[idx]
+        if not normalized or normalized == raw_key:
             continue
-        candidates.append(
-            CanonicalTeamCandidate(
-                team_id=team_id,
-                team_name=team_name,
-                score=best_score,
-                matched_alias=best_alias if best_alias != team_name else None,
+        score = score_a[idx]
+        if score_b[idx] > score:
+            score = score_b[idx]
+        if score <= 0.0:
+            continue
+        team_id = team_ids[idx]
+        current = best_by_team.get(team_id)
+        if current is None or score > current[0]:
+            best_by_team[team_id] = (score, idx)
+
+    ranked: list[tuple[float, str, int, float, str | None]] = []
+    for team_id, (best_score, best_idx) in best_by_team.items():
+        canonical_name = team_names[best_idx]
+        best_value = candidate_values[best_idx]
+        ranked.append(
+            (
+                -best_score,
+                canonical_name,
+                team_id,
+                best_score,
+                best_value if best_value != canonical_name else None,
             )
         )
-
-    return sorted(
-        candidates,
-        key=lambda item: (-item.score, item.team_name),
-    )[:limit]
+    ranked.sort()
+    return [
+        CanonicalTeamCandidate(
+            team_id=team_id,
+            team_name=canonical_name,
+            score=best_score,
+            matched_alias=matched_alias,
+        )
+        for (_neg, canonical_name, team_id, best_score, matched_alias) in ranked[:limit]
+    ]
 
 
 def get_canonical_team(

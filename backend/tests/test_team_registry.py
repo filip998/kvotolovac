@@ -282,3 +282,279 @@ def test_create_canonical_teams_batch_returns_existing_active_team(team_registry
     assert resolutions[0].source == "canonical"
     assert resolutions[1].team_name == "Fresh Batch FC"
     assert resolutions[1].source == "batch_create"
+
+
+# ---------------------------------------------------------------------------
+# search_canonical_team_candidates — batched RapidFuzz scoring (issue #125)
+#
+# These tests pin the public contract of `search_canonical_team_candidates`
+# after switching the inner scoring loop to `rapidfuzz.process.extract`.
+# Use sport="football" because basketball is auto-seeded via SPORT_ALIAS_SEEDS
+# and would not be a clean fixture for "empty corpus" / single-team setups.
+
+
+def _reference_search_canonical_team_candidates(
+    raw_team_name: str,
+    *,
+    sport: str,
+    limit: int,
+):
+    """Verbatim copy of the pre-#125 algorithm, used as the equivalence oracle.
+
+    Reads from the same `_load_team_search_rows` cache and uses the same
+    rapidfuzz scorers — so any RapidFuzz/version drift moves both
+    implementations identically. The only thing this test guards is the
+    rewrite, not the underlying library.
+    """
+    from rapidfuzz import fuzz as _fuzz
+
+    from app.config import settings as _settings
+    from app.services.team_registry import (
+        CanonicalTeamCandidate as _CanonicalTeamCandidate,
+        _ensure_bootstrapped as _ensure_bootstrapped_fn,
+        _load_team_search_rows as _load_rows,
+    )
+
+    _ensure_bootstrapped_fn()
+    raw_key = normalize_identity_text(raw_team_name)
+    if not raw_key:
+        return []
+
+    candidates: list[_CanonicalTeamCandidate] = []
+    for team_id, team_name, aliases in _load_rows(_settings.db_path, sport):
+        best_score = 0.0
+        best_alias = None
+        for candidate_value in (team_name, *aliases):
+            candidate_key = normalize_identity_text(candidate_value)
+            if not candidate_key or candidate_key == raw_key:
+                continue
+            score = float(
+                max(
+                    _fuzz.token_set_ratio(raw_key, candidate_key),
+                    _fuzz.partial_ratio(raw_key, candidate_key),
+                )
+            )
+            if score > best_score:
+                best_score = score
+                best_alias = candidate_value
+        if best_score <= 0:
+            continue
+        candidates.append(
+            _CanonicalTeamCandidate(
+                team_id=team_id,
+                team_name=team_name,
+                score=best_score,
+                matched_alias=best_alias if best_alias != team_name else None,
+            )
+        )
+
+    return sorted(
+        candidates,
+        key=lambda item: (-item.score, item.team_name),
+    )[:limit]
+
+
+def test_search_canonical_team_candidates_empty_corpus_returns_empty(
+    team_registry_file,
+):
+    assert (
+        team_registry.search_canonical_team_candidates(
+            "Anything", sport="football", limit=3
+        )
+        == []
+    )
+
+
+def test_search_canonical_team_candidates_empty_raw_returns_empty(
+    team_registry_file,
+):
+    team_registry.create_canonical_team(display_name="Real Madrid", sport="football")
+    assert (
+        team_registry.search_canonical_team_candidates(
+            "", sport="football", limit=3
+        )
+        == []
+    )
+    assert (
+        team_registry.search_canonical_team_candidates(
+            "   ", sport="football", limit=3
+        )
+        == []
+    )
+
+
+def test_search_canonical_team_candidates_exact_name_only_team_is_skipped(
+    team_registry_file,
+):
+    """A team whose ONLY indexed string normalises to the raw key contributes
+    no candidate: the canonical name row and the auto-registered display-name
+    alias both equal `raw_key` and are skipped (preserves the
+    `candidate_key == raw_key` guard)."""
+    team_registry.create_canonical_team(display_name="Real Madrid", sport="football")
+
+    results = team_registry.search_canonical_team_candidates(
+        "Real Madrid", sport="football", limit=3
+    )
+
+    assert results == []
+
+
+def test_search_canonical_team_candidates_exact_alias_skipped_team_still_found_via_other_alias(
+    team_registry_file,
+):
+    """Adding a manually-registered alias whose key equals raw_key is also
+    skipped, but the canonical name (a different normalized form) can still
+    contribute a fuzzy score and the team appears with `matched_alias=None`."""
+    team_registry.create_canonical_team(display_name="Real Madrid", sport="football")
+    team_registry.remember_team_alias(
+        bookmaker_id="qa-book",
+        raw_team_name="Real",
+        team_name="Real Madrid",
+        sport="football",
+    )
+
+    results = team_registry.search_canonical_team_candidates(
+        "Real", sport="football", limit=3
+    )
+
+    assert len(results) == 1
+    candidate = results[0]
+    assert candidate.team_name == "Real Madrid"
+    assert candidate.matched_alias is None
+    assert 0.0 < candidate.score <= 100.0
+
+
+def test_search_canonical_team_candidates_same_team_tie_team_name_wins(
+    team_registry_file,
+):
+    """When the canonical-name row and an alias row score equally, team_name
+    wins — `matched_alias` must be None. Use word-order variants where
+    token_set_ratio scores 100 for both rows."""
+    resolution = team_registry.create_canonical_team(
+        display_name="Foo Bar", sport="football"
+    )
+    team_registry.remember_team_alias(
+        bookmaker_id="qa-book",
+        raw_team_name="Bar Foo",
+        team_name="Foo Bar",
+        sport="football",
+    )
+
+    results = team_registry.search_canonical_team_candidates(
+        "Foo Bar Baz", sport="football", limit=3
+    )
+
+    assert len(results) == 1
+    candidate = results[0]
+    assert candidate.team_id == resolution.team_id
+    assert candidate.team_name == "Foo Bar"
+    assert candidate.matched_alias is None
+
+
+def test_search_canonical_team_candidates_cross_team_tie_sorted_by_name(
+    team_registry_file,
+):
+    """Cross-team ties break on team_name ascending — current sort key
+    `(-score, team_name)`. We pick names that genuinely tie under the
+    rapidfuzz scorers: partial_ratio = 87.50 for both `"Bravo United"` and
+    `"Charlie United"` against `"qa united"`, while `"Alpha United"` scores
+    higher (94.12) and must come first."""
+    team_registry.create_canonical_team(
+        display_name="Charlie United", sport="football"
+    )
+    team_registry.create_canonical_team(
+        display_name="Bravo United", sport="football"
+    )
+    team_registry.create_canonical_team(
+        display_name="Alpha United", sport="football"
+    )
+
+    results = team_registry.search_canonical_team_candidates(
+        "qa united", sport="football", limit=3
+    )
+
+    assert [c.team_name for c in results] == [
+        "Alpha United",
+        "Bravo United",
+        "Charlie United",
+    ]
+    assert results[1].score == results[2].score
+    assert results[0].score > results[1].score
+
+
+def test_search_canonical_team_candidates_limit_caps_results(team_registry_file):
+    for name in [
+        "Alpha United",
+        "Bravo United",
+        "Charlie United",
+        "Delta United",
+        "Echo United",
+    ]:
+        team_registry.create_canonical_team(display_name=name, sport="football")
+
+    results = team_registry.search_canonical_team_candidates(
+        "United Town", sport="football", limit=2
+    )
+    assert len(results) == 2
+
+    results_full = team_registry.search_canonical_team_candidates(
+        "United Town", sport="football", limit=5
+    )
+    assert len(results_full) == 5
+
+
+def test_search_canonical_team_candidates_matches_reference_implementation(
+    team_registry_file,
+):
+    """Equivalence oracle: assert the new batched implementation returns
+    exactly the same list (order, scores, matched_alias) as a verbatim copy
+    of the old per-pair scoring loop."""
+    team_registry.create_canonical_team(
+        display_name="Real Madrid", sport="football"
+    )
+    team_registry.remember_team_alias(
+        bookmaker_id="qa-book",
+        raw_team_name="FC Real",
+        team_name="Real Madrid",
+        sport="football",
+    )
+    team_registry.create_canonical_team(
+        display_name="Atletico Madrid", sport="football"
+    )
+    team_registry.remember_team_alias(
+        bookmaker_id="qa-book",
+        raw_team_name="Atleti",
+        team_name="Atletico Madrid",
+        sport="football",
+    )
+    team_registry.create_canonical_team(
+        display_name="Barcelona", sport="football"
+    )
+    team_registry.create_canonical_team(
+        display_name="Sevilla FC", sport="football"
+    )
+    team_registry.create_canonical_team(
+        display_name="Real Sociedad", sport="football"
+    )
+
+    queries = [
+        "Real Madrid CF",
+        "FC Atletico",
+        "Barca",
+        "Real Sociedad B",
+        "Sevilla",
+        "Madrid CF",
+        "Sociedad de San Sebastian",
+    ]
+    for query in queries:
+        for limit in (1, 3, 5):
+            actual = team_registry.search_canonical_team_candidates(
+                query, sport="football", limit=limit
+            )
+            expected = _reference_search_canonical_team_candidates(
+                query, sport="football", limit=limit
+            )
+            assert actual == expected, (
+                f"mismatch for query={query!r} limit={limit}: "
+                f"actual={actual!r} expected={expected!r}"
+            )
