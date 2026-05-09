@@ -179,6 +179,11 @@ def _runtime_metadata(
         },
         proxies_configured=proxy_count > 0,
         proxy_count=proxy_count,
+        max_middle_opportunities_per_market=(
+            runtime_settings.max_middle_opportunities_per_market
+        ),
+        enable_fitted_middles=runtime_settings.enable_fitted_middles,
+        min_fitted_middle_ev_percent=runtime_settings.min_fitted_middle_ev_percent,
     )
 
 

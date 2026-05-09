@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     # Empty = use scrape_market_scope compatibility behavior; "all" = no filtering.
     analysis_markets: str = ""
     max_middle_opportunities_per_market: int = Field(default=10, ge=1)
+    enable_fitted_middles: bool = False
+    min_fitted_middle_ev_percent: float = Field(default=0.0, ge=0)
     notification_gap_threshold: float = 1.5
     persist_inapp_notifications: bool = False
     telegram_bot_token: str = ""

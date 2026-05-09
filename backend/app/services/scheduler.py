@@ -979,6 +979,8 @@ async def _load_current_canonical_analysis(
     *,
     snapshot_id: str | None = None,
     max_middle_opportunities_per_market: int | None = 10,
+    enable_fitted_middles: bool = True,
+    min_fitted_middle_ev_percent: float = 0.0,
 ) -> _CanonicalAnalysisResult:
     canonical_offer_load_started_at = time.perf_counter()
     canonical_offers = await odds_store.get_current_canonical_offers_for_matches(
@@ -1008,6 +1010,8 @@ async def _load_current_canonical_analysis(
         canonical_offers,
         event_primary_match_ids=event_primary_match_ids,
         max_middle_opportunities_per_market=max_middle_opportunities_per_market,
+        enable_fitted_middles=enable_fitted_middles,
+        min_fitted_middle_ev_percent=min_fitted_middle_ev_percent,
         canonical_offer_load_ms=canonical_offer_load_ms,
         primary_match_lookup_ms=primary_match_lookup_ms,
     )
@@ -2249,6 +2253,10 @@ class Scheduler:
                         snapshot_id=snapshot_id,
                         max_middle_opportunities_per_market=(
                             runtime_settings.max_middle_opportunities_per_market
+                        ),
+                        enable_fitted_middles=runtime_settings.enable_fitted_middles,
+                        min_fitted_middle_ev_percent=(
+                            runtime_settings.min_fitted_middle_ev_percent
                         ),
                     )
                 except Exception as exc:

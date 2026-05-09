@@ -351,6 +351,8 @@ export interface ScrapeRuntimeSettings {
   scrape_lookahead_hours: number;
   scrape_interval_minutes: number;
   max_middle_opportunities_per_market: number;
+  enable_fitted_middles: boolean;
+  min_fitted_middle_ev_percent: number;
   rate_limit_per_second: number;
   meridian_rate_limit_per_second: number;
   soccerbet_detail_mode: ScraperDetailMode;
@@ -387,6 +389,8 @@ export interface ScrapeSettingsOptions {
   scrape_lookahead_hours_max: number;
   max_middle_opportunities_per_market_min: number;
   max_middle_opportunities_per_market_max: number;
+  min_fitted_middle_ev_percent_min: number;
+  min_fitted_middle_ev_percent_max: number;
   rate_limit_per_second_min: number;
   rate_limit_per_second_max: number;
 }

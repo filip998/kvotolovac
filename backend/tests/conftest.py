@@ -56,6 +56,21 @@ def all_market_scrape_scope(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def enable_fitted_middles_for_tests(monkeypatch):
+    """Keep fitted-middle opportunities enabled in tests unless a test opts out.
+
+    Production default flips to OFF (see Settings.enable_fitted_middles), but
+    most cycle tests pre-date the gate and assert middle opportunities exist.
+    Tests that want to verify the gated behaviour should opt in with
+    `monkeypatch.setattr(settings, 'enable_fitted_middles', False)` or call
+    `update_scrape_settings(ScrapeRuntimeSettingsUpdate(enable_fitted_middles=False), ...)`.
+    """
+    monkeypatch.setattr(settings, "enable_fitted_middles", True)
+    monkeypatch.setattr(settings, "min_fitted_middle_ev_percent", 0.0)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def clear_telegram_token(monkeypatch):
     """Keep Telegram settings tests independent from local .env secrets."""
     monkeypatch.setattr(settings, "telegram_bot_token", "")

@@ -506,6 +506,8 @@ class ScrapeRuntimeSettings(BaseModel):
     scrape_lookahead_hours: int = Field(default=24, ge=0)
     scrape_interval_minutes: int = Field(default=10, ge=1)
     max_middle_opportunities_per_market: int = Field(default=10, ge=1)
+    enable_fitted_middles: bool = True
+    min_fitted_middle_ev_percent: float = Field(default=0.0, ge=0)
     rate_limit_per_second: float = Field(default=1.0, ge=0)
     meridian_rate_limit_per_second: float = Field(default=2.0, ge=0)
     soccerbet_detail_mode: ScraperDetailMode = "partial"
@@ -524,6 +526,8 @@ class ScrapeRuntimeSettingsUpdate(BaseModel):
     scrape_lookahead_hours: Optional[int] = Field(default=None, ge=0)
     scrape_interval_minutes: Optional[int] = Field(default=None, ge=1)
     max_middle_opportunities_per_market: Optional[int] = Field(default=None, ge=1)
+    enable_fitted_middles: Optional[bool] = None
+    min_fitted_middle_ev_percent: Optional[float] = Field(default=None, ge=0)
     rate_limit_per_second: Optional[float] = Field(default=None, ge=0)
     meridian_rate_limit_per_second: Optional[float] = Field(default=None, ge=0)
     soccerbet_detail_mode: Optional[ScraperDetailMode] = None
@@ -560,6 +564,8 @@ class ScrapeSettingsOptions(BaseModel):
     scrape_lookahead_hours_max: int = 24 * 14
     max_middle_opportunities_per_market_min: int = 1
     max_middle_opportunities_per_market_max: int = 1000
+    min_fitted_middle_ev_percent_min: float = 0.0
+    min_fitted_middle_ev_percent_max: float = 100.0
     rate_limit_per_second_min: float = 0
     rate_limit_per_second_max: float = 20
 
@@ -600,6 +606,9 @@ class BenchmarkRuntimeMetadataOut(BaseModel):
     detail_modes: dict[str, ScraperDetailMode] = Field(default_factory=dict)
     proxies_configured: bool = False
     proxy_count: int = 0
+    max_middle_opportunities_per_market: int = 0
+    enable_fitted_middles: bool = True
+    min_fitted_middle_ev_percent: float = 0.0
 
 
 class HttpTimingBenchmarkOut(BaseModel):
