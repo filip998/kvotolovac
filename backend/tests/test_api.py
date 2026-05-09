@@ -1724,6 +1724,87 @@ async def test_canonical_teams_can_include_merged_sources(
 
 
 @pytest.mark.asyncio
+async def test_canonical_teams_page_returns_total_and_slice(
+    client: AsyncClient,
+    team_registry_file,
+):
+    teams = [
+        create_canonical_team(display_name=f"QA Page {name}")
+        for name in ("Alpha", "Bravo", "Charlie", "Delta")
+    ]
+
+    resp = await client.get(
+        "/api/v1/canonical-teams/page?search=QA%20Page&limit=2&offset=1"
+    )
+    beyond_resp = await client.get(
+        "/api/v1/canonical-teams/page?search=QA%20Page&limit=2&offset=99"
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total"] == len(teams)
+    assert payload["limit"] == 2
+    assert payload["offset"] == 1
+    assert [row["display_name"] for row in payload["items"]] == [
+        "QA Page Bravo",
+        "QA Page Charlie",
+    ]
+    assert beyond_resp.status_code == 200
+    assert beyond_resp.json()["total"] == len(teams)
+    assert beyond_resp.json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_canonical_teams_page_search_matches_normalized_text(
+    client: AsyncClient,
+    team_registry_file,
+):
+    matching = create_canonical_team(display_name="QA Search Čačak 94")
+    create_canonical_team(display_name="QA Search Beograd")
+
+    resp = await client.get(
+        "/api/v1/canonical-teams/page?search=search%20cacak%2094&limit=25"
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total"] == 1
+    assert [row["id"] for row in payload["items"]] == [matching.team_id]
+
+
+@pytest.mark.asyncio
+async def test_canonical_teams_page_can_include_merged_sources(
+    client: AsyncClient,
+    team_registry_file,
+):
+    source = create_canonical_team(display_name="QA Page Merged Source")
+    target = create_canonical_team(display_name="QA Page Merged Target")
+    merge_resp = await client.post(
+        f"/api/v1/canonical-teams/{source.team_id}/merge",
+        json={"target_team_id": target.team_id},
+    )
+
+    active_resp = await client.get(
+        "/api/v1/canonical-teams/page?search=QA%20Page%20Merged&limit=25"
+    )
+    merged_resp = await client.get(
+        "/api/v1/canonical-teams/page?search=QA%20Page%20Merged&limit=25&include_merged=true"
+    )
+
+    assert merge_resp.status_code == 200
+    assert active_resp.status_code == 200
+    assert [row["display_name"] for row in active_resp.json()["items"]] == [
+        "QA Page Merged Target"
+    ]
+    assert active_resp.json()["total"] == 1
+    assert merged_resp.status_code == 200
+    rows_by_name = {team["display_name"]: team for team in merged_resp.json()["items"]}
+    assert merged_resp.json()["total"] == 2
+    assert rows_by_name["QA Page Merged Source"]["merged_into_team_id"] == target.team_id
+    assert rows_by_name["QA Page Merged Target"]["merged_into_team_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_merge_canonical_teams_rewrites_pending_team_review_cases(
     client: AsyncClient,
     team_registry_file,

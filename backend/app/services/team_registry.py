@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+import unicodedata
 
 from rapidfuzz import fuzz, process
 
@@ -94,6 +95,14 @@ class CanonicalTeamSummary:
     aliases: tuple[str, ...]
     alias_count: int
     merged_into_team_id: int | None = None
+
+
+@dataclass(frozen=True)
+class CanonicalTeamPage:
+    items: tuple[CanonicalTeamSummary, ...]
+    total: int
+    limit: int
+    offset: int
 
 
 @dataclass(frozen=True)
@@ -804,7 +813,9 @@ def _load_canonical_team_list_rows(
             team_names,
             key=lambda item: (
                 merged_targets.get(item) is not None,
+                team_names[item].casefold(),
                 team_names[item],
+                item,
             ),
         )
     )
@@ -1397,13 +1408,54 @@ def list_canonical_teams(
     offset: int = 0,
     include_merged: bool = False,
 ) -> list[CanonicalTeamSummary]:
+    page = list_canonical_teams_page(
+        sport=sport,
+        search=search,
+        limit=limit,
+        offset=offset,
+        include_merged=include_merged,
+    )
+    return list(page.items)
+
+
+def _normalize_canonical_team_search_text(value: str | None) -> str:
+    if not value:
+        return ""
+
+    normalized = unicodedata.normalize("NFD", value)
+    without_marks = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    cleaned = "".join(ch.lower() if ch.isalnum() else " " for ch in without_marks)
+    return " ".join(cleaned.split())
+
+
+def _canonical_team_search_matches(
+    *,
+    team_name: str,
+    aliases: tuple[str, ...],
+    search_key: str,
+) -> bool:
+    if not search_key:
+        return True
+    haystack = _normalize_canonical_team_search_text(" ".join((team_name, *aliases)))
+    return search_key in haystack
+
+
+def _filtered_canonical_team_summaries(
+    *,
+    sport: str,
+    search: str | None,
+    include_merged: bool,
+) -> tuple[CanonicalTeamSummary, ...]:
     _ensure_bootstrapped()
-    search_key = normalize_identity_text(search)
+    search_key = _normalize_canonical_team_search_text(search)
     rows = _load_canonical_team_list_rows(settings.db_path, sport, include_merged)
     summaries: list[CanonicalTeamSummary] = []
     for team_id, team_name, aliases, merged_into_team_id in rows:
-        haystack = " ".join((team_name, *aliases))
-        if search_key and search_key not in normalize_identity_text(haystack):
+        if not _canonical_team_search_matches(
+            team_name=team_name,
+            aliases=aliases,
+            search_key=search_key,
+        ):
             continue
         summaries.append(
             CanonicalTeamSummary(
@@ -1415,7 +1467,28 @@ def list_canonical_teams(
                 merged_into_team_id=merged_into_team_id,
             )
         )
-    return summaries[offset : offset + limit]
+    return tuple(summaries)
+
+
+def list_canonical_teams_page(
+    *,
+    sport: str = DEFAULT_SPORT,
+    search: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    include_merged: bool = False,
+) -> CanonicalTeamPage:
+    summaries = _filtered_canonical_team_summaries(
+        sport=sport,
+        search=search,
+        include_merged=include_merged,
+    )
+    return CanonicalTeamPage(
+        items=summaries[offset : offset + limit],
+        total=len(summaries),
+        limit=limit,
+        offset=offset,
+    )
 
 
 def _team_alias_snapshot(

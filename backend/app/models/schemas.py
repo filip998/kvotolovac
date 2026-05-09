@@ -1154,6 +1154,13 @@ class CanonicalTeamOut(BaseModel):
     merged_into_team_id: Optional[int] = None
 
 
+class CanonicalTeamsPageOut(BaseModel):
+    items: list[CanonicalTeamOut]
+    total: int
+    limit: int
+    offset: int
+
+
 class CanonicalTeamMergeIn(BaseModel):
     target_team_id: int
 

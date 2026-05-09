@@ -1,9 +1,8 @@
-import { useDeferredValue, useMemo } from 'react';
 import EmptyState from './EmptyState';
 import LoadingSpinner from './LoadingSpinner';
 import OfferSearchStrip from './OfferSearchStrip';
 import type { CanonicalTeam } from '../api/types';
-import { buildSearchIndex, filterSearchIndex, normalizeSearchText } from '../utils/search';
+import { normalizeSearchText } from '../utils/search';
 
 function aliasPreview(aliases: string[]) {
   const preview = aliases.slice(0, 6);
@@ -20,7 +19,7 @@ export default function CanonicalTeamsPanel({
   errorMessage,
   searchQuery,
   onSearchChange,
-  selectedSourceTeamId,
+  selectedSourceTeam,
   onSelectSource,
   onMerge,
   onUnmerge,
@@ -28,38 +27,45 @@ export default function CanonicalTeamsPanel({
   mergingTargetTeamId,
   unmergingTeamId,
   actionMessage,
+  totalTeams,
+  pageOffset,
+  pageSize,
+  pageSizeOptions,
+  onPageSizeChange,
+  onPreviousPage,
+  onNextPage,
 }: {
   teams: CanonicalTeam[];
   isLoading: boolean;
   errorMessage: string | null;
   searchQuery: string;
   onSearchChange: (value: string) => void;
-  selectedSourceTeamId: number | null;
-  onSelectSource: (teamId: number | null) => void;
+  selectedSourceTeam: CanonicalTeam | null;
+  onSelectSource: (team: CanonicalTeam | null) => void;
   onMerge: (sourceTeamId: number, targetTeamId: number) => void;
   onUnmerge: (sourceTeamId: number) => void;
   mergingSourceTeamId: number | null;
   mergingTargetTeamId: number | null;
   unmergingTeamId: number | null;
   actionMessage: string | null;
+  totalTeams: number;
+  pageOffset: number;
+  pageSize: number;
+  pageSizeOptions: number[];
+  onPageSizeChange: (pageSize: number) => void;
+  onPreviousPage: () => void;
+  onNextPage: () => void;
 }) {
-  const appliedSearchQuery = useDeferredValue(searchQuery);
-  const searchableTeams = useMemo(
-    () => buildSearchIndex(teams, (team) => [team.display_name, ...team.aliases, team.sport]),
-    [teams]
-  );
-  const filteredTeams = useMemo(
-    () => filterSearchIndex(searchableTeams, appliedSearchQuery),
-    [appliedSearchQuery, searchableTeams]
-  );
-  const hasSearchQuery = normalizeSearchText(appliedSearchQuery).length > 0;
-  const activeSearchLabel = appliedSearchQuery.trim();
-  const selectedSourceTeam =
-    teams.find((team) => team.id === selectedSourceTeamId && team.merged_into_team_id == null) ??
-    null;
-  const activeTeams = teams.filter((team) => team.merged_into_team_id == null);
-  const mergedTeams = teams.filter((team) => team.merged_into_team_id != null);
-  const totalAliases = activeTeams.reduce((sum, team) => sum + team.alias_count, 0);
+  const hasSearchQuery = normalizeSearchText(searchQuery).length > 0;
+  const activeSearchLabel = searchQuery.trim();
+  const selectedSourceTeamId = selectedSourceTeam?.id ?? null;
+  const pageStart = totalTeams === 0 ? 0 : pageOffset + 1;
+  const pageEnd = totalTeams === 0 ? 0 : pageOffset + teams.length;
+  const totalPages = Math.max(1, Math.ceil(totalTeams / pageSize));
+  const currentPage = totalTeams === 0 ? 1 : Math.floor(pageOffset / pageSize) + 1;
+  const canGoPrevious = pageOffset > 0;
+  const canGoNext = pageOffset + teams.length < totalTeams;
+  const mergedTeamsOnPage = teams.filter((team) => team.merged_into_team_id != null).length;
 
   const searchStrip = (
     <OfferSearchStrip
@@ -67,8 +73,8 @@ export default function CanonicalTeamsPanel({
       onChange={onSearchChange}
       scopeLabel="Canonical teams"
       placeholder="Search canonical names or aliases, e.g. Baskonia or Buducnost"
-      resultCount={filteredTeams.length}
-      totalCount={teams.length}
+      resultCount={totalTeams}
+      totalCount={totalTeams}
       tone="accent"
     />
   );
@@ -93,7 +99,7 @@ export default function CanonicalTeamsPanel({
     );
   }
 
-  if (hasSearchQuery && filteredTeams.length === 0 && teams.length > 0) {
+  if (hasSearchQuery && totalTeams === 0) {
     return (
       <div className="space-y-4">
         {searchStrip}
@@ -105,7 +111,7 @@ export default function CanonicalTeamsPanel({
     );
   }
 
-  if (teams.length === 0) {
+  if (teams.length === 0 && totalTeams === 0) {
     return (
       <div className="space-y-4">
         {searchStrip}
@@ -142,33 +148,33 @@ export default function CanonicalTeamsPanel({
         )}
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <div className="rounded-lg border border-border bg-bg/60 px-4 py-3">
-              <div className="text-[11px] uppercase tracking-[0.14em] text-text-muted">Teams</div>
-              <div className="mt-2 font-mono text-2xl font-semibold text-text">
-                {activeTeams.length}
-              </div>
-            </div>
           <div className="rounded-lg border border-border bg-bg/60 px-4 py-3">
-            <div className="text-[11px] uppercase tracking-[0.14em] text-text-muted">Aliases</div>
-            <div className="mt-2 font-mono text-2xl font-semibold text-accent">{totalAliases}</div>
-            </div>
-            <div className="rounded-lg border border-border bg-bg/60 px-4 py-3">
-              <div className="text-[11px] uppercase tracking-[0.14em] text-text-muted">
-                Visible
-              </div>
-              <div className="mt-2 font-mono text-2xl font-semibold text-text-secondary">
-                {filteredTeams.length}
-              </div>
-            </div>
-            <div className="rounded-lg border border-border bg-bg/60 px-4 py-3">
-              <div className="text-[11px] uppercase tracking-[0.14em] text-text-muted">
-                Merged
-              </div>
-              <div className="mt-2 font-mono text-2xl font-semibold text-warning">
-                {mergedTeams.length}
-              </div>
+            <div className="text-[11px] uppercase tracking-[0.14em] text-text-muted">Total</div>
+            <div className="mt-2 font-mono text-2xl font-semibold text-text">{totalTeams}</div>
+          </div>
+          <div className="rounded-lg border border-border bg-bg/60 px-4 py-3">
+            <div className="text-[11px] uppercase tracking-[0.14em] text-text-muted">Range</div>
+            <div className="mt-2 font-mono text-2xl font-semibold text-accent">
+              {pageStart}-{pageEnd}
             </div>
           </div>
+          <div className="rounded-lg border border-border bg-bg/60 px-4 py-3">
+            <div className="text-[11px] uppercase tracking-[0.14em] text-text-muted">
+              Page
+            </div>
+            <div className="mt-2 font-mono text-2xl font-semibold text-text-secondary">
+              {currentPage}/{totalPages}
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-bg/60 px-4 py-3">
+            <div className="text-[11px] uppercase tracking-[0.14em] text-text-muted">
+              Merged here
+            </div>
+            <div className="mt-2 font-mono text-2xl font-semibold text-warning">
+              {mergedTeamsOnPage}
+            </div>
+          </div>
+        </div>
       </section>
 
       {selectedSourceTeam && (
@@ -202,123 +208,170 @@ export default function CanonicalTeamsPanel({
           <div>
             <h3 className="text-sm font-semibold text-text">Canonical teams</h3>
             <p className="mt-1 text-sm text-text-secondary">
-              Search active and merged canonical rows, inspect aliases, merge duplicates, or roll
-              back a merge.
+              Search all active and merged canonical rows, inspect aliases, merge duplicates, or
+              roll back a merge.
             </p>
           </div>
-          <div className="text-xs text-text-muted">
-            {filteredTeams.length} visible team{filteredTeams.length === 1 ? '' : 's'}
+          <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
+            <span>
+              Showing {pageStart}-{pageEnd} of {totalTeams}
+            </span>
+            <label className="flex items-center gap-2">
+              <span>Rows</span>
+              <select
+                value={pageSize}
+                onChange={(event) => onPageSizeChange(Number(event.target.value))}
+                className="rounded-md border border-border bg-bg px-2 py-1 text-xs text-text outline-none transition focus:border-accent/50"
+              >
+                {pageSizeOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
         </div>
 
         <div className="space-y-3">
-          {filteredTeams.map((team) => {
-            const isMerged = team.merged_into_team_id != null;
-            const isSelectedSource = team.id === selectedSourceTeamId;
-            const isMergingIntoTeam =
-              mergingSourceTeamId === selectedSourceTeamId && mergingTargetTeamId === team.id;
-            const isUnmergingTeam = unmergingTeamId === team.id;
-            const { preview, remainder } = aliasPreview(team.aliases);
+          {teams.length === 0 ? (
+            <EmptyState
+              title="No teams on this page"
+              message="Use the previous page control to return to available canonical rows."
+            />
+          ) : (
+            teams.map((team) => {
+              const isMerged = team.merged_into_team_id != null;
+              const isSelectedSource = team.id === selectedSourceTeamId;
+              const isMergingIntoTeam =
+                mergingSourceTeamId === selectedSourceTeamId && mergingTargetTeamId === team.id;
+              const isUnmergingTeam = unmergingTeamId === team.id;
+              const { preview, remainder } = aliasPreview(team.aliases);
 
-            return (
-              <article
-                key={team.id}
-                className={`rounded-xl border p-4 ${
-                  isSelectedSource
-                    ? 'border-warning/40 bg-warning/10'
-                    : isMerged
-                      ? 'border-border bg-bg/50'
-                      : 'border-border bg-surface'
-                }`}
-              >
-                <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h4 className="text-lg font-semibold tracking-tight text-text">
-                        {team.display_name}
-                      </h4>
-                      <span className="rounded-full border border-border bg-bg px-2 py-1 text-[11px] font-medium text-text-secondary">
-                        {team.alias_count} alias{team.alias_count === 1 ? '' : 'es'}
-                      </span>
-                      <span className="rounded-full border border-border bg-bg px-2 py-1 text-[11px] font-medium text-text-muted">
-                        {team.sport}
-                      </span>
-                      {isMerged && (
-                        <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-1 text-[11px] font-medium text-warning">
-                          merged into #{team.merged_into_team_id}
+              return (
+                <article
+                  key={team.id}
+                  className={`rounded-xl border p-4 ${
+                    isSelectedSource
+                      ? 'border-warning/40 bg-warning/10'
+                      : isMerged
+                        ? 'border-border bg-bg/50'
+                        : 'border-border bg-surface'
+                  }`}
+                >
+                  <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="text-lg font-semibold tracking-tight text-text">
+                          {team.display_name}
+                        </h4>
+                        <span className="rounded-full border border-border bg-bg px-2 py-1 text-[11px] font-medium text-text-secondary">
+                          {team.alias_count} alias{team.alias_count === 1 ? '' : 'es'}
                         </span>
-                      )}
+                        <span className="rounded-full border border-border bg-bg px-2 py-1 text-[11px] font-medium text-text-muted">
+                          {team.sport}
+                        </span>
+                        {isMerged && (
+                          <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-1 text-[11px] font-medium text-warning">
+                            merged into #{team.merged_into_team_id}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {preview.map((alias) => (
+                          <span
+                            key={`${team.id}-${alias}`}
+                            className="rounded-full border border-border bg-bg/60 px-2.5 py-1 text-xs text-text-secondary"
+                          >
+                            {alias}
+                          </span>
+                        ))}
+                        {remainder > 0 && (
+                          <span className="rounded-full border border-border bg-bg/60 px-2.5 py-1 text-xs text-text-muted">
+                            +{remainder} more
+                          </span>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {preview.map((alias) => (
-                        <span
-                          key={`${team.id}-${alias}`}
-                          className="rounded-full border border-border bg-bg/60 px-2.5 py-1 text-xs text-text-secondary"
+                    <div className="flex shrink-0 flex-col gap-2 xl:w-44">
+                      {isMerged ? (
+                        <button
+                          type="button"
+                          onClick={() => onUnmerge(team.id)}
+                          disabled={mergingSourceTeamId != null || unmergingTeamId != null}
+                          className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs font-medium text-warning transition hover:border-warning hover:bg-warning/15 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          {alias}
-                        </span>
-                      ))}
-                      {remainder > 0 && (
-                        <span className="rounded-full border border-border bg-bg/60 px-2.5 py-1 text-xs text-text-muted">
-                          +{remainder} more
-                        </span>
+                          {isUnmergingTeam ? 'Unmerging...' : 'Unmerge'}
+                        </button>
+                      ) : isSelectedSource ? (
+                        <button
+                          type="button"
+                          onClick={() => onSelectSource(null)}
+                          disabled={mergingSourceTeamId != null || unmergingTeamId != null}
+                          className="rounded-md border border-border bg-surface px-3 py-2 text-xs font-medium text-text-secondary transition hover:border-border-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Selected source
+                        </button>
+                      ) : selectedSourceTeamId == null ? (
+                        <button
+                          type="button"
+                          onClick={() => onSelectSource(team)}
+                          disabled={mergingSourceTeamId != null || unmergingTeamId != null}
+                          className="rounded-md border border-border bg-surface px-3 py-2 text-xs font-medium text-text-secondary transition hover:border-border-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Select source
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => onMerge(selectedSourceTeamId, team.id)}
+                          disabled={mergingSourceTeamId != null || unmergingTeamId != null}
+                          className="rounded-md border border-border bg-surface px-3 py-2 text-xs font-medium text-text-secondary transition hover:border-border-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {isMergingIntoTeam ? 'Merging...' : 'Merge source into this'}
+                        </button>
                       )}
+                      <p className="text-[11px] leading-5 text-text-muted">
+                        {isMerged
+                          ? 'Restores this source team and moves its saved aliases back when rollback metadata exists.'
+                          : isSelectedSource
+                            ? 'This team will disappear as a standalone canonical row after merge.'
+                            : selectedSourceTeamId == null
+                              ? 'Start by selecting the duplicate team you want to merge away.'
+                              : 'The selected source team name will be preserved as an alias here.'}
+                      </p>
                     </div>
                   </div>
-
-                  <div className="flex shrink-0 flex-col gap-2 xl:w-44">
-                    {isMerged ? (
-                      <button
-                        type="button"
-                        onClick={() => onUnmerge(team.id)}
-                        disabled={mergingSourceTeamId != null || unmergingTeamId != null}
-                        className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs font-medium text-warning transition hover:border-warning hover:bg-warning/15 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {isUnmergingTeam ? 'Unmerging...' : 'Unmerge'}
-                      </button>
-                    ) : isSelectedSource ? (
-                      <button
-                        type="button"
-                        onClick={() => onSelectSource(null)}
-                        disabled={mergingSourceTeamId != null || unmergingTeamId != null}
-                        className="rounded-md border border-border bg-surface px-3 py-2 text-xs font-medium text-text-secondary transition hover:border-border-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        Selected source
-                      </button>
-                    ) : selectedSourceTeamId == null ? (
-                      <button
-                        type="button"
-                        onClick={() => onSelectSource(team.id)}
-                        disabled={mergingSourceTeamId != null || unmergingTeamId != null}
-                        className="rounded-md border border-border bg-surface px-3 py-2 text-xs font-medium text-text-secondary transition hover:border-border-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        Select source
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => onMerge(selectedSourceTeamId, team.id)}
-                        disabled={mergingSourceTeamId != null || unmergingTeamId != null}
-                        className="rounded-md border border-border bg-surface px-3 py-2 text-xs font-medium text-text-secondary transition hover:border-border-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {isMergingIntoTeam ? 'Merging...' : 'Merge source into this'}
-                      </button>
-                    )}
-                    <p className="text-[11px] leading-5 text-text-muted">
-                      {isMerged
-                        ? 'Restores this source team and moves its saved aliases back when rollback metadata exists.'
-                        : isSelectedSource
-                          ? 'This team will disappear as a standalone canonical row after merge.'
-                          : selectedSourceTeamId == null
-                            ? 'Start by selecting the duplicate team you want to merge away.'
-                            : 'The selected source team name will be preserved as an alias here.'}
-                    </p>
-                  </div>
-                </div>
-              </article>
-            );
-          })}
+                </article>
+              );
+            })
+          )}
+        </div>
+        <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm text-text-secondary">
+            Page {currentPage} of {totalPages} · showing {teams.length} row
+            {teams.length === 1 ? '' : 's'}
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onPreviousPage}
+              disabled={!canGoPrevious || isLoading}
+              className="rounded-md border border-border bg-bg px-3 py-2 text-xs font-medium text-text-secondary transition hover:border-border-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              onClick={onNextPage}
+              disabled={!canGoNext || isLoading}
+              className="rounded-md border border-border bg-bg px-3 py-2 text-xs font-medium text-text-secondary transition hover:border-border-hover hover:text-text disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Next
+            </button>
+          </div>
         </div>
       </section>
     </div>

@@ -5,6 +5,8 @@ import type {
   CanonicalTeam,
   CanonicalTeamFilters,
   CanonicalTeamMerge,
+  CanonicalTeamPageFilters,
+  CanonicalTeamsPage,
   CanonicalTeamUnmerge,
   EventDetail,
   EventMergeInput,
@@ -55,11 +57,39 @@ import {
   mockTelegramSettings,
   mockTeamReviewCases,
 } from './mockData';
+import { normalizeSearchText } from '../utils/search';
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false';
 
 function delay(ms = 300): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function filterMockCanonicalTeams(filters: CanonicalTeamFilters = {}) {
+  const search = normalizeSearchText(filters.search);
+  let results = [...mockCanonicalTeams];
+  if (filters.include_merged) {
+    const activeTeamIds = new Set(results.map((team) => team.id));
+    results = [
+      ...results,
+      ...mockCanonicalTeamMergeHistory
+        .filter((history) => !activeTeamIds.has(history.sourceTeam.id))
+        .map((history) => ({
+          ...history.sourceTeam,
+          aliases: [...history.sourceTeam.aliases],
+          merged_into_team_id: history.targetTeamId,
+        })),
+    ];
+  }
+  if (filters.sport) {
+    results = results.filter((team) => team.sport === filters.sport);
+  }
+  if (search) {
+    results = results.filter((team) =>
+      normalizeSearchText([team.display_name, ...team.aliases].join(' ')).includes(search)
+    );
+  }
+  return results;
 }
 
 function cloneMockScrapeSettings(): ScrapeSettingsResponse {
@@ -701,29 +731,7 @@ export function useCanonicalTeams(
     queryFn: async () => {
       if (USE_MOCK) {
         await delay();
-        const search = filters.search?.trim().toLowerCase();
-        let results = [...mockCanonicalTeams];
-        if (filters.include_merged) {
-          const activeTeamIds = new Set(results.map((team) => team.id));
-          results = [
-            ...results,
-            ...mockCanonicalTeamMergeHistory
-              .filter((history) => !activeTeamIds.has(history.sourceTeam.id))
-              .map((history) => ({
-                ...history.sourceTeam,
-                aliases: [...history.sourceTeam.aliases],
-                merged_into_team_id: history.targetTeamId,
-              })),
-          ];
-        }
-        if (filters.sport) {
-          results = results.filter((team) => team.sport === filters.sport);
-        }
-        if (search) {
-          results = results.filter((team) =>
-            [team.display_name, ...team.aliases].some((value) => value.toLowerCase().includes(search))
-          );
-        }
+        const results = filterMockCanonicalTeams(filters);
         const offset = filters.offset ?? 0;
         const limit = filters.limit ?? results.length;
         return results.slice(offset, offset + limit);
@@ -735,6 +743,37 @@ export function useCanonicalTeams(
       return data;
     },
     enabled: options.enabled ?? true,
+    staleTime: 30000,
+  });
+}
+
+export function useCanonicalTeamsPage(
+  filters: CanonicalTeamPageFilters = {},
+  options: { enabled?: boolean } = {}
+) {
+  return useQuery<CanonicalTeamsPage>({
+    queryKey: ['canonicalTeams', 'page', filters],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        const results = filterMockCanonicalTeams(filters);
+        const offset = filters.offset ?? 0;
+        const limit = filters.limit ?? 25;
+        return {
+          items: results.slice(offset, offset + limit),
+          total: results.length,
+          limit,
+          offset,
+        };
+      }
+
+      const { data } = await client.get<CanonicalTeamsPage>('/canonical-teams/page', {
+        params: filters,
+      });
+      return data;
+    },
+    enabled: options.enabled ?? true,
+    placeholderData: (previousData) => previousData,
     staleTime: 30000,
   });
 }

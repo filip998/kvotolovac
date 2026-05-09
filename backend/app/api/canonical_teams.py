@@ -10,15 +10,29 @@ from ..models.schemas import (
     CanonicalTeamMergeOut,
     CanonicalTeamOut,
     CanonicalTeamUnmergeOut,
+    CanonicalTeamsPageOut,
 )
 from ..services.scheduler import scheduler
 from ..services.team_registry import (
     list_canonical_teams,
+    list_canonical_teams_page,
     merge_canonical_teams,
     unmerge_canonical_team,
+    CanonicalTeamSummary,
 )
 
 router = APIRouter(prefix="/canonical-teams", tags=["canonical-teams"])
+
+
+def _canonical_team_out(team: CanonicalTeamSummary) -> CanonicalTeamOut:
+    return CanonicalTeamOut(
+        id=team.id,
+        sport=team.sport,
+        display_name=team.display_name,
+        aliases=list(team.aliases),
+        alias_count=team.alias_count,
+        merged_into_team_id=team.merged_into_team_id,
+    )
 
 
 @router.get("", response_model=list[CanonicalTeamOut])
@@ -37,17 +51,31 @@ async def get_canonical_teams(
         offset=offset,
         include_merged=include_merged,
     )
-    return [
-        CanonicalTeamOut(
-            id=team.id,
-            sport=team.sport,
-            display_name=team.display_name,
-            aliases=list(team.aliases),
-            alias_count=team.alias_count,
-            merged_into_team_id=team.merged_into_team_id,
-        )
-        for team in teams
-    ]
+    return [_canonical_team_out(team) for team in teams]
+
+
+@router.get("/page", response_model=CanonicalTeamsPageOut)
+async def get_canonical_teams_page(
+    sport: str = Query(default="basketball"),
+    search: Optional[str] = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    include_merged: bool = Query(default=False),
+) -> CanonicalTeamsPageOut:
+    page = await asyncio.to_thread(
+        list_canonical_teams_page,
+        sport=sport,
+        search=search,
+        limit=limit,
+        offset=offset,
+        include_merged=include_merged,
+    )
+    return CanonicalTeamsPageOut(
+        items=[_canonical_team_out(team) for team in page.items],
+        total=page.total,
+        limit=page.limit,
+        offset=page.offset,
+    )
 
 
 @router.post("/{team_id}/merge", response_model=CanonicalTeamMergeOut)
