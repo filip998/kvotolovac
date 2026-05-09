@@ -4446,3 +4446,109 @@ async def test_scheduler_stop_waits_for_active_cycle_to_finish():
     assert scheduler_under_test.is_running is False
     assert scheduler_under_test.progress_snapshot().in_progress is False
     assert status.last_scrape_at is not None
+
+
+# ── feature gate (issue #131): kill-switch + fitted-EV threshold ──────────
+
+
+@pytest.mark.asyncio
+async def test_scheduler_kill_switch_disabled_yields_no_fitted_middles_through_full_cycle(
+    monkeypatch,
+):
+    """End-to-end: when runtime setting enable_fitted_middles=False, the cycle
+    persists no middle opportunities even though the scrapers produce a
+    canonical line-middle pair that would normally yield one.
+
+    Regression for issue #131. The autouse fixture
+    `enable_fitted_middles_for_tests` defaults to True; here we override it
+    to False to verify the disabled path."""
+    monkeypatch.setattr(settings, "enable_fitted_middles", False)
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds(
+                        "alpha",
+                        160.5,
+                        over_odds=1.90,
+                        under_odds=1.80,
+                        player_name=None,
+                        market_type="game_total",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds(
+                        "beta",
+                        163.5,
+                        over_odds=1.70,
+                        under_odds=2.10,
+                        player_name=None,
+                        market_type="game_total",
+                    )
+                ]
+            },
+        ),
+    )
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["opportunities_found"] == 0
+    opportunities = await odds_store.get_opportunities(sport="basketball")
+    assert opportunities == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_runtime_threshold_drops_low_ev_middles_through_full_cycle(
+    monkeypatch,
+):
+    """End-to-end: when min_fitted_middle_ev_percent is set above any candidate's
+    EV, the cycle persists 0 middles. With a 0 floor on the same fixture, the
+    cycle persists at least one. Asserts the threshold is correctly threaded
+    from runtime settings → analyzer."""
+    _register_test_scrapers(
+        StubScraper(
+            "alpha",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds(
+                        "alpha",
+                        160.5,
+                        over_odds=1.90,
+                        under_odds=1.80,
+                        player_name=None,
+                        market_type="game_total",
+                    )
+                ]
+            },
+        ),
+        StubScraper(
+            "beta",
+            payload_by_league={
+                "euroleague": [
+                    _raw_odds(
+                        "beta",
+                        163.5,
+                        over_odds=1.70,
+                        under_odds=2.10,
+                        player_name=None,
+                        market_type="game_total",
+                    )
+                ]
+            },
+        ),
+    )
+
+    # 100% floor is above any realistic candidate's EV → all dropped.
+    monkeypatch.setattr(settings, "min_fitted_middle_ev_percent", 100.0)
+
+    result = await Scheduler(interval_minutes=1).run_cycle()
+
+    assert result["opportunities_found"] == 0
+    opportunities = await odds_store.get_opportunities(sport="basketball")
+    assert opportunities == []

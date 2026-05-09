@@ -750,3 +750,148 @@ def test_canonical_resolved_event_uses_primary_match_and_source_leg_matches():
         "match-mozzart",
         "match-meridian",
     }
+
+
+# ── feature gate (issue #131): kill-switch + fitted-EV threshold ──────────
+
+
+def _line_middle_offers_basketball():
+    """Basketball player_points middle with consensus over/under odds so the
+    Normal model fits. Uses the same fixture pattern as the existing
+    test_canonical_line_middle_populates_market_implied_ev_fields test."""
+    return [
+        *_odds("value-over", "Lundberg", 8.5, over=2.10, under=4.00),
+        *_odds("fair-mid", "Lundberg", 12.5, over=2.00, under=2.00),
+        *_odds("value-under", "Lundberg", 15.5, over=4.00, under=2.10),
+    ]
+
+
+def _arb_offers_basketball():
+    """Same-line basketball arbitrage; emitted by two_way_arbitrage rule, not line_middle."""
+    return [
+        *_odds("mozzart", "Lundberg", 16.5, over=2.10, under=1.95),
+        *_odds("meridian", "Lundberg", 16.5, over=1.95, under=2.10),
+    ]
+
+
+def test_canonical_kill_switch_drops_fitted_middles():
+    """enable_fitted_middles=False suppresses the line_middle rule output entirely."""
+    offers = _line_middle_offers_basketball()
+    enabled = analyze_canonical_offers(offers)
+    assert len(enabled) >= 1
+    assert all(o.opportunity_type == "middle" for o in enabled)
+
+    disabled = analyze_canonical_offers(offers, enable_fitted_middles=False)
+    assert disabled == []
+
+
+def test_canonical_kill_switch_preserves_arbitrages():
+    """Same-line arbitrages flow through two_way_arbitrage and must NOT be gated by enable_fitted_middles."""
+    offers = _arb_offers_basketball()
+
+    enabled = analyze_canonical_offers(offers, enable_fitted_middles=True)
+    disabled = analyze_canonical_offers(offers, enable_fitted_middles=False)
+
+    arb_enabled = [o for o in enabled if o.opportunity_type == "same_line_arbitrage"]
+    arb_disabled = [o for o in disabled if o.opportunity_type == "same_line_arbitrage"]
+    assert len(arb_enabled) == 1
+    assert len(arb_disabled) == 1
+    assert arb_disabled[0].profit_margin == arb_enabled[0].profit_margin
+
+
+def test_canonical_kill_switch_preserves_complementary_outcomes():
+    """football_result/double_chance complementary arbs must NOT be gated by enable_fitted_middles."""
+    offers = [
+        _outcome_offer("mozzart", "result", "home", 2.50),
+        _outcome_offer("meridian", "double_chance", "draw_or_away", 1.85),
+    ]
+    enabled = analyze_canonical_offers(offers, enable_fitted_middles=True)
+    disabled = analyze_canonical_offers(offers, enable_fitted_middles=False)
+    assert len(enabled) == len(disabled) == 1
+    assert enabled[0].opportunity_type == "complementary_outcomes"
+    assert disabled[0].opportunity_type == "complementary_outcomes"
+
+
+def test_canonical_min_ev_threshold_drops_low_ev_fitted_middles():
+    """A floor above every candidate's EV drops them all; a low floor keeps them."""
+    offers = _line_middle_offers_basketball()
+    no_floor = analyze_canonical_offers(offers, min_fitted_middle_ev_percent=0.0)
+    assert len(no_floor) >= 1
+    assert all(o.middle_ev is not None and o.middle_ev > 0 for o in no_floor)
+    max_ev_percent = max(o.middle_ev for o in no_floor) * 100
+
+    # Set the floor above every candidate's EV → all dropped.
+    floor_above_max = max_ev_percent + 5.0
+    filtered = analyze_canonical_offers(
+        offers, min_fitted_middle_ev_percent=floor_above_max
+    )
+    assert filtered == []
+
+    # Floor below the max → at least one survives.
+    floor_below_max = max(0.0, max_ev_percent - 0.5)
+    surviving = analyze_canonical_offers(
+        offers, min_fitted_middle_ev_percent=floor_below_max
+    )
+    assert len(surviving) >= 1
+    assert all(o.middle_ev * 100 >= floor_below_max for o in surviving)
+
+
+def test_canonical_min_ev_threshold_drops_fallback_middles_when_positive():
+    """Football-totals fallback (no fitted EV) drops out at any positive threshold,
+    survives at threshold == 0. Gap must be >= FALLBACK_MIDDLE_MIN_GAP=2.0 and
+    outside_margin must clear the football margin floor of -0.05."""
+    offers = [
+        _outcome_offer("balkanbet", "football_total_goals", "over", 2.10, line=1.5),
+        _outcome_offer("maxbet", "football_total_goals", "under", 2.10, line=3.5),
+    ]
+    survivors_zero = analyze_canonical_offers(offers, min_fitted_middle_ev_percent=0.0)
+    survivors_positive = analyze_canonical_offers(
+        offers, min_fitted_middle_ev_percent=0.01
+    )
+
+    middles_zero = [o for o in survivors_zero if o.opportunity_type == "middle"]
+    middles_positive = [
+        o for o in survivors_positive if o.opportunity_type == "middle"
+    ]
+    # Must have at least one fallback middle when the threshold is 0
+    assert len(middles_zero) >= 1
+    fallback = [
+        o
+        for o in middles_zero
+        if o.middle_ev is None and o.middle_model_confidence == "fallback"
+    ]
+    assert len(fallback) == len(middles_zero), (
+        "expected all surviving middles to be fallback (no fitted EV) for football-totals at line 1.5/3.5"
+    )
+    # And zero when the floor is positive (fallbacks have no EV → drop)
+    assert middles_positive == []
+
+
+def test_canonical_kill_switch_overrides_threshold():
+    """When the kill-switch is off, threshold value is irrelevant — no middles ever."""
+    offers = _line_middle_offers_basketball()
+    result = analyze_canonical_offers(
+        offers,
+        enable_fitted_middles=False,
+        min_fitted_middle_ev_percent=0.0,
+    )
+    assert result == []
+    # And with a non-zero threshold:
+    result = analyze_canonical_offers(
+        offers,
+        enable_fitted_middles=False,
+        min_fitted_middle_ev_percent=50.0,
+    )
+    assert result == []
+
+
+def test_canonical_default_function_args_preserve_legacy_behaviour():
+    """Calling analyze_canonical_offers with no gate args must match legacy behaviour."""
+    offers = _line_middle_offers_basketball()
+    legacy = analyze_canonical_offers(offers)
+    explicit_on = analyze_canonical_offers(
+        offers, enable_fitted_middles=True, min_fitted_middle_ev_percent=0.0
+    )
+    assert len(legacy) == len(explicit_on)
+    assert len(legacy) >= 1
+    assert all(o.opportunity_type == "middle" for o in legacy)

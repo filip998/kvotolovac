@@ -147,6 +147,8 @@ def _analyze_total_goals(
     *,
     match_id: str,
     resolved_event_id: str | None,
+    enable_fitted_middles: bool = True,
+    min_fitted_middle_ev_percent: float = 0.0,
 ) -> list[Opportunity]:
     totals = [
         item.offer
@@ -187,6 +189,9 @@ def _analyze_total_goals(
                 )
             continue
 
+        if not enable_fitted_middles:
+            continue
+
         low, high = (a, b) if a.line < b.line else (b, a)
         if low.outcome_code != "over" or high.outcome_code != "under":
             continue
@@ -206,6 +211,10 @@ def _analyze_total_goals(
         )
         if not estimate.should_publish:
             continue
+        if min_fitted_middle_ev_percent > 0:
+            ev = estimate.expected_roi
+            if ev is None or ev * 100 < min_fitted_middle_ev_percent:
+                continue
         opportunities.append(
             Opportunity(
                 sport=low.sport,
@@ -289,6 +298,8 @@ def analyze_outcome_offers(
     *,
     event_members: list[ResolvedEventMemberOut] | None = None,
     event_primary_match_ids: Mapping[str, str] | None = None,
+    enable_fitted_middles: bool = True,
+    min_fitted_middle_ev_percent: float = 0.0,
 ) -> list[Opportunity]:
     member_by_offer = (
         _active_member_lookup(event_members)
@@ -329,6 +340,8 @@ def analyze_outcome_offers(
                 group,
                 match_id=match_id,
                 resolved_event_id=resolved_event_id,
+                enable_fitted_middles=enable_fitted_middles,
+                min_fitted_middle_ev_percent=min_fitted_middle_ev_percent,
             ),
         ]:
             deduped[_dedupe_key(opportunity)] = opportunity

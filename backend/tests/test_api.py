@@ -2389,3 +2389,111 @@ async def test_init_db_rebuilds_legacy_tables_with_canonical_team_foreign_keys(t
         )
         await db.commit()
     await db.rollback()
+
+
+# ── feature gate (issue #131): kill-switch + fitted-EV threshold ──────────
+
+
+@pytest.mark.asyncio
+async def test_get_scrape_settings_exposes_fitted_middle_gate(client: AsyncClient):
+    """The settings response surfaces the new gate fields and their option bounds."""
+    resp = await client.get("/api/v1/settings/scrape")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    # Schema-level default is True (preserves legacy persisted JSON), but the
+    # user-facing default flows through config.py → False on a fresh seed.
+    assert data["applied"]["enable_fitted_middles"] == settings.enable_fitted_middles
+    assert (
+        data["applied"]["min_fitted_middle_ev_percent"]
+        == settings.min_fitted_middle_ev_percent
+    )
+    assert data["defaults"]["enable_fitted_middles"] == settings.enable_fitted_middles
+    assert (
+        data["defaults"]["min_fitted_middle_ev_percent"]
+        == settings.min_fitted_middle_ev_percent
+    )
+    assert data["options"]["min_fitted_middle_ev_percent_min"] == 0.0
+    assert data["options"]["min_fitted_middle_ev_percent_max"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_patch_scrape_settings_accepts_fitted_middle_gate(client: AsyncClient):
+    """The PATCH endpoint accepts the gate fields and they roundtrip."""
+    resp = await client.patch(
+        "/api/v1/settings/scrape",
+        json={
+            "enable_fitted_middles": True,
+            "min_fitted_middle_ev_percent": 3.5,
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["applied"]["enable_fitted_middles"] is True
+    assert data["applied"]["min_fitted_middle_ev_percent"] == 3.5
+
+    get_resp = await client.get("/api/v1/settings/scrape")
+    body = get_resp.json()
+    assert body["applied"]["enable_fitted_middles"] is True
+    assert body["applied"]["min_fitted_middle_ev_percent"] == 3.5
+
+
+@pytest.mark.asyncio
+async def test_patch_scrape_settings_rejects_min_fitted_middle_ev_percent_above_100(
+    client: AsyncClient,
+):
+    resp = await client.patch(
+        "/api/v1/settings/scrape",
+        json={"min_fitted_middle_ev_percent": 150.0},
+    )
+    assert resp.status_code == 422
+    assert "min_fitted_middle_ev_percent" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_patch_scrape_settings_rejects_negative_min_fitted_middle_ev_percent(
+    client: AsyncClient,
+):
+    resp = await client.patch(
+        "/api/v1/settings/scrape",
+        json={"min_fitted_middle_ev_percent": -1.0},
+    )
+    # Pydantic ge=0 rejects this at parse time → 422
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_legacy_persisted_scrape_settings_without_gate_fields_load_with_schema_defaults(
+    client: AsyncClient, monkeypatch
+):
+    """A pre-upgrade JSON blob without the new fields loads cleanly. Schema-level
+    defaults are True / 0.0 (preserve existing dev installs)."""
+    from app.services.runtime_settings import _settings_from_json
+
+    legacy_json = (
+        '{"enabled_bookmakers": ["mozzart"], "enabled_sports": ["basketball"], '
+        '"scrape_market_scope": "all", "analysis_markets": ["all"], '
+        '"scrape_lookahead_hours": 24, "scrape_interval_minutes": 10, '
+        '"max_middle_opportunities_per_market": 10, "rate_limit_per_second": 1.0, '
+        '"meridian_rate_limit_per_second": 2.0, '
+        '"soccerbet_detail_mode": "partial", "merkurxtip_detail_mode": "partial", '
+        '"pinnbet_detail_mode": "partial", "betole_detail_mode": "partial", '
+        '"notification_gap_threshold": 1.5, "persist_inapp_notifications": false}'
+    )
+    parsed = _settings_from_json(legacy_json)
+    # Schema-level default for enable_fitted_middles is True (legacy preservation).
+    assert parsed.enable_fitted_middles is True
+    assert parsed.min_fitted_middle_ev_percent == 0.0
+
+
+def test_config_module_default_is_off():
+    """The config-level default for the kill-switch must be OFF (per #131 product
+    decision). Read directly from the Settings class to verify that the default
+    isn't accidentally flipped by a future PR. Bypasses the autouse fixture
+    which sets it to True for cycle tests."""
+    from app.config import Settings
+
+    fresh = Settings()
+    assert fresh.enable_fitted_middles is False
+    assert fresh.min_fitted_middle_ev_percent == 0.0

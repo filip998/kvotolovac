@@ -127,3 +127,55 @@ def test_analyze_total_goals_middle_filters_large_outside_loss():
     )
 
     assert opportunities == []
+
+
+# ── feature gate (issue #131): kill-switch + fitted-EV threshold ──────────
+
+
+def _legacy_middle_offers():
+    """Football-totals middle (line gap 3.0) that survives the football margin floor and
+    triggers the line_middle path rather than same_line_arbitrage."""
+    return [
+        _offer("balkanbet", "football_total_goals", "over", 2.0, line=1.5),
+        _offer("maxbet", "football_total_goals", "under", 2.0, line=4.5),
+    ]
+
+
+def _legacy_same_line_arb_offers():
+    return [
+        _offer("maxbet", "football_total_goals", "under", 2.15, line=2.5),
+        _offer("balkanbet", "football_total_goals", "over", 2.85, line=2.5),
+    ]
+
+
+def test_analyze_outcome_offers_default_includes_fitted_middles():
+    """Regression: legacy default behaviour preserved."""
+    opportunities = analyze_outcome_offers(_legacy_middle_offers())
+    assert len(opportunities) == 1
+    assert opportunities[0].opportunity_type == "middle"
+
+
+def test_analyze_outcome_offers_kill_switch_drops_fitted_middles_only():
+    """Kill-switch suppresses ONLY the cross-line middle branch — same-line arbitrage path
+    remains untouched."""
+    arb_only = analyze_outcome_offers(
+        _legacy_same_line_arb_offers(), enable_fitted_middles=False
+    )
+    assert len(arb_only) == 1
+    assert arb_only[0].opportunity_type == "same_line_arbitrage"
+
+    middle_dropped = analyze_outcome_offers(
+        _legacy_middle_offers(), enable_fitted_middles=False
+    )
+    assert middle_dropped == []
+
+
+def test_analyze_outcome_offers_threshold_drops_fallback_middles():
+    """Positive threshold drops fallback middles (no fitted EV)."""
+    offers = _legacy_middle_offers()
+    no_floor = analyze_outcome_offers(offers, min_fitted_middle_ev_percent=0.0)
+    assert len(no_floor) == 1
+    assert no_floor[0].middle_ev is None  # fallback path
+
+    with_floor = analyze_outcome_offers(offers, min_fitted_middle_ev_percent=0.5)
+    assert with_floor == []

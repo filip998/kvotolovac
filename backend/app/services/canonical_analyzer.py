@@ -158,6 +158,8 @@ def analyze_canonical_offers(
     min_gap: float = 0.0,
     event_primary_match_ids: Mapping[str, str] | None = None,
     max_middle_opportunities_per_market: int | None = 10,
+    enable_fitted_middles: bool = True,
+    min_fitted_middle_ev_percent: float = 0.0,
 ) -> list[Opportunity]:
     """Find two-leg opportunities from canonical bookmaker offers."""
     return list(
@@ -166,6 +168,8 @@ def analyze_canonical_offers(
             min_gap=min_gap,
             event_primary_match_ids=event_primary_match_ids,
             max_middle_opportunities_per_market=max_middle_opportunities_per_market,
+            enable_fitted_middles=enable_fitted_middles,
+            min_fitted_middle_ev_percent=min_fitted_middle_ev_percent,
         ).opportunities
     )
 
@@ -176,6 +180,8 @@ def analyze_canonical_offers_with_benchmark(
     min_gap: float = 0.0,
     event_primary_match_ids: Mapping[str, str] | None = None,
     max_middle_opportunities_per_market: int | None = 10,
+    enable_fitted_middles: bool = True,
+    min_fitted_middle_ev_percent: float = 0.0,
     canonical_offer_load_ms: int = 0,
     primary_match_lookup_ms: int = 0,
 ) -> CanonicalOpportunityAnalysisResult:
@@ -209,6 +215,8 @@ def analyze_canonical_offers_with_benchmark(
             metrics,
             min_gap=min_gap,
             max_opportunities=max_middle_opportunities_per_market,
+            enable_fitted_middles=enable_fitted_middles,
+            min_fitted_middle_ev_percent=min_fitted_middle_ev_percent,
         ):
             deduped[_dedupe_key(opportunity)] = opportunity
 
@@ -297,6 +305,8 @@ def _analyze_line_middle(
     *,
     min_gap: float,
     max_opportunities: int | None,
+    enable_fitted_middles: bool = True,
+    min_fitted_middle_ev_percent: float = 0.0,
 ) -> list[Opportunity]:
     started_at = time.perf_counter()
     if not group:
@@ -316,6 +326,8 @@ def _analyze_line_middle(
             rule_metrics=rule_metrics,
             min_gap=min_gap,
             max_opportunities=max_opportunities,
+            enable_fitted_middles=enable_fitted_middles,
+            min_fitted_middle_ev_percent=min_fitted_middle_ev_percent,
         )
     finally:
         duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -330,7 +342,11 @@ def _analyze_line_middle_inner(
     rule_metrics: _RuleBenchmarkAcc,
     min_gap: float,
     max_opportunities: int | None,
+    enable_fitted_middles: bool = True,
+    min_fitted_middle_ev_percent: float = 0.0,
 ) -> list[Opportunity]:
+    if not enable_fitted_middles:
+        return []
     if max_opportunities is not None and max_opportunities <= 0:
         return []
 
@@ -391,6 +407,10 @@ def _analyze_line_middle_inner(
                     )
                     if not estimate.should_publish:
                         continue
+                    if min_fitted_middle_ev_percent > 0:
+                        ev = estimate.expected_roi
+                        if ev is None or ev * 100 < min_fitted_middle_ev_percent:
+                            continue
                     candidates.append(
                         _LineMiddleCandidate(
                             low=low,

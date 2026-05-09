@@ -83,6 +83,12 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
         "pinnbet": settings.pinnbet_detail_mode,
         "soccerbet": settings.soccerbet_detail_mode,
     }
+    assert (
+        body["metadata"]["max_middle_opportunities_per_market"]
+        == settings.max_middle_opportunities_per_market
+    )
+    assert body["metadata"]["enable_fitted_middles"] is True
+    assert body["metadata"]["min_fitted_middle_ev_percent"] == 0.0
     assert "scrape" in body["phase_durations_ms"]
     assert "normalize_threshold_odds" in body["phase_durations_ms"]
     assert "normalize_outcome_offers" in body["phase_durations_ms"]

@@ -24,6 +24,7 @@ type NumericSetting =
   | 'scrape_interval_minutes'
   | 'scrape_lookahead_hours'
   | 'max_middle_opportunities_per_market'
+  | 'min_fitted_middle_ev_percent'
   | 'rate_limit_per_second'
   | 'meridian_rate_limit_per_second'
   | 'notification_gap_threshold';
@@ -266,6 +267,7 @@ function NumberControl({
   step = 1,
   unit,
   onChange,
+  disabled,
 }: {
   value: number;
   min?: number;
@@ -273,9 +275,15 @@ function NumberControl({
   step?: number;
   unit: string;
   onChange: (value: string) => void;
+  disabled?: boolean;
 }) {
   return (
-    <span className="flex w-full items-center rounded-xl border border-border bg-bg px-3 py-2 text-sm text-text transition focus-within:border-accent sm:w-40">
+    <span
+      className={`flex w-full items-center rounded-xl border border-border bg-bg px-3 py-2 text-sm text-text transition focus-within:border-accent sm:w-40 ${
+        disabled ? 'opacity-50' : ''
+      }`}
+      aria-disabled={disabled || undefined}
+    >
       <input
         type="number"
         min={min}
@@ -283,7 +291,8 @@ function NumberControl({
         step={step}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="min-w-0 flex-1 bg-transparent text-right font-semibold outline-none"
+        disabled={disabled}
+        className="min-w-0 flex-1 bg-transparent text-right font-semibold outline-none disabled:cursor-not-allowed"
       />
       <span className="ml-2 text-xs text-text-muted">{unit}</span>
     </span>
@@ -1130,6 +1139,43 @@ function SettingsForm({
               max={options.max_middle_opportunities_per_market_max}
               unit="rows"
               onChange={(value) => setNumber('max_middle_opportunities_per_market', value)}
+            />
+          </SettingRow>
+
+          <SettingRow
+            label="Enable fitted EV middles"
+            description="Show model-fitted middle opportunities (over-low / under-high). Pure arbitrages and same-line arbs are unaffected."
+            onClick={() =>
+              setDraft((current) => ({
+                ...current,
+                enable_fitted_middles: !current.enable_fitted_middles,
+              }))
+            }
+          >
+            <SwitchControl
+              checked={draft.enable_fitted_middles}
+              ariaLabel="Enable fitted EV middles"
+              onChange={(checked) =>
+                setDraft((current) => ({
+                  ...current,
+                  enable_fitted_middles: checked,
+                }))
+              }
+            />
+          </SettingRow>
+
+          <SettingRow
+            label="Min fitted middle EV"
+            description="Hide model-fitted middles below this expected ROI floor. Fallback (unscored) middles are also hidden when this is > 0."
+          >
+            <NumberControl
+              value={draft.min_fitted_middle_ev_percent}
+              min={options.min_fitted_middle_ev_percent_min}
+              max={options.min_fitted_middle_ev_percent_max}
+              step={0.1}
+              unit="%"
+              disabled={!draft.enable_fitted_middles}
+              onChange={(value) => setNumber('min_fitted_middle_ev_percent', value)}
             />
           </SettingRow>
         </div>

@@ -35,6 +35,7 @@ _SUPPORTED_SPORTS = ("basketball", "football", "tennis")
 _SCRAPE_INTERVAL_MINUTES_MAX = 24 * 60
 _SCRAPE_LOOKAHEAD_HOURS_MAX = 24 * 365 * 10
 _MAX_MIDDLE_OPPORTUNITIES_PER_MARKET_MAX = 1000
+_MIN_FITTED_MIDDLE_EV_PERCENT_MAX = 100.0
 _RATE_LIMIT_PER_SECOND_MAX = 20.0
 _SETTINGS_LOCK: asyncio.Lock | None = None
 _SETTINGS_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
@@ -73,6 +74,8 @@ def default_scrape_runtime_settings(
         scrape_lookahead_hours=settings.scrape_lookahead_hours,
         scrape_interval_minutes=settings.scrape_interval_minutes,
         max_middle_opportunities_per_market=settings.max_middle_opportunities_per_market,
+        enable_fitted_middles=settings.enable_fitted_middles,
+        min_fitted_middle_ev_percent=settings.min_fitted_middle_ev_percent,
         rate_limit_per_second=settings.rate_limit_per_second,
         meridian_rate_limit_per_second=settings.meridian_rate_limit_per_second,
         soccerbet_detail_mode=settings.soccerbet_detail_mode,
@@ -206,6 +209,12 @@ def validate_scrape_runtime_settings(
         maximum=_MAX_MIDDLE_OPPORTUNITIES_PER_MARKET_MAX,
     )
     _validate_range(
+        "min_fitted_middle_ev_percent",
+        normalized.min_fitted_middle_ev_percent,
+        minimum=0,
+        maximum=_MIN_FITTED_MIDDLE_EV_PERCENT_MAX,
+    )
+    _validate_range(
         "rate_limit_per_second",
         normalized.rate_limit_per_second,
         minimum=0,
@@ -264,6 +273,11 @@ def _sanitize_persisted_scrape_runtime_settings(
                 values.max_middle_opportunities_per_market,
                 minimum=1,
                 maximum=_MAX_MIDDLE_OPPORTUNITIES_PER_MARKET_MAX,
+            ),
+            "min_fitted_middle_ev_percent": _clamp(
+                values.min_fitted_middle_ev_percent,
+                minimum=0,
+                maximum=_MIN_FITTED_MIDDLE_EV_PERCENT_MAX,
             ),
             "rate_limit_per_second": _clamp(
                 values.rate_limit_per_second,
@@ -502,5 +516,6 @@ def _settings_options(*, applied: ScrapeRuntimeSettings) -> ScrapeSettingsOption
         scrape_interval_minutes_max=_SCRAPE_INTERVAL_MINUTES_MAX,
         scrape_lookahead_hours_max=_SCRAPE_LOOKAHEAD_HOURS_MAX,
         max_middle_opportunities_per_market_max=_MAX_MIDDLE_OPPORTUNITIES_PER_MARKET_MAX,
+        min_fitted_middle_ev_percent_max=_MIN_FITTED_MIDDLE_EV_PERCENT_MAX,
         rate_limit_per_second_max=_RATE_LIMIT_PER_SECOND_MAX,
     )
