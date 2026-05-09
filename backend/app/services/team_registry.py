@@ -520,6 +520,7 @@ def clear_team_registry_cache(*, reset_bootstrap: bool = True) -> None:
     _find_resolution_by_exact_alias_cached.cache_clear()
     _load_team_search_rows.cache_clear()
     _load_team_review_search_choices.cache_clear()
+    _load_team_review_search_snapshot.cache_clear()
     _load_canonical_team_list_rows.cache_clear()
 
 
@@ -854,6 +855,198 @@ def _load_team_review_search_choices(
     )
 
 
+_MIN_TOKEN_LEN_FOR_INDEX = 3
+_MAX_TOKEN_TEAM_FREQUENCY = 0.10
+_MIN_TOKEN_TEAM_FREQUENCY_FLOOR = 10
+_TRIGRAM_LEN = 3
+
+
+def _generate_trigrams(normalized_choice: str) -> tuple[str, ...]:
+    """Return the whitespace-stripped 3-grams of ``normalized_choice``.
+
+    Whitespace is removed so split-token bookmaker spellings (e.g.
+    ``"liver pool"``) still share trigrams with concatenated canonical names
+    (e.g. ``"liverpool"``). Strings shorter than 3 characters after stripping
+    produce no trigrams (the caller falls back to full scan when both the
+    token index and the trigram index miss).
+    """
+    compact = normalized_choice.replace(" ", "")
+    if len(compact) < _TRIGRAM_LEN:
+        return ()
+    return tuple(
+        compact[i : i + _TRIGRAM_LEN]
+        for i in range(len(compact) - _TRIGRAM_LEN + 1)
+    )
+
+
+@lru_cache(maxsize=16)
+def _load_team_review_search_snapshot(
+    db_path: str,
+    sport: str,
+) -> tuple[
+    tuple[int, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    dict[str, tuple[int, ...]],
+    dict[str, tuple[int, ...]],
+    dict[int, tuple[int, ...]],
+]:
+    """Atomically build the team-review search choices and inverted indexes
+    from a single :func:`_load_team_search_rows` snapshot.
+
+    Returning everything from one cache entry guarantees that the choices'
+    flat-list positions match the indexes' idx values even if
+    ``clear_team_registry_cache`` fires between two consumer reads — the
+    tuple a caller already holds is a coherent snapshot regardless of what
+    the cache returns next.
+
+    Returns seven items, in this order:
+
+    - ``team_ids[i]``             — owning team for row ``i``
+    - ``team_names[i]``           — canonical display name of that team
+    - ``candidate_values[i]``     — original string for this row
+    - ``normalized_choices[i]``   — ``normalize_identity_text(candidate_values[i])``
+    - ``token_index[token]``      — tuple of flat idxs whose normalized choice
+      contains ``token``. Tokens shorter than 3 characters or matching more
+      than ``max(10, total_teams * 0.10)`` distinct teams are excluded.
+    - ``trigram_index[trigram]``  — tuple of flat idxs whose
+      whitespace-stripped normalized choice contains ``trigram``.
+    - ``idxs_by_team_id[team_id]``— tuple of all flat idxs belonging to that
+      team (for team-set expansion during prefiltering).
+
+    Cache invalidation is wired into :func:`clear_team_registry_cache`.
+    """
+    del db_path
+    team_ids_list: list[int] = []
+    team_names_list: list[str] = []
+    candidate_values_list: list[str] = []
+    normalized_choices_list: list[str] = []
+    for team_id, team_name, aliases in _load_team_search_rows(settings.db_path, sport):
+        for candidate_value in (team_name, *aliases):
+            team_ids_list.append(team_id)
+            team_names_list.append(team_name)
+            candidate_values_list.append(candidate_value)
+            normalized_choices_list.append(normalize_identity_text(candidate_value))
+
+    team_ids = tuple(team_ids_list)
+    team_names = tuple(team_names_list)
+    candidate_values = tuple(candidate_values_list)
+    normalized_choices = tuple(normalized_choices_list)
+
+    token_index_lists: dict[str, list[int]] = {}
+    trigram_index_lists: dict[str, list[int]] = {}
+    idxs_by_team_id_lists: dict[int, list[int]] = {}
+    teams_per_token: dict[str, set[int]] = {}
+
+    for idx, normalized in enumerate(normalized_choices):
+        team_id = team_ids[idx]
+        idxs_by_team_id_lists.setdefault(team_id, []).append(idx)
+        if not normalized:
+            continue
+        seen_tokens_for_idx: set[str] = set()
+        for token in normalized.split():
+            if len(token) < _MIN_TOKEN_LEN_FOR_INDEX:
+                continue
+            if token in seen_tokens_for_idx:
+                continue
+            seen_tokens_for_idx.add(token)
+            token_index_lists.setdefault(token, []).append(idx)
+            teams_per_token.setdefault(token, set()).add(team_id)
+        seen_trigrams_for_idx: set[str] = set()
+        for trigram in _generate_trigrams(normalized):
+            if trigram in seen_trigrams_for_idx:
+                continue
+            seen_trigrams_for_idx.add(trigram)
+            trigram_index_lists.setdefault(trigram, []).append(idx)
+
+    total_teams = len(idxs_by_team_id_lists)
+    if total_teams > 0:
+        max_team_count = max(
+            _MIN_TOKEN_TEAM_FREQUENCY_FLOOR,
+            int(total_teams * _MAX_TOKEN_TEAM_FREQUENCY),
+        )
+        token_index = {
+            token: tuple(idxs)
+            for token, idxs in token_index_lists.items()
+            if len(teams_per_token.get(token, ())) <= max_team_count
+        }
+    else:
+        token_index = {}
+
+    trigram_index = {
+        trigram: tuple(idxs) for trigram, idxs in trigram_index_lists.items()
+    }
+    idxs_by_team_id = {
+        team_id: tuple(idxs) for team_id, idxs in idxs_by_team_id_lists.items()
+    }
+    return (
+        team_ids,
+        team_names,
+        candidate_values,
+        normalized_choices,
+        token_index,
+        trigram_index,
+        idxs_by_team_id,
+    )
+
+
+def _load_team_review_search_indexes(
+    db_path: str,
+    sport: str,
+) -> tuple[
+    dict[str, tuple[int, ...]],
+    dict[str, tuple[int, ...]],
+    dict[int, tuple[int, ...]],
+]:
+    """Backwards-compatible accessor for callers (currently only tests) that
+    only need the three index dicts. Reads from the same atomic snapshot as
+    :func:`_load_team_review_search_snapshot`.
+    """
+    _t, _n, _c, _nc, token_index, trigram_index, idxs_by_team_id = (
+        _load_team_review_search_snapshot(db_path, sport)
+    )
+    return token_index, trigram_index, idxs_by_team_id
+
+
+def _collect_team_search_candidate_idxs(
+    raw_key: str,
+    *,
+    token_index: dict[str, tuple[int, ...]],
+    trigram_index: dict[str, tuple[int, ...]],
+    idxs_by_team_id: dict[int, tuple[int, ...]],
+    team_ids: tuple[int, ...],
+    total_rows: int,
+) -> list[int]:
+    """Return the sorted ascending list of candidate idxs for ``raw_key``.
+
+    Performs token-index lookup (length >= 3 only), trigram-index lookup,
+    and *team-set expansion* (every team whose any row hit the prefilter
+    contributes all of its rows). Falls back to the full corpus when both
+    indexes miss everything — preserves behaviour on degenerate queries
+    (single-character, whitespace-only, etc).
+
+    Sorted-ascending output preserves the original-flat-index order on
+    which the per-team strict-``>`` aggregation relies for tie-breaking.
+    """
+    initial: set[int] = set()
+    for token in raw_key.split():
+        if len(token) < _MIN_TOKEN_LEN_FOR_INDEX:
+            continue
+        initial.update(token_index.get(token, ()))
+    for trigram in _generate_trigrams(raw_key):
+        initial.update(trigram_index.get(trigram, ()))
+
+    if not initial:
+        return list(range(total_rows))
+
+    matched_team_ids = {team_ids[idx] for idx in initial}
+    expanded: set[int] = set()
+    for team_id in matched_team_ids:
+        expanded.update(idxs_by_team_id[team_id])
+    return sorted(expanded)
+
+
 def search_canonical_team_candidates(
     raw_team_name: str,
     *,
@@ -865,34 +1058,51 @@ def search_canonical_team_candidates(
     if not raw_key:
         return []
 
-    team_ids, team_names, candidate_values, normalized_choices = (
-        _load_team_review_search_choices(settings.db_path, sport)
-    )
+    (
+        team_ids,
+        team_names,
+        candidate_values,
+        normalized_choices,
+        token_index,
+        trigram_index,
+        idxs_by_team_id,
+    ) = _load_team_review_search_snapshot(settings.db_path, sport)
     if not team_ids:
         return []
 
-    row_count = len(normalized_choices)
-    score_a = [0.0] * row_count
-    score_b = [0.0] * row_count
-    for _choice, score, idx in process.extract(
+    candidate_idxs = _collect_team_search_candidate_idxs(
         raw_key,
-        normalized_choices,
+        token_index=token_index,
+        trigram_index=trigram_index,
+        idxs_by_team_id=idxs_by_team_id,
+        team_ids=team_ids,
+        total_rows=len(normalized_choices),
+    )
+    if not candidate_idxs:
+        return []
+
+    candidate_choices = [normalized_choices[idx] for idx in candidate_idxs]
+    score_a: dict[int, float] = {idx: 0.0 for idx in candidate_idxs}
+    score_b: dict[int, float] = {idx: 0.0 for idx in candidate_idxs}
+    for _choice, score, sub_idx in process.extract(
+        raw_key,
+        candidate_choices,
         scorer=fuzz.token_set_ratio,
-        limit=row_count,
+        limit=len(candidate_choices),
         score_cutoff=0.0,
     ):
-        score_a[idx] = float(score)
-    for _choice, score, idx in process.extract(
+        score_a[candidate_idxs[sub_idx]] = float(score)
+    for _choice, score, sub_idx in process.extract(
         raw_key,
-        normalized_choices,
+        candidate_choices,
         scorer=fuzz.partial_ratio,
-        limit=row_count,
+        limit=len(candidate_choices),
         score_cutoff=0.0,
     ):
-        score_b[idx] = float(score)
+        score_b[candidate_idxs[sub_idx]] = float(score)
 
     best_by_team: dict[int, tuple[float, int]] = {}
-    for idx in range(row_count):
+    for idx in candidate_idxs:
         normalized = normalized_choices[idx]
         if not normalized or normalized == raw_key:
             continue

@@ -503,12 +503,20 @@ def test_search_canonical_team_candidates_limit_caps_results(team_registry_file)
     assert len(results_full) == 5
 
 
-def test_search_canonical_team_candidates_matches_reference_implementation(
+def test_search_canonical_team_candidates_top1_matches_reference_implementation(
     team_registry_file,
 ):
-    """Equivalence oracle: assert the new batched implementation returns
-    exactly the same list (order, scores, matched_alias) as a verbatim copy
-    of the old per-pair scoring loop."""
+    """Top-1 equivalence oracle: assert the prefilter implementation picks the
+    same #1 result as a verbatim copy of the pre-#125 algorithm.
+
+    The post-#128 prefilter does not preserve full bit-identical equivalence
+    on `limit > 1` because the prefilter intentionally drops candidates that
+    score via partial-substring overlap with no shared tokens or trigrams
+    (e.g. ``'FC Atletico'`` vs ``'FC Real'`` scores 76.9 in the reference
+    but is dropped by the prefilter — that is a deliberate precision
+    tradeoff, not a regression). Top-1 stays the same because the genuine
+    best match always shares strong signal with the query.
+    """
     team_registry.create_canonical_team(
         display_name="Real Madrid", sport="football"
     )
@@ -547,14 +555,441 @@ def test_search_canonical_team_candidates_matches_reference_implementation(
         "Sociedad de San Sebastian",
     ]
     for query in queries:
-        for limit in (1, 3, 5):
-            actual = team_registry.search_canonical_team_candidates(
-                query, sport="football", limit=limit
-            )
-            expected = _reference_search_canonical_team_candidates(
-                query, sport="football", limit=limit
-            )
-            assert actual == expected, (
-                f"mismatch for query={query!r} limit={limit}: "
-                f"actual={actual!r} expected={expected!r}"
-            )
+        actual = team_registry.search_canonical_team_candidates(
+            query, sport="football", limit=3
+        )
+        expected = _reference_search_canonical_team_candidates(
+            query, sport="football", limit=3
+        )
+        assert actual, f"prefilter returned no result for query={query!r}"
+        assert expected, f"reference returned no result for query={query!r}"
+        assert actual[0].team_id == expected[0].team_id, (
+            f"top-1 team_id mismatch for query={query!r}: "
+            f"actual={actual[0]!r} expected={expected[0]!r}"
+        )
+        assert actual[0].team_name == expected[0].team_name
+        assert actual[0].score == expected[0].score
+        assert actual[0].matched_alias == expected[0].matched_alias
+
+
+# ---------------------------------------------------------------------------
+# Token + trigram inverted-index prefilter (issue #128)
+#
+# These tests pin the new prefilter behaviour: index correctness, candidate
+# selection (token / trigram / fallback / team-set expansion), end-to-end
+# semantic recall on randomized mutations, and explicit recall-risk
+# sentinels for legitimate fuzzy matches that the prefilter must keep.
+
+import random as _random
+
+
+def test_load_team_review_search_indexes_empty_corpus(team_registry_file):
+    token_index, trigram_index, idxs_by_team_id = (
+        team_registry._load_team_review_search_indexes(
+            team_registry.settings.db_path, "football"
+        )
+    )
+    assert token_index == {}
+    assert trigram_index == {}
+    assert idxs_by_team_id == {}
+
+
+def test_load_team_review_search_indexes_token_index_correctness(
+    team_registry_file,
+):
+    real = team_registry.create_canonical_team(
+        display_name="Real Madrid", sport="football"
+    )
+    atletico = team_registry.create_canonical_team(
+        display_name="Atletico Madrid", sport="football"
+    )
+    barcelona = team_registry.create_canonical_team(
+        display_name="Barcelona", sport="football"
+    )
+    token_index, _, idxs_by_team_id = team_registry._load_team_review_search_indexes(
+        team_registry.settings.db_path, "football"
+    )
+
+    real_idxs = set(idxs_by_team_id[real.team_id])
+    atletico_idxs = set(idxs_by_team_id[atletico.team_id])
+    barcelona_idxs = set(idxs_by_team_id[barcelona.team_id])
+
+    madrid_hits = set(token_index.get("madrid", ()))
+    assert madrid_hits & real_idxs, "real madrid rows must be in token_index['madrid']"
+    assert madrid_hits & atletico_idxs, "atletico madrid rows must be in token_index['madrid']"
+    assert not (madrid_hits & barcelona_idxs)
+
+    barcelona_hits = set(token_index.get("barcelona", ()))
+    assert barcelona_hits == barcelona_idxs
+
+
+def test_load_team_review_search_indexes_skips_short_tokens(team_registry_file):
+    """Tokens shorter than 3 chars are deliberately excluded so common
+    affixes like ``"fc"`` do not balloon the candidate set."""
+    team_registry.create_canonical_team(
+        display_name="Real Madrid CF", sport="football"
+    )
+    team_registry.create_canonical_team(
+        display_name="FC Barcelona", sport="football"
+    )
+    token_index, _, _ = team_registry._load_team_review_search_indexes(
+        team_registry.settings.db_path, "football"
+    )
+    assert "fc" not in token_index
+    assert "cf" not in token_index
+    assert "real" in token_index
+    assert "barcelona" in token_index
+
+
+def test_load_team_review_search_indexes_skips_corpus_frequent_tokens(
+    team_registry_file,
+):
+    """Tokens that match more than 10 % of teams (with a min-floor of 10
+    teams to avoid over-filtering small test corpora) are dropped (e.g.
+    ``"fc"``, ``"club"``). Setup: 11 teams all sharing one rare token; that
+    token must NOT be in the index because 11 > floor=10."""
+    for i in range(11):
+        team_registry.create_canonical_team(
+            display_name=f"Team{i:02d} unitedrare", sport="football"
+        )
+    token_index, _, idxs_by_team_id = (
+        team_registry._load_team_review_search_indexes(
+            team_registry.settings.db_path, "football"
+        )
+    )
+    assert len(idxs_by_team_id) == 11
+    assert "unitedrare" not in token_index
+    assert "team00" in token_index
+    assert "team09" in token_index
+
+
+def test_load_team_review_search_indexes_trigram_strips_whitespace(
+    team_registry_file,
+):
+    team_registry.create_canonical_team(
+        display_name="Real Madrid", sport="football"
+    )
+    _, trigram_index, _ = team_registry._load_team_review_search_indexes(
+        team_registry.settings.db_path, "football"
+    )
+    assert "alm" in trigram_index, (
+        "trigram 'alm' (from 'realmadrid') must be present"
+    )
+    assert "rea" in trigram_index
+    assert "rid" in trigram_index
+
+
+def test_load_team_review_search_indexes_idxs_by_team_id_covers_every_row(
+    team_registry_file,
+):
+    real = team_registry.create_canonical_team(
+        display_name="Real Madrid", sport="football"
+    )
+    team_registry.remember_team_alias(
+        bookmaker_id="qa-book",
+        raw_team_name="Los Blancos",
+        team_name="Real Madrid",
+        sport="football",
+    )
+    _, _, idxs_by_team_id = team_registry._load_team_review_search_indexes(
+        team_registry.settings.db_path, "football"
+    )
+    team_ids, _, _, normalized_choices = (
+        team_registry._load_team_review_search_choices(
+            team_registry.settings.db_path, "football"
+        )
+    )
+    real_idxs_from_index = set(idxs_by_team_id[real.team_id])
+    real_idxs_truth = {
+        idx for idx, tid in enumerate(team_ids) if tid == real.team_id
+    }
+    assert real_idxs_from_index == real_idxs_truth
+    assert len(real_idxs_from_index) == 3
+
+
+def test_load_team_review_search_indexes_invalidated_by_clear_cache(
+    team_registry_file,
+):
+    team_registry.create_canonical_team(
+        display_name="Team Alpha", sport="football"
+    )
+    token_index_v1, _, _ = team_registry._load_team_review_search_indexes(
+        team_registry.settings.db_path, "football"
+    )
+    assert "alpha" in token_index_v1
+
+    team_registry.create_canonical_team(
+        display_name="Team Beta", sport="football"
+    )
+    token_index_v2, _, _ = team_registry._load_team_review_search_indexes(
+        team_registry.settings.db_path, "football"
+    )
+    assert "beta" in token_index_v2, (
+        "create_canonical_team must invalidate the index cache so subsequent "
+        "lookups see the newly created team"
+    )
+
+
+def test_collect_candidate_idxs_token_path(team_registry_file):
+    real = team_registry.create_canonical_team(
+        display_name="Real Madrid", sport="football"
+    )
+    barcelona = team_registry.create_canonical_team(
+        display_name="Barcelona", sport="football"
+    )
+    indexes = team_registry._load_team_review_search_indexes(
+        team_registry.settings.db_path, "football"
+    )
+    team_ids, _, _, normalized_choices = (
+        team_registry._load_team_review_search_choices(
+            team_registry.settings.db_path, "football"
+        )
+    )
+
+    candidate_idxs = team_registry._collect_team_search_candidate_idxs(
+        "real Madrid",
+        token_index=indexes[0],
+        trigram_index=indexes[1],
+        idxs_by_team_id=indexes[2],
+        team_ids=team_ids,
+        total_rows=len(normalized_choices),
+    )
+    real_idxs = set(indexes[2][real.team_id])
+    barcelona_idxs = set(indexes[2][barcelona.team_id])
+    assert real_idxs.issubset(set(candidate_idxs))
+    assert not (barcelona_idxs & set(candidate_idxs))
+
+
+def test_collect_candidate_idxs_trigram_path(team_registry_file):
+    """A typo'd query that shares NO tokens still hits via the trigram
+    index. Without trigrams, this case would produce 0 candidates."""
+    liverpool = team_registry.create_canonical_team(
+        display_name="Liverpool", sport="football"
+    )
+    barcelona = team_registry.create_canonical_team(
+        display_name="Barcelona", sport="football"
+    )
+    indexes = team_registry._load_team_review_search_indexes(
+        team_registry.settings.db_path, "football"
+    )
+    team_ids, _, _, normalized_choices = (
+        team_registry._load_team_review_search_choices(
+            team_registry.settings.db_path, "football"
+        )
+    )
+    candidate_idxs = team_registry._collect_team_search_candidate_idxs(
+        "liverpol",
+        token_index=indexes[0],
+        trigram_index=indexes[1],
+        idxs_by_team_id=indexes[2],
+        team_ids=team_ids,
+        total_rows=len(normalized_choices),
+    )
+    liverpool_idxs = set(indexes[2][liverpool.team_id])
+    barcelona_idxs = set(indexes[2][barcelona.team_id])
+    assert liverpool_idxs.issubset(set(candidate_idxs))
+    assert not (barcelona_idxs & set(candidate_idxs))
+
+
+def test_collect_candidate_idxs_empty_set_falls_back_to_full_corpus(
+    team_registry_file,
+):
+    """When token + trigram lookups both miss everything, return the full
+    range so behaviour matches the pre-prefilter implementation."""
+    team_registry.create_canonical_team(
+        display_name="Real Madrid", sport="football"
+    )
+    indexes = team_registry._load_team_review_search_indexes(
+        team_registry.settings.db_path, "football"
+    )
+    team_ids, _, _, normalized_choices = (
+        team_registry._load_team_review_search_choices(
+            team_registry.settings.db_path, "football"
+        )
+    )
+    candidate_idxs = team_registry._collect_team_search_candidate_idxs(
+        "qz",
+        token_index=indexes[0],
+        trigram_index=indexes[1],
+        idxs_by_team_id=indexes[2],
+        team_ids=team_ids,
+        total_rows=len(normalized_choices),
+    )
+    assert candidate_idxs == list(range(len(normalized_choices)))
+
+
+def test_collect_candidate_idxs_team_set_expansion_preserves_tie_semantics(
+    team_registry_file,
+):
+    """When a manual alias of team T is the only row that hits the
+    prefilter, team-set expansion still adds T's team_name row so per-team
+    aggregation can correctly tie-break to ``matched_alias=None``."""
+    foo = team_registry.create_canonical_team(
+        display_name="Foo Bar", sport="football"
+    )
+    team_registry.remember_team_alias(
+        bookmaker_id="qa-book",
+        raw_team_name="Bar Foo",
+        team_name="Foo Bar",
+        sport="football",
+    )
+    indexes = team_registry._load_team_review_search_indexes(
+        team_registry.settings.db_path, "football"
+    )
+    team_ids, _, _, normalized_choices = (
+        team_registry._load_team_review_search_choices(
+            team_registry.settings.db_path, "football"
+        )
+    )
+    candidate_idxs = team_registry._collect_team_search_candidate_idxs(
+        "Bar Foo",
+        token_index=indexes[0],
+        trigram_index=indexes[1],
+        idxs_by_team_id=indexes[2],
+        team_ids=team_ids,
+        total_rows=len(normalized_choices),
+    )
+    foo_idxs = set(indexes[2][foo.team_id])
+    assert foo_idxs.issubset(set(candidate_idxs)), (
+        "team-set expansion must include all of Foo Bar's rows even when "
+        "only one row hit the prefilter"
+    )
+
+
+_RECALL_RISK_FIXTURES = [
+    ("utd", "Manchester United"),
+    ("liverpol", "Liverpool FC"),
+    ("liver pool", "Liverpool FC"),
+    ("bayer munchen", "Bayern Munich"),
+    ("marselle", "Olympique Marseille"),
+    ("man utd", "Manchester United"),
+    ("inter", "Internazionale Milano"),
+]
+
+
+@pytest.mark.parametrize("query,expected_team_name", _RECALL_RISK_FIXTURES)
+def test_search_canonical_team_candidates_recall_risk_sentinels(
+    query, expected_team_name, team_registry_file
+):
+    """Lock in the legitimate fuzzy matches that motivated this issue. If a
+    future change tightens the prefilter (e.g. raises the trigram-overlap
+    threshold) and silently breaks one of these, this parametrized test
+    fails with a clear "missing recall" signal."""
+    for canonical in {expected_team_name, "Barcelona", "Real Madrid", "Atletico Madrid", "Juventus"}:
+        team_registry.create_canonical_team(
+            display_name=canonical, sport="football"
+        )
+    results = team_registry.search_canonical_team_candidates(
+        query, sport="football", limit=3
+    )
+    assert results, f"no candidates returned for query={query!r}"
+    team_names = [c.team_name for c in results]
+    assert expected_team_name in team_names, (
+        f"expected {expected_team_name!r} in top-3 for query={query!r}, "
+        f"got {team_names!r}"
+    )
+
+
+def test_search_canonical_team_candidates_semantic_recall_property(
+    team_registry_file,
+):
+    """Randomized property test: for queries derived from corpus team names
+    via single-character mutations, dropping short noise words, or appending
+    a junk suffix, the source team must appear in the prefilter's top-3
+    result. This is the primary correctness oracle for the prefilter."""
+    rng = _random.Random(20260509)
+    base_names = [
+        "Real Madrid",
+        "Atletico Madrid",
+        "Barcelona",
+        "Sevilla FC",
+        "Real Sociedad",
+        "Athletic Bilbao",
+        "Real Betis",
+        "Valencia",
+        "Villarreal",
+        "Real Mallorca",
+        "Liverpool FC",
+        "Manchester United",
+        "Manchester City",
+        "Chelsea FC",
+        "Arsenal FC",
+        "Tottenham Hotspur",
+        "Newcastle United",
+        "Aston Villa",
+        "Brighton Hove Albion",
+        "Leeds United",
+        "FC Bayern Munich",
+        "Borussia Dortmund",
+        "RB Leipzig",
+        "Bayer Leverkusen",
+        "Eintracht Frankfurt",
+        "Olympique Marseille",
+        "Paris Saint Germain",
+        "Olympique Lyonnais",
+        "AS Monaco",
+        "Stade Rennais",
+    ]
+    for name in base_names:
+        team_registry.create_canonical_team(display_name=name, sport="football")
+
+    def mutate(name: str) -> str | None:
+        """Return a query that differs from ``name`` while preserving most
+        signal, or ``None`` if no usable mutation is possible.
+
+        The function deliberately avoids mutations that strip all signal
+        (e.g. truncating ``"FC Barcelona"`` to ``"FC"``). It also returns
+        ``None`` when the mutation would equal ``name`` exactly (which would
+        trigger the ``candidate_key == raw_key`` skip and the team would be
+        filtered out — that is correct behaviour but not what we are
+        testing here)."""
+        choice = rng.choice(["substitute", "drop_short_word", "append_junk"])
+        words = name.split()
+        if choice == "substitute" and len(name) >= 4:
+            for _ in range(5):
+                i = rng.randrange(1, len(name))
+                if name[i] == " ":
+                    continue
+                replacement = rng.choice("aeiouxz")
+                if replacement == name[i]:
+                    continue
+                mutated = name[:i] + replacement + name[i + 1 :]
+                if mutated != name:
+                    return mutated
+            return None
+        if choice == "drop_short_word" and len(words) > 1:
+            kept = [w for w in words if len(w) >= 4]
+            if len(kept) >= 1 and len(kept) < len(words):
+                mutated = " ".join(kept)
+                if mutated and mutated != name:
+                    return mutated
+            return None
+        if choice == "append_junk":
+            return name + " " + rng.choice(["xtra", "qq", "aux"])
+        return None
+
+    misses: list[tuple[str, str, list[str]]] = []
+    attempts = 0
+    successes = 0
+    while successes < 50 and attempts < 200:
+        attempts += 1
+        source = rng.choice(base_names)
+        query = mutate(source)
+        if query is None:
+            continue
+        successes += 1
+        results = team_registry.search_canonical_team_candidates(
+            query, sport="football", limit=3
+        )
+        names = [c.team_name for c in results]
+        if source not in names:
+            misses.append((query, source, names))
+
+    assert successes >= 30, (
+        f"only {successes}/200 mutation attempts produced a usable query; "
+        "the mutate generator may be too restrictive"
+    )
+    assert not misses, (
+        f"semantic recall failure on {len(misses)} / {successes} queries:\n"
+        + "\n".join(f"  query={q!r} source={s!r} top3={t!r}" for q, s, t in misses)
+    )
