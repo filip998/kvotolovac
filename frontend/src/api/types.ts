@@ -532,6 +532,15 @@ export interface CanonicalTeamFilters {
   include_merged?: boolean;
 }
 
+export type CanonicalTeamPageFilters = CanonicalTeamFilters;
+
+export interface CanonicalTeamsPage {
+  items: CanonicalTeam[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface CanonicalTeamMerge {
   source_team_id: number;
   target_team_id: number;

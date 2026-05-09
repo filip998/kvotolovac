@@ -1,7 +1,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
-  useCanonicalTeams,
+  useCanonicalTeamsPage,
   useMergeCanonicalTeam,
   useUnmergeCanonicalTeam,
   useApproveTeamReviewCase,
@@ -12,7 +12,7 @@ import {
   useTeamReviewCases,
   useUnresolvedOdds,
 } from '../api/hooks';
-import type { OpportunityBoardFilters } from '../api/types';
+import type { CanonicalTeam, OpportunityBoardFilters } from '../api/types';
 import FilterBar from '../components/FilterBar';
 import BookmakerFilterDeck from '../components/BookmakerFilterDeck';
 import EdgeGroupRow from '../components/EdgeRow';
@@ -44,9 +44,18 @@ const SPORT_FILTER_OPTIONS: { value: SportFilter; label: string }[] = [
   { value: 'football', label: 'Football' },
   { value: 'tennis', label: 'Tennis' },
 ];
+const CANONICAL_TEAMS_PAGE_SIZE_OPTIONS = [25, 50, 100, 200, 500];
+const DEFAULT_CANONICAL_TEAMS_PAGE_SIZE = 25;
 
 function sportFilterToParam(value: SportFilter): string | undefined {
   return value === 'both' ? undefined : value;
+}
+
+function clampPageIndex(pageIndex: number, pageSize: number, total: number) {
+  if (total <= 0) {
+    return 0;
+  }
+  return Math.min(pageIndex, Math.floor((total - 1) / pageSize));
 }
 
 export default function Dashboard() {
@@ -70,9 +79,13 @@ export default function Dashboard() {
   const [expandedFlatCalculatorIds, setExpandedFlatCalculatorIds] = useState<Set<string>>(new Set());
   const [teamReviewMessage, setTeamReviewMessage] = useState<string | null>(null);
   const [canonicalTeamMessage, setCanonicalTeamMessage] = useState<string | null>(null);
-  const [selectedCanonicalMergeSourceId, setSelectedCanonicalMergeSourceId] = useState<number | null>(
-    null
+  const [selectedCanonicalMergeSource, setSelectedCanonicalMergeSource] =
+    useState<CanonicalTeam | null>(null);
+  const [canonicalPageIndex, setCanonicalPageIndex] = useState(0);
+  const [canonicalPageSize, setCanonicalPageSize] = useState(
+    DEFAULT_CANONICAL_TEAMS_PAGE_SIZE
   );
+  const [debouncedCanonicalSearchQuery, setDebouncedCanonicalSearchQuery] = useState(searchQuery);
   const [stakeUnitsInput, setStakeUnitsInput] = useState(() =>
     formatDashboardStakeUnitsInput(stakeUnits)
   );
@@ -87,6 +100,10 @@ export default function Dashboard() {
   const switchTab = useCallback((nextTab: DashboardTab) => {
     if (nextTab !== activeTab) {
       setSearchQuery('');
+      setDebouncedCanonicalSearchQuery('');
+      if (nextTab === 'canonical' || activeTab === 'canonical') {
+        setCanonicalPageIndex(0);
+      }
     }
     setActiveTab(nextTab);
   }, [activeTab]);
@@ -94,6 +111,42 @@ export default function Dashboard() {
   useEffect(() => {
     setStakeUnitsInput(formatDashboardStakeUnitsInput(stakeUnits));
   }, [stakeUnits]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedCanonicalSearchQuery(searchQuery);
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [searchQuery]);
+
+  const handleSearchChange = useCallback(
+    (value: string) => {
+      setSearchQuery(value);
+      if (activeTab === 'canonical') {
+        setCanonicalPageIndex(0);
+      }
+    },
+    [activeTab]
+  );
+
+  const handleDiagnosticsSportChange = useCallback((sport: 'basketball' | 'football') => {
+    setDiagnosticsSport(sport);
+    setCanonicalPageIndex(0);
+    setSelectedCanonicalMergeSource(null);
+  }, []);
+
+  const handleCanonicalPageSizeChange = useCallback((pageSize: number) => {
+    setCanonicalPageSize(pageSize);
+    setCanonicalPageIndex(0);
+  }, []);
+
+  const handleCanonicalPreviousPage = useCallback(() => {
+    setCanonicalPageIndex((pageIndex) => Math.max(0, pageIndex - 1));
+  }, []);
+
+  const handleCanonicalNextPage = useCallback(() => {
+    setCanonicalPageIndex((pageIndex) => pageIndex + 1);
+  }, []);
 
   const toggleFlatCalculator = useCallback((edgeId: string) => {
     setExpandedFlatCalculatorIds((prev) => {
@@ -181,19 +234,38 @@ export default function Dashboard() {
     { enabled: activeTab === 'teams' }
   );
   const {
-    data: canonicalTeams,
+    data: canonicalTeamsPage,
     isLoading: canonicalTeamsLoading,
     isError: canonicalTeamsError,
     error: canonicalTeamsLoadError,
     refetch: refetchCanonicalTeams,
-  } = useCanonicalTeams(
+  } = useCanonicalTeamsPage(
     {
       sport: diagnosticsSport,
-      limit: 300,
+      search: debouncedCanonicalSearchQuery.trim() || undefined,
+      limit: canonicalPageSize,
+      offset: canonicalPageIndex * canonicalPageSize,
       include_merged: true,
     },
     { enabled: activeTab === 'canonical' }
   );
+  useEffect(() => {
+    if (activeTab !== 'canonical' || !canonicalTeamsPage) {
+      return;
+    }
+    const clampedPageIndex = clampPageIndex(
+      canonicalPageIndex,
+      canonicalPageSize,
+      canonicalTeamsPage.total
+    );
+    if (clampedPageIndex === canonicalPageIndex) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setCanonicalPageIndex(clampedPageIndex);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [activeTab, canonicalPageIndex, canonicalPageSize, canonicalTeamsPage]);
   const { data: status } = useSystemStatus();
   const approveTeamReviewCase = useApproveTeamReviewCase();
   const declineTeamReviewCase = useDeclineTeamReviewCase();
@@ -302,8 +374,9 @@ export default function Dashboard() {
   const filteredOpportunityCount = filteredGroups.length;
   const unresolvedCount = unresolvedWarningGroups.length;
   const teamReviewCount = teamReviewCases?.filter((row) => row.status === 'pending').length ?? 0;
-  const canonicalTeamCount =
-    canonicalTeams?.filter((team) => team.merged_into_team_id == null).length ?? 0;
+  const canonicalTeams = canonicalTeamsPage?.items ?? [];
+  const canonicalTeamCount = canonicalTeamsPage?.total ?? 0;
+  const canonicalPageOffset = canonicalTeamsPage?.offset ?? canonicalPageIndex * canonicalPageSize;
   const teamApproveCaseId =
     approveTeamReviewCase.isPending ? approveTeamReviewCase.variables?.caseId ?? null : null;
   const teamDeclineCaseId =
@@ -375,12 +448,13 @@ export default function Dashboard() {
           setCanonicalTeamMessage(
             `Merged team ${result.source_team_id} into ${result.merged_team_name}. Run the next scrape to apply the merged aliases everywhere.`
           );
-          setSelectedCanonicalMergeSourceId(null);
+          setSelectedCanonicalMergeSource(null);
           void queryClient.invalidateQueries({ queryKey: ['canonicalTeams'] });
           void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
           void refetchCanonicalTeams();
         },
         onError: (mutationError) => {
+          setSelectedCanonicalMergeSource(null);
           setCanonicalTeamMessage(`Failed to merge canonical teams: ${mutationError.message}`);
         },
       }
@@ -396,12 +470,13 @@ export default function Dashboard() {
           setCanonicalTeamMessage(
             `Restored ${result.restored_team_name} as a standalone canonical team. Run the next scrape to apply the split everywhere.`
           );
-          setSelectedCanonicalMergeSourceId(null);
+          setSelectedCanonicalMergeSource(null);
           void queryClient.invalidateQueries({ queryKey: ['canonicalTeams'] });
           void queryClient.invalidateQueries({ queryKey: ['teamReviewCases'] });
           void refetchCanonicalTeams();
         },
         onError: (mutationError) => {
+          setSelectedCanonicalMergeSource(null);
           setCanonicalTeamMessage(`Failed to unmerge canonical team: ${mutationError.message}`);
         },
       }
@@ -699,7 +774,7 @@ export default function Dashboard() {
               </div>
               <OfferSearchStrip
                 value={searchQuery}
-                onChange={setSearchQuery}
+                onChange={handleSearchChange}
                 scopeLabel="Opportunities"
                 placeholder="Search team or player names, e.g. PAOK or Nunn"
                 resultCount={filteredOpportunityCount}
@@ -715,7 +790,7 @@ export default function Dashboard() {
               {(['basketball', 'football'] as const).map((sport) => (
                 <button
                   key={sport}
-                  onClick={() => setDiagnosticsSport(sport)}
+                  onClick={() => handleDiagnosticsSportChange(sport)}
                   className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
                     diagnosticsSport === sport
                       ? 'bg-surface-raised text-text'
@@ -738,7 +813,7 @@ export default function Dashboard() {
             isLoading={matchesLoading}
             errorMessage={matchesError ? (matchesLoadError as Error)?.message || 'Unknown error' : null}
             searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
+            onSearchChange={handleSearchChange}
           />
         ) : activeTab === 'teams' ? (
           <TeamReviewPanel
@@ -746,7 +821,7 @@ export default function Dashboard() {
             isLoading={teamReviewLoading}
             errorMessage={teamReviewError ? (teamReviewLoadError as Error)?.message || 'Unknown error' : null}
             searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
+            onSearchChange={handleSearchChange}
             onApprove={handleApproveTeamCase}
             onDecline={handleDeclineTeamCase}
             approvingCaseId={teamApproveCaseId}
@@ -761,15 +836,22 @@ export default function Dashboard() {
               canonicalTeamsError ? (canonicalTeamsLoadError as Error)?.message || 'Unknown error' : null
             }
             searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            selectedSourceTeamId={selectedCanonicalMergeSourceId}
-            onSelectSource={setSelectedCanonicalMergeSourceId}
+            onSearchChange={handleSearchChange}
+            selectedSourceTeam={selectedCanonicalMergeSource}
+            onSelectSource={setSelectedCanonicalMergeSource}
             onMerge={handleMergeCanonicalTeam}
             onUnmerge={handleUnmergeCanonicalTeam}
             mergingSourceTeamId={canonicalMergeSourceId}
             mergingTargetTeamId={canonicalMergeTargetId}
             unmergingTeamId={canonicalUnmergeTeamId}
             actionMessage={canonicalTeamMessage}
+            totalTeams={canonicalTeamCount}
+            pageOffset={canonicalPageOffset}
+            pageSize={canonicalPageSize}
+            pageSizeOptions={CANONICAL_TEAMS_PAGE_SIZE_OPTIONS}
+            onPageSizeChange={handleCanonicalPageSizeChange}
+            onPreviousPage={handleCanonicalPreviousPage}
+            onNextPage={handleCanonicalNextPage}
           />
         ) : (
           <UnresolvedOddsPanel
@@ -777,7 +859,7 @@ export default function Dashboard() {
             isLoading={unresolvedLoading}
             errorMessage={unresolvedError ? (unresolvedLoadError as Error)?.message || 'Unknown error' : null}
             searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
+            onSearchChange={handleSearchChange}
           />
         )}
       </div>
