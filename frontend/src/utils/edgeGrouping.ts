@@ -1,7 +1,8 @@
 import type { Edge, EdgeSport } from '../api/types';
+import { normalizeSearchText } from './search';
 
 /**
- * A group of Edges that share a (match_id, market_type, player_name) tuple.
+ * A group of Edges that share an event/match, market, and subject tuple.
  *
  * Threshold-based markets (handicap, totals, player props) emit one analyzer
  * row per (threshold_a, threshold_b, bookmaker_a, bookmaker_b) cross-pair —
@@ -31,23 +32,18 @@ export interface EdgeGroup {
 }
 
 /**
- * Build a stable, collision-free key for an edge group. Includes
- * market_type + player_name so player props and game-level markets on the
- * same match remain separate. ``player_name`` may be ``null`` for
- * game-level markets — we mark it explicitly with NUL to avoid a collision
- * with a hypothetical player whose name is the literal string "null".
+ * Build a stable, collision-free key for an edge group. Resolved events use
+ * event identity so opportunities attached to sibling normalized matches
+ * collapse into the same market row.
  */
-export function buildEdgeGroupKey(
-  matchId: string,
-  marketType: string,
-  playerName: string | null,
-): string {
-  const player = playerName === null ? '\u0000' : playerName;
-  return `${matchId}\u001f${marketType}\u001f${player}`;
+export function buildEdgeGroupKey(edge: Edge): string {
+  const eventOrMatchId = edge.resolved_event_id ?? edge.match_id;
+  const subject = (edge.subject_key ?? normalizeSearchText(edge.player_name ?? '')) || '\u0000';
+  return `${eventOrMatchId}\u001f${edge.market_type}\u001f${subject}`;
 }
 
 /**
- * Group edges by (match_id, market_type, player_name).
+ * Group edges by (resolved_event_id || match_id, market_type, subject).
  *
  * Within each group, lines are sorted by the market-appropriate value so the
  * first entry is always the most attractive offer (the "best line").
@@ -61,7 +57,7 @@ export function groupEdgesByMarket(edges: readonly Edge[]): EdgeGroup[] {
   const order: string[] = [];
 
   for (const edge of edges) {
-    const key = buildEdgeGroupKey(edge.match_id, edge.market_type, edge.player_name);
+    const key = buildEdgeGroupKey(edge);
     const existing = byKey.get(key);
     if (existing) {
       existing.push(edge);

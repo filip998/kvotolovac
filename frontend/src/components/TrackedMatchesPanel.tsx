@@ -2,6 +2,7 @@ import { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import type { Match, MatchBookmaker } from '../api/types';
 import { formatDateTime } from '../utils/format';
+import { eventOrMatchPath } from '../utils/routes';
 import { buildSearchIndex, filterSearchIndex, normalizeSearchText } from '../utils/search';
 import BookmakerBadge from './BookmakerBadge';
 import EmptyState from './EmptyState';
@@ -311,7 +312,7 @@ export default function TrackedMatchesPanel({
           return (
             <Link
               key={group.key}
-              to={{ pathname: `/matches/${primary.id}`, search: location.search }}
+              to={eventOrMatchPath(primary.id, primary.resolved_event_id, location.search)}
               className={rowClasses}
             >
               {inner}

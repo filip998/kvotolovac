@@ -33,6 +33,52 @@ export interface Match {
   available_bookmakers: MatchBookmaker[];
 }
 
+export interface ResolvedEventMember {
+  id: number;
+  snapshot_id?: string | null;
+  resolved_event_id: string;
+  match_id: string;
+  bookmaker_id: string;
+  bookmaker_name?: string | null;
+  orientation: string;
+  confidence?: number | null;
+  status: string;
+  source_url?: string | null;
+  source_league_id?: string | null;
+  source_league_name?: string | null;
+  source_home_team?: string | null;
+  source_away_team?: string | null;
+  source_start_time?: string | null;
+  evidence: string[];
+  metadata: Record<string, unknown>;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface EventPlayer {
+  key: string;
+  display_name: string;
+  source_variants: string[];
+}
+
+export interface EventDetail {
+  id: string;
+  sport: string;
+  start_time: string;
+  primary_match_id: string;
+  status: string;
+  confidence?: number | null;
+  method: string;
+  display_home_team?: string | null;
+  display_away_team?: string | null;
+  display_league_name?: string | null;
+  metadata: Record<string, unknown>;
+  members: ResolvedEventMember[];
+  players: EventPlayer[];
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 export type MarketType =
   | 'player_points'
   | 'player_points_milestones'
@@ -75,6 +121,11 @@ export interface OddsOffer {
   over_odds: number | null;
   under_odds: number | null;
   scraped_at: string;
+}
+
+export interface EventOddsOffer extends OddsOffer {
+  event_scoped_player_key: string | null;
+  event_player_display_name: string | null;
 }
 
 export interface OutcomeOffer {
@@ -157,6 +208,7 @@ export interface Edge {
   league_name: string | null;
   start_time: string | null;
   market_type: string;
+  subject_key?: string | null;
   player_name: string | null;
   profit_margin: number | null;
   middle_profit_margin: number | null;

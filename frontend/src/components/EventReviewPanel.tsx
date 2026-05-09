@@ -2,6 +2,7 @@ import { useDeferredValue, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import type { EventReviewCase, EventReviewStatus, EventReviewVariant } from '../api/types';
 import { formatDateTime, formatRelativeTime } from '../utils/format';
+import { eventOrMatchPath } from '../utils/routes';
 import { buildSearchIndex, filterSearchIndex, normalizeSearchText } from '../utils/search';
 import BookmakerBadge from './BookmakerBadge';
 import EmptyState from './EmptyState';
@@ -376,7 +377,7 @@ export default function EventReviewPanel({
                                 </a>
                               )}
                               <Link
-                                to={`/matches/${variant.match_id}`}
+                                to={eventOrMatchPath(variant.match_id, row.resolved_event_id)}
                                 className="font-medium text-text-muted transition hover:text-accent"
                               >
                                 Match →

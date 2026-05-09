@@ -15,6 +15,9 @@ from ..models.schemas import (
     BookmakerOut,
     CanonicalOffer,
     CanonicalTeamOut,
+    EventDetailOut,
+    EventOddsOut,
+    EventPlayerOut,
     EventReviewCaseIn,
     EventReviewCaseOut,
     EventReviewVariantOut,
@@ -48,7 +51,10 @@ from ..services.canonical_offers import (
     canonical_offer_from_normalized_outcome_offer,
     canonical_offers_from_normalized_odds,
 )
-from ..services.event_player_resolver import build_event_scoped_player_odds
+from ..services.event_player_resolver import (
+    build_event_scoped_player_identities,
+    build_event_scoped_player_odds,
+)
 from ..services.league_registry import league_country, league_display_name
 
 
@@ -1746,6 +1752,386 @@ async def get_resolved_event(
     return _row_to_resolved_event(rows[0], members=members)
 
 
+async def _get_current_event_context(
+    db: aiosqlite.Connection,
+    resolved_event_id: str,
+) -> tuple[ResolvedEventOut, list[ResolvedEventMemberOut], str | None] | None:
+    event_rows = await db.execute_fetchall(
+        "SELECT * FROM resolved_events WHERE id = ? AND status = 'active'",
+        (resolved_event_id,),
+    )
+    if not event_rows:
+        return None
+
+    current_snapshot_id = await _get_current_snapshot_id(db)
+    if current_snapshot_id is not None:
+        if event_rows[0]["method"] in {"manual", "manual_review"}:
+            snapshot_clause = "(m.snapshot_id = ? OR m.snapshot_id IS NULL)"
+            snapshot_params: list[object] = [current_snapshot_id]
+            snapshot_order = "CASE WHEN m.snapshot_id = ? THEN 0 ELSE 1 END, "
+            order_params: list[object] = [current_snapshot_id]
+        else:
+            snapshot_clause = "m.snapshot_id = ?"
+            snapshot_params = [current_snapshot_id]
+            snapshot_order = ""
+            order_params = []
+    elif await _has_scrape_snapshots(db):
+        return None
+    else:
+        snapshot_clause = "m.snapshot_id IS NULL"
+        snapshot_params = []
+        snapshot_order = ""
+        order_params = []
+
+    member_rows = await db.execute_fetchall(
+        f"""SELECT m.*, b.name AS bookmaker_name
+           FROM resolved_event_members m
+           LEFT JOIN bookmakers b ON b.id = m.bookmaker_id
+           WHERE m.resolved_event_id = ?
+             AND m.status = 'active'
+             AND {snapshot_clause}
+           ORDER BY {snapshot_order}m.match_id ASC, b.name ASC, m.bookmaker_id ASC, m.id ASC""",
+        [resolved_event_id, *snapshot_params, *order_params],
+    )
+    members: list[ResolvedEventMemberOut] = []
+    seen_member_keys: set[tuple[str, str]] = set()
+    for row in member_rows:
+        member = _row_to_resolved_event_member(row)
+        key = (member.match_id, member.bookmaker_id)
+        if key in seen_member_keys:
+            continue
+        seen_member_keys.add(key)
+        members.append(member)
+    if not members:
+        return None
+    event = _row_to_resolved_event(event_rows[0], members=members)
+    return event, members, current_snapshot_id
+
+
+async def _get_event_odds_rows(
+    db: aiosqlite.Connection,
+    members: list[ResolvedEventMemberOut],
+    *,
+    current_snapshot_id: str | None,
+    bookmaker_ids: list[str] | None = None,
+    market_type: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[aiosqlite.Row]:
+    odds_filter, odds_params = await _current_or_legacy_snapshot_filter(
+        db,
+        "o",
+        snapshot_id=current_snapshot_id,
+    )
+    if odds_filter is None:
+        return []
+    if not members:
+        return []
+
+    if current_snapshot_id is not None:
+        source_snapshot_clause = "mbs.snapshot_id = ?"
+        source_snapshot_params: list[object] = [current_snapshot_id]
+    else:
+        source_snapshot_clause = "mbs.snapshot_id IS NULL"
+        source_snapshot_params = []
+
+    pair_conditions: list[str] = []
+    pair_params: list[object] = []
+    for member in members:
+        pair_conditions.append("(o.match_id = ? AND o.bookmaker_id = ?)")
+        pair_params.extend([member.match_id, member.bookmaker_id])
+
+    conditions = [odds_filter, f"({' OR '.join(pair_conditions)})"]
+    params: list[object] = [
+        current_snapshot_id,
+        *source_snapshot_params,
+        *odds_params,
+        *pair_params,
+    ]
+    if bookmaker_ids:
+        conditions.append(f"o.bookmaker_id IN ({_sql_placeholders(bookmaker_ids)})")
+        params.extend(bookmaker_ids)
+    if market_type:
+        conditions.append("o.market_type = ?")
+        params.append(market_type)
+
+    pagination = ""
+    if limit is not None:
+        pagination = " LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+    where_clause = " AND ".join(conditions)
+    return await db.execute_fetchall(
+        f"""SELECT o.id,
+                  o.match_id,
+                  o.bookmaker_id,
+                  b.name AS bookmaker_name,
+                  mbs.source_url AS source_url,
+                  o.market_type,
+                  o.player_name,
+                  o.threshold,
+                  o.over_odds,
+                  o.under_odds,
+                  o.scraped_at,
+                  COALESCE(sm.league_id, m.league_id, '') AS league_id,
+                  COALESCE(sm.sport, m.sport, 'basketball') AS sport,
+                  COALESCE(sm.home_team_id, m.home_team_id, 0) AS home_team_id,
+                  COALESCE(sm.away_team_id, m.away_team_id, 0) AS away_team_id,
+                  COALESCE(sm.home_team, m.home_team) AS home_team,
+                  COALESCE(sm.away_team, m.away_team) AS away_team,
+                  COALESCE(sm.start_time, m.start_time) AS start_time
+           FROM odds o
+           JOIN matches m ON m.id = o.match_id
+           LEFT JOIN snapshot_matches sm
+             ON sm.snapshot_id = ? AND sm.match_id = o.match_id
+           LEFT JOIN bookmakers b ON b.id = o.bookmaker_id
+           LEFT JOIN match_bookmaker_sources mbs
+             ON mbs.match_id = o.match_id
+            AND mbs.bookmaker_id = o.bookmaker_id
+            AND {source_snapshot_clause}
+          WHERE {where_clause}
+          ORDER BY COALESCE(sm.start_time, m.start_time) ASC,
+                   o.match_id ASC,
+                   b.name ASC,
+                   o.bookmaker_id ASC,
+                   o.market_type ASC,
+                   o.player_name ASC,
+                   o.threshold ASC,
+                   o.id ASC{pagination}""",
+        params,
+    )
+
+
+def _event_odds_normalized(row: aiosqlite.Row) -> NormalizedOdds:
+    data = _row_to_dict(row)
+    return NormalizedOdds(
+        match_id=data["match_id"],
+        bookmaker_id=data["bookmaker_id"],
+        league_id=data["league_id"],
+        sport=data["sport"],
+        home_team_id=data["home_team_id"],
+        away_team_id=data["away_team_id"],
+        home_team=data["home_team"],
+        away_team=data["away_team"],
+        source_url=data.get("source_url"),
+        market_type=data["market_type"],
+        player_name=data.get("player_name"),
+        threshold=data["threshold"],
+        over_odds=data.get("over_odds"),
+        under_odds=data.get("under_odds"),
+        start_time=data.get("start_time"),
+        scraped_at=data.get("scraped_at"),
+    )
+
+
+def _build_event_scoped_odds(
+    rows: list[aiosqlite.Row],
+    members: list[ResolvedEventMemberOut],
+    *,
+    identity_rows: list[aiosqlite.Row] | None = None,
+) -> tuple[list[EventOddsOut], list[EventPlayerOut]]:
+    member_source_by_key = {
+        (member.match_id, member.bookmaker_id): member.source_url for member in members
+    }
+    identity_normalized_rows: list[tuple[aiosqlite.Row, NormalizedOdds]] = [
+        (row, _event_odds_normalized(row)) for row in (identity_rows or rows)
+    ]
+    output_normalized_rows: list[tuple[aiosqlite.Row, NormalizedOdds]] = [
+        (row, _event_odds_normalized(row)) for row in rows
+    ]
+    row_id_by_normalized_id = {
+        id(normalized): row["id"] for row, normalized in identity_normalized_rows
+    }
+    scoped_odds = build_event_scoped_player_odds(
+        [normalized for _, normalized in identity_normalized_rows],
+        members,
+    )
+    scoped_by_row_id = {
+        row_id_by_normalized_id[id(scoped.odds)]: scoped for scoped in scoped_odds
+    }
+
+    odds_out: list[EventOddsOut] = []
+    for row, _normalized in output_normalized_rows:
+        data = _row_to_dict(row)
+        source_url = data.get("source_url") or member_source_by_key.get(
+            (data["match_id"], data["bookmaker_id"])
+        )
+        scoped = scoped_by_row_id.get(data["id"])
+        odds_out.append(
+            EventOddsOut(
+                id=data["id"],
+                match_id=data["match_id"],
+                bookmaker_id=data["bookmaker_id"],
+                bookmaker_name=data.get("bookmaker_name"),
+                source_url=source_url,
+                market_type=data["market_type"],
+                player_name=data.get("player_name"),
+                threshold=data["threshold"],
+                over_odds=data.get("over_odds"),
+                under_odds=data.get("under_odds"),
+                scraped_at=data.get("scraped_at"),
+                event_scoped_player_key=scoped.event_scoped_player_key
+                if scoped
+                else None,
+                event_player_display_name=scoped.event_player_display_name
+                if scoped
+                else None,
+            )
+        )
+
+    players = [
+        EventPlayerOut(
+            key=identity.event_scoped_player_key,
+            display_name=identity.display_name,
+            source_variants=list(identity.source_variants),
+        )
+        for identity in build_event_scoped_player_identities(scoped_odds)
+    ]
+    return odds_out, players
+
+
+async def get_event_detail(resolved_event_id: str) -> EventDetailOut | None:
+    db = await get_db()
+    context = await _get_current_event_context(db, resolved_event_id)
+    if context is None:
+        return None
+    event, members, current_snapshot_id = context
+    odds_rows = await _get_event_odds_rows(
+        db,
+        members,
+        current_snapshot_id=current_snapshot_id,
+    )
+    _, players = _build_event_scoped_odds(odds_rows, members)
+    return EventDetailOut(**event.model_dump(), players=players)
+
+
+async def get_event_odds(
+    resolved_event_id: str,
+    *,
+    bookmaker_ids: list[str] | None = None,
+    market_type: str | None = None,
+    limit: int = 5000,
+    offset: int = 0,
+) -> list[EventOddsOut] | None:
+    db = await get_db()
+    context = await _get_current_event_context(db, resolved_event_id)
+    if context is None:
+        return None
+    _event, members, current_snapshot_id = context
+    rows = await _get_event_odds_rows(
+        db,
+        members,
+        current_snapshot_id=current_snapshot_id,
+        bookmaker_ids=bookmaker_ids,
+        market_type=market_type,
+        limit=limit,
+        offset=offset,
+    )
+    identity_rows = await _get_event_odds_rows(
+        db,
+        members,
+        current_snapshot_id=current_snapshot_id,
+    )
+    odds, _players = _build_event_scoped_odds(
+        rows,
+        members,
+        identity_rows=identity_rows,
+    )
+    return odds
+
+
+async def get_event_outcome_offers(
+    resolved_event_id: str,
+    *,
+    bookmaker_ids: list[str] | None = None,
+    market_type: str | None = None,
+    limit: int = 5000,
+    offset: int = 0,
+) -> list[OutcomeOfferOut] | None:
+    db = await get_db()
+    context = await _get_current_event_context(db, resolved_event_id)
+    if context is None:
+        return None
+    _event, members, current_snapshot_id = context
+
+    offer_filter, offer_params = await _current_or_legacy_snapshot_filter(
+        db,
+        "oo",
+        snapshot_id=current_snapshot_id,
+    )
+    if offer_filter is None:
+        return []
+
+    if current_snapshot_id is not None:
+        source_snapshot_clause = "mbs.snapshot_id = ?"
+        source_snapshot_params: list[object] = [current_snapshot_id]
+    else:
+        source_snapshot_clause = "mbs.snapshot_id IS NULL"
+        source_snapshot_params = []
+
+    pair_conditions: list[str] = []
+    pair_params: list[object] = []
+    member_source_by_key = {
+        (member.match_id, member.bookmaker_id): member.source_url for member in members
+    }
+    for member in members:
+        pair_conditions.append("(oo.match_id = ? AND oo.bookmaker_id = ?)")
+        pair_params.extend([member.match_id, member.bookmaker_id])
+
+    conditions = [offer_filter, f"({' OR '.join(pair_conditions)})"]
+    params: list[object] = [
+        *source_snapshot_params,
+        *offer_params,
+        *pair_params,
+    ]
+    if bookmaker_ids:
+        conditions.append(f"oo.bookmaker_id IN ({_sql_placeholders(bookmaker_ids)})")
+        params.extend(bookmaker_ids)
+    if market_type:
+        conditions.append("oo.market_type = ?")
+        params.append(market_type)
+    params.extend([limit, offset])
+    where_clause = " AND ".join(conditions)
+    rows = await db.execute_fetchall(
+        f"""SELECT oo.id,
+                  oo.match_id,
+                  oo.bookmaker_id,
+                  b.name AS bookmaker_name,
+                  mbs.source_url AS source_url,
+                  oo.market_type,
+                  oo.outcome_code,
+                  oo.odds,
+                  oo.line,
+                  oo.raw_label,
+                  oo.scraped_at
+           FROM outcome_offers oo
+           JOIN matches m ON m.id = oo.match_id
+           LEFT JOIN bookmakers b ON b.id = oo.bookmaker_id
+           LEFT JOIN match_bookmaker_sources mbs
+             ON mbs.match_id = oo.match_id
+            AND mbs.bookmaker_id = oo.bookmaker_id
+            AND {source_snapshot_clause}
+          WHERE {where_clause}
+          ORDER BY oo.match_id ASC,
+                   b.name ASC,
+                   oo.bookmaker_id ASC,
+                   oo.market_type ASC,
+                   oo.line ASC,
+                   oo.outcome_code ASC,
+                   oo.id ASC
+          LIMIT ? OFFSET ?""",
+        params,
+    )
+    offers: list[OutcomeOfferOut] = []
+    for row in rows:
+        data = _row_to_dict(row)
+        data["source_url"] = data.get("source_url") or member_source_by_key.get(
+            (data["match_id"], data["bookmaker_id"])
+        )
+        offers.append(OutcomeOfferOut(**data))
+    return offers
+
+
 async def list_resolved_events(
     *,
     sport: str | None = None,
@@ -3298,25 +3684,8 @@ async def get_outcome_offers_for_match(
     limit: int = 1000,
     offset: int = 0,
 ) -> list[OutcomeOfferOut]:
-    db = await get_db()
-    current_snapshot_id = await _get_current_snapshot_id(db)
-    resolved_event_id = await _get_resolved_event_id_for_match(
-        db,
-        match_id,
-        snapshot_id=current_snapshot_id,
-    )
-    scoped_match_ids = [match_id]
-    if resolved_event_id is not None:
-        event_match_ids = await _get_resolved_event_member_match_ids(
-            db,
-            resolved_event_id,
-            snapshot_id=current_snapshot_id,
-        )
-        if event_match_ids:
-            scoped_match_ids = event_match_ids
-
     return await get_outcome_offers(
-        match_ids=scoped_match_ids,
+        match_id=match_id,
         bookmaker_ids=bookmaker_ids,
         market_type=market_type,
         limit=limit,

@@ -6,8 +6,10 @@ import type {
   CanonicalTeamFilters,
   CanonicalTeamMerge,
   CanonicalTeamUnmerge,
+  EventDetail,
   EventMergeInput,
   EventMergeResult,
+  EventOddsOffer,
   EventReviewAction,
   EventReviewCase,
   EventReviewFilters,
@@ -40,7 +42,6 @@ import {
   mockBookmakers,
   mockLeagues,
   mockMatches,
-  mockMatchOutcomeOfferScopes,
   mockOddsOffers,
   mockOpportunities,
   mockFootballOutcomeOffers,
@@ -48,6 +49,8 @@ import {
   mockSystemStatus,
   mockCanonicalTeams,
   mockEventReviewCases,
+  mockEvents,
+  mockEventOddsOffers,
   mockScrapeSettings,
   mockTelegramSettings,
   mockTeamReviewCases,
@@ -925,6 +928,23 @@ export function useMatch(id: string) {
   });
 }
 
+export function useEvent(id: string) {
+  return useQuery<EventDetail>({
+    queryKey: ['event', id],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        const event = mockEvents.find((event) => event.id === id);
+        if (!event) throw new Error('Event not found');
+        return JSON.parse(JSON.stringify(event)) as EventDetail;
+      }
+      const { data } = await client.get<EventDetail>(`/events/${id}`);
+      return data;
+    },
+    enabled: !!id,
+  });
+}
+
 export function useMergeMatches() {
   return useMutation<MatchMergeResult, Error, MatchMergeInput>({
     mutationFn: async (payload) => {
@@ -1032,19 +1052,58 @@ export function useMatchOdds(matchId: string) {
   });
 }
 
+function mockEventMemberKeys(eventId: string): Set<string> {
+  const event = mockEvents.find((item) => item.id === eventId);
+  return new Set(event?.members.map((member) => `${member.match_id}:${member.bookmaker_id}`) ?? []);
+}
+
+export function useEventOdds(eventId: string) {
+  return useQuery<EventOddsOffer[]>({
+    queryKey: ['eventOdds', eventId],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        const memberKeys = mockEventMemberKeys(eventId);
+        return mockEventOddsOffers.filter((offer) =>
+          memberKeys.has(`${offer.match_id}:${offer.bookmaker_id}`)
+        );
+      }
+      const { data } = await client.get<EventOddsOffer[]>(`/events/${eventId}/odds`);
+      return data;
+    },
+    enabled: !!eventId,
+  });
+}
+
 export function useMatchOutcomeOffers(matchId: string) {
   return useQuery<OutcomeOffer[]>({
     queryKey: ['matchOutcomeOffers', matchId],
     queryFn: async () => {
       if (USE_MOCK) {
         await delay();
-        const scopedMatchIds = new Set(mockMatchOutcomeOfferScopes[matchId] ?? [matchId]);
-        return mockFootballOutcomeOffers.filter((offer) => scopedMatchIds.has(offer.match_id));
+        return mockFootballOutcomeOffers.filter((offer) => offer.match_id === matchId);
       }
       const { data } = await client.get<OutcomeOffer[]>(`/matches/${matchId}/market-offers`);
       return data;
     },
     enabled: !!matchId,
+  });
+}
+
+export function useEventOutcomeOffers(eventId: string) {
+  return useQuery<OutcomeOffer[]>({
+    queryKey: ['eventOutcomeOffers', eventId],
+    queryFn: async () => {
+      if (USE_MOCK) {
+        await delay();
+        const event = mockEvents.find((item) => item.id === eventId);
+        const matchIds = new Set(event?.members.map((member) => member.match_id) ?? []);
+        return mockFootballOutcomeOffers.filter((offer) => matchIds.has(offer.match_id));
+      }
+      const { data } = await client.get<OutcomeOffer[]>(`/events/${eventId}/market-offers`);
+      return data;
+    },
+    enabled: !!eventId,
   });
 }
 

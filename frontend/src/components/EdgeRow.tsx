@@ -10,6 +10,7 @@ import {
 } from '../utils/format';
 import { edgeMarketHeadline, formatLegLineLabel, formatOutcomeLabel } from '../utils/edgeFormatting';
 import type { EdgeGroup } from '../utils/edgeGrouping';
+import { eventOrMatchPath } from '../utils/routes';
 import BookmakerBadge from './BookmakerBadge';
 import StakeCalculatorPanel from './StakeCalculatorPanel';
 
@@ -259,7 +260,7 @@ export default function EdgeGroupRow({
               {isCalculatorExpanded ? 'Hide calc' : 'Calc'}
             </button>
             <Link
-              to={`/matches/${selected.match_id}${sharedSearch}`}
+              to={eventOrMatchPath(selected.match_id, selected.resolved_event_id, sharedSearch)}
               aria-label={`View ${selected.player_name || headline} for ${selected.home_team ?? ''} vs ${selected.away_team ?? ''}`}
               className="text-xs font-medium text-text-muted transition hover:text-accent"
             >

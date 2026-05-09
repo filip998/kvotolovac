@@ -719,7 +719,7 @@ async def test_football_market_offers_and_opportunities_api(client: AsyncClient)
 
 
 @pytest.mark.asyncio
-async def test_match_market_offers_include_resolved_event_members(client: AsyncClient):
+async def test_event_market_offers_include_current_active_members(client: AsyncClient):
     home = create_canonical_team(display_name="Jelgava", sport="football")
     away = create_canonical_team(display_name="Super Nova", sport="football")
     current_snapshot = "2030-01-01T12:00:00"
@@ -823,7 +823,13 @@ async def test_match_market_offers_include_resolved_event_members(client: AsyncC
         )
     await odds_store.set_current_snapshot(current_snapshot)
 
-    resp = await client.get("/api/v1/matches/sibling-football-match/market-offers")
+    exact_resp = await client.get("/api/v1/matches/sibling-football-match/market-offers")
+    assert exact_resp.status_code == 200
+    assert [(row["match_id"], row["bookmaker_id"]) for row in exact_resp.json()] == [
+        ("sibling-football-match", "balkanbet")
+    ]
+
+    resp = await client.get("/api/v1/events/evt-latvia-football/market-offers")
     assert resp.status_code == 200
     rows = resp.json()
     assert {row["match_id"] for row in rows} == {
@@ -833,11 +839,20 @@ async def test_match_market_offers_include_resolved_event_members(client: AsyncC
     assert {row["bookmaker_id"] for row in rows} == {"maxbet", "balkanbet"}
 
     filtered_resp = await client.get(
-        "/api/v1/matches/primary-football-match/market-offers",
+        "/api/v1/events/evt-latvia-football/market-offers",
         params={"bookmaker_ids": "maxbet"},
     )
     assert filtered_resp.status_code == 200
     assert {row["bookmaker_id"] for row in filtered_resp.json()} == {"maxbet"}
+
+    event_resp = await client.get("/api/v1/events/evt-latvia-football")
+    assert event_resp.status_code == 200
+    event = event_resp.json()
+    assert event["id"] == "evt-latvia-football"
+    assert {member["match_id"] for member in event["members"]} == {
+        "primary-football-match",
+        "sibling-football-match",
+    }
 
     detail_resp = await client.get("/api/v1/matches/primary-football-match")
     assert detail_resp.status_code == 200
@@ -845,6 +860,161 @@ async def test_match_market_offers_include_resolved_event_members(client: AsyncC
         "maxbet",
         "balkanbet",
     }
+
+
+@pytest.mark.asyncio
+async def test_event_odds_aggregate_members_and_resolve_player_names(client: AsyncClient):
+    home = create_canonical_team(display_name="AEK Athens", sport="basketball")
+    away = create_canonical_team(display_name="Rytas", sport="basketball")
+    current_snapshot = "2030-01-01T12:00:00"
+    stale_snapshot = "2029-12-31T12:00:00"
+
+    for bookmaker_id, bookmaker_name in (
+        ("mozzart", "Mozzart"),
+        ("maxbet", "MaxBet"),
+        ("meridian", "Meridian"),
+        ("balkanbet", "BalkanBet"),
+    ):
+        await odds_store.upsert_bookmaker(bookmaker_id, bookmaker_name)
+    await odds_store.upsert_league("champions_league", "Champions League", "basketball")
+    for match_id, home_team in (
+        ("aek-primary", "AEK"),
+        ("aek-rich", "AEK Athens"),
+        ("aek-stale", "AEK Old"),
+        ("aek-inactive", "AEK Inactive"),
+    ):
+        await odds_store.upsert_match(
+            id=match_id,
+            league_id="champions_league",
+            sport="basketball",
+            home_team_id=home.team_id,
+            away_team_id=away.team_id,
+            home_team=home_team,
+            away_team=away.team_name,
+            start_time="2030-01-01T20:00:00+00:00",
+        )
+
+    async def insert_odds(
+        match_id: str,
+        bookmaker_id: str,
+        player_name: str | None,
+        scraped_at: str,
+        *,
+        market_type: str = "player_points",
+        threshold: float = 14.5,
+    ) -> None:
+        await odds_store.upsert_odds(
+            NormalizedOdds(
+                match_id=match_id,
+                bookmaker_id=bookmaker_id,
+                league_id="champions_league",
+                sport="basketball",
+                home_team_id=home.team_id,
+                away_team_id=away.team_id,
+                home_team="AEK Athens",
+                away_team=away.team_name,
+                source_url=f"https://example.test/{bookmaker_id}/{match_id}",
+                market_type=market_type,
+                player_name=player_name,
+                threshold=threshold,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time="2030-01-01T20:00:00+00:00",
+            ),
+            scraped_at=scraped_at,
+        )
+
+    await insert_odds("aek-primary", "mozzart", "J.Harding", current_snapshot)
+    await insert_odds("aek-rich", "maxbet", "Jerrick Harding", current_snapshot)
+    await insert_odds(
+        "aek-rich",
+        "maxbet",
+        None,
+        current_snapshot,
+        market_type="game_total",
+        threshold=161.5,
+    )
+    await insert_odds("aek-stale", "meridian", "J. Harding", stale_snapshot)
+    await insert_odds("aek-inactive", "balkanbet", "Jerrick Harding", current_snapshot)
+
+    await odds_store.upsert_resolved_event(
+        ResolvedEventIn(
+            id="evt-aek-rytas",
+            sport="basketball",
+            start_time="2030-01-01T20:00:00+00:00",
+            primary_match_id="aek-primary",
+            method="auto_fuzzy_high",
+            display_home_team="AEK Athens",
+            display_away_team="Rytas",
+            display_league_name="Champions League",
+        )
+    )
+    for match_id, bookmaker_id, snapshot_id, status in (
+        ("aek-primary", "mozzart", current_snapshot, "active"),
+        ("aek-rich", "maxbet", current_snapshot, "active"),
+        ("aek-stale", "meridian", stale_snapshot, "active"),
+        ("aek-inactive", "balkanbet", current_snapshot, "inactive"),
+    ):
+        await odds_store.link_resolved_event_member(
+            ResolvedEventMemberIn(
+                snapshot_id=snapshot_id,
+                resolved_event_id="evt-aek-rytas",
+                match_id=match_id,
+                bookmaker_id=bookmaker_id,
+                status=status,
+            )
+        )
+    await odds_store.set_current_snapshot(current_snapshot)
+
+    exact_resp = await client.get("/api/v1/matches/aek-primary/odds")
+    assert exact_resp.status_code == 200
+    assert {row["match_id"] for row in exact_resp.json()} == {"aek-primary"}
+
+    odds_resp = await client.get("/api/v1/events/evt-aek-rytas/odds")
+    assert odds_resp.status_code == 200
+    rows = odds_resp.json()
+    assert {row["match_id"] for row in rows} == {"aek-primary", "aek-rich"}
+
+    player_rows = [row for row in rows if row["market_type"] == "player_points"]
+    assert len(player_rows) == 2
+    assert {row["event_player_display_name"] for row in player_rows} == {
+        "Jerrick Harding"
+    }
+    assert len({row["event_scoped_player_key"] for row in player_rows}) == 1
+
+    filtered_odds_resp = await client.get(
+        "/api/v1/events/evt-aek-rytas/odds",
+        params={"bookmaker_ids": "mozzart"},
+    )
+    assert filtered_odds_resp.status_code == 200
+    assert [
+        row["event_player_display_name"]
+        for row in filtered_odds_resp.json()
+        if row["market_type"] == "player_points"
+    ] == ["Jerrick Harding"]
+
+    non_player_rows = [row for row in rows if row["market_type"] == "game_total"]
+    assert len(non_player_rows) == 1
+    assert non_player_rows[0]["event_scoped_player_key"] is None
+    assert non_player_rows[0]["event_player_display_name"] is None
+
+    detail_resp = await client.get("/api/v1/events/evt-aek-rytas")
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert {member["match_id"] for member in detail["members"]} == {
+        "aek-primary",
+        "aek-rich",
+    }
+    assert detail["players"] == [
+        {
+            "key": player_rows[0]["event_scoped_player_key"],
+            "display_name": "Jerrick Harding",
+            "source_variants": ["Jerrick Harding", "J.Harding"],
+        }
+    ]
+
+    missing_resp = await client.get("/api/v1/events/not-an-event")
+    assert missing_resp.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -894,6 +1064,76 @@ async def test_match_market_offers_fall_back_to_exact_match(client: AsyncClient)
 
     missing_resp = await client.get("/api/v1/matches/not-a-match/market-offers")
     assert missing_resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_manual_event_detail_uses_persistent_members(client: AsyncClient):
+    home = create_canonical_team(display_name="Fenerbahce", sport="basketball")
+    away = create_canonical_team(display_name="Partizan", sport="basketball")
+    scraped_at = "2030-01-01T12:00:00"
+
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_league("euroleague", "EuroLeague", "basketball")
+    await odds_store.upsert_match(
+        id="manual-event-match",
+        league_id="euroleague",
+        sport="basketball",
+        home_team_id=home.team_id,
+        away_team_id=away.team_id,
+        home_team=home.team_name,
+        away_team=away.team_name,
+        start_time="2030-01-01T20:00:00+00:00",
+    )
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="manual-event-match",
+            bookmaker_id="mozzart",
+            league_id="euroleague",
+            sport="basketball",
+            home_team_id=home.team_id,
+            away_team_id=away.team_id,
+            home_team=home.team_name,
+            away_team=away.team_name,
+            source_url="https://mozzart.example/manual",
+            market_type="player_points",
+            player_name="Nigel Hayes-Davis",
+            threshold=16.5,
+            over_odds=1.9,
+            under_odds=1.9,
+            start_time="2030-01-01T20:00:00+00:00",
+        ),
+        scraped_at=scraped_at,
+    )
+    await odds_store.upsert_resolved_event(
+        ResolvedEventIn(
+            id="evt-manual-persistent",
+            sport="basketball",
+            start_time="2030-01-01T20:00:00+00:00",
+            primary_match_id="manual-event-match",
+            method="manual_review",
+        )
+    )
+    await odds_store.link_resolved_event_member(
+        ResolvedEventMemberIn(
+            resolved_event_id="evt-manual-persistent",
+            match_id="manual-event-match",
+            bookmaker_id="mozzart",
+            source_url="https://mozzart.example/manual",
+        )
+    )
+    await odds_store.set_current_snapshot(scraped_at)
+
+    detail_resp = await client.get("/api/v1/events/evt-manual-persistent")
+    assert detail_resp.status_code == 200
+    assert [member["match_id"] for member in detail_resp.json()["members"]] == [
+        "manual-event-match"
+    ]
+
+    odds_resp = await client.get("/api/v1/events/evt-manual-persistent/odds")
+    assert odds_resp.status_code == 200
+    assert [(row["match_id"], row["bookmaker_id"]) for row in odds_resp.json()] == [
+        ("manual-event-match", "mozzart")
+    ]
 
 
 @pytest.mark.asyncio

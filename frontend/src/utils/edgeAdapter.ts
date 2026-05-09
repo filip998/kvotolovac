@@ -53,6 +53,7 @@ export function opportunityToEdge(o: Opportunity): Edge | null {
     league_name: o.league_name,
     start_time: o.start_time,
     market_type: o.market_type,
+    subject_key: o.subject_key ?? null,
     player_name: o.subject_name ?? null,
     profit_margin: o.profit_margin,
     middle_profit_margin: o.middle_profit_margin,

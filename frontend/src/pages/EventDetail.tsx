@@ -1,20 +1,19 @@
 import { useParams, Link } from 'react-router-dom';
-import { useMatch, useMatchOdds, useMatchOutcomeOffers } from '../api/hooks';
+import { useEvent, useEventOdds, useEventOutcomeOffers } from '../api/hooks';
 import { formatDateTime } from '../utils/format';
 import { MARKET_TYPE_LABELS } from '../utils/constants';
-import { eventOrMatchPath } from '../utils/routes';
 import OddsTable from '../components/OddsTable';
 import OutcomeOffersTable from '../components/OutcomeOffersTable';
 import LoadingSpinner from '../components/LoadingSpinner';
 import PageShell from '../components/PageShell';
-import type { OddsOffer, OutcomeOffer } from '../api/types';
+import type { EventOddsOffer, OutcomeOffer } from '../api/types';
 import BookmakerFilterDeck from '../components/BookmakerFilterDeck';
 import { useBookmakerFilter } from '../hooks/useBookmakerFilter';
 
 interface MarketGroup {
   key: string;
   title: string;
-  offers: OddsOffer[];
+  offers: EventOddsOffer[];
 }
 
 interface OutcomeMarketGroup {
@@ -28,16 +27,21 @@ function formatOutcomeGroupTitle(offer: OutcomeOffer): string {
   return offer.line === null ? typeLabel : `${typeLabel} ${offer.line.toFixed(1)}`;
 }
 
-export default function MatchDetail() {
+function eventTitle(homeTeam?: string | null, awayTeam?: string | null): string {
+  if (homeTeam && awayTeam) return `${homeTeam} vs ${awayTeam}`;
+  return homeTeam || awayTeam || 'Resolved event';
+}
+
+export default function EventDetail() {
   const { id } = useParams<{ id: string }>();
   const {
     selectedBookmakerIds,
     updateSelectedBookmakerIds,
     search,
   } = useBookmakerFilter();
-  const { data: match, isLoading: matchLoading } = useMatch(id!);
-  const { data: odds, isLoading: oddsLoading } = useMatchOdds(id!);
-  const { data: outcomeOffers, isLoading: outcomeOffersLoading } = useMatchOutcomeOffers(id!);
+  const { data: event, isLoading: eventLoading } = useEvent(id!);
+  const { data: odds, isLoading: oddsLoading } = useEventOdds(id!);
+  const { data: outcomeOffers, isLoading: outcomeOffersLoading } = useEventOutcomeOffers(id!);
 
   const filteredOdds =
     selectedBookmakerIds.length === 0
@@ -48,12 +52,12 @@ export default function MatchDetail() {
       ? outcomeOffers || []
       : (outcomeOffers || []).filter((offer) => selectedBookmakerIds.includes(offer.bookmaker_id));
 
-  if (matchLoading || oddsLoading || outcomeOffersLoading) return <LoadingSpinner />;
+  if (eventLoading || oddsLoading || outcomeOffersLoading) return <LoadingSpinner />;
 
-  if (!match) {
+  if (!event) {
     return (
       <div className="py-16 text-center">
-        <h2 className="mb-2 text-base font-semibold text-text-secondary">Match not found</h2>
+        <h2 className="mb-2 text-base font-semibold text-text-secondary">Event not found</h2>
         <Link to={`/${search}`} className="text-sm text-text-muted hover:text-accent">
           ← Back to Dashboard
         </Link>
@@ -62,18 +66,20 @@ export default function MatchDetail() {
   }
 
   const marketGroups: MarketGroup[] = [];
-  const marketMap = new Map<string, OddsOffer[]>();
+  const marketMap = new Map<string, EventOddsOffer[]>();
   const outcomeMarketGroups: OutcomeMarketGroup[] = [];
   const outcomeMarketMap = new Map<string, OutcomeOffer[]>();
 
   for (const offer of filteredOdds) {
-    const key = `${offer.market_type}|${offer.player_name || ''}`;
+    const playerKey = offer.event_scoped_player_key ?? (offer.player_name ? `raw:${offer.player_name}` : '');
+    const key = `${offer.market_type}|${playerKey}`;
     if (!marketMap.has(key)) marketMap.set(key, []);
     marketMap.get(key)!.push(offer);
   }
 
   for (const [key, offers] of marketMap) {
-    const { market_type: marketType, player_name: playerName } = offers[0];
+    const { market_type: marketType } = offers[0];
+    const playerName = offers[0].event_player_display_name ?? offers[0].player_name;
     const typeLabel = MARKET_TYPE_LABELS[marketType] || marketType;
     const title = playerName ? `${playerName} — ${typeLabel}` : typeLabel;
     marketGroups.push({ key, title, offers });
@@ -93,19 +99,17 @@ export default function MatchDetail() {
     });
   }
 
-  const trackedPlayers = Array.from(
-    new Set(
-      (odds || [])
-        .filter((offer) =>
-          selectedBookmakerIds.length === 0
-            ? true
-            : selectedBookmakerIds.includes(offer.bookmaker_id)
-        )
-        .map((offer) => offer.player_name)
-        .filter((playerName): playerName is string => Boolean(playerName))
-    )
-  ).sort((a, b) => a.localeCompare(b));
+  const visiblePlayerKeys = new Set(
+    filteredOdds
+      .map((offer) => offer.event_scoped_player_key)
+      .filter((key): key is string => Boolean(key))
+  );
+  const trackedPlayers = event.players
+    .filter((player) => visiblePlayerKeys.has(player.key))
+    .map((player) => player.display_name)
+    .sort((a, b) => a.localeCompare(b));
   const visibleOfferCount = filteredOdds.length + filteredOutcomeOffers.length;
+  const title = eventTitle(event.display_home_team, event.display_away_team);
 
   return (
     <div className="space-y-6">
@@ -117,28 +121,10 @@ export default function MatchDetail() {
       </Link>
 
       <PageShell
-        eyebrow={match.league_name}
-        title={`${match.home_team} vs ${match.away_team}`}
-        description={`${formatDateTime(match.start_time)} · ${match.status}`}
+        eyebrow={event.display_league_name ?? event.sport}
+        title={title}
+        description={`${formatDateTime(event.start_time)} · full resolved event`}
       >
-        {match.resolved_event_id && (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent/35 bg-accent/[0.08] px-4 py-3">
-            <div>
-              <div className="text-sm font-medium text-text">This match belongs to a resolved event</div>
-              <div className="text-xs text-text-muted">
-                This page shows only the exact normalized match. Open the event to see all member odds.
-              </div>
-            </div>
-            <Link
-              to={eventOrMatchPath(match.id, match.resolved_event_id, search)}
-              className="text-sm font-medium text-accent transition hover:text-text"
-            >
-              View full event →
-            </Link>
-          </div>
-        )}
-
-        {/* Inline stats */}
         <div className="flex flex-wrap items-center gap-6">
           <div className="flex items-baseline gap-1.5">
             <span className="font-mono text-lg font-semibold text-text">{visibleOfferCount}</span>
@@ -148,7 +134,11 @@ export default function MatchDetail() {
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="font-mono text-lg font-semibold text-text">{trackedPlayers.length}</span>
-            <span className="text-xs text-text-muted">players</span>
+            <span className="text-xs text-text-muted">canonical players</span>
+          </div>
+          <div className="flex items-baseline gap-1.5">
+            <span className="font-mono text-lg font-semibold text-text">{event.members.length}</span>
+            <span className="text-xs text-text-muted">member books</span>
           </div>
         </div>
 
@@ -160,7 +150,7 @@ export default function MatchDetail() {
         {trackedPlayers.length > 0 && (
           <section>
             <h3 className="mb-3 text-[11px] font-medium uppercase tracking-wider text-text-muted">
-              Tracked players
+              Canonical players
             </h3>
             <div className="flex flex-wrap gap-1.5">
               {trackedPlayers.map((player) => (
@@ -179,8 +169,8 @@ export default function MatchDetail() {
           <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center">
             <p className="text-sm text-text-muted">
               {selectedBookmakerIds.length
-                ? 'No odds from the selected bookmakers for this match right now.'
-                : 'No odds data available for this match yet.'}
+                ? 'No odds from the selected bookmakers for this event right now.'
+                : 'No odds data available for this event yet.'}
             </p>
           </div>
         ) : (

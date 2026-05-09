@@ -91,6 +91,16 @@ class ResolvedEventOut(ResolvedEventIn):
     updated_at: Optional[str] = None
 
 
+class EventPlayerOut(BaseModel):
+    key: str
+    display_name: str
+    source_variants: list[str] = Field(default_factory=list)
+
+
+class EventDetailOut(ResolvedEventOut):
+    players: list[EventPlayerOut] = Field(default_factory=list)
+
+
 class EventReviewCaseIn(BaseModel):
     fingerprint: str
     sport: str = "basketball"
@@ -177,6 +187,11 @@ class OddsOut(BaseModel):
     over_odds: Optional[float] = None
     under_odds: Optional[float] = None
     scraped_at: Optional[str] = None
+
+
+class EventOddsOut(OddsOut):
+    event_scoped_player_key: Optional[str] = None
+    event_player_display_name: Optional[str] = None
 
 
 class UnresolvedOddsDiagnostic(BaseModel):
