@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { EventOddsOffer, OddsOffer, OutcomeOffer } from '../api/types';
-import { extractCards, type MarketCard } from '../utils/oddsAxes';
+import { extractCards } from '../utils/oddsAxes';
 import {
   collectPlayersAcrossTabs,
   groupCardsBySection,
@@ -26,12 +26,13 @@ interface EventOddsLayoutProps {
  * each rendered as a stack of `OddsLadderCard`s.
  *
  * Page-level state lives here:
- *   - `bankrollUnits`  — shared across all cards (so changing it updates
- *     every visible stake-split panel).
  *   - `activeStatKey`  — basketball player markets only; switching tabs
  *     swaps which player cards are visible.
  *   - `activePlayerKey` — basketball player markets only; scopes the
  *     active stat tab to a single player when set.
+ *
+ * Each card owns its own stake-calculator state internally so users can
+ * size legs independently per market.
  */
 export default function EventOddsLayout({
   outcomeOffers,
@@ -50,7 +51,20 @@ export default function EventOddsLayout({
   }
 
   return (
-    <div className="space-y-0" style={{ fontFeatureSettings: '"tnum" 1' }}>
+    <div
+      className="space-y-0"
+      style={{
+        // System-font scope: the user wanted these screens to feel less
+        // "modern" / easier to read than the rest of the app. Override the
+        // global Outfit / JetBrains Mono variables for this subtree only.
+        ['--font-sans' as string]:
+          'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        ['--font-mono' as string]:
+          'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+        fontFamily: 'var(--font-sans)',
+        fontFeatureSettings: '"tnum" 1',
+      }}
+    >
       <EventWire cards={cards} lastUpdated={lastUpdated ?? null} />
       <MarketJumpBar sections={sections} />
       {sections.map((section) => (
@@ -80,7 +94,7 @@ function Section({ section }: { section: PageSection }) {
       </header>
       <div>
         {section.cards.map((card) => (
-          <CardWithSharedBankroll key={card.cardKey} card={card} />
+          <OddsLadderCard key={card.cardKey} card={card} />
         ))}
       </div>
     </section>
@@ -134,7 +148,7 @@ function PlayerSection({ section }: { section: PageSection }) {
       />
       <div>
         {visibleCards.length > 0 ? (
-          visibleCards.map((card) => <CardWithSharedBankroll key={card.cardKey} card={card} />)
+          visibleCards.map((card) => <OddsLadderCard key={card.cardKey} card={card} />)
         ) : (
           <div className="px-4 py-8 text-center text-sm text-text-muted">
             No cards for this player at the selected stat.
@@ -145,12 +159,3 @@ function PlayerSection({ section }: { section: PageSection }) {
   );
 }
 
-/**
- * Tiny wrapper that keeps the bankroll input independent per card for now.
- * (Future enhancement: pull bankroll from a global hook so it's shared across
- * the page, similar to `useDashboardStakeUnits`.)
- */
-function CardWithSharedBankroll({ card }: { card: MarketCard }) {
-  const [bankroll, setBankroll] = useState<number>(100);
-  return <OddsLadderCard card={card} bankrollUnits={bankroll} onBankrollChange={setBankroll} />;
-}

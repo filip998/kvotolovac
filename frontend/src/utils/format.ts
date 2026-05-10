@@ -123,6 +123,42 @@ export function profitBgColor(margin: number): string {
 }
 
 /**
+ * ROI for a balanced two-leg arb at a given implied %.
+ *
+ * Implied % = (1/odds_back + 1/odds_lay) × 100.
+ *   < 100 → arbitrage opportunity (positive ROI)
+ *   = 100 → break-even
+ *   > 100 → bookmaker margin (negative ROI on a balanced split)
+ *
+ * For a perfectly balanced split, ROI = (100 / impliedPct − 1).
+ * Examples:
+ *   impliedPct = 96.8 → ROI ≈ +3.31%
+ *   impliedPct = 105  → ROI ≈ −4.76%
+ *   impliedPct = 108.8 → ROI ≈ −8.09%
+ */
+export function roiFromImpliedPct(impliedPct: number | null | undefined): number | null {
+  if (impliedPct === null || impliedPct === undefined || !Number.isFinite(impliedPct) || impliedPct <= 0) return null;
+  return (100 / impliedPct - 1) * 100;
+}
+
+/** Format a balanced ROI as "+3.3%" / "−4.8%" / "—". */
+export function formatRoi(roi: number | null | undefined): string {
+  if (roi === null || roi === undefined || !Number.isFinite(roi)) return '—';
+  const abs = Math.abs(roi);
+  // Use a real minus sign so signs render with consistent width in mono fonts.
+  const sign = roi > 1e-9 ? '+' : roi < -1e-9 ? '−' : '';
+  return `${sign}${abs.toFixed(2)}%`;
+}
+
+/** Tailwind text-color class for an ROI value. */
+export function roiColor(roi: number | null | undefined): string {
+  if (roi === null || roi === undefined || !Number.isFinite(roi)) return 'text-text-muted';
+  if (roi > 0) return 'text-accent';
+  if (roi >= -1) return 'text-warning';
+  return 'text-danger';
+}
+
+/**
  * Format a back↔lay implied percentage for display.
  *
  * impliedPct is `1/odds_back + 1/odds_lay` expressed as a percentage of 100.

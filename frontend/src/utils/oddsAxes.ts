@@ -68,6 +68,12 @@ export interface AxisRow {
   bestLay: AxisLeg | null;
   /** Implied % using the best back + best lay (cross-book). */
   bestPairImpliedPct: number | null;
+  /**
+   * True when the best back and best lay come from the same bookmaker.
+   * In that case the "implied %" is just that bookmaker's overround — not a
+   * tradable cross-book arb. UIs should warn the user.
+   */
+  bestPairSameBook: boolean;
   /** Per-bookmaker rows for the pivot table, sorted. */
   bookmakerRows: AxisBookmakerRow[];
 }
@@ -289,6 +295,7 @@ function buildAxisRow(
     bestBack,
     bestLay,
     bestPairImpliedPct: impliedPctOf(bestBack?.odds, bestLay?.odds),
+    bestPairSameBook: !!bestBack && !!bestLay && bestBack.bookmakerId === bestLay.bookmakerId,
     bookmakerRows,
   };
 }
@@ -302,7 +309,10 @@ function countAllBookmakers(rows: AxisRow[]): number {
 }
 
 function countArbs(rows: AxisRow[]): number {
-  return rows.filter((r) => r.bestPairImpliedPct !== null && r.bestPairImpliedPct < 100).length;
+  // A same-book "best pair" is just that bookmaker's overround — not a tradable arb.
+  return rows.filter(
+    (r) => r.bestPairImpliedPct !== null && r.bestPairImpliedPct < 100 && !r.bestPairSameBook,
+  ).length;
 }
 
 // ─── Footbal 1X2 + DC card ────────────────────────────────────────────────
@@ -493,6 +503,7 @@ function buildCardFromOddsOffers(offers: OddsOffer[], inputs: OddsAxisInputs): M
       bestBack,
       bestLay,
       bestPairImpliedPct: impliedPctOf(bestBack?.odds, bestLay?.odds),
+      bestPairSameBook: !!bestBack && !!bestLay && bestBack.bookmakerId === bestLay.bookmakerId,
       bookmakerRows,
     });
   }
@@ -611,9 +622,9 @@ export function extractCards(
         category: 'handicap',
         sport: 'basketball',
         title: 'Handicap (+OT)',
-        pairEyebrow: 'Home cover ↔ Away cover · per line',
-        backLabel: 'Home cover',
-        layLabel: 'Away cover',
+        pairEyebrow: 'H1 ↔ H2 · per line',
+        backLabel: 'H1',
+        layLabel: 'H2',
         formatLineTag: (threshold) => formatHandicapLine(threshold, 'home'),
         formatNumericLine: (threshold) => threshold,
       });

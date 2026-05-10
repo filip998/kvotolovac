@@ -1,17 +1,411 @@
 import { useMemo, useState } from 'react';
-import type { AxisRow, MarketCard } from '../utils/oddsAxes';
-import { formatImpliedPct, formatOdds, impliedPctColor, impliedPctTier } from '../utils/format';
+import type { AxisBookmakerRow, AxisLeg, AxisRow, MarketCard } from '../utils/oddsAxes';
+import {
+  formatOdds,
+  formatRoi,
+  impliedPctTier,
+  roiColor,
+  roiFromImpliedPct,
+} from '../utils/format';
 import BookmakerBadge from './BookmakerBadge';
 
 interface OddsLadderCardProps {
   card: MarketCard;
-  /** Bankroll value in units (controlled by the parent so it persists across cards). */
-  bankrollUnits: number;
-  /** Called when the user edits the bankroll input. */
-  onBankrollChange: (units: number) => void;
   /** Optional anchor id override (for jump-bar). */
   anchorId?: string;
 }
+
+/**
+ * Trading-style market card.
+ *
+ * Body has three regions separated by 1px rules:
+ *   1. Ladder       — clickable axis selector (line + best back + best lay + ROI)
+ *   2. Pivot        — per-bookmaker odds for the selected axis. Clicking the
+ *                     "back" cell of any row sets that bookmaker as the
+ *                     selected back leg; clicking the "lay" cell sets the lay
+ *                     leg. The stake calculator on the right uses these
+ *                     selections (defaulting to the auto-best when nothing
+ *                     was clicked).
+ *   3. Stake calc   — three inputs: Back stake, Lay stake, Total. Editing any
+ *                     one auto-balances the other two so both legs return the
+ *                     same payout (a balanced two-leg arb).
+ *
+ * Display: numerics in a system-mono stack so they're easy to read; labels in
+ * the system sans stack. No custom Google fonts inside this component.
+ */
+export default function OddsLadderCard({ card, anchorId }: OddsLadderCardProps) {
+  // Axis selection (which ladder row drives the pivot + stake calc).
+  const [selectedAxisKey, setSelectedAxisKey] = useState<string | null>(null);
+  // Per-axis bookmaker overrides for back/lay legs (null = auto-best).
+  // Keyed by axisKey so switching axes resets to auto.
+  const [legOverride, setLegOverride] = useState<{ axisKey: string; backBmId: string | null; layBmId: string | null } | null>(null);
+  // Stake-input state. The user can edit any one of these; the other two
+  // auto-recompute to maintain balanced arb when odds are known.
+  // The active "source" determines who is the source of truth on render.
+  const [stake, setStake] = useState<{ source: 'total' | 'back' | 'lay'; value: number }>({
+    source: 'total',
+    value: 100,
+  });
+
+  const strongestIdx = useMemo(() => pickStrongestAxisIndex(card.axes), [card.axes]);
+  const explicitIdx =
+    selectedAxisKey !== null ? card.axes.findIndex((a) => a.axisKey === selectedAxisKey) : -1;
+  const effectiveIdx = explicitIdx >= 0 ? explicitIdx : strongestIdx;
+  const selectedAxis = card.axes[effectiveIdx] ?? card.axes[0];
+
+  // Resolve override state against the currently selected axis.
+  const activeOverride =
+    legOverride && selectedAxis && legOverride.axisKey === selectedAxis.axisKey ? legOverride : null;
+
+  // Effective legs (per-row click overrides default "best").
+  const effectiveBack: AxisLeg | null = useMemo(() => {
+    if (!selectedAxis) return null;
+    if (activeOverride?.backBmId) {
+      const row = selectedAxis.bookmakerRows.find((r) => r.bookmakerId === activeOverride.backBmId);
+      if (row?.backOdds != null) {
+        return {
+          bookmakerId: row.bookmakerId,
+          bookmakerName: row.bookmakerName,
+          sourceUrl: row.sourceUrl,
+          odds: row.backOdds,
+        };
+      }
+    }
+    return selectedAxis.bestBack;
+  }, [selectedAxis, activeOverride]);
+
+  const effectiveLay: AxisLeg | null = useMemo(() => {
+    if (!selectedAxis) return null;
+    if (activeOverride?.layBmId) {
+      const row = selectedAxis.bookmakerRows.find((r) => r.bookmakerId === activeOverride.layBmId);
+      if (row?.layOdds != null) {
+        return {
+          bookmakerId: row.bookmakerId,
+          bookmakerName: row.bookmakerName,
+          sourceUrl: row.sourceUrl,
+          odds: row.layOdds,
+        };
+      }
+    }
+    return selectedAxis.bestLay;
+  }, [selectedAxis, activeOverride]);
+
+  // Implied % and ROI for the *effective* (possibly user-overridden) pair.
+  const effectiveImpliedPct =
+    effectiveBack && effectiveLay
+      ? (1 / effectiveBack.odds + 1 / effectiveLay.odds) * 100
+      : null;
+  const effectiveRoi = roiFromImpliedPct(effectiveImpliedPct);
+  const effectiveSameBook =
+    !!effectiveBack && !!effectiveLay && effectiveBack.bookmakerId === effectiveLay.bookmakerId;
+
+  // Stake split — derive based on the active source input.
+  const split = computeStakeSplit(
+    effectiveBack?.odds ?? null,
+    effectiveLay?.odds ?? null,
+    stake,
+  );
+
+  const backStakeStr = split ? split.backStake.toFixed(2) : '';
+  const layStakeStr = split ? split.layStake.toFixed(2) : '';
+  const totalStr = split ? split.total.toFixed(2) : String(stake.value);
+
+  function handleStakeInput(source: 'total' | 'back' | 'lay', text: string) {
+    const value = Number(text);
+    if (!Number.isFinite(value) || value < 0) return;
+    setStake({ source, value });
+  }
+
+  const sectionId = anchorId ?? card.cardKey;
+
+  // Status badge for the card header.
+  const headerArbCount = card.arbCount;
+
+  return (
+    <article
+      id={sectionId}
+      className="border-b border-border px-4 pb-6 pt-4 last:border-b-0"
+      style={{
+        // Use system fonts inside this component (override the Outfit /
+        // JetBrains Mono globals — the user wants something more "boring"
+        // and easier to read).
+        ['--font-sans' as string]:
+          'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        ['--font-mono' as string]:
+          'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+        fontFamily: 'var(--font-sans)',
+      }}
+    >
+      {/* Card head */}
+      <header className="flex flex-wrap items-baseline gap-x-4 gap-y-2 px-1 pb-3">
+        <h3 className="m-0 text-[18px] font-semibold tracking-[-0.005em] text-text">{card.title}</h3>
+        {card.pairEyebrow && (
+          <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-text-muted">
+            {card.pairEyebrow}
+          </span>
+        )}
+        <span className="ml-auto flex items-baseline gap-4 font-mono text-[11px] uppercase tracking-[0.06em] text-text-muted">
+          {headerArbCount > 0 && (
+            <span className="font-bold text-accent">
+              {headerArbCount} ARB{headerArbCount > 1 ? 'S' : ''}
+            </span>
+          )}
+          <span>{card.bookmakerCount} BOOK{card.bookmakerCount === 1 ? '' : 'S'}</span>
+          {card.axes.length > 1 && (
+            <span>
+              {card.axes.length} {card.category === 'match' ? 'AXES' : 'LINES'}
+            </span>
+          )}
+        </span>
+      </header>
+
+      {/* 3-column body separated by vertical rules */}
+      <div className="grid grid-cols-1 border-b border-t border-border md:grid-cols-[minmax(280px,1.2fr)_minmax(360px,1.6fr)] xl:grid-cols-[minmax(300px,1.2fr)_minmax(400px,2fr)_minmax(280px,1fr)]">
+        {/* ─── Ladder ───────────────────────────────────────────────── */}
+        <div className="min-w-0 px-4 py-3 xl:border-r xl:border-border">
+          {card.axes.length > 1 && (
+            <div className="mb-2 px-1 font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
+              {card.category === 'match' ? 'Outcome' : 'Line'}
+            </div>
+          )}
+          <div className="flex flex-col">
+            {card.axes.map((axis) => {
+              const isSelected = axis.axisKey === selectedAxis?.axisKey;
+              const roi = roiFromImpliedPct(axis.bestPairImpliedPct);
+              const roiTier = impliedPctTier(axis.bestPairImpliedPct);
+              return (
+                <button
+                  key={axis.axisKey}
+                  type="button"
+                  onClick={() => {
+                    setSelectedAxisKey(axis.axisKey);
+                    // Clear any per-row overrides when switching axes.
+                    setLegOverride(null);
+                  }}
+                  aria-pressed={isSelected}
+                  className={`relative grid w-full grid-cols-[minmax(40px,auto)_minmax(0,1fr)_minmax(0,1fr)_auto] items-baseline gap-x-3 border-t border-dotted border-border bg-transparent py-2 pl-3 pr-1 text-left text-[13px] transition-colors first:border-t-0 ${
+                    isSelected ? 'text-text' : 'text-text-secondary hover:text-text'
+                  }`}
+                >
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute left-0 top-2 bottom-2 w-0.5 transition-colors"
+                    style={{ background: isSelected ? 'var(--color-accent)' : 'transparent' }}
+                  />
+                  <span className="font-mono text-[13px] font-semibold text-text">{axis.lineTag}</span>
+                  <BookmakerLegSummary leg={axis.bestBack} muted={!isSelected} />
+                  <BookmakerLegSummary leg={axis.bestLay} muted={!isSelected} />
+                  <span
+                    className={`text-right font-mono text-[12px] font-semibold ${roiColor(roi)}`}
+                    title={
+                      axis.bestPairImpliedPct != null
+                        ? `Implied ${axis.bestPairImpliedPct.toFixed(1)}%`
+                        : undefined
+                    }
+                  >
+                    {formatRoi(roi)}
+                    {roiTier === 'arb' && axis.bestPairSameBook ? ' *' : ''}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ─── Pivot ────────────────────────────────────────────────── */}
+        <div className="min-w-0 border-t border-border bg-surface px-4 py-3 md:border-l md:border-t-0 xl:border-r">
+          <div className="mb-2 px-1 font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
+            {selectedAxis ? (
+              <>
+                {card.bookmakerCount} BOOK{card.bookmakerCount === 1 ? '' : 'S'} · LINE{' '}
+                <span className="font-semibold text-text normal-case tracking-normal">
+                  {selectedAxis.lineTag}
+                </span>
+                {' '}· click an odds to use it in the calculator
+              </>
+            ) : (
+              'No data'
+            )}
+          </div>
+          {selectedAxis && selectedAxis.bookmakerRows.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-[13px]" style={{ fontFamily: 'var(--font-mono)' }}>
+                <thead>
+                  <tr className="border-b border-border text-[10px] font-medium uppercase tracking-[0.08em] text-text-muted">
+                    <th className="pb-2 pr-3 text-left font-medium">Book</th>
+                    <th className="pb-2 pr-3 text-right font-medium">{selectedAxis.backColumnLabel}</th>
+                    <th className="pb-2 pr-3 text-right font-medium">{selectedAxis.layColumnLabel}</th>
+                    <th className="pb-2 text-right font-medium">ROI</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedAxis.bookmakerRows.map((row) => (
+                    <PivotRow
+                      key={row.bookmakerId}
+                      row={row}
+                      isBackSelected={
+                        activeOverride?.backBmId
+                          ? row.bookmakerId === activeOverride.backBmId
+                          : !!selectedAxis.bestBack && row.bookmakerId === selectedAxis.bestBack.bookmakerId &&
+                            row.backOdds === selectedAxis.bestBack.odds
+                      }
+                      isLaySelected={
+                        activeOverride?.layBmId
+                          ? row.bookmakerId === activeOverride.layBmId
+                          : !!selectedAxis.bestLay && row.bookmakerId === selectedAxis.bestLay.bookmakerId &&
+                            row.layOdds === selectedAxis.bestLay.odds
+                      }
+                      onPickBack={() =>
+                        setLegOverride((prev) => ({
+                          axisKey: selectedAxis.axisKey,
+                          backBmId: row.bookmakerId,
+                          layBmId: prev?.axisKey === selectedAxis.axisKey ? prev.layBmId : null,
+                        }))
+                      }
+                      onPickLay={() =>
+                        setLegOverride((prev) => ({
+                          axisKey: selectedAxis.axisKey,
+                          backBmId: prev?.axisKey === selectedAxis.axisKey ? prev.backBmId : null,
+                          layBmId: row.bookmakerId,
+                        }))
+                      }
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="px-1 py-3 text-center text-[12px] text-text-muted">
+              No bookmaker data for this axis
+            </div>
+          )}
+        </div>
+
+        {/* ─── Stake calc ───────────────────────────────────────────── */}
+        <div className="min-w-0 border-t border-border bg-bg px-4 py-3 xl:border-l xl:border-t-0">
+          {effectiveBack && effectiveLay ? (
+            <>
+              <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
+                Stake calculator
+              </div>
+              <div className="space-y-1 border-b border-border pb-3 text-[13px] leading-snug">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-mono text-text-muted">►</span>
+                  <BookmakerBadge name={effectiveBack.bookmakerName} compact />
+                  <span className="text-text-secondary">·</span>
+                  <span className="font-medium text-text">{selectedAxis.backLabel}</span>
+                  <span className="ml-auto font-mono font-semibold text-text">
+                    {formatOdds(effectiveBack.odds)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-mono text-text-muted">+</span>
+                  <BookmakerBadge name={effectiveLay.bookmakerName} compact />
+                  <span className="text-text-secondary">·</span>
+                  <span className="font-medium text-text">{selectedAxis.layLabel}</span>
+                  <span className="ml-auto font-mono font-semibold text-text">
+                    {formatOdds(effectiveLay.odds)}
+                  </span>
+                </div>
+                <div className={`pt-2 font-mono text-[12px] font-semibold ${roiColor(effectiveRoi)}`}>
+                  {effectiveRoi != null
+                    ? `ROI ${formatRoi(effectiveRoi)}${
+                        effectiveSameBook
+                          ? '  ·  same book (display only)'
+                          : effectiveRoi > 0
+                            ? '  ·  arb'
+                            : '  ·  margin'
+                      }`
+                    : 'ROI —'}
+                </div>
+              </div>
+
+              {/* Three inputs — Back / Lay / Total. Editing one auto-balances the others. */}
+              <div className="space-y-2 pt-3 text-[13px]">
+                <StakeInput
+                  label={`Stake ${selectedAxis.backLabel}`}
+                  hint={effectiveBack.bookmakerName}
+                  value={backStakeStr}
+                  onChange={(v) => handleStakeInput('back', v)}
+                />
+                <StakeInput
+                  label={`Stake ${selectedAxis.layLabel}`}
+                  hint={effectiveLay.bookmakerName}
+                  value={layStakeStr}
+                  onChange={(v) => handleStakeInput('lay', v)}
+                />
+                <StakeInput label="Total stake" hint="bankroll" value={totalStr} onChange={(v) => handleStakeInput('total', v)} />
+                {split && (
+                  <div className="mt-2 grid grid-cols-2 gap-2 border-t border-border pt-2 text-[12px]">
+                    <div className="text-text-secondary">Worst-case profit</div>
+                    <div
+                      className={`text-right font-mono font-semibold ${
+                        split.profit >= 0 ? 'text-accent' : 'text-warning'
+                      }`}
+                    >
+                      {split.profit >= 0 ? '+' : '−'}
+                      {Math.abs(split.profit).toFixed(2)}u
+                    </div>
+                    <div className="text-text-secondary">ROI</div>
+                    <div
+                      className={`text-right font-mono font-semibold ${
+                        split.roi >= 0 ? 'text-accent' : 'text-warning'
+                      }`}
+                    >
+                      {formatRoi(split.roi)}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 flex flex-col gap-1.5">
+                {effectiveSameBook ? (
+                  <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-text-muted">
+                    Same bookmaker — not a tradable arb
+                  </span>
+                ) : (
+                  <>
+                    {effectiveBack.sourceUrl ? (
+                      <a
+                        href={effectiveBack.sourceUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-mono text-[11px] uppercase tracking-[0.12em] text-accent hover:text-text"
+                      >
+                        ▸ Open {selectedAxis.backLabel} @ {effectiveBack.bookmakerName}
+                      </a>
+                    ) : null}
+                    {effectiveLay.sourceUrl ? (
+                      <a
+                        href={effectiveLay.sourceUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-mono text-[11px] uppercase tracking-[0.12em] text-accent hover:text-text"
+                      >
+                        ▸ Open {selectedAxis.layLabel} @ {effectiveLay.bookmakerName}
+                      </a>
+                    ) : null}
+                    {!effectiveBack.sourceUrl && !effectiveLay.sourceUrl && (
+                      <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-text-muted">
+                        Source URLs unavailable
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="px-1 py-2 text-[13px] text-text-muted">
+              Insufficient odds to compute pair
+            </div>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+/* ────────────────────────── helpers ────────────────────────── */
 
 function pickStrongestAxisIndex(axes: AxisRow[]): number {
   let bestIdx = 0;
@@ -26,356 +420,173 @@ function pickStrongestAxisIndex(axes: AxisRow[]): number {
   return bestIdx;
 }
 
-function StatusPill({ pct, count }: { pct: number | null | undefined; count: number }) {
-  const tier = impliedPctTier(pct);
-  if (count > 0 && tier === 'arb') {
-    return (
-      <span className="font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-accent">
-        {count} ARB{count > 1 ? 'S' : ''}
-      </span>
-    );
-  }
-  if (tier === 'knife-edge') {
-    return <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-accent/70">KNIFE-EDGE</span>;
-  }
-  if (tier === 'margin') {
-    return <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-warning">MARGIN</span>;
-  }
-  if (tier === 'high-margin') {
-    return <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-danger">HIGH MARGIN</span>;
-  }
-  return null;
+interface StakeSplit {
+  backStake: number;
+  layStake: number;
+  total: number;
+  /** Worst-case profit assuming the BACK leg wins (= guaranteed return − total). */
+  profit: number;
+  /** ROI = profit / total × 100. */
+  roi: number;
 }
 
-function calcStakeSplit(backOdds: number, layOdds: number, bankroll: number) {
-  if (backOdds <= 0 || layOdds <= 0 || bankroll <= 0) {
-    return { stakeBack: 0, stakeLay: 0, profit: 0, roi: 0, returnAmount: 0 };
+function computeStakeSplit(
+  backOdds: number | null,
+  layOdds: number | null,
+  stake: { source: 'total' | 'back' | 'lay'; value: number },
+): StakeSplit | null {
+  if (backOdds == null || layOdds == null || backOdds <= 0 || layOdds <= 0) return null;
+  if (!Number.isFinite(stake.value) || stake.value < 0) return null;
+
+  let backStake: number;
+  let layStake: number;
+  if (stake.source === 'total') {
+    // Balanced split.
+    backStake = (stake.value * layOdds) / (backOdds + layOdds);
+    layStake = stake.value - backStake;
+  } else if (stake.source === 'back') {
+    backStake = stake.value;
+    layStake = (backStake * backOdds) / layOdds;
+  } else {
+    layStake = stake.value;
+    backStake = (layStake * layOdds) / backOdds;
   }
-  const totalOdds = backOdds + layOdds;
-  const stakeBack = bankroll * (layOdds / totalOdds);
-  const stakeLay = bankroll - stakeBack;
-  // Both legs return ~ same payout under balanced split.
-  const returnIfBack = stakeBack * backOdds;
-  const returnIfLay = stakeLay * layOdds;
+
+  const total = backStake + layStake;
+  const returnIfBack = backStake * backOdds;
+  const returnIfLay = layStake * layOdds;
   const minReturn = Math.min(returnIfBack, returnIfLay);
-  const profit = minReturn - bankroll;
-  const roi = bankroll > 0 ? (profit / bankroll) * 100 : 0;
+  const profit = minReturn - total;
+  const roi = total > 0 ? (profit / total) * 100 : 0;
   return {
-    stakeBack: Number(stakeBack.toFixed(2)),
-    stakeLay: Number(stakeLay.toFixed(2)),
-    profit: Number(profit.toFixed(2)),
-    roi: Number(roi.toFixed(2)),
-    returnAmount: Number(minReturn.toFixed(2)),
+    backStake: round2(backStake),
+    layStake: round2(layStake),
+    total: round2(total),
+    profit: round2(profit),
+    roi: round2(roi),
   };
 }
 
-export default function OddsLadderCard({ card, bankrollUnits, onBankrollChange, anchorId }: OddsLadderCardProps) {
-  const [selectedAxisKey, setSelectedAxisKey] = useState<string | null>(null);
+function round2(value: number): number {
+  return Number.isFinite(value) ? Number(value.toFixed(2)) : 0;
+}
 
-  // Derive the effective selection at render time so it survives data refreshes
-  // and so the same value drives both the rendered selected axis and `aria-pressed`.
-  // (React 19's eslint rule forbids setState inside useEffect.)
-  const strongestIdx = useMemo(() => pickStrongestAxisIndex(card.axes), [card.axes]);
-  const explicitIdx =
-    selectedAxisKey !== null ? card.axes.findIndex((a) => a.axisKey === selectedAxisKey) : -1;
-  const effectiveIdx = explicitIdx >= 0 ? explicitIdx : strongestIdx;
-  const selectedAxis = card.axes[effectiveIdx] ?? card.axes[0];
-  const effectiveAxisKey = selectedAxis?.axisKey ?? null;
+/* ────────────────────────── small subcomponents ────────────────────────── */
 
-  const stakeSplit = useMemo(() => {
-    if (!selectedAxis?.bestBack || !selectedAxis?.bestLay) return null;
-    return calcStakeSplit(selectedAxis.bestBack.odds, selectedAxis.bestLay.odds, bankrollUnits);
-  }, [selectedAxis, bankrollUnits]);
-
-  const arbCountPill = card.arbCount > 0 ? (
-    <span className="font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-accent">
-      {card.arbCount} ARB{card.arbCount > 1 ? 'S' : ''}
-    </span>
-  ) : null;
-
-  const sectionId = anchorId ?? card.cardKey;
-
+function BookmakerLegSummary({ leg, muted }: { leg: AxisLeg | null; muted: boolean }) {
+  if (!leg) {
+    return <span className={muted ? 'text-text-muted' : 'text-text-secondary'}>—</span>;
+  }
   return (
-    <article
-      id={sectionId}
-      className="border-b border-border px-4 pb-6 pt-4 last:border-b-0"
-      style={{ fontFeatureSettings: '"tnum" 1' }}
-    >
-      {/* Card head — no box, just typography */}
-      <header className="flex flex-wrap items-baseline gap-x-4 gap-y-2 px-1 pb-3">
-        <h3 className="m-0 text-[17px] font-medium tracking-[-0.005em] text-text">{card.title}</h3>
-        <span className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-text-muted">
-          {card.pairEyebrow}
-        </span>
-        <span className="ml-auto flex items-baseline gap-4 font-mono text-[10.5px] uppercase tracking-[0.1em] text-text-muted">
-          {arbCountPill}
-          <span>{card.bookmakerCount} BOOKS</span>
-          {card.axes.length > 1 && (
-            <span>
-              {card.axes.length} {card.category === 'match' ? 'AXES' : 'LINES'}
-            </span>
-          )}
-        </span>
-      </header>
-
-      {/* 3-column body separated by vertical rules */}
-      <div className="grid grid-cols-1 border-b border-t border-border md:grid-cols-[minmax(280px,1.1fr)_minmax(360px,1.7fr)] xl:grid-cols-[minmax(300px,1.1fr)_minmax(400px,2fr)_minmax(260px,1fr)]">
-        {/* Ladder */}
-        <div className="min-w-0 border-r-0 border-border px-5 py-4 xl:border-r">
-          <div className="mb-3 flex items-baseline gap-2 border-b border-border pb-2 font-mono text-[9.5px] uppercase tracking-[0.18em] text-text-muted">
-            <span>Axis</span>
-            <strong className="font-medium normal-case tracking-[0.04em] text-text">
-              {card.category === 'match' ? 'back outcome → complement' : 'line · back ↔ lay'}
-            </strong>
-          </div>
-          <div className="flex flex-col font-mono">
-            {card.axes.map((axis) => {
-              const isSelected = axis.axisKey === effectiveAxisKey;
-              const tier = impliedPctTier(axis.bestPairImpliedPct);
-              const pctClass = impliedPctColor(axis.bestPairImpliedPct);
-              return (
-                <button
-                  key={axis.axisKey}
-                  type="button"
-                  onClick={() => setSelectedAxisKey(axis.axisKey)}
-                  aria-pressed={isSelected}
-                  className={`relative grid w-full grid-cols-[auto_1fr_1fr_auto] items-baseline gap-3 border-t border-dotted border-border bg-transparent py-2 pl-3.5 pr-1 text-left text-[12px] transition-colors first:border-t-0 ${
-                    isSelected ? 'text-text' : 'text-text-secondary hover:text-text'
-                  }`}
-                  style={{ fontFamily: 'inherit' }}
-                >
-                  <span
-                    aria-hidden
-                    className="pointer-events-none absolute left-0 top-2 bottom-2 w-0.5 transition-colors"
-                    style={{
-                      background: isSelected
-                        ? 'var(--color-accent)'
-                        : tier === 'arb'
-                          ? 'transparent'
-                          : 'transparent',
-                    }}
-                  />
-                  <span className="min-w-[42px] text-[12px] font-bold text-text">{axis.lineTag}</span>
-                  <span className="flex min-w-0 items-baseline gap-2">
-                    <span className="truncate text-[10.5px] uppercase tracking-[0.04em] text-text-secondary">
-                      {axis.bestBack ? axis.bestBack.bookmakerName : '—'}
-                    </span>
-                    <span className="ml-auto font-bold text-text">
-                      {axis.bestBack ? formatOdds(axis.bestBack.odds) : '—'}
-                    </span>
-                  </span>
-                  <span className="flex min-w-0 items-baseline gap-2">
-                    <span className="truncate text-[10.5px] uppercase tracking-[0.04em] text-text-secondary">
-                      {axis.bestLay ? `${axis.bestLay.bookmakerName} · ${axis.layLabel}` : '—'}
-                    </span>
-                    <span className="ml-auto font-bold text-text">
-                      {axis.bestLay ? formatOdds(axis.bestLay.odds) : '—'}
-                    </span>
-                  </span>
-                  <span className={`text-right text-[12px] font-bold ${pctClass}`}>
-                    {formatImpliedPct(axis.bestPairImpliedPct)}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Pivot */}
-        <div className="min-w-0 border-t border-border bg-surface px-5 py-4 md:border-l xl:border-l xl:border-r xl:border-t-0">
-          <div className="mb-3 flex items-baseline gap-2 pb-2 font-mono text-[9.5px] uppercase tracking-[0.18em] text-text-muted">
-            <span>All books · selected</span>
-            {selectedAxis && (
-              <strong className="font-medium normal-case tracking-[0.04em] text-text">
-                {selectedAxis.lineTag}
-                {card.category !== 'match' ? '' : ` · ${selectedAxis.backLabel}↔${selectedAxis.layLabel}`}
-              </strong>
-            )}
-          </div>
-          <div className="overflow-x-auto font-mono">
-            <table className="w-full border-collapse text-[12px]">
-              <thead>
-                <tr className="border-b border-border text-[9.5px] font-medium uppercase tracking-[0.14em] text-text-muted">
-                  <th className="pb-2 pr-3 text-left">Bookmaker</th>
-                  <th className="pb-2 pr-3 text-right">{selectedAxis?.backColumnLabel ?? 'Back'}</th>
-                  <th className="pb-2 pr-3 text-right">{selectedAxis?.layColumnLabel ?? 'Lay'}</th>
-                  <th className="pb-2 text-right">Implied %</th>
-                </tr>
-              </thead>
-              <tbody>
-                {selectedAxis?.bookmakerRows.map((row) => {
-                  const pctClass = impliedPctColor(row.impliedPct);
-                  return (
-                    <tr key={row.bookmakerId} className="border-b border-dotted border-border last:border-0">
-                      <td className="py-2 pr-3 text-left">
-                        <BookmakerBadge name={row.bookmakerName} compact href={row.sourceUrl ?? undefined} />
-                      </td>
-                      <td
-                        className={`py-2 pr-3 text-right font-bold ${
-                          row.isBestBack ? 'text-accent' : 'text-text'
-                        }`}
-                      >
-                        {row.isBestBack && row.backOdds != null ? '◆ ' : ''}
-                        {row.backOdds != null ? formatOdds(row.backOdds) : '—'}
-                      </td>
-                      <td
-                        className={`py-2 pr-3 text-right font-bold ${
-                          row.isBestLay ? 'text-accent' : 'text-text'
-                        }`}
-                      >
-                        {row.isBestLay && row.layOdds != null ? '◆ ' : ''}
-                        {row.layOdds != null ? formatOdds(row.layOdds) : '—'}
-                      </td>
-                      <td className={`py-2 text-right font-bold ${pctClass}`}>
-                        {formatImpliedPct(row.impliedPct)}
-                      </td>
-                    </tr>
-                  );
-                })}
-                {(!selectedAxis || selectedAxis.bookmakerRows.length === 0) && (
-                  <tr>
-                    <td colSpan={4} className="py-3 text-center text-[11px] text-text-muted">
-                      No bookmaker data for this axis
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Stake calc */}
-        <div className="min-w-0 border-t border-border bg-bg px-5 py-4 xl:border-l xl:border-t-0">
-          <div className="mb-3 pb-2 font-mono text-[9.5px] uppercase tracking-[0.18em] text-text-muted">
-            <span>Stake split · </span>
-            <strong className="font-medium normal-case tracking-[0.04em] text-text">best combo</strong>
-          </div>
-          {selectedAxis?.bestBack && selectedAxis?.bestLay ? (
-            <>
-              <div className="space-y-1.5 border-b border-border pb-3 font-mono text-[11px] leading-snug text-text-secondary">
-                <div className="flex items-baseline gap-1.5">
-                  <span>►</span>
-                  <strong className="font-bold text-text">{selectedAxis.bestBack.bookmakerName}</strong>
-                  <span>· {selectedAxis.backLabel} · {formatOdds(selectedAxis.bestBack.odds)}</span>
-                </div>
-                <div className="flex items-baseline gap-1.5">
-                  <span>+</span>
-                  <strong className="font-bold text-text">{selectedAxis.bestLay.bookmakerName}</strong>
-                  <span>· {selectedAxis.layLabel} · {formatOdds(selectedAxis.bestLay.odds)}</span>
-                </div>
-                <div
-                  className={`mt-2 font-bold tracking-wider ${impliedPctColor(selectedAxis.bestPairImpliedPct)}`}
-                >
-                  → {formatImpliedPct(selectedAxis.bestPairImpliedPct)}
-                  <StatusPillSeparator pct={selectedAxis.bestPairImpliedPct} />
-                </div>
-              </div>
-
-              <div className="mb-3 flex items-baseline gap-2 border-b border-border pb-3">
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={Number.isFinite(bankrollUnits) ? bankrollUnits : 0}
-                  onChange={(e) => {
-                    const next = Number(e.target.value);
-                    if (Number.isFinite(next) && next >= 0) onBankrollChange(next);
-                  }}
-                  aria-label="Bankroll in units"
-                  className="w-[90px] border-0 border-b border-text bg-transparent pb-1 text-right font-mono text-[22px] font-bold text-text outline-none focus:border-accent"
-                />
-                <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">units</span>
-              </div>
-
-              {stakeSplit && (
-                <div className="space-y-1 font-mono text-[11.5px]">
-                  <StakeRow
-                    label={`Stake ${selectedAxis.backLabel} · ${selectedAxis.bestBack.bookmakerName}`}
-                    value={`${stakeSplit.stakeBack.toFixed(2)}u`}
-                  />
-                  <StakeRow
-                    label={`Stake ${selectedAxis.layLabel} · ${selectedAxis.bestLay.bookmakerName}`}
-                    value={`${stakeSplit.stakeLay.toFixed(2)}u`}
-                  />
-                  <div className="mt-2 grid grid-cols-[1fr_auto] gap-3 border-t border-border pt-2.5">
-                    <span className="text-text-secondary">Worst-case profit</span>
-                    <span
-                      className={`font-bold ${stakeSplit.profit >= 0 ? 'text-accent' : 'text-warning'}`}
-                    >
-                      {stakeSplit.profit >= 0 ? '+' : ''}
-                      {stakeSplit.profit.toFixed(2)}u
-                    </span>
-                  </div>
-                  <StakeRow
-                    label="ROI"
-                    value={`${stakeSplit.roi >= 0 ? '+' : ''}${stakeSplit.roi.toFixed(2)}%`}
-                    valueClassName={stakeSplit.roi >= 0 ? 'text-accent' : 'text-warning'}
-                  />
-                </div>
-              )}
-
-              {selectedAxis.bestBack.sourceUrl && selectedAxis.bestLay.sourceUrl ? (
-                <div className="mt-4 flex flex-col gap-2">
-                  <a
-                    href={selectedAxis.bestBack.sourceUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="font-mono text-[11px] uppercase tracking-[0.22em] text-accent hover:text-text"
-                  >
-                    ▸ Open back leg
-                  </a>
-                  <a
-                    href={selectedAxis.bestLay.sourceUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="font-mono text-[11px] uppercase tracking-[0.22em] text-accent hover:text-text"
-                  >
-                    ▸ Open lay leg
-                  </a>
-                </div>
-              ) : (
-                <div className="mt-4 font-mono text-[11px] uppercase tracking-[0.22em] text-text-muted">
-                  —  Source URLs unavailable
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-text-muted">
-              Insufficient odds to compute pair
-            </div>
-          )}
-        </div>
-      </div>
-    </article>
+    <span className="flex min-w-0 items-center gap-1.5">
+      <BookmakerBadge name={leg.bookmakerName} compact />
+      <span className="min-w-0 truncate text-[12px] text-text-secondary" title={leg.bookmakerName}>
+        {leg.bookmakerName}
+      </span>
+      <span className="ml-auto shrink-0 font-mono text-[13px] font-semibold text-text">
+        {formatOdds(leg.odds)}
+      </span>
+    </span>
   );
 }
 
-function StakeRow({
+function PivotRow({
+  row,
+  isBackSelected,
+  isLaySelected,
+  onPickBack,
+  onPickLay,
+}: {
+  row: AxisBookmakerRow;
+  isBackSelected: boolean;
+  isLaySelected: boolean;
+  onPickBack: () => void;
+  onPickLay: () => void;
+}) {
+  const roi = roiFromImpliedPct(row.impliedPct);
+  return (
+    <tr className="border-b border-dotted border-border last:border-0">
+      <td className="py-2 pr-3 text-left">
+        <BookmakerBadge name={row.bookmakerName} compact href={row.sourceUrl ?? undefined} />
+      </td>
+      <td className="py-1 pr-2 text-right">
+        {row.backOdds != null ? (
+          <button
+            type="button"
+            onClick={onPickBack}
+            aria-pressed={isBackSelected}
+            className={`-mr-1 rounded-sm px-2 py-1 font-mono text-[13px] font-semibold transition ${
+              isBackSelected
+                ? 'bg-accent/[0.18] text-accent ring-1 ring-accent/40'
+                : row.isBestBack
+                  ? 'text-accent hover:bg-accent/[0.06]'
+                  : 'text-text hover:bg-text/[0.04]'
+            }`}
+          >
+            {row.isBestBack && !isBackSelected ? '◆ ' : ''}
+            {formatOdds(row.backOdds)}
+          </button>
+        ) : (
+          <span className="px-2 font-mono text-[13px] text-text-muted">—</span>
+        )}
+      </td>
+      <td className="py-1 pr-2 text-right">
+        {row.layOdds != null ? (
+          <button
+            type="button"
+            onClick={onPickLay}
+            aria-pressed={isLaySelected}
+            className={`-mr-1 rounded-sm px-2 py-1 font-mono text-[13px] font-semibold transition ${
+              isLaySelected
+                ? 'bg-accent/[0.18] text-accent ring-1 ring-accent/40'
+                : row.isBestLay
+                  ? 'text-accent hover:bg-accent/[0.06]'
+                  : 'text-text hover:bg-text/[0.04]'
+            }`}
+          >
+            {row.isBestLay && !isLaySelected ? '◆ ' : ''}
+            {formatOdds(row.layOdds)}
+          </button>
+        ) : (
+          <span className="px-2 font-mono text-[13px] text-text-muted">—</span>
+        )}
+      </td>
+      <td className={`py-2 text-right font-mono text-[12px] font-semibold ${roiColor(roi)}`}>
+        {formatRoi(roi)}
+      </td>
+    </tr>
+  );
+}
+
+function StakeInput({
   label,
+  hint,
   value,
-  valueClassName,
+  onChange,
 }: {
   label: string;
+  hint?: string;
   value: string;
-  valueClassName?: string;
+  onChange: (next: string) => void;
 }) {
   return (
-    <div className="grid grid-cols-[1fr_auto] items-baseline gap-3 py-1">
-      <span className="text-text-secondary">{label}</span>
-      <span className={`font-bold ${valueClassName ?? 'text-text'}`}>{value}</span>
-    </div>
+    <label className="flex items-center gap-2 border-b border-border pb-1">
+      <span className="flex-1 truncate text-text-secondary">
+        {label}
+        {hint && <span className="ml-1.5 text-[11px] text-text-muted">· {hint}</span>}
+      </span>
+      <input
+        type="number"
+        inputMode="decimal"
+        min={0}
+        step="0.01"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-20 bg-transparent text-right font-mono text-[14px] font-semibold text-text outline-none focus:text-accent"
+        style={{ fontFamily: 'var(--font-mono)' }}
+        aria-label={label}
+      />
+      <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-text-muted">u</span>
+    </label>
   );
 }
-
-function StatusPillSeparator({ pct }: { pct: number | null | undefined }) {
-  const tier = impliedPctTier(pct);
-  if (tier === 'arb') return <> · arb</>;
-  if (tier === 'knife-edge') return <> · knife-edge</>;
-  if (tier === 'margin') return <> · margin</>;
-  if (tier === 'high-margin') return <> · high margin</>;
-  return null;
-}
-
-// Re-export only used externally via the named function. StatusPill below is unused
-// but kept for future top-of-event ticker — typed import to silence linter.
-export { StatusPill };
