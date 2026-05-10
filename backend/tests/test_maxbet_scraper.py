@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -15,6 +17,7 @@ from app.scrapers.maxbet_scraper import (
     _parse_handicap_ot_match,
     _parse_football_outcome_match,
     _parse_tennis_outcome_match,
+    _tennis_skip_reason,
     _parse_match_detail,
     _get_player_match_ids,
     _parse_start_time,
@@ -25,6 +28,11 @@ SPECIALS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "maxbet_specials.js
 TOTALS_FIXTURE_PATH = (
     Path(__file__).parent / "fixtures" / "maxbet_basketball_totals.json"
 )
+TENNIS_NOW = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
+
+
+def _tennis_kickoff_ms(**delta_kwargs) -> int:
+    return int((TENNIS_NOW + timedelta(**delta_kwargs)).timestamp() * 1000)
 
 
 @pytest.fixture
@@ -56,8 +64,14 @@ def test_parse_start_time():
     assert "2026-04" in result
 
 
+def test_parse_start_time_numeric_string():
+    assert _parse_start_time("1778407200000") == "2026-05-10T10:00:00+00:00"
+
+
 def test_parse_start_time_none():
     assert _parse_start_time(None) is None
+    assert _parse_start_time(0) is None
+    assert _parse_start_time("0") is None
 
 
 def test_extract_league_id_known_variants():
@@ -430,6 +444,94 @@ def test_parse_tennis_outcome_match_emits_singles_match_winner():
     }
     assert {row.league_id for row in results} == {"atp_challenger_bengaluru_qual."}
     assert str(match["id"]) in (results[0].source_url or "")
+
+
+def test_parse_tennis_outcome_match_allows_future_live_flagged_prematch():
+    results = _parse_tennis_outcome_match(
+        {
+            "id": 23401849,
+            "leagueName": "ATP Challenger Bengaluru Qual.",
+            "home": "Papa C.",
+            "away": "Shanmugam A.",
+            "kickOffTime": str(_tennis_kickoff_ms(minutes=10)),
+            "live": True,
+            "odds": {"1": 1.73, "3": 2.0, "254": 1.75},
+        },
+        now=TENNIS_NOW,
+    )
+
+    assert len(results) == 2
+    assert {row.outcome_code for row in results} == {"home", "away"}
+    assert {row.start_time for row in results} == {"2026-05-10T12:10:00+00:00"}
+
+
+@pytest.mark.parametrize(
+    ("delta_kwargs", "expected_reason"),
+    [
+        ({"minutes": 5}, "live_near_or_past_start"),
+        ({"seconds": 35}, "live_near_or_past_start"),
+        ({"minutes": -1}, "live_near_or_past_start"),
+    ],
+)
+def test_parse_tennis_outcome_match_skips_live_rows_near_start_or_past(
+    delta_kwargs,
+    expected_reason,
+):
+    match = {
+        "leagueName": "ATP Challenger Bengaluru Qual.",
+        "home": "Papa C.",
+        "away": "Shanmugam A.",
+        "kickOffTime": _tennis_kickoff_ms(**delta_kwargs),
+        "live": True,
+        "odds": {"1": 1.73, "3": 2.0},
+    }
+
+    assert _parse_tennis_outcome_match(match, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(match, now=TENNIS_NOW) == expected_reason
+
+
+def test_parse_tennis_outcome_match_skips_live_rows_with_bad_start_time():
+    missing_start = {
+        "leagueName": "ATP Challenger Bengaluru Qual.",
+        "home": "Papa C.",
+        "away": "Shanmugam A.",
+        "live": True,
+        "odds": {"1": 1.73, "3": 2.0},
+    }
+    invalid_start = {**missing_start, "kickOffTime": "not-an-epoch"}
+
+    assert _parse_tennis_outcome_match(missing_start, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(missing_start, now=TENNIS_NOW) == "missing_start_time"
+    assert _parse_tennis_outcome_match(invalid_start, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(invalid_start, now=TENNIS_NOW) == "invalid_start_time"
+
+
+def test_parse_tennis_outcome_match_skip_precedence_for_blocked_doubles_and_bad_shape():
+    future_live_match = {
+        "leagueName": "ATP Challenger Bengaluru Qual.",
+        "home": "Papa C.",
+        "away": "Shanmugam A.",
+        "kickOffTime": _tennis_kickoff_ms(minutes=10),
+        "live": True,
+        "odds": {"1": 1.73, "3": 2.0},
+    }
+
+    blocked = {**future_live_match, "blocked": True}
+    doubles_league = {**future_live_match, "leagueName": "ATP Rome Doubles"}
+    doubles_home = {**future_live_match, "home": "Cadenasso G./Vasami J."}
+    missing_home = {**future_live_match, "home": ""}
+    invalid_odds = {**future_live_match, "odds": []}
+
+    assert _parse_tennis_outcome_match(blocked, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(blocked, now=TENNIS_NOW) == "blocked"
+    assert _parse_tennis_outcome_match(doubles_league, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(doubles_league, now=TENNIS_NOW) == "doubles"
+    assert _parse_tennis_outcome_match(doubles_home, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(doubles_home, now=TENNIS_NOW) == "doubles"
+    assert _parse_tennis_outcome_match(missing_home, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(missing_home, now=TENNIS_NOW) == "missing_competitor"
+    assert _parse_tennis_outcome_match(invalid_odds, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(invalid_odds, now=TENNIS_NOW) == "invalid_odds_map"
 
 
 @pytest.mark.parametrize(
@@ -982,9 +1084,10 @@ async def test_scraper_unknown_sport_returns_empty():
 
 
 @pytest.mark.asyncio
-async def test_scrape_outcome_offers_tennis_uses_list_endpoint_only():
+async def test_scrape_outcome_offers_tennis_uses_list_endpoint_only(caplog):
     scraper = MaxBetScraper()
     calls: list[str] = []
+    caplog.set_level(logging.INFO)
 
     async def mock_get(url, **kwargs):
         calls.append(url)
@@ -1001,6 +1104,24 @@ async def test_scrape_outcome_offers_tennis_uses_list_endpoint_only():
                         "odds": {"1": 1.73, "3": 2.0},
                     },
                     {
+                        "id": 23401850,
+                        "leagueName": "ATP Challenger Bengaluru Qual.",
+                        "home": "Future P.",
+                        "away": "Future A.",
+                        "kickOffTime": _tennis_kickoff_ms(minutes=10),
+                        "live": True,
+                        "odds": {"1": 1.91, "3": 1.91},
+                    },
+                    {
+                        "id": 23401851,
+                        "leagueName": "ATP Challenger Bengaluru Qual.",
+                        "home": "Soon P.",
+                        "away": "Soon A.",
+                        "kickOffTime": _tennis_kickoff_ms(minutes=5),
+                        "live": True,
+                        "odds": {"1": 1.91, "3": 1.91},
+                    },
+                    {
                         "id": 23397652,
                         "leagueName": "ATP Rome Doubles",
                         "home": "Cadenasso G./Vasami J.",
@@ -1013,14 +1134,20 @@ async def test_scrape_outcome_offers_tennis_uses_list_endpoint_only():
             }
         raise AssertionError(f"unexpected url {url}")
 
-    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+    with (
+        patch("app.scrapers.maxbet_scraper.current_utc_time", return_value=TENNIS_NOW),
+        patch.object(scraper._http, "get_json", side_effect=mock_get),
+    ):
         results = await scraper.scrape_outcome_offers("tennis")
 
     assert calls == ["https://www.maxbet.rs/restapi/offer/sr/sport/T/mob"]
     assert [(row.outcome_code, row.odds) for row in results] == [
         ("home", 1.73),
         ("away", 2.0),
+        ("home", 1.91),
+        ("away", 1.91),
     ]
+    assert "skipped={'live_near_or_past_start': 1, 'doubles': 1}" in caplog.text
 
 
 @pytest.mark.asyncio
