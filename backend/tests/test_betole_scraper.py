@@ -13,6 +13,7 @@ from app.scrapers.betole_scraper import (
     _FOOTBALL_LIST_URL,
     _PLAYER_FEED_URL,
     _REGULAR_FEED_URL,
+    _TENNIS_LIST_URL,
     _build_matchup_index,
     _extract_league_id,
     _parse_football_double_chance_detail_match,
@@ -20,8 +21,11 @@ from app.scrapers.betole_scraper import (
     _parse_handicap_match,
     _parse_player_match,
     _parse_regular_match,
+    _parse_start_time,
+    _parse_tennis_outcome_match,
 )
 from app.models.schemas import RawOutcomeOffer
+from app.services.league_registry import resolve_league
 
 REGULAR_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "betole_regular_league.json"
 PLAYER_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "betole_players_league.json"
@@ -493,10 +497,101 @@ def test_extract_league_id_default_kwarg_uses_football():
     assert _extract_league_id(None, default="football") == "football"
 
 
+def test_tennis_league_id_resolves_punctuation_variants_to_same_key():
+    betole_league_id = _extract_league_id(
+        "ITF Men, M25 Loule (Portugal), hard",
+        default="tennis",
+    )
+
+    assert resolve_league(betole_league_id, "betole").league_id == resolve_league(
+        "itf_men,_m25_loule_(portugal),_hard",
+        "oktagonbet",
+    ).league_id
+
+
+def test_parse_tennis_outcome_match_emits_match_winner_offers():
+    match = {
+        "id": 90361490,
+        "home": "Tiago Pereira",
+        "away": "Joao Domingues",
+        "leagueName": "ITF Men, M25 Loule (Portugal), hard",
+        "kickOffTime": 1778407200000,
+        "live": False,
+        "blocked": False,
+        "odds": {"1": 1.4, "3": 2.8, "50510": 1.83},
+    }
+
+    results = _parse_tennis_outcome_match(match)
+
+    assert len(results) == 2
+    assert all(isinstance(r, RawOutcomeOffer) for r in results)
+    assert {r.bookmaker_id for r in results} == {"betole"}
+    assert {r.sport for r in results} == {"tennis"}
+    assert {r.league_id for r in results} == {"itf_men_m25_loule_portugal_hard"}
+    assert {r.home_team for r in results} == {"Tiago Pereira"}
+    assert {r.away_team for r in results} == {"Joao Domingues"}
+    assert {r.market_type for r in results} == {"tennis_match_winner"}
+    assert {r.source_url for r in results} == {
+        "https://www.betole.com/sr/sportsko-kladjenje/tenis/T"
+    }
+    assert {
+        (r.outcome_code, r.raw_label, r.odds, r.line, r.start_time)
+        for r in results
+    } == {
+        ("home", "1", 1.4, None, _parse_start_time(1778407200000)),
+        ("away", "2", 2.8, None, _parse_start_time(1778407200000)),
+    }
+
+
+def test_parse_tennis_outcome_match_emits_available_one_sided_odds():
+    results = _parse_tennis_outcome_match(
+        {
+            "home": "Jessica Pegula",
+            "away": "Rebeka Masarova",
+            "leagueName": "WTA, Rome (Italy), clay",
+            "kickOffTime": 1778410800000,
+            "live": False,
+            "blocked": False,
+            "odds": {"1": 1.2},
+        }
+    )
+
+    assert [(row.outcome_code, row.odds) for row in results] == [("home", 1.2)]
+
+
+def test_parse_tennis_outcome_match_skips_live_blocked_and_doubles():
+    base_match = {
+        "home": "Tiago Pereira",
+        "away": "Joao Domingues",
+        "leagueName": "ITF Men, M25 Loule (Portugal), hard",
+        "kickOffTime": 1778407200000,
+        "live": False,
+        "blocked": False,
+        "odds": {"1": 1.4, "3": 2.8},
+    }
+
+    assert _parse_tennis_outcome_match({**base_match, "live": True}) == []
+    assert _parse_tennis_outcome_match({**base_match, "blocked": True}) == []
+    assert _parse_tennis_outcome_match(
+        {**base_match, "leagueName": "ATP Doubles, Rome (Italy), clay"}
+    ) == []
+    assert _parse_tennis_outcome_match({**base_match, "home": "A. Player/B. Player"}) == []
+    assert _parse_tennis_outcome_match({**base_match, "away": "A. Player/B. Player"}) == []
+
+
+def test_parse_tennis_outcome_match_skips_invalid_rows():
+    assert _parse_tennis_outcome_match({"away": "Away", "odds": {"1": 1.9}}) == []
+    assert _parse_tennis_outcome_match({"home": "Home", "odds": {"1": 1.9}}) == []
+    assert _parse_tennis_outcome_match({"home": "Home", "away": "Away", "odds": []}) == []
+    assert _parse_tennis_outcome_match(
+        {"home": "Home", "away": "Away", "odds": {"1": 0, "3": "bad"}}
+    ) == []
+
+
 @pytest.mark.asyncio
 async def test_scraper_supports_football_outcomes():
     scraper = BetOleScraper()
-    assert scraper.get_supported_outcome_sports() == ["football"]
+    assert scraper.get_supported_outcome_sports() == ["football", "tennis"]
 
 
 @pytest.mark.asyncio
@@ -722,6 +817,63 @@ async def test_scrape_outcome_offers_non_football_returns_empty():
 
     assert results == []
     http_client.get_json.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_tennis_uses_one_list_call_without_details():
+    tennis_data = {
+        "esMatches": [
+            {
+                "id": 90361490,
+                "home": "Tiago Pereira",
+                "away": "Joao Domingues",
+                "leagueName": "ITF Men, M25 Loule (Portugal), hard",
+                "kickOffTime": 1778407200000,
+                "live": False,
+                "blocked": False,
+                "odds": {"1": 1.4, "3": 2.8},
+            },
+            {
+                "id": 90360000,
+                "home": "Cadenasso G./Vasami J.",
+                "away": "Granollers M./Zeballos H.",
+                "leagueName": "ATP Doubles, Rome (Italy), clay",
+                "kickOffTime": 1778407200000,
+                "live": False,
+                "blocked": False,
+                "odds": {"1": 7.4, "3": 1.05},
+            },
+            {
+                "id": 90360001,
+                "home": "Taisei Ichikawa",
+                "away": "Uisung Park",
+                "leagueName": "ITF Men, M15 Wuning (China), hard",
+                "kickOffTime": 1778378400000,
+                "live": True,
+                "blocked": False,
+                "odds": {"1": 2.8, "3": 1.4},
+            },
+        ]
+    }
+
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del headers
+        if url == _TENNIS_LIST_URL:
+            assert params and params.get("hours")
+            return tennis_data
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    http_client = AsyncMock()
+    http_client.rate_limit_per_second = 4.0
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = BetOleScraper(http_client=http_client, detail_mode="full")
+    results = await scraper.scrape_outcome_offers("tennis")
+
+    assert len(results) == 2
+    assert all(row.sport == "tennis" for row in results)
+    requested_urls = [call.args[0] for call in http_client.get_json.call_args_list]
+    assert requested_urls == [_TENNIS_LIST_URL]
 
 
 def test_scheduler_applies_betole_detail_mode_and_analysis_markets():

@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 _REGULAR_FEED_URL = "https://www.betole.com/restapi/offer/sr/sport/B/mob"
 _PLAYER_FEED_URL = "https://www.betole.com/restapi/offer/sr/sport/SK/mob"
 _FOOTBALL_LIST_URL = "https://www.betole.com/restapi/offer/sr/sport/S/mob"
+_TENNIS_LIST_URL = "https://www.betole.com/restapi/offer/sr/sport/T/mob"
+_TENNIS_PAGE_URL = "https://www.betole.com/sr/sportsko-kladjenje/tenis/T"
 _FOOTBALL_DETAIL_URL_TEMPLATE = "https://www.betole.com/restapi/offer/sr/match/{match_id}"
 
 _DEFAULT_HEADERS: dict[str, str] = {
@@ -150,6 +152,10 @@ _FOOTBALL_DETAIL_DOUBLE_CHANCE_CODES: dict[str, tuple[str, str]] = {
     "7": ("home_or_draw", "1X"),
     "8": ("home_or_away", "12"),
     "9": ("draw_or_away", "X2"),
+}
+_TENNIS_OUTCOME_CODES: dict[str, tuple[str, str]] = {
+    "1": ("home", "1"),
+    "3": ("away", "2"),
 }
 
 
@@ -458,6 +464,59 @@ def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
     return results
 
 
+def _is_tennis_doubles_match(match: dict) -> bool:
+    league_name = str(match.get("leagueName") or "")
+    home_team = str(match.get("home") or "")
+    away_team = str(match.get("away") or "")
+    league_key = _normalize_league_key(league_name)
+    if any(token in league_key.split() for token in ("doubles", "double", "parovi")):
+        return True
+    return "/" in home_team or "/" in away_team
+
+
+def _parse_tennis_outcome_match(match: dict) -> list[RawOutcomeOffer]:
+    if match.get("live") is True:
+        return []
+    if match.get("blocked") is True:
+        return []
+    if _is_tennis_doubles_match(match):
+        return []
+
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return []
+
+    odds_map = match.get("odds") or {}
+    if not isinstance(odds_map, dict):
+        return []
+
+    league_id = _extract_league_id(match.get("leagueName"), default="tennis")
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    results: list[RawOutcomeOffer] = []
+    for code, (outcome_code, raw_label) in _TENNIS_OUTCOME_CODES.items():
+        odds = _coerce_positive_odds(odds_map.get(code))
+        if odds is None:
+            continue
+        results.append(
+            RawOutcomeOffer(
+                bookmaker_id=_BOOKMAKER_ID,
+                league_id=league_id,
+                sport="tennis",
+                home_team=home_team,
+                away_team=away_team,
+                source_url=_TENNIS_PAGE_URL,
+                market_type="tennis_match_winner",
+                outcome_code=outcome_code,
+                odds=odds,
+                line=None,
+                raw_label=raw_label,
+                start_time=start_time,
+            )
+        )
+    return results
+
+
 def _parse_football_double_chance_detail_match(match: dict) -> list[RawOutcomeOffer]:
     """Emit detail-derived football double-chance offers (codes 7/8/9).
 
@@ -551,7 +610,7 @@ class BetOleScraper(BaseScraper):
         return ["basketball"]
 
     def get_supported_outcome_sports(self) -> list[str]:
-        return ["football"]
+        return ["football", "tennis"]
 
     async def _fetch_feed_rows(self, url: str, *, label: str) -> list[dict]:
         try:
@@ -643,6 +702,22 @@ class BetOleScraper(BaseScraper):
             return []
         return [row for row in rows if isinstance(row, dict)]
 
+    async def _fetch_tennis_list(self) -> list[dict]:
+        try:
+            data = await self._http.get_json(
+                _TENNIS_LIST_URL,
+                params=_list_params(),
+                headers=_DEFAULT_HEADERS,
+            )
+        except Exception:
+            logger.warning("BetOle: failed to fetch tennis listing", exc_info=True)
+            return []
+
+        rows = data.get("esMatches") or []
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+
     async def _fetch_football_detail(
         self,
         match_id: int,
@@ -676,16 +751,47 @@ class BetOleScraper(BaseScraper):
         return allowlist.allows(sport="football", market_type="football_double_chance")
 
     async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
-        """Scrape football outcome offers (result, optional double chance, 2.5 totals).
+        """Scrape outcome offers for supported sports.
 
         BetOle's bulk PUT endpoint that the OktagonBet sibling uses
         (``/ibet/offer/prematchesByIds.html``) returns an empty body
         for anonymous and cookie-bearing requests alike, so full mode
-        enriches each list match with a per-match GET to pick up the
+        enriches each football list match with a per-match GET to pick up the
         double chance picks (codes 7/8/9) that are not present in the
         list payload. Result and totals are always parsed from the
         cheaper list response.
         """
+
+        if sport == "tennis":
+            tennis_matches = await self._fetch_tennis_list()
+            results: list[RawOutcomeOffer] = []
+            skipped_live = 0
+            skipped_blocked = 0
+            skipped_doubles = 0
+            for match in tennis_matches:
+                if match.get("live") is True:
+                    skipped_live += 1
+                    continue
+                if match.get("blocked") is True:
+                    skipped_blocked += 1
+                    continue
+                if _is_tennis_doubles_match(match):
+                    skipped_doubles += 1
+                    continue
+                results.extend(_parse_tennis_outcome_match(match))
+
+            logger.info(
+                (
+                    "BetOle scraped %d tennis outcome offers from %d matches "
+                    "(skipped %d live, %d blocked, %d doubles)"
+                ),
+                len(results),
+                len(tennis_matches),
+                skipped_live,
+                skipped_blocked,
+                skipped_doubles,
+            )
+            return results
 
         if sport != "football":
             return []
