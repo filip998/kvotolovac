@@ -10,6 +10,7 @@ import pytest
 
 from app.scrapers.pinnbet_scraper import (
     PinnBetScraper,
+    _BET_TENNIS_MATCH_WINNER,
     _extract_league_id,
     _parse_event_name,
     _parse_event_detail,
@@ -20,14 +21,19 @@ from app.scrapers.pinnbet_scraper import (
     _resolve_matchup_from_short_name,
     _parse_football_outcome_event,
     _parse_football_double_chance_detail,
+    _parse_tennis_outcome_event,
     _parse_total_line,
     _resolve_total_line,
     _dedupe_football_events,
+    _dedupe_tennis_events,
     _football_detail_identity,
     _football_event_completeness_score,
     _BASE_DETAIL_URL,
+    _BASE_LIST_URL,
     _FOOTBALL_PAGE_ID,
     _FOOTBALL_SPORT_ID,
+    _TENNIS_PAGE_ID,
+    _TENNIS_SPORT_ID,
 )
 from app.models.schemas import RawOddsData, RawOutcomeOffer
 
@@ -1262,17 +1268,181 @@ def test_get_supported_outcome_sports_isolates_football_from_basketball_capabili
     # threshold-odds lane: basketball only — football MUST NOT leak here,
     # otherwise the unified pipeline would call scrape_odds("football") every cycle.
     assert scraper.get_supported_leagues() == ["basketball"]
-    # outcome-offer lane: football
-    assert scraper.get_supported_outcome_sports() == ["football"]
+    # outcome-offer lane: football + tennis
+    assert scraper.get_supported_outcome_sports() == ["football", "tennis"]
 
 
 @pytest.mark.asyncio
-async def test_scrape_outcome_offers_returns_empty_for_non_football_without_http():
+async def test_scrape_outcome_offers_returns_empty_for_unsupported_sport_without_http():
     scraper = PinnBetScraper(detail_mode="full")
     with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get:
         results = await scraper.scrape_outcome_offers("basketball")
     assert results == []
     mock_get.assert_not_called()
+
+
+def _tennis_event(**overrides) -> dict:
+    event = {
+        "id": 2247500,
+        "sportId": _TENNIS_SPORT_ID,
+        "regionId": 186,
+        "competitionId": 22767,
+        "competitionName": "Đuđang Ž",
+        "dateTime": "2026-05-10T05:00:00",
+        "name": "Xiaodi You - En Shuo Liang",
+        "isLive": False,
+        "isPlayable": True,
+        "isInOffer": True,
+        "bets": [
+            {
+                "betTypeId": _BET_TENNIS_MATCH_WINNER,
+                "betTypeName": "Pobednik",
+                "isPlayable": True,
+                "isInOffer": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.97, "isPlayable": True, "isInOffer": True},
+                    {"name": "2", "odd": 1.83, "isPlayable": True, "isInOffer": True},
+                    {"name": "X", "odd": 99.0, "isPlayable": True, "isInOffer": True},
+                ],
+            },
+            {
+                "betTypeId": 269,
+                "betTypeName": "1.set - Pobednik",
+                "isPlayable": True,
+                "isInOffer": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.90, "isPlayable": True, "isInOffer": True},
+                    {"name": "2", "odd": 1.83, "isPlayable": True, "isInOffer": True},
+                ],
+            },
+        ],
+    }
+    event.update(overrides)
+    return event
+
+
+def test_parse_tennis_outcome_event_emits_match_winner_offers():
+    offers = _parse_tennis_outcome_event(_tennis_event())
+
+    assert len(offers) == 2
+    assert all(isinstance(row, RawOutcomeOffer) for row in offers)
+    assert {row.bookmaker_id for row in offers} == {"pinnbet"}
+    assert {row.sport for row in offers} == {"tennis"}
+    assert {row.league_id for row in offers} == {"đuđang ž"}
+    assert {row.home_team for row in offers} == {"Xiaodi You"}
+    assert {row.away_team for row in offers} == {"En Shuo Liang"}
+    assert {row.market_type for row in offers} == {"tennis_match_winner"}
+    assert {row.source_url for row in offers} == {
+        "https://www.pinnbet.rs/sportsko-kladjenje/tenis"
+    }
+    assert {
+        (row.outcome_code, row.raw_label, row.odds, row.line, row.start_time)
+        for row in offers
+    } == {
+        ("home", "1", 1.97, None, "2026-05-10T05:00:00+00:00"),
+        ("away", "2", 1.83, None, "2026-05-10T05:00:00+00:00"),
+    }
+    assert 99.0 not in {row.odds for row in offers}
+    assert 1.90 not in {row.odds for row in offers}
+
+
+def test_parse_tennis_outcome_event_skips_event_level_exclusions():
+    assert _parse_tennis_outcome_event(_tennis_event(isLive=True)) == []
+    assert _parse_tennis_outcome_event(_tennis_event(isPlayable=False)) == []
+    assert _parse_tennis_outcome_event(_tennis_event(isInOffer=False)) == []
+    assert _parse_tennis_outcome_event(
+        _tennis_event(name="Dang Y./You X. - Lee Y./Ye Q.")
+    ) == []
+    assert _parse_tennis_outcome_event(_tennis_event(name="NoSeparator")) == []
+
+
+def test_parse_tennis_outcome_event_skips_bet_and_outcome_level_exclusions():
+    assert _parse_tennis_outcome_event(
+        _tennis_event(
+            bets=[
+                {
+                    "betTypeId": _BET_TENNIS_MATCH_WINNER,
+                    "isPlayable": False,
+                    "isInOffer": True,
+                    "betOutcomes": [{"name": "1", "odd": 1.5, "isPlayable": True}],
+                }
+            ]
+        )
+    ) == []
+    assert _parse_tennis_outcome_event(
+        _tennis_event(
+            bets=[
+                {
+                    "betTypeId": _BET_TENNIS_MATCH_WINNER,
+                    "isPlayable": True,
+                    "isInOffer": False,
+                    "betOutcomes": [{"name": "1", "odd": 1.5, "isPlayable": True}],
+                }
+            ]
+        )
+    ) == []
+    assert _parse_tennis_outcome_event(
+        _tennis_event(
+            bets=[
+                {
+                    "betTypeId": _BET_TENNIS_MATCH_WINNER,
+                    "isPlayable": True,
+                    "isInOffer": True,
+                    "betOutcomes": [
+                        {"name": "1", "odd": 1.5, "isPlayable": False, "isInOffer": True},
+                        {"name": "2", "odd": 1.9, "isPlayable": True, "isInOffer": False},
+                        {"name": "1", "odd": 0, "isPlayable": True, "isInOffer": True},
+                        {"name": "2", "odd": "bad", "isPlayable": True, "isInOffer": True},
+                    ],
+                }
+            ]
+        )
+    ) == []
+
+
+def test_dedupe_tennis_events_keeps_richer_duplicate_row():
+    sparse = _tennis_event(id=123, bets=[])
+    rich = _tennis_event(id=123)
+    by_id = _dedupe_tennis_events([sparse, rich])
+
+    assert list(by_id.keys()) == [123]
+    assert by_id[123] is rich
+
+    by_id = _dedupe_tennis_events([rich, sparse])
+    assert by_id[123] is rich
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_tennis_full_mode_uses_one_list_call(monkeypatch):
+    scraper = PinnBetScraper(detail_mode="full")
+    captured: list[str] = []
+    fixed_now = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.config.settings.scrape_lookahead_hours", 24)
+    monkeypatch.setattr("app.scrapers.pinnbet_scraper.current_utc_time", lambda: fixed_now)
+
+    async def mock_get(url, **kwargs):
+        del kwargs
+        captured.append(url)
+        if "betsAndGroups" in url:
+            raise AssertionError(f"Tennis must not fetch detail in full mode: {url}")
+        if "getWebEventsSelections" in url:
+            return [_tennis_event(), {**_tennis_event(), "id": 2247500, "bets": []}]
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        offers = await scraper.scrape_outcome_offers("tennis")
+
+    assert len(offers) == 2
+    assert len(captured) == 1
+    parsed = urlparse(captured[0])
+    assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == _BASE_LIST_URL
+    qs = parse_qs(parsed.query)
+    assert qs["pageId"] == [str(_TENNIS_PAGE_ID)]
+    assert qs["sportId"] == [str(_TENNIS_SPORT_ID)]
+    assert qs["isLive"] == ["false"]
+    assert qs["dateFrom"] == ["2030-01-01T12:00:00"]
+    assert qs["dateTo"] == ["2030-01-02T12:00:00"]
+    assert qs["eventMappingTypes"] == ["1", "2", "3", "4", "5"]
 
 
 @pytest.mark.asyncio

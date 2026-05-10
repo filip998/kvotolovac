@@ -30,11 +30,13 @@ _BASE_DETAIL_URL = (
 _PLAYER_SPORT_ID = 3
 _GAME_TOTAL_SPORT_ID = 2
 _FOOTBALL_SPORT_ID = 1
+_TENNIS_SPORT_ID = 4
 _OFFICE_ID = "6"
 _LANGUAGE = "sr-Latn"
 _PLAYER_PAGE_ID = 3
 _GAME_TOTAL_PAGE_ID = 35
 _FOOTBALL_PAGE_ID = 3
+_TENNIS_PAGE_ID = 3
 
 _MAPPING_TYPE_PLAYER = 5
 _EVENT_MAPPING_TYPES = [1, 2, 3, 4, 5]
@@ -48,6 +50,8 @@ _HANDICAP_OT_BET_NAME = "hendikep (+ot)"
 _BET_FOOTBALL_RESULT = 1  # "Konacan ishod"
 _BET_FOOTBALL_TOTAL_GOALS = 2  # "Ukupno golova"
 _BET_FOOTBALL_DOUBLE_CHANCE = 3  # "Dupla sansa"
+_BET_TENNIS_MATCH_WINNER = 257  # "Pobednik"
+_TENNIS_PAGE_URL = "https://www.pinnbet.rs/sportsko-kladjenje/tenis"
 
 # Only the 2.5 line is in scope for football_total_goals (matches the
 # canonical line used by every other football outcome scraper).
@@ -65,6 +69,10 @@ _FOOTBALL_DOUBLE_CHANCE_OUTCOMES: dict[str, tuple[str, str]] = {
     "1X": ("home_or_draw", "1X"),
     "12": ("home_or_away", "12"),
     "X2": ("draw_or_away", "X2"),
+}
+_TENNIS_MATCH_WINNER_OUTCOMES: dict[str, tuple[str, str]] = {
+    "1": ("home", "1"),
+    "2": ("away", "2"),
 }
 # Total-goals side classification keyed off accent/case-insensitive name.
 # Maps to (outcome_code, canonical raw_label) — the canonical raw_label
@@ -710,6 +718,67 @@ def _parse_football_double_chance_detail(
     )
 
 
+def _is_tennis_doubles_event(event: dict) -> bool:
+    home_team, away_team = _parse_event_name(event.get("name", ""))
+    if not home_team or not away_team:
+        return False
+    return "/" in home_team or "/" in away_team
+
+
+def _parse_tennis_outcome_event(event: dict) -> list[RawOutcomeOffer]:
+    if event.get("isLive") is True:
+        return []
+    if event.get("isPlayable") is False or event.get("isInOffer") is False:
+        return []
+
+    home_team, away_team = _parse_event_name(event.get("name", ""))
+    if not home_team or not away_team:
+        return []
+    if _is_tennis_doubles_event(event):
+        return []
+
+    league_id = _extract_league_id(event, fallback_league_id="tennis")
+    start_time = _normalize_start_time(event.get("dateTime"))
+    results: list[RawOutcomeOffer] = []
+
+    for bet in event.get("bets", []):
+        if bet.get("betTypeId") != _BET_TENNIS_MATCH_WINNER:
+            continue
+        if bet.get("isPlayable") is False or bet.get("isInOffer") is False:
+            continue
+
+        for outcome in bet.get("betOutcomes", []):
+            if outcome.get("isPlayable") is False or outcome.get("isInOffer") is False:
+                continue
+            odds = _coerce_positive_odds(outcome.get("odd"))
+            if odds is None:
+                continue
+
+            raw_name = (outcome.get("name") or "").strip()
+            mapping = _TENNIS_MATCH_WINNER_OUTCOMES.get(raw_name)
+            if mapping is None:
+                continue
+            outcome_code, raw_label = mapping
+            results.append(
+                RawOutcomeOffer(
+                    bookmaker_id="pinnbet",
+                    league_id=league_id,
+                    sport="tennis",
+                    home_team=home_team,
+                    away_team=away_team,
+                    market_type="tennis_match_winner",
+                    outcome_code=outcome_code,
+                    odds=odds,
+                    line=None,
+                    raw_label=raw_label,
+                    start_time=start_time,
+                    source_url=_TENNIS_PAGE_URL,
+                )
+            )
+
+    return results
+
+
 def _football_detail_identity(event: dict) -> tuple[int, int, int, int] | None:
     """Resolve the (sportId, regionId, competitionId, eventId) tuple needed
     to build the detail URL.  Returns ``None`` when any field is missing.
@@ -769,6 +838,19 @@ def _dedupe_football_events(events: list[dict]) -> dict[int, dict]:
     return by_id
 
 
+def _dedupe_tennis_events(events: list[dict]) -> dict[int, dict]:
+    by_id: dict[int, dict] = {}
+    for event in events:
+        try:
+            event_id = int(event["id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        existing = by_id.get(event_id)
+        if existing is None or len(event.get("bets") or []) > len(existing.get("bets") or []):
+            by_id[event_id] = event
+    return by_id
+
+
 def _get_detail_fetch_concurrency(http_client: HttpClient, match_count: int) -> int:
     if match_count <= 0:
         return 0
@@ -809,7 +891,7 @@ class PinnBetScraper(BaseScraper):
         return ["basketball"]
 
     def get_supported_outcome_sports(self) -> list[str]:
-        return ["football"]
+        return ["football", "tennis"]
 
     async def _fetch_game_total_events(self) -> list[dict]:
         url = _build_list_url(
@@ -913,6 +995,27 @@ class PinnBetScraper(BaseScraper):
 
         return [event for event in data if isinstance(event, dict)]
 
+    async def _fetch_tennis_events(self) -> list[dict]:
+        url = _build_list_url(
+            _TENNIS_SPORT_ID,
+            page_id=_TENNIS_PAGE_ID,
+        )
+
+        try:
+            data = await self._http.get_json(url, headers=_DEFAULT_HEADERS)
+        except Exception:
+            logger.warning("PinnBet: failed to fetch tennis prematch events")
+            return []
+
+        if not isinstance(data, list):  # type: ignore[arg-type]
+            logger.warning(
+                "PinnBet: unexpected response type %s for tennis prematch events",
+                type(data).__name__,
+            )
+            return []
+
+        return [event for event in data if isinstance(event, dict)]
+
     async def _fetch_football_detail(
         self,
         identity: tuple[int, int, int, int],
@@ -953,6 +1056,19 @@ class PinnBetScraper(BaseScraper):
         list-derived and detail-derived offers share the same
         normalized event.
         """
+        if sport == "tennis":
+            tennis_events = await self._fetch_tennis_events()
+            events_by_id = _dedupe_tennis_events(tennis_events)
+            results: list[RawOutcomeOffer] = []
+            for event in events_by_id.values():
+                results.extend(_parse_tennis_outcome_event(event))
+            logger.info(
+                "PinnBet scraped %d tennis outcome offers from %d events",
+                len(results),
+                len(events_by_id),
+            )
+            return results
+
         if sport != "football":
             return []
 
