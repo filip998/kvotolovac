@@ -72,7 +72,7 @@ export default function Layout() {
       <StatusBar />
 
       <main className="flex-1">
-        <div className="mx-auto w-full max-w-7xl px-5 py-8 sm:px-6">
+        <div className="mx-auto w-full max-w-[100rem] px-5 py-8 sm:px-6">
           <ErrorBoundary>
             <Outlet />
           </ErrorBoundary>

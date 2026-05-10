@@ -121,3 +121,38 @@ export function profitBgColor(margin: number): string {
   if (margin >= 0.015) return 'bg-warning/[0.06] border-warning/20';
   return 'bg-surface border-border';
 }
+
+/**
+ * Format a back↔lay implied percentage for display.
+ *
+ * impliedPct is `1/odds_back + 1/odds_lay` expressed as a percentage of 100.
+ *   < 100 → arbitrage (sure profit at the right stake split)
+ *   = 100 → break-even
+ *   > 100 → bookmaker margin
+ */
+export function formatImpliedPct(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  return `${value.toFixed(1)}%`;
+}
+
+/** Tailwind text-color class for an implied % value. */
+export function impliedPctColor(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return 'text-text-muted';
+  if (value < 100) return 'text-accent';
+  if (value < 101) return 'text-accent';
+  if (value < 105) return 'text-warning';
+  return 'text-danger';
+}
+
+/**
+ * Classify an implied % into a category for non-color UX (icon, label, etc.).
+ */
+export type ImpliedPctTier = 'arb' | 'knife-edge' | 'margin' | 'high-margin' | 'unknown';
+
+export function impliedPctTier(value: number | null | undefined): ImpliedPctTier {
+  if (value === null || value === undefined || !Number.isFinite(value)) return 'unknown';
+  if (value < 100) return 'arb';
+  if (value < 101) return 'knife-edge';
+  if (value < 105) return 'margin';
+  return 'high-margin';
+}
