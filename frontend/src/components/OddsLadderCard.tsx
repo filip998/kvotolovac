@@ -183,7 +183,7 @@ export default function OddsLadderCard({ card, anchorId }: OddsLadderCardProps) 
                     setLegOverride(null);
                   }}
                   aria-pressed={isSelected}
-                  className={`relative grid w-full grid-cols-[minmax(40px,auto)_minmax(0,1fr)_minmax(0,1fr)_auto] items-baseline gap-x-3 border-t border-dotted border-border bg-transparent py-2 pl-3 pr-1 text-left text-[13px] transition-colors first:border-t-0 ${
+                  className={`relative grid w-full grid-cols-[minmax(40px,auto)_minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-x-3 border-t border-dotted border-border bg-transparent py-2 pl-3 pr-1 text-left text-[13px] transition-colors first:border-t-0 ${
                     isSelected ? 'text-text' : 'text-text-secondary hover:text-text'
                   }`}
                 >
@@ -515,7 +515,7 @@ function PivotRow({
             type="button"
             onClick={onPickBack}
             aria-pressed={isBackSelected}
-            className={`-mr-1 rounded-sm px-2 py-1 font-mono text-[13px] font-semibold transition ${
+            className={`-mr-1 inline-flex min-w-[64px] items-center justify-end gap-1 rounded-sm px-2 py-1 font-mono text-[13px] font-semibold transition ${
               isBackSelected
                 ? 'bg-accent/[0.18] text-accent ring-1 ring-accent/40'
                 : row.isBestBack
@@ -523,8 +523,12 @@ function PivotRow({
                   : 'text-text hover:bg-text/[0.04]'
             }`}
           >
-            {row.isBestBack && !isBackSelected ? '◆ ' : ''}
-            {formatOdds(row.backOdds)}
+            {/* Reserve a fixed-width slot for the ◆ marker so the cell width
+                doesn't shift when the same-row selection state toggles. */}
+            <span aria-hidden className="w-3 text-left text-[10px]">
+              {row.isBestBack ? '◆' : ''}
+            </span>
+            <span>{formatOdds(row.backOdds)}</span>
           </button>
         ) : (
           <span className="px-2 font-mono text-[13px] text-text-muted">—</span>
@@ -536,7 +540,7 @@ function PivotRow({
             type="button"
             onClick={onPickLay}
             aria-pressed={isLaySelected}
-            className={`-mr-1 rounded-sm px-2 py-1 font-mono text-[13px] font-semibold transition ${
+            className={`-mr-1 inline-flex min-w-[64px] items-center justify-end gap-1 rounded-sm px-2 py-1 font-mono text-[13px] font-semibold transition ${
               isLaySelected
                 ? 'bg-accent/[0.18] text-accent ring-1 ring-accent/40'
                 : row.isBestLay
@@ -544,8 +548,10 @@ function PivotRow({
                   : 'text-text hover:bg-text/[0.04]'
             }`}
           >
-            {row.isBestLay && !isLaySelected ? '◆ ' : ''}
-            {formatOdds(row.layOdds)}
+            <span aria-hidden className="w-3 text-left text-[10px]">
+              {row.isBestLay ? '◆' : ''}
+            </span>
+            <span>{formatOdds(row.layOdds)}</span>
           </button>
         ) : (
           <span className="px-2 font-mono text-[13px] text-text-muted">—</span>
