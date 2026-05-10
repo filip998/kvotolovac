@@ -17,12 +17,14 @@ from app.scrapers.soccerbet_scraper import (
     _GROUP_LEAGUES_URL,
     _LEAGUE_PREVIEW_URL,
     _PLAYER_PREVIEW_URL,
+    _TENNIS_GAMES_URL,
     _build_matchup_index,
     _extract_league_id,
     _parse_handicap_spec,
     _parse_football_outcome_match,
     _parse_player_match,
     _parse_regular_match,
+    _parse_tennis_outcome_match,
 )
 
 
@@ -154,6 +156,22 @@ PLAYER_DETAIL_MATCH = {
     },
 }
 
+TENNIS_MATCH = {
+    "id": 514504284,
+    "matchCode": 74001,
+    "home": "Tiago Pereira",
+    "away": "Joao Domingues",
+    "kickOffTime": 1778407200000,
+    "leagueName": "ITF Loule",
+    "live": False,
+    "blocked": False,
+    "betMap": {
+        "1": _group(1, ("NULL", 1.38)),
+        "2": _group(2, ("NULL", 99.0)),
+        "3": _group(3, ("NULL", 2.8)),
+    },
+}
+
 GROUPS_RESPONSE = {"categories": [{"id": "2495"}]}
 GROUP_LEAGUES_RESPONSE = {
     "categories": [
@@ -260,6 +278,72 @@ def test_parse_football_outcome_match_recovers_missing_home_from_match_label():
         ("Shire Endaselassie", "Ethio Electric")
     }
     assert {row.outcome_code for row in results} == {"home", "away"}
+
+
+def test_parse_tennis_outcome_match_emits_match_winner_offers():
+    results = _parse_tennis_outcome_match(TENNIS_MATCH)
+
+    assert len(results) == 2
+    assert {row.bookmaker_id for row in results} == {"soccerbet"}
+    assert {row.sport for row in results} == {"tennis"}
+    assert {row.league_id for row in results} == {"itf_loule"}
+    assert {row.home_team for row in results} == {"Tiago Pereira"}
+    assert {row.away_team for row in results} == {"Joao Domingues"}
+    assert {row.market_type for row in results} == {"tennis_match_winner"}
+    assert {row.source_url for row in results} == {
+        "https://www.soccerbet.rs/sr/sportsko-kladjenje/tenis/T"
+    }
+    assert {
+        (row.outcome_code, row.raw_label, row.odds, row.line, row.start_time)
+        for row in results
+    } == {
+        ("home", "1", 1.38, None, "2026-05-10T10:00:00+00:00"),
+        ("away", "2", 2.8, None, "2026-05-10T10:00:00+00:00"),
+    }
+    assert 99.0 not in {row.odds for row in results}
+
+
+def test_parse_tennis_outcome_match_emits_available_one_sided_odds():
+    results = _parse_tennis_outcome_match(
+        {
+            **TENNIS_MATCH,
+            "betMap": {
+                "1": _group(1, ("NULL", 1.65)),
+                "3": _group_with_status(3, ("NULL", 2.1, "L")),
+            },
+        }
+    )
+
+    assert [(row.outcome_code, row.odds) for row in results] == [("home", 1.65)]
+
+
+def test_parse_tennis_outcome_match_skips_live_blocked_and_doubles():
+    assert _parse_tennis_outcome_match({**TENNIS_MATCH, "live": True}) == []
+    assert _parse_tennis_outcome_match({**TENNIS_MATCH, "blocked": True}) == []
+    assert _parse_tennis_outcome_match(
+        {**TENNIS_MATCH, "leagueName": "ATP Rome Dublovi"}
+    ) == []
+    assert _parse_tennis_outcome_match(
+        {**TENNIS_MATCH, "leagueName": "ATP Rome Doubles"}
+    ) == []
+    assert _parse_tennis_outcome_match({**TENNIS_MATCH, "home": "A. Player/B. Player"}) == []
+    assert _parse_tennis_outcome_match({**TENNIS_MATCH, "away": "A. Player/B. Player"}) == []
+
+
+def test_parse_tennis_outcome_match_skips_invalid_rows():
+    assert _parse_tennis_outcome_match({"away": "Away", "betMap": {"1": {}}}) == []
+    assert _parse_tennis_outcome_match({"home": "Home", "betMap": {"1": {}}}) == []
+    assert _parse_tennis_outcome_match({"home": "Home", "away": "Away", "betMap": []}) == []
+    assert _parse_tennis_outcome_match(
+        {
+            "home": "Home",
+            "away": "Away",
+            "betMap": {
+                "1": _group(1, ("NULL", 0.0)),
+                "3": _group(3, ("NULL", "bad")),
+            },
+        }
+    ) == []
 
 
 # ── Handicap (+OT) parsing ──────────────────────────────────────────────
@@ -526,12 +610,45 @@ async def test_scrape_outcome_offers_uses_football_preview_feed():
 
 
 @pytest.mark.asyncio
-async def test_scrape_outcome_offers_ignores_non_football_sport():
+async def test_scrape_outcome_offers_uses_tennis_preview_feed():
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del params, headers
+        if url == _TENNIS_GAMES_URL:
+            return {
+                "esMatches": [
+                    TENNIS_MATCH,
+                    {**TENNIS_MATCH, "id": 514504285, "home": "Yasmine Mansouri"},
+                    {**TENNIS_MATCH, "id": 514504830, "leagueName": "ATP Rome Dublovi"},
+                ]
+            }
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    http_client = AsyncMock()
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = SoccerBetScraper(http_client=http_client)
+    results = await scraper.scrape_outcome_offers("tennis")
+
+    assert len(results) == 4
+    assert {row.market_type for row in results} == {"tennis_match_winner"}
+    assert {row.sport for row in results} == {"tennis"}
+    assert [call.args[0] for call in http_client.get_json.call_args_list] == [
+        _TENNIS_GAMES_URL,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_ignores_unsupported_sport():
     http_client = AsyncMock()
     scraper = SoccerBetScraper(http_client=http_client)
 
     assert await scraper.scrape_outcome_offers("basketball") == []
     http_client.get_json.assert_not_called()
+
+
+def test_scraper_supports_football_and_tennis_outcomes():
+    scraper = SoccerBetScraper()
+    assert scraper.get_supported_outcome_sports() == ["football", "tennis"]
 
 
 @pytest.mark.asyncio

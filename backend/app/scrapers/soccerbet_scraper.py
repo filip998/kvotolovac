@@ -29,6 +29,8 @@ _PLAYER_PREVIEW_URL = (
 _ALL_GAMES_URL = "https://www.soccerbet.rs/restapi/offer/sr/sport/B/mob"
 _ALL_PLAYERS_URL = "https://www.soccerbet.rs/restapi/offer/sr/ext/sport/B/PL/mob"
 _FOOTBALL_GAMES_URL = "https://www.soccerbet.rs/restapi/offer/sr/sport/S/mob"
+_TENNIS_GAMES_URL = "https://www.soccerbet.rs/restapi/offer/sr/sport/T/mob"
+_TENNIS_PAGE_URL = "https://www.soccerbet.rs/sr/sportsko-kladjenje/tenis/T"
 _DETAIL_URL = "https://www.soccerbet.rs/restapi/offer/sr/match-by-code/{match_code}"
 
 _DEFAULT_HEADERS: dict[str, str] = {
@@ -128,6 +130,10 @@ _FOOTBALL_OUTCOME_CODES: dict[str, tuple[str, str, float | None, str]] = {
     # SoccerBet football exposes the 2.5 total as fixed "0-2" / "3+" picks.
     "22": ("football_total_goals", "under", 2.5, "0-2"),
     "24": ("football_total_goals", "over", 2.5, "3+"),
+}
+_TENNIS_OUTCOME_CODES: dict[str, tuple[str, str]] = {
+    "1": ("home", "1"),
+    "3": ("away", "2"),
 }
 
 # OT-inclusive Asian handicap (full game). SoccerBet's existing basketball
@@ -419,6 +425,75 @@ def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
     return results
 
 
+def _is_tennis_doubles_match(match: dict) -> bool:
+    league_name = normalize_identity_text(match.get("leagueName"))
+    if any(token in league_name for token in ("doubles", "double", "dublovi", "parovi")):
+        return True
+
+    home_team = str(match.get("home") or "")
+    away_team = str(match.get("away") or "")
+    return "/" in home_team or "/" in away_team
+
+
+def _tennis_skip_reason(match: dict) -> str | None:
+    if match.get("live") is True:
+        return "live"
+    if match.get("blocked") is True:
+        return "blocked"
+    if _is_tennis_doubles_match(match):
+        return "doubles"
+
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return "missing_competitor"
+
+    bet_map = match.get("betMap") or {}
+    if not isinstance(bet_map, dict):
+        return "invalid_bet_map"
+
+    return None
+
+
+def _parse_tennis_outcome_match(match: dict) -> list[RawOutcomeOffer]:
+    if _tennis_skip_reason(match):
+        return []
+
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    bet_map = match.get("betMap") or {}
+    if not isinstance(bet_map, dict):
+        return []
+
+    league_id = _extract_league_id(match.get("leagueName"), default="tennis")
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    results: list[RawOutcomeOffer] = []
+
+    for code, (outcome_code, raw_label) in _TENNIS_OUTCOME_CODES.items():
+        for entry in _iter_group_entries(bet_map, int(code)):
+            odds = _parse_float(entry.get("ov"))
+            if odds is None or odds <= 0:
+                continue
+            results.append(
+                RawOutcomeOffer(
+                    bookmaker_id=_BOOKMAKER_ID,
+                    league_id=league_id,
+                    sport="tennis",
+                    home_team=home_team,
+                    away_team=away_team,
+                    market_type="tennis_match_winner",
+                    outcome_code=outcome_code,
+                    odds=odds,
+                    line=None,
+                    raw_label=raw_label,
+                    start_time=start_time,
+                    source_url=_TENNIS_PAGE_URL,
+                )
+            )
+
+    return results
+
+
 def _parse_player_match(
     match: dict,
     matchup_by_super_code: dict[int, MatchContext],
@@ -506,7 +581,7 @@ class SoccerBetScraper(BaseScraper):
         return ["basketball"]
 
     def get_supported_outcome_sports(self) -> list[str]:
-        return ["football"]
+        return ["football", "tennis"]
 
     async def _fetch_groups(self) -> list[str]:
         try:
@@ -622,6 +697,9 @@ class SoccerBetScraper(BaseScraper):
 
     async def _fetch_football_preview(self) -> list[dict]:
         return await self._fetch_preview_rows(_FOOTBALL_GAMES_URL)
+
+    async def _fetch_tennis_preview(self) -> list[dict]:
+        return await self._fetch_preview_rows(_TENNIS_GAMES_URL)
 
     async def _fetch_detail(self, match_code: int, semaphore: asyncio.Semaphore) -> dict | None:
         async with semaphore:
@@ -742,17 +820,37 @@ class SoccerBetScraper(BaseScraper):
         return all_results
 
     async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
-        if sport != "football":
+        if sport == "football":
+            football_matches = await self._fetch_football_preview()
+            results: list[RawOutcomeOffer] = []
+            for match in football_matches:
+                results.extend(_parse_football_outcome_match(match))
+
+            logger.info(
+                "SoccerBet scraped %d football outcome offers from %d previews",
+                len(results),
+                len(football_matches),
+            )
+            return results
+
+        if sport != "tennis":
             return []
 
-        football_matches = await self._fetch_football_preview()
+        tennis_matches = await self._fetch_tennis_preview()
         results: list[RawOutcomeOffer] = []
-        for match in football_matches:
-            results.extend(_parse_football_outcome_match(match))
+        skipped: dict[str, int] = {}
+        for match in tennis_matches:
+            parsed = _parse_tennis_outcome_match(match)
+            if not parsed:
+                reason = _tennis_skip_reason(match) or "no_match_winner"
+                skipped[reason] = skipped.get(reason, 0) + 1
+                continue
+            results.extend(parsed)
 
         logger.info(
-            "SoccerBet scraped %d football outcome offers from %d previews",
+            "SoccerBet scraped %d tennis outcome offers from %d previews; skipped=%s",
             len(results),
-            len(football_matches),
+            len(tennis_matches),
+            skipped,
         )
         return results
