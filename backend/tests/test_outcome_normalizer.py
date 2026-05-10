@@ -56,6 +56,8 @@ def _tennis_offer(
     *,
     market_type: str = "tennis_match_winner",
     outcome_code: str = "home",
+    odds: float = 2.1,
+    start_time: str | None = START_TIME,
 ) -> RawOutcomeOffer:
     return RawOutcomeOffer(
         bookmaker_id=bookmaker_id,
@@ -65,10 +67,10 @@ def _tennis_offer(
         away_team=away_team,
         market_type=market_type,
         outcome_code=outcome_code,
-        odds=2.1,
+        odds=odds,
         line=None,
         raw_label=outcome_code,
-        start_time=START_TIME,
+        start_time=start_time,
     )
 
 
@@ -611,6 +613,149 @@ def test_tennis_initial_variants_merge_when_unambiguous(team_registry_file):
     assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
     assert unresolved == []
     assert review_cases == []
+
+
+def test_tennis_comma_initial_full_and_reversed_time_drift_merge(team_registry_file):
+    early_time = "2026-05-10T17:00:00+00:00"
+    drifted_time = "2026-05-10T17:05:00+00:00"
+    raw = [
+        _tennis_offer(
+            "merkurxtip",
+            "E. Cocciaretto",
+            "I. Swiatek",
+            outcome_code="home",
+            odds=6.1,
+            start_time=early_time,
+        ),
+        _tennis_offer(
+            "merkurxtip",
+            "E. Cocciaretto",
+            "I. Swiatek",
+            outcome_code="away",
+            odds=1.09,
+            start_time=early_time,
+        ),
+        _tennis_offer(
+            "admiralbet",
+            "Cocciaretto, Elisabetta",
+            "Swiatek, Iga",
+            outcome_code="home",
+            odds=7.8,
+            start_time=early_time,
+        ),
+        _tennis_offer(
+            "admiralbet",
+            "Cocciaretto, Elisabetta",
+            "Swiatek, Iga",
+            outcome_code="away",
+            odds=1.12,
+            start_time=early_time,
+        ),
+        _tennis_offer(
+            "pinnbet",
+            "Elisabetta Cocciaretto",
+            "Iga Swiatek",
+            outcome_code="home",
+            odds=6.3,
+            start_time=early_time,
+        ),
+        _tennis_offer(
+            "pinnbet",
+            "Elisabetta Cocciaretto",
+            "Iga Swiatek",
+            outcome_code="away",
+            odds=1.12,
+            start_time=early_time,
+        ),
+        _tennis_offer(
+            "mozzart",
+            "Swiatek, Iga",
+            "Cocciaretto, Elisabetta",
+            outcome_code="home",
+            odds=1.1,
+            start_time=drifted_time,
+        ),
+        _tennis_offer(
+            "mozzart",
+            "Swiatek, Iga",
+            "Cocciaretto, Elisabetta",
+            outcome_code="away",
+            odds=6.9,
+            start_time=drifted_time,
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert unresolved == []
+    assert review_cases == []
+    assert len(normalized) == len(raw)
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert {offer.start_time for offer in normalized} == {early_time}
+    assert {
+        (offer.bookmaker_id, offer.odds, offer.outcome_code)
+        for offer in normalized
+        if offer.bookmaker_id == "mozzart"
+    } == {
+        ("mozzart", 1.1, "away"),
+        ("mozzart", 6.9, "home"),
+    }
+
+
+def test_tennis_broad_time_drift_merges_strong_player_identity(team_registry_file):
+    raw = [
+        _tennis_offer(
+            "maxbet",
+            "Javia D.",
+            "Milic O.",
+            outcome_code="home",
+            start_time="2026-05-11T04:30:00+00:00",
+        ),
+        _tennis_offer(
+            "superbet",
+            "Dev Javia",
+            "Ognjen Milic",
+            outcome_code="away",
+            start_time="2026-05-11T09:40:00+00:00",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert unresolved == []
+    assert review_cases == []
+    assert len(normalized) == 2
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert {offer.start_time for offer in normalized} == {
+        "2026-05-11T04:30:00+00:00"
+    }
+
+
+def test_tennis_broad_time_drift_does_not_merge_initials_only(team_registry_file):
+    raw = [
+        _tennis_offer(
+            "maxbet",
+            "Smith J.",
+            "Brown A.",
+            outcome_code="home",
+            start_time="2026-05-11T04:30:00+00:00",
+        ),
+        _tennis_offer(
+            "superbet",
+            "Smith J.",
+            "Brown A.",
+            outcome_code="away",
+            start_time="2026-05-11T09:40:00+00:00",
+        ),
+    ]
+
+    normalized, unresolved, _ = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert normalized == []
+    assert {row.reason_code for row in unresolved} == {
+        "unresolved_home_team",
+        "unresolved_away_team",
+    }
 
 
 def test_tennis_shared_surname_initial_collision_remains_unresolved(team_registry_file):

@@ -166,6 +166,121 @@ def test_event_resolution_groups_keep_sports_separate_for_same_teams_and_time():
     }
 
 
+def test_event_resolution_groups_tennis_reversed_comma_variants_with_time_drift():
+    candidates = [
+        EventCandidate(
+            match_id="tennis-a",
+            bookmaker_id="book-a",
+            sport="tennis",
+            start_time="2026-05-10T17:00:00+00:00",
+            home_team_id=1,
+            away_team_id=2,
+            home_team="Cocciaretto, Elisabetta",
+            away_team="Swiatek, Iga",
+        ),
+        EventCandidate(
+            match_id="tennis-b",
+            bookmaker_id="book-b",
+            sport="tennis",
+            start_time="2026-05-10T17:05:00+00:00",
+            home_team_id=3,
+            away_team_id=4,
+            home_team="Iga Swiatek",
+            away_team="Elisabetta Cocciaretto",
+        ),
+    ]
+
+    resolutions, review_cases = build_event_resolution_groups(candidates)
+
+    assert review_cases == []
+    assert len(resolutions) == 1
+    resolution = resolutions[0]
+    assert resolution.sport == "tennis"
+    assert resolution.start_time == "2026-05-10T17:00:00+00:00"
+    assert {member.match_id for member in resolution.members} == {
+        "tennis-a",
+        "tennis-b",
+    }
+    assert any("Tennis start-time drift: 5.0 minutes" in item for item in resolution.evidence)
+    primary = next(
+        member
+        for member in resolution.members
+        if member.match_id == resolution.primary_match_id
+    )
+    reversed_member = next(
+        member for member in resolution.members if member.match_id == "tennis-b"
+    )
+    assert _orientation_scores(
+        primary.home_team,
+        primary.away_team,
+        reversed_member.home_team,
+        reversed_member.away_team,
+        sport="tennis",
+    )[0].orientation == "reversed"
+
+
+def test_event_resolution_groups_tennis_broad_drift_requires_strong_identity():
+    strong_candidates = [
+        EventCandidate(
+            match_id="tennis-a",
+            bookmaker_id="book-a",
+            sport="tennis",
+            start_time="2026-05-11T04:30:00+00:00",
+            home_team_id=1,
+            away_team_id=2,
+            home_team="Javia D.",
+            away_team="Milic O.",
+        ),
+        EventCandidate(
+            match_id="tennis-b",
+            bookmaker_id="book-b",
+            sport="tennis",
+            start_time="2026-05-11T09:40:00+00:00",
+            home_team_id=3,
+            away_team_id=4,
+            home_team="Dev Javia",
+            away_team="Ognjen Milic",
+        ),
+    ]
+
+    resolutions, review_cases = build_event_resolution_groups(strong_candidates)
+
+    assert review_cases == []
+    assert len(resolutions) == 1
+    assert {member.match_id for member in resolutions[0].members} == {
+        "tennis-a",
+        "tennis-b",
+    }
+
+    initials_only = [
+        EventCandidate(
+            match_id="tennis-c",
+            bookmaker_id="book-c",
+            sport="tennis",
+            start_time="2026-05-11T04:30:00+00:00",
+            home_team_id=5,
+            away_team_id=6,
+            home_team="Smith J.",
+            away_team="Brown A.",
+        ),
+        EventCandidate(
+            match_id="tennis-d",
+            bookmaker_id="book-d",
+            sport="tennis",
+            start_time="2026-05-11T09:40:00+00:00",
+            home_team_id=7,
+            away_team_id=8,
+            home_team="Smith J.",
+            away_team="Brown A.",
+        ),
+    ]
+
+    resolutions, review_cases = build_event_resolution_groups(initials_only)
+
+    assert review_cases == []
+    assert len(resolutions) == 2
+
+
 def test_event_resolution_benchmark_counts_pair_and_fuzzy_work():
     candidates = [
         EventCandidate(

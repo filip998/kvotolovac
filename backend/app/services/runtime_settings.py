@@ -501,12 +501,13 @@ def _settings_response(
     pending_at: str | None,
     applied_immediately: bool,
 ) -> ScrapeSettingsResponse:
+    defaults = _with_rollout_enabled_sports(
+        default_scrape_runtime_settings(prefer_registered_bookmakers=False)
+    )
     return ScrapeSettingsResponse(
         applied=applied,
         pending=pending,
-        defaults=validate_scrape_runtime_settings(
-            default_scrape_runtime_settings(prefer_registered_bookmakers=False)
-        ),
+        defaults=validate_scrape_runtime_settings(defaults),
         has_pending_changes=pending is not None,
         applied_at=applied_at,
         pending_at=pending_at,

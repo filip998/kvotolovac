@@ -52,6 +52,7 @@ _DISCOVERY_CONCURRENCY = 8
 _DETAIL_CONCURRENCY = 5
 _BOOKMAKER_ID = "soccerbet"
 _ACTIVE_PICK_STATUS = "U"
+_TENNIS_LIVE_START_BUFFER_MS = 5 * 60 * 1000
 
 
 @dataclass(frozen=True)
@@ -435,9 +436,30 @@ def _is_tennis_doubles_match(match: dict) -> bool:
     return "/" in home_team or "/" in away_team
 
 
-def _tennis_skip_reason(match: dict) -> str | None:
-    if match.get("live") is True:
-        return "live"
+def _tennis_live_start_skip_reason(
+    match: dict,
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    if match.get("live") is not True:
+        return None
+
+    raw_kickoff = match.get("kickOffTime")
+    if raw_kickoff in (None, ""):
+        return "missing_start_time"
+
+    kickoff_ms = _parse_int(raw_kickoff)
+    if kickoff_ms is None:
+        return "invalid_start_time"
+
+    now_ms = int((now or current_utc_time()).timestamp() * 1000)
+    if kickoff_ms <= now_ms + _TENNIS_LIVE_START_BUFFER_MS:
+        return "live_near_or_past_start"
+
+    return None
+
+
+def _tennis_skip_reason(match: dict, *, now: datetime | None = None) -> str | None:
     if match.get("blocked") is True:
         return "blocked"
     if _is_tennis_doubles_match(match):
@@ -452,11 +474,19 @@ def _tennis_skip_reason(match: dict) -> str | None:
     if not isinstance(bet_map, dict):
         return "invalid_bet_map"
 
+    live_start_reason = _tennis_live_start_skip_reason(match, now=now)
+    if live_start_reason:
+        return live_start_reason
+
     return None
 
 
-def _parse_tennis_outcome_match(match: dict) -> list[RawOutcomeOffer]:
-    if _tennis_skip_reason(match):
+def _parse_tennis_outcome_match(
+    match: dict,
+    *,
+    now: datetime | None = None,
+) -> list[RawOutcomeOffer]:
+    if _tennis_skip_reason(match, now=now):
         return []
 
     home_team = (match.get("home") or "").strip()
@@ -837,12 +867,13 @@ class SoccerBetScraper(BaseScraper):
             return []
 
         tennis_matches = await self._fetch_tennis_preview()
+        scrape_now = current_utc_time()
         results: list[RawOutcomeOffer] = []
         skipped: dict[str, int] = {}
         for match in tennis_matches:
-            parsed = _parse_tennis_outcome_match(match)
+            parsed = _parse_tennis_outcome_match(match, now=scrape_now)
             if not parsed:
-                reason = _tennis_skip_reason(match) or "no_match_winner"
+                reason = _tennis_skip_reason(match, now=scrape_now) or "no_match_winner"
                 skipped[reason] = skipped.get(reason, 0) + 1
                 continue
             results.extend(parsed)

@@ -25,6 +25,7 @@ from app.scrapers.soccerbet_scraper import (
     _parse_player_match,
     _parse_regular_match,
     _parse_tennis_outcome_match,
+    _tennis_skip_reason,
 )
 
 
@@ -171,6 +172,7 @@ TENNIS_MATCH = {
         "3": _group(3, ("NULL", 2.8)),
     },
 }
+TENNIS_NOW = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
 
 GROUPS_RESPONSE = {"categories": [{"id": "2495"}]}
 GROUP_LEAGUES_RESPONSE = {
@@ -183,6 +185,11 @@ GROUP_LEAGUES_RESPONSE = {
 def _football_fixture_data() -> dict:
     with FOOTBALL_FIXTURE_PATH.open() as f:
         return json.load(f)
+
+
+def _tennis_kickoff_ms(*, seconds: int = 0, minutes: int = 0) -> int:
+    kickoff = TENNIS_NOW + timedelta(seconds=seconds, minutes=minutes)
+    return int(kickoff.timestamp() * 1000)
 
 
 def test_extract_league_id_strips_players_suffix():
@@ -317,8 +324,59 @@ def test_parse_tennis_outcome_match_emits_available_one_sided_odds():
     assert [(row.outcome_code, row.odds) for row in results] == [("home", 1.65)]
 
 
-def test_parse_tennis_outcome_match_skips_live_blocked_and_doubles():
-    assert _parse_tennis_outcome_match({**TENNIS_MATCH, "live": True}) == []
+def test_parse_tennis_outcome_match_allows_future_live_flagged_prematch():
+    results = _parse_tennis_outcome_match(
+        {
+            **TENNIS_MATCH,
+            "live": True,
+            "kickOffTime": _tennis_kickoff_ms(minutes=10),
+        },
+        now=TENNIS_NOW,
+    )
+
+    assert len(results) == 2
+    assert {row.outcome_code for row in results} == {"home", "away"}
+    assert {row.start_time for row in results} == {"2026-05-10T12:10:00+00:00"}
+
+
+def test_parse_tennis_outcome_match_skips_live_rows_near_start_or_past():
+    near_start = {
+        **TENNIS_MATCH,
+        "live": True,
+        "kickOffTime": _tennis_kickoff_ms(seconds=35),
+    }
+    past_start = {
+        **TENNIS_MATCH,
+        "live": True,
+        "kickOffTime": _tennis_kickoff_ms(minutes=-1),
+    }
+
+    assert _parse_tennis_outcome_match(near_start, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(near_start, now=TENNIS_NOW) == "live_near_or_past_start"
+    assert _parse_tennis_outcome_match(past_start, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(past_start, now=TENNIS_NOW) == "live_near_or_past_start"
+
+
+def test_parse_tennis_outcome_match_skips_live_rows_with_bad_start_time():
+    missing_start = {**TENNIS_MATCH, "live": True}
+    missing_start.pop("kickOffTime")
+    invalid_start = {**TENNIS_MATCH, "live": True, "kickOffTime": "not-an-epoch"}
+
+    assert _parse_tennis_outcome_match(missing_start, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(missing_start, now=TENNIS_NOW) == "missing_start_time"
+    assert _parse_tennis_outcome_match(invalid_start, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(invalid_start, now=TENNIS_NOW) == "invalid_start_time"
+
+
+def test_parse_tennis_outcome_match_skips_blocked_and_doubles_before_live_buffer():
+    future_live_match = {
+        **TENNIS_MATCH,
+        "live": True,
+        "kickOffTime": _tennis_kickoff_ms(minutes=10),
+    }
+
+    assert _parse_tennis_outcome_match({**future_live_match, "blocked": True}, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason({**future_live_match, "blocked": True}, now=TENNIS_NOW) == "blocked"
     assert _parse_tennis_outcome_match({**TENNIS_MATCH, "blocked": True}) == []
     assert _parse_tennis_outcome_match(
         {**TENNIS_MATCH, "leagueName": "ATP Rome Dublovi"}
@@ -326,7 +384,14 @@ def test_parse_tennis_outcome_match_skips_live_blocked_and_doubles():
     assert _parse_tennis_outcome_match(
         {**TENNIS_MATCH, "leagueName": "ATP Rome Doubles"}
     ) == []
-    assert _parse_tennis_outcome_match({**TENNIS_MATCH, "home": "A. Player/B. Player"}) == []
+    assert _parse_tennis_outcome_match(
+        {**future_live_match, "home": "A. Player/B. Player"},
+        now=TENNIS_NOW,
+    ) == []
+    assert _tennis_skip_reason(
+        {**future_live_match, "home": "A. Player/B. Player"},
+        now=TENNIS_NOW,
+    ) == "doubles"
     assert _parse_tennis_outcome_match({**TENNIS_MATCH, "away": "A. Player/B. Player"}) == []
 
 

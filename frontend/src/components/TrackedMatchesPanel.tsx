@@ -26,6 +26,10 @@ interface TrackedGroup {
   searchTerms: string[];
 }
 
+function sportIcon(sport: string) {
+  return sport === 'football' ? '⚽' : sport === 'tennis' ? '🎾' : '🏀';
+}
+
 function groupMatchesByResolvedEvent(matches: Match[]): TrackedGroup[] {
   const groupMap = new Map<string, Match[]>();
   for (const match of matches) {
@@ -233,7 +237,7 @@ export default function TrackedMatchesPanel({
                       title={primary.sport}
                       aria-label={primary.sport}
                     >
-                      {primary.sport === 'football' ? '⚽' : '🏀'}
+                      {sportIcon(primary.sport)}
                     </span>
                     <span className="text-[11px] font-medium uppercase tracking-wider text-accent">
                       {primary.league_name}

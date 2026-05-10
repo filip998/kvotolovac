@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 import logging
 import re
 import time
@@ -28,6 +29,11 @@ from .normalizer import (
     resolve_team_name,
 )
 from .team_registry import create_canonical_team, create_canonical_teams_batch
+from .tennis_name_matcher import (
+    TENNIS_BROAD_DRIFT_MINUTES,
+    match_tennis_player_names,
+    tennis_competitor_pair_matches,
+)
 from .text_normalizer import normalize_identity_text
 
 logger = logging.getLogger(__name__)
@@ -73,6 +79,26 @@ _TENNIS_MATCH_WINNER_MARKETS = frozenset({"tennis_match_winner", "match_winner"}
 
 def _elapsed_ms(started_at: float) -> int:
     return int((time.perf_counter() - started_at) * 1000)
+
+
+def _parse_event_time(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _event_time_delta_minutes(left: str, right: str) -> float | None:
+    if left == right:
+        return 0.0
+    left_dt = _parse_event_time(left)
+    right_dt = _parse_event_time(right)
+    if left_dt is None or right_dt is None:
+        return None
+    try:
+        return abs((left_dt - right_dt).total_seconds()) / 60
+    except TypeError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -128,6 +154,8 @@ class _OutcomeEventPair:
     home_score: float
     away_score: float
     orientation: str
+    time_delta_minutes: float = 0.0
+    broad_time_safe: bool = False
 
     @property
     def score(self) -> float:
@@ -357,54 +385,9 @@ def _tennis_name_match_score(
     *,
     text_cache: _OutcomeTextCache,
 ) -> float | None:
-    left_text = text_cache.comparison_text(left_name, sport="tennis")
-    right_text = text_cache.comparison_text(right_name, sport="tennis")
-    if not left_text or not right_text:
-        return None
-    if left_text == right_text:
-        return 100.0
-    left_tokens = text_cache.significant_tokens(left_name, sport="tennis")
-    right_tokens = text_cache.significant_tokens(right_name, sport="tennis")
-    if left_tokens and left_tokens == right_tokens:
-        return 100.0
-
-    left_parts = _tennis_player_name_parts(left_name, text_cache=text_cache)
-    right_parts = _tennis_player_name_parts(right_name, text_cache=text_cache)
-    if left_parts is None or right_parts is None:
-        return None
-
-    left_family, left_given, left_initials = left_parts
-    right_family, right_given, right_initials = right_parts
-    if not left_family or not right_family:
-        return None
-    if not _tokens_suffix_compatible(left_family, right_family):
-        return None
-
-    left_has_given_evidence = bool(left_given or left_initials)
-    right_has_given_evidence = bool(right_given or right_initials)
-    if not left_has_given_evidence or not right_has_given_evidence:
-        return None
-
-    if left_given and right_given:
-        return 96.0 if left_given == right_given else None
-    if left_initials and right_initials:
-        return 96.0 if left_initials == right_initials else None
-
-    if left_initials:
-        right_given_initials = _tennis_initials_for(right_given)
-        return (
-            96.0
-            if left_initials == right_given_initials[: len(left_initials)]
-            else None
-        )
-    if right_initials:
-        left_given_initials = _tennis_initials_for(left_given)
-        return (
-            96.0
-            if right_initials == left_given_initials[: len(right_initials)]
-            else None
-        )
-    return None
+    del text_cache
+    match = match_tennis_player_names(left_name, right_name)
+    return match.score if match is not None else None
 
 
 def _team_qualifiers(name: str, *, sport: str | None = None) -> set[str]:
@@ -589,55 +572,44 @@ def _pair_candidates(
     text_cache: _OutcomeTextCache | None = None,
     stats: _FootballEventResolutionStats | None = None,
 ) -> _OutcomeEventPair | None:
-    if left.bookmaker_id == right.bookmaker_id or left.sport != right.sport or left.start_time != right.start_time:
+    if left.bookmaker_id == right.bookmaker_id or left.sport != right.sport:
+        return None
+    time_delta = _event_time_delta_minutes(left.start_time, right.start_time)
+    if time_delta is None:
+        return None
+    if left.sport == "tennis":
+        if time_delta > TENNIS_BROAD_DRIFT_MINUTES:
+            return None
+    elif left.start_time != right.start_time:
         return None
     if stats is not None:
         stats.football_event_pair_candidate_count += 1
     text_cache = text_cache or _OutcomeTextCache(stats)
     candidates: list[_OutcomeEventPair] = []
     if left.sport == "tennis":
-        if text_cache.same_context(left.home_team, right.home_team, sport=left.sport) and text_cache.same_context(left.away_team, right.away_team, sport=left.sport):
-            home_score = _tennis_name_match_score(
-                left.home_team,
-                right.home_team,
-                text_cache=text_cache,
-            )
-            away_score = _tennis_name_match_score(
-                left.away_team,
-                right.away_team,
-                text_cache=text_cache,
-            )
-            if home_score is not None and away_score is not None:
-                candidates.append(
-                    _OutcomeEventPair(
-                        left=left,
-                        right=right,
-                        home_score=home_score,
-                        away_score=away_score,
-                        orientation=_SAME_ORIENTATION,
-                    )
+        for tennis_match in tennis_competitor_pair_matches(
+            left.home_team,
+            left.away_team,
+            right.home_team,
+            right.away_team,
+        ):
+            if time_delta > tennis_match.max_time_delta_minutes:
+                continue
+            candidates.append(
+                _OutcomeEventPair(
+                    left=left,
+                    right=right,
+                    home_score=tennis_match.home_score,
+                    away_score=tennis_match.away_score,
+                    orientation=(
+                        _SAME_ORIENTATION
+                        if tennis_match.orientation == "as_listed"
+                        else _REVERSED_ORIENTATION
+                    ),
+                    time_delta_minutes=time_delta,
+                    broad_time_safe=tennis_match.broad_time_safe,
                 )
-        if text_cache.same_context(left.home_team, right.away_team, sport=left.sport) and text_cache.same_context(left.away_team, right.home_team, sport=left.sport):
-            home_score = _tennis_name_match_score(
-                left.home_team,
-                right.away_team,
-                text_cache=text_cache,
             )
-            away_score = _tennis_name_match_score(
-                left.away_team,
-                right.home_team,
-                text_cache=text_cache,
-            )
-            if home_score is not None and away_score is not None:
-                candidates.append(
-                    _OutcomeEventPair(
-                        left=left,
-                        right=right,
-                        home_score=home_score,
-                        away_score=away_score,
-                        orientation=_REVERSED_ORIENTATION,
-                    )
-                )
         if not candidates:
             return None
         return max(
@@ -1043,6 +1015,26 @@ def _pair_has_women_marker_variation_cached(
     return False
 
 
+def _pair_counterpart(pair: _OutcomeEventPair, event: _OutcomeEvent) -> _OutcomeEvent:
+    return pair.right if pair.left == event else pair.left
+
+
+def _tennis_candidate_pairs_are_coherent(
+    event: _OutcomeEvent,
+    candidates: list[_OutcomeEventPair],
+    *,
+    text_cache: _OutcomeTextCache,
+) -> bool:
+    if len(candidates) <= 1:
+        return True
+    counterparts = [_pair_counterpart(pair, event) for pair in candidates]
+    for left_index, left in enumerate(counterparts):
+        for right in counterparts[left_index + 1 :]:
+            if _pair_candidates(left, right, text_cache=text_cache) is None:
+                return False
+    return True
+
+
 def _rank_event_pairs(
     events: list[_OutcomeEvent],
     *,
@@ -1050,8 +1042,15 @@ def _rank_event_pairs(
     stats: _FootballEventResolutionStats | None = None,
 ) -> list[_OutcomeEventPair]:
     events_by_slot: dict[tuple[str, str], list[_OutcomeEvent]] = defaultdict(list)
+    events_by_pair_bucket: dict[tuple[str, str], list[_OutcomeEvent]] = defaultdict(list)
     for event in events:
         events_by_slot[(event.sport, event.start_time)].append(event)
+        pair_bucket = (
+            (event.sport, "__tennis_time_drift__")
+            if event.sport == "tennis"
+            else (event.sport, event.start_time)
+        )
+        events_by_pair_bucket[pair_bucket].append(event)
     if stats is not None:
         bucket_rows: list[OutcomeFootballEventBucketBenchmarkOut] = []
         for (sport, start_time), slot_events in events_by_slot.items():
@@ -1085,13 +1084,14 @@ def _rank_event_pairs(
         )[:20]
 
     accepted: list[_OutcomeEventPair] = []
-    for events in events_by_slot.values():
+    for events in events_by_pair_bucket.values():
         text_cache = _OutcomeTextCache(stats)
         resolution_by_event = (
             {event: resolutions.get(_event_key(event)) for event in events}
             if resolutions is not None
             else {}
         )
+        time_support = Counter(event.start_time for event in events)
         slot_bookmaker_support: dict[frozenset[int], set[str]] = defaultdict(set)
         for event, resolution in resolution_by_event.items():
             if resolution is not None:
@@ -1104,11 +1104,24 @@ def _rank_event_pairs(
             for right in events[idx + 1 :]:
                 if left.bookmaker_id == right.bookmaker_id:
                     continue
+                pair_left = left
+                pair_right = right
+                if left.sport == "tennis" and left.start_time != right.start_time:
+                    pair_left, pair_right = sorted(
+                        (left, right),
+                        key=lambda event: (
+                            -time_support[event.start_time],
+                            event.start_time,
+                            event.bookmaker_id,
+                            normalize_identity_text(event.home_team),
+                            normalize_identity_text(event.away_team),
+                        ),
+                    )
                 if _should_skip_disjoint_canonical_slots(
-                    left,
-                    right,
-                    left_resolution=resolution_by_event.get(left),
-                    right_resolution=resolution_by_event.get(right),
+                    pair_left,
+                    pair_right,
+                    left_resolution=resolution_by_event.get(pair_left),
+                    right_resolution=resolution_by_event.get(pair_right),
                     slot_bookmaker_support=slot_bookmaker_support,
                     text_cache=text_cache,
                 ):
@@ -1118,7 +1131,12 @@ def _rank_event_pairs(
                             4
                         )
                     continue
-                pair = _pair_candidates(left, right, text_cache=text_cache, stats=stats)
+                pair = _pair_candidates(
+                    pair_left,
+                    pair_right,
+                    text_cache=text_cache,
+                    stats=stats,
+                )
                 if pair is None:
                     continue
                 all_pairs.append(pair)
@@ -1128,6 +1146,17 @@ def _rank_event_pairs(
         for event, candidates in candidates_by_event.items():
             ranked = sorted(candidates, key=lambda item: item.score, reverse=True)
             if not ranked:
+                continue
+            if event.sport == "tennis":
+                if not _tennis_candidate_pairs_are_coherent(
+                    event,
+                    ranked,
+                    text_cache=text_cache,
+                ):
+                    continue
+                for candidate in ranked:
+                    if candidate not in accepted:
+                        accepted.append(candidate)
                 continue
             best = ranked[0]
             if len(ranked) > 1 and best.score - ranked[1].score < _FOOTBALL_AUTO_MATCH_MARGIN:
@@ -1194,6 +1223,22 @@ def _build_football_event_resolutions(
 
         if left_resolution is not None and right_resolution is not None:
             if _same_slot(left_resolution, right_resolution):
+                continue
+            if pair.left.sport == "tennis":
+                mutation_started_at = time.perf_counter()
+                _move_resolution_component(
+                    resolutions,
+                    source_resolution=right_resolution,
+                    target_slot=left_resolution.slot,
+                    source_target_orientation=_orientation_from_pair(
+                        left_resolution.orientation,
+                        pair.orientation,
+                    ),
+                )
+                if stats is not None:
+                    stats.football_event_slot_mutation_ms += _elapsed_ms(
+                        mutation_started_at
+                    )
                 continue
             if pair.orientation == _REVERSED_ORIENTATION and _reversed_slots(
                 left_resolution, right_resolution
@@ -1483,7 +1528,7 @@ def _normalized_offer_from_resolution(
     match_id = generate_match_id(
         resolution.slot.home_team_id,
         resolution.slot.away_team_id,
-        raw.start_time,
+        resolution.slot.start_time,
         raw.sport,
     )
     return NormalizedOutcomeOffer(
@@ -1501,7 +1546,7 @@ def _normalized_offer_from_resolution(
         odds=raw.odds,
         line=raw.line,
         raw_label=raw.raw_label,
-        start_time=raw.start_time,
+        start_time=resolution.slot.start_time,
     )
 
 

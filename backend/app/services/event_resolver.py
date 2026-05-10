@@ -41,6 +41,10 @@ from .outcome_normalizer import (
     _team_qualifiers,
     FootballEventResolutionMap,
 )
+from .tennis_name_matcher import (
+    TENNIS_BROAD_DRIFT_MINUTES,
+    tennis_competitor_pair_matches,
+)
 from .text_normalizer import normalize_identity_text
 
 logger = logging.getLogger(__name__)
@@ -423,6 +427,7 @@ class EventCandidate:
     source_league_name: str | None = None
     source_home_team: str | None = None
     source_away_team: str | None = None
+    source_start_time: str | None = None
     source_url: str | None = None
     source_kind: str = "normalized"
 
@@ -1592,6 +1597,21 @@ def _orientation_scores(
     *,
     sport: str | None = None,
 ) -> list[_OrientationScore]:
+    if sport == "tennis":
+        return [
+            _OrientationScore(
+                orientation=match.orientation,
+                home_score=match.home_score,
+                away_score=match.away_score,
+            )
+            for match in tennis_competitor_pair_matches(
+                left_home,
+                left_away,
+                right_home,
+                right_away,
+            )
+        ]
+
     scores: list[_OrientationScore] = []
     if _same_team_context(left_home, right_home, sport=sport) and _same_team_context(left_away, right_away, sport=sport):
         scores.append(
@@ -1908,6 +1928,7 @@ def _normalized_odds_candidate(
         source_league_name=league_name,
         source_home_team=source.home_team if source else row.home_team,
         source_away_team=source.away_team if source else row.away_team,
+        source_start_time=source.start_time if source else row.start_time,
         source_url=source.source_url if source and source.source_url else row.source_url,
         source_kind=source.source_kind if source else "normalized_odds",
     )
@@ -1943,6 +1964,7 @@ def _normalized_outcome_candidate(
         source_league_name=league_name,
         source_home_team=source.home_team if source else row.home_team,
         source_away_team=source.away_team if source else row.away_team,
+        source_start_time=source.start_time if source else row.start_time,
         source_url=source.source_url if source and source.source_url else row.source_url,
         source_kind=source.source_kind if source else "normalized_outcome_offer",
     )
@@ -2033,7 +2055,7 @@ def _football_raw_resolution_candidates(
         match_id = generate_match_id(
             resolution.slot.home_team_id,
             resolution.slot.away_team_id,
-            raw.start_time,
+            resolution.slot.start_time,
             raw.sport,
         )
         if (match_id, raw.bookmaker_id) not in stored_match_bookmakers:
@@ -2044,7 +2066,7 @@ def _football_raw_resolution_candidates(
                 match_id=match_id,
                 bookmaker_id=raw.bookmaker_id,
                 sport=raw.sport,
-                start_time=raw.start_time,
+                start_time=resolution.slot.start_time,
                 home_team_id=resolution.slot.home_team_id,
                 away_team_id=resolution.slot.away_team_id,
                 home_team=resolution.slot.home_team,
@@ -2053,6 +2075,7 @@ def _football_raw_resolution_candidates(
                 source_league_name=league_name,
                 source_home_team=raw.home_team,
                 source_away_team=raw.away_team,
+                source_start_time=raw.start_time,
                 source_url=raw.source_url,
                 source_kind="raw_outcome_offer",
             )
@@ -2396,6 +2419,76 @@ def _group_pair_resolution(
     combined_bookmaker_count = len(left.bookmakers | right.bookmakers)
     for left_candidate in left.candidates:
         for right_candidate in right.candidates:
+            if (
+                left_candidate.sport == "tennis"
+                and right_candidate.sport == "tennis"
+            ):
+                delta = _event_time_delta_minutes(
+                    left_candidate.start_time,
+                    right_candidate.start_time,
+                )
+                if delta is None or delta > TENNIS_BROAD_DRIFT_MINUTES:
+                    continue
+                tennis_matches = [
+                    match
+                    for match in tennis_competitor_pair_matches(
+                        left_candidate.home_team,
+                        left_candidate.away_team,
+                        right_candidate.home_team,
+                        right_candidate.away_team,
+                    )
+                    if delta <= match.max_time_delta_minutes
+                ]
+                if not tennis_matches:
+                    continue
+                top_match = tennis_matches[0]
+                time_evidence = (
+                    f"Exact start time: {left_candidate.start_time}"
+                    if delta == 0
+                    else (
+                        "Tennis start-time drift: "
+                        f"{delta:.1f} minutes "
+                        f"({left_candidate.start_time} vs {right_candidate.start_time})"
+                    )
+                )
+                if (
+                    len(tennis_matches) > 1
+                    and top_match.avg_score >= _REVIEW_FUZZY_AVG_SCORE
+                    and top_match.avg_score - tennis_matches[1].avg_score
+                    < _FUZZY_ORIENTATION_MARGIN
+                ):
+                    resolution = _PairResolution(
+                        confidence=top_match.avg_score / 100,
+                        score=top_match.avg_score,
+                        weak_side_score=top_match.weak_side_score,
+                        orientation=top_match.orientation,
+                        reason_code="ambiguous_event_orientation",
+                        evidence=(
+                            time_evidence,
+                            "Multiple tennis player orientations scored too closely for automatic grouping",
+                        ),
+                    )
+                else:
+                    resolution = _PairResolution(
+                        confidence=top_match.avg_score / 100,
+                        score=top_match.avg_score,
+                        weak_side_score=top_match.weak_side_score,
+                        orientation=top_match.orientation,
+                        reason_code="high_confidence_fuzzy_event_match",
+                        evidence=(
+                            time_evidence,
+                            (
+                                "High-confidence cross-bookmaker tennis players: "
+                                f"{left_candidate.home_team} vs {left_candidate.away_team} ↔ "
+                                f"{right_candidate.home_team} vs {right_candidate.away_team} "
+                                f"({top_match.orientation}, score {top_match.avg_score:.1f})"
+                            ),
+                        ),
+                    )
+                if best is None or resolution.score > best.score:
+                    best = resolution
+                continue
+
             scores = text_cache.orientation_scores(
                 left_candidate.home_team,
                 left_candidate.away_team,
@@ -2550,6 +2643,25 @@ def _display_league_name(candidates: tuple[EventCandidate, ...]) -> str | None:
     return min(counts.items(), key=lambda item: (-item[1], item[0]))[0]
 
 
+def _primary_candidate_for_resolution(
+    members: tuple[EventCandidate, ...],
+) -> EventCandidate:
+    if not members:
+        raise ValueError("Cannot choose a primary event candidate from an empty group")
+    first = members[0]
+    if first.sport != "tennis":
+        return min(members, key=lambda candidate: (candidate.match_id, candidate.bookmaker_id))
+    time_counts = Counter(member.start_time for member in members)
+    preferred_time = min(
+        time_counts,
+        key=lambda start_time: (-time_counts[start_time], start_time),
+    )
+    return min(
+        (member for member in members if member.start_time == preferred_time),
+        key=lambda candidate: (candidate.match_id, candidate.bookmaker_id),
+    )
+
+
 def _event_member_orientation(primary: EventCandidate, member: EventCandidate) -> str:
     scores = _orientation_scores(
         primary.home_team,
@@ -2655,7 +2767,12 @@ def build_event_resolution_groups(
     groups_by_slot: dict[tuple[str, str], list[_CandidateGroup]] = defaultdict(list)
     for group in exact_groups:
         representative = group.representative
-        groups_by_slot[(representative.sport, representative.start_time)].append(group)
+        bucket_key = (
+            (representative.sport, "__tennis_time_drift__")
+            if representative.sport == "tennis"
+            else (representative.sport, representative.start_time)
+        )
+        groups_by_slot[bucket_key].append(group)
 
     for groups in groups_by_slot.values():
         sorted_groups = sorted(
@@ -2779,7 +2896,7 @@ def build_event_resolution_groups(
         )
         if not members:
             continue
-        primary = members[0]
+        primary = _primary_candidate_for_resolution(members)
         pair_evidence = tuple(
             evidence
             for pair in accepted_pairs_by_root.get(root, [])
@@ -2867,9 +2984,13 @@ async def persist_event_resolution_groups(
                 },
             )
         )
-        primary = min(
-            resolution.members,
-            key=lambda candidate: (candidate.match_id, candidate.bookmaker_id),
+        primary = next(
+            (
+                member
+                for member in resolution.members
+                if member.match_id == resolution.primary_match_id
+            ),
+            _primary_candidate_for_resolution(resolution.members),
         )
         for member in resolution.members:
             members.append(
@@ -2884,7 +3005,7 @@ async def persist_event_resolution_groups(
                     source_league_name=member.source_league_name,
                     source_home_team=member.source_home_team or member.home_team,
                     source_away_team=member.source_away_team or member.away_team,
-                    source_start_time=member.start_time,
+                    source_start_time=member.source_start_time or member.start_time,
                     evidence=list(resolution.evidence),
                     metadata={
                         "resolver": _RESOLVER_VERSION,
