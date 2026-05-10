@@ -17,9 +17,11 @@ from app.scrapers.oktagonbet_scraper import (
     _parse_bulk_match,
     _parse_football_outcome_match,
     _parse_football_double_chance_bulk_match,
+    _parse_tennis_outcome_match,
     _parse_start_time,
     _is_player_market,
     _extract_league_id,
+    _extract_plain_league_id,
     _SPORT_SPECS,
 )
 from app.models.schemas import RawOddsData, RawOutcomeOffer
@@ -124,6 +126,14 @@ def test_extract_league_id_live_basketball_variants():
 
 def test_extract_league_id_empty():
     assert _extract_league_id("") == "basketball"
+
+
+def test_extract_plain_league_id_for_tennis():
+    assert _extract_plain_league_id(
+        "ITF M25 ~ Loule (Portugal)",
+        "tennis",
+    ) == "itf_m25_loule_(portugal)"
+    assert _extract_plain_league_id("", "tennis") == "tennis"
 
 
 # ── Parsing real fixture data ─────────────────────────────
@@ -933,6 +943,70 @@ def test_parse_bulk_match_first_non_null_wins_for_duplicate_tip_types():
     assert results[0].under_odds == 1.95
 
 
+# ── Tennis outcome offers ────────────────────────────────
+
+
+def test_parse_tennis_outcome_match_emits_match_winner_offers():
+    match = {
+        "id": 42345455,
+        "home": "Tiago Pereira",
+        "away": "Joao Domingues",
+        "leagueName": "ITF M25 ~ Loule (Portugal)",
+        "kickOffTime": 1778407200000,
+        "live": False,
+        "blocked": False,
+        "odds": {"1": 1.4, "3": 2.8, "50538": 1.83},
+    }
+
+    results = _parse_tennis_outcome_match(match)
+
+    assert len(results) == 2
+    assert all(isinstance(r, RawOutcomeOffer) for r in results)
+    assert {r.bookmaker_id for r in results} == {"oktagonbet"}
+    assert {r.sport for r in results} == {"tennis"}
+    assert {r.league_id for r in results} == {"itf_m25_loule_(portugal)"}
+    assert {r.home_team for r in results} == {"Tiago Pereira"}
+    assert {r.away_team for r in results} == {"Joao Domingues"}
+    assert {r.market_type for r in results} == {"tennis_match_winner"}
+    assert {r.source_url for r in results} == {
+        "https://www.oktagonbet.com/sr/sportsko-kladjenje/tenis/T"
+    }
+    assert {
+        (r.outcome_code, r.raw_label, r.odds, r.line, r.start_time)
+        for r in results
+    } == {
+        ("home", "1", 1.4, None, _parse_start_time(1778407200000)),
+        ("away", "2", 2.8, None, _parse_start_time(1778407200000)),
+    }
+
+
+def test_parse_tennis_outcome_match_skips_live_blocked_and_doubles():
+    base_match = {
+        "home": "Tiago Pereira",
+        "away": "Joao Domingues",
+        "leagueName": "ITF M25 ~ Loule (Portugal)",
+        "kickOffTime": 1778407200000,
+        "live": False,
+        "blocked": False,
+        "odds": {"1": 1.4, "3": 2.8},
+    }
+
+    assert _parse_tennis_outcome_match({**base_match, "live": True}) == []
+    assert _parse_tennis_outcome_match({**base_match, "blocked": True}) == []
+    assert _parse_tennis_outcome_match({**base_match, "leagueName": "ATP Doubles ~ Rome"}) == []
+    assert _parse_tennis_outcome_match({**base_match, "home": "A. Player/B. Player"}) == []
+    assert _parse_tennis_outcome_match({**base_match, "away": "A. Player/B. Player"}) == []
+
+
+def test_parse_tennis_outcome_match_skips_invalid_rows():
+    assert _parse_tennis_outcome_match({"away": "Away", "odds": {"1": 1.9}}) == []
+    assert _parse_tennis_outcome_match({"home": "Home", "odds": {"1": 1.9}}) == []
+    assert _parse_tennis_outcome_match({"home": "Home", "away": "Away", "odds": []}) == []
+    assert _parse_tennis_outcome_match(
+        {"home": "Home", "away": "Away", "odds": {"1": 0, "3": "bad"}}
+    ) == []
+
+
 @pytest.mark.asyncio
 async def test_scraper_unsupported_league():
     scraper = OktagonBetScraper()
@@ -966,7 +1040,7 @@ async def test_scraper_interface():
     assert scraper.get_bookmaker_id() == "oktagonbet"
     assert scraper.get_bookmaker_name() == "OktagonBet"
     assert "basketball" in scraper.get_supported_leagues()
-    assert scraper.get_supported_outcome_sports() == ["football"]
+    assert scraper.get_supported_outcome_sports() == ["football", "tennis"]
 
 
 @pytest.mark.asyncio
@@ -1018,7 +1092,7 @@ async def test_scrape_outcome_offers_football_returns_list_offers_when_bulk_miss
 
 
 @pytest.mark.asyncio
-async def test_scrape_outcome_offers_non_football_returns_empty():
+async def test_scrape_outcome_offers_unsupported_sport_returns_empty():
     scraper = OktagonBetScraper()
 
     with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get, \
@@ -1027,4 +1101,51 @@ async def test_scrape_outcome_offers_non_football_returns_empty():
 
     assert results == []
     mock_get.assert_not_called()
+    mock_put.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_tennis_uses_one_list_call_without_bulk():
+    scraper = OktagonBetScraper()
+    calls: list[tuple[str, dict]] = []
+    tennis_data = {
+        "esMatches": [
+            {
+                "id": 42345455,
+                "home": "Tiago Pereira",
+                "away": "Joao Domingues",
+                "leagueName": "ITF M25 ~ Loule (Portugal)",
+                "kickOffTime": 1778407200000,
+                "live": False,
+                "blocked": False,
+                "odds": {"1": 1.4, "3": 2.8},
+            },
+            {
+                "id": 42340299,
+                "home": "Cadenasso G./Vasami J.",
+                "away": "Granollers M./Zeballos H.",
+                "leagueName": "ATP Doubles ~ Rome (Italy)-STB",
+                "kickOffTime": 1778407200000,
+                "live": False,
+                "blocked": False,
+                "odds": {"1": 7.4, "3": 1.05},
+            },
+        ]
+    }
+
+    async def mock_get(url, **kwargs):
+        calls.append((url, kwargs.get("params", {})))
+        if "/sport/T/mob" in url:
+            return tennis_data
+        raise AssertionError(f"Unexpected GET URL: {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get), \
+         patch.object(scraper._http, "put_json", new_callable=AsyncMock) as mock_put:
+        results = await scraper.scrape_outcome_offers("tennis")
+
+    assert len(results) == 2
+    assert all(r.sport == "tennis" for r in results)
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/sport/T/mob")
+    assert calls[0][1]["hours"]
     mock_put.assert_not_called()
