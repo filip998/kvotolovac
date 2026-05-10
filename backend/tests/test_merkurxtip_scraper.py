@@ -12,10 +12,12 @@ from app.scrapers.merkurxtip_scraper import (
     _parse_game_total_ot_match,
     _parse_handicap_ot_match,
     _parse_football_outcome_match,
+    _parse_tennis_outcome_match,
     _get_player_matches,
     _get_total_match_ids,
     _parse_start_time,
     _extract_league_id,
+    _extract_plain_league_id,
 )
 from app.models.schemas import RawOddsData, RawOutcomeOffer
 
@@ -106,6 +108,11 @@ def test_extract_league_id_empty():
 def test_extract_league_id_case_insensitive():
     assert _extract_league_id("acb igrači") == "acb"
     assert _extract_league_id("ACB IGRAČI") == "acb"
+
+
+def test_extract_plain_league_id_for_tennis():
+    assert _extract_plain_league_id("Rome Masters", "tennis") == "rome_masters"
+    assert _extract_plain_league_id(" ", "tennis") == "tennis"
 
 
 # ── _get_player_matches ─────────────────────────────────
@@ -638,6 +645,70 @@ def test_parse_football_outcome_match_requires_teams_and_odds_map():
     assert _parse_football_outcome_match({"home": "Home", "away": "Away", "odds": []}) == []
 
 
+# ── Tennis outcome offers ────────────────────────────────
+
+
+def test_parse_tennis_outcome_match_emits_match_winner_offers():
+    match = {
+        "id": 133125569,
+        "home": "C. Ruud",
+        "away": "J. Lehecka",
+        "leagueName": "Rome Masters",
+        "kickOffTime": 1778403600000,
+        "live": False,
+        "blocked": False,
+        "odds": {"1": 1.55, "3": 2.3, "251": 1.82},
+    }
+
+    results = _parse_tennis_outcome_match(match)
+
+    assert len(results) == 2
+    assert all(isinstance(r, RawOutcomeOffer) for r in results)
+    assert {r.bookmaker_id for r in results} == {"merkurxtip"}
+    assert {r.sport for r in results} == {"tennis"}
+    assert {r.league_id for r in results} == {"rome_masters"}
+    assert {r.home_team for r in results} == {"C. Ruud"}
+    assert {r.away_team for r in results} == {"J. Lehecka"}
+    assert {r.market_type for r in results} == {"tennis_match_winner"}
+    assert {r.source_url for r in results} == {
+        "https://www.merkurxtip.rs/sr/sportsko-kladjenje/tenis/T"
+    }
+    assert {
+        (r.outcome_code, r.raw_label, r.odds, r.line, r.start_time)
+        for r in results
+    } == {
+        ("home", "1", 1.55, None, "2026-05-10T09:00:00+00:00"),
+        ("away", "2", 2.3, None, "2026-05-10T09:00:00+00:00"),
+    }
+
+
+def test_parse_tennis_outcome_match_skips_live_blocked_and_doubles():
+    base_match = {
+        "home": "C. Ruud",
+        "away": "J. Lehecka",
+        "leagueName": "Rome",
+        "kickOffTime": 1778403600000,
+        "live": False,
+        "blocked": False,
+        "odds": {"1": 1.55, "3": 2.3},
+    }
+
+    assert _parse_tennis_outcome_match({**base_match, "live": True}) == []
+    assert _parse_tennis_outcome_match({**base_match, "blocked": True}) == []
+    assert _parse_tennis_outcome_match({**base_match, "leagueName": "Rome Doubles"}) == []
+    assert _parse_tennis_outcome_match({**base_match, "home": "A. Player/B. Player"}) == []
+    assert _parse_tennis_outcome_match({**base_match, "away": "A. Player/B. Player"}) == []
+
+
+def test_parse_tennis_outcome_match_skips_invalid_rows():
+    assert _parse_tennis_outcome_match({"away": "Away", "odds": {"1": 1.9}}) == []
+    assert _parse_tennis_outcome_match({"home": "Home", "odds": {"1": 1.9}}) == []
+    assert _parse_tennis_outcome_match({"home": "Home", "away": "Away", "odds": []}) == []
+    assert _parse_tennis_outcome_match(
+        {"home": "Home", "away": "Away", "odds": {"1": 0, "3": "bad"}}
+    ) == []
+
+
 # ── Integration: MerkurXTipScraper with mocked HTTP ──────
 
 
@@ -717,7 +788,7 @@ async def test_scraper_interface():
     assert scraper.get_bookmaker_id() == "merkurxtip"
     assert scraper.get_bookmaker_name() == "MERKUR X TIP"
     assert "basketball" in scraper.get_supported_leagues()
-    assert scraper.get_supported_outcome_sports() == ["football"]
+    assert scraper.get_supported_outcome_sports() == ["football", "tennis"]
 
 
 @pytest.mark.asyncio
@@ -750,6 +821,53 @@ async def test_scrape_outcome_offers_non_football_returns_empty():
 
     assert results == []
     mock_get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_tennis_uses_one_sport_listing():
+    scraper = MerkurXTipScraper()
+    calls: list[tuple[str, dict]] = []
+    tennis_data = {
+        "esMatches": [
+            {
+                "id": 133125569,
+                "home": "C. Ruud",
+                "away": "J. Lehecka",
+                "leagueName": "Rome",
+                "kickOffTime": 1778403600000,
+                "live": False,
+                "blocked": False,
+                "odds": {"1": 1.55, "3": 2.3},
+            },
+            {
+                "id": 133125545,
+                "home": "Cadenasso G./Vasami J.",
+                "away": "Granollers M./Zeballos H.",
+                "leagueName": "Rome Doubles",
+                "kickOffTime": 1778403600000,
+                "live": False,
+                "blocked": False,
+                "odds": {"1": 7.4, "3": 1.05},
+            },
+        ]
+    }
+
+    async def mock_get(url, **kwargs):
+        calls.append((url, kwargs.get("params", {})))
+        if url.endswith("/sport/T/mob"):
+            return tennis_data
+        if "/match/" in url:
+            pytest.fail("tennis match winner import should not fetch per-match details")
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_outcome_offers("tennis")
+
+    assert len(results) == 2
+    assert all(r.sport == "tennis" for r in results)
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/sport/T/mob")
+    assert calls[0][1]["hours"]
 
 
 @pytest.mark.asyncio
