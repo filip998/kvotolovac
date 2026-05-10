@@ -13,6 +13,7 @@ from .http_client import HttpClient
 from .outcome_team_recovery import recover_matchup_from_payload
 from ..config import settings
 from ..models.schemas import RawOddsData, RawOutcomeOffer
+from ..services.scrape_window import current_utc_time
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,7 @@ _TENNIS_OUTCOME_CODES: dict[str, tuple[str, str]] = {
     "1": ("home", "1"),
     "3": ("away", "2"),
 }
+_TENNIS_LIVE_START_BUFFER_MS = 5 * 60 * 1000
 
 _KNOWN_LEAGUE_IDS: list[int] = [
     2314461,  # NBA Igrači
@@ -173,10 +175,18 @@ _UNLIMITED_DETAIL_CONCURRENCY = 10
 _MIN_DETAIL_CONCURRENCY = 2
 
 
-def _parse_start_time(epoch_ms: int | None) -> str | None:
-    if not epoch_ms:
+def _parse_int(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
         return None
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).isoformat()
+
+
+def _parse_start_time(epoch_ms: object) -> str | None:
+    parsed = _parse_int(epoch_ms)
+    if parsed is None or parsed <= 0:
+        return None
+    return datetime.fromtimestamp(parsed / 1000, tz=timezone.utc).isoformat()
 
 
 def _extract_league_id(league_name: str, *, default: str = "basketball") -> str:
@@ -480,19 +490,61 @@ def _is_tennis_doubles_match(match: dict) -> bool:
     return "/" in home_team or "/" in away_team
 
 
-def _parse_tennis_outcome_match(match: dict) -> list[RawOutcomeOffer]:
-    if match.get("live") is True:
-        return []
+def _tennis_live_start_skip_reason(
+    match: dict,
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    if match.get("live") is not True:
+        return None
+
+    raw_kickoff = match.get("kickOffTime")
+    if raw_kickoff in (None, ""):
+        return "missing_start_time"
+
+    kickoff_ms = _parse_int(raw_kickoff)
+    if kickoff_ms is None:
+        return "invalid_start_time"
+
+    now_ms = int((now or current_utc_time()).timestamp() * 1000)
+    if kickoff_ms <= now_ms + _TENNIS_LIVE_START_BUFFER_MS:
+        return "live_near_or_past_start"
+
+    return None
+
+
+def _tennis_skip_reason(match: dict, *, now: datetime | None = None) -> str | None:
     if match.get("blocked") is True:
-        return []
+        return "blocked"
     if _is_tennis_doubles_match(match):
-        return []
+        return "doubles"
 
     home_team = (match.get("home") or "").strip()
     away_team = (match.get("away") or "").strip()
     if not home_team or not away_team:
+        return "missing_competitor"
+
+    raw_odds_map = match.get("odds")
+    if raw_odds_map is not None and not isinstance(raw_odds_map, dict):
+        return "invalid_odds_map"
+
+    live_start_reason = _tennis_live_start_skip_reason(match, now=now)
+    if live_start_reason:
+        return live_start_reason
+
+    return None
+
+
+def _parse_tennis_outcome_match(
+    match: dict,
+    *,
+    now: datetime | None = None,
+) -> list[RawOutcomeOffer]:
+    if _tennis_skip_reason(match, now=now):
         return []
 
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
     odds_map = match.get("odds") or {}
     if not isinstance(odds_map, dict):
         return []
@@ -820,14 +872,22 @@ class MerkurXTipScraper(BaseScraper):
 
         if sport == "tennis":
             tennis_matches = await self._fetch_tennis_matches()
+            scrape_now = current_utc_time()
             results = []
+            skipped: dict[str, int] = {}
             for match in tennis_matches:
-                results.extend(_parse_tennis_outcome_match(match))
+                parsed = _parse_tennis_outcome_match(match, now=scrape_now)
+                if not parsed:
+                    reason = _tennis_skip_reason(match, now=scrape_now) or "no_match_winner"
+                    skipped[reason] = skipped.get(reason, 0) + 1
+                    continue
+                results.extend(parsed)
 
             logger.info(
-                "MerkurXTip scraped %d tennis outcome offers from %d matches",
+                "MerkurXTip scraped %d tennis outcome offers from %d matches with skipped=%s",
                 len(results),
                 len(tennis_matches),
+                skipped,
             )
             return results
 
