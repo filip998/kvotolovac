@@ -180,6 +180,7 @@ _TENNIS_OUTCOME_CODES: dict[str, tuple[str, str]] = {
     "1": ("home", "1"),
     "3": ("away", "2"),
 }
+_TENNIS_LIVE_START_BUFFER_MS = 5 * 60 * 1000
 _CANONICAL_LEAGUES: dict[str, str] = {
     "nba play off": "nba",
     "nba play in": "nba",
@@ -209,7 +210,7 @@ def _parse_float(value: object) -> float | None:
 
 def _parse_start_time(epoch_ms: object) -> str | None:
     parsed = _parse_int(epoch_ms)
-    if parsed is None:
+    if parsed is None or parsed <= 0:
         return None
     return datetime.fromtimestamp(parsed / 1000, tz=timezone.utc).isoformat()
 
@@ -471,27 +472,72 @@ def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
 
 def _is_tennis_doubles_match(match: dict) -> bool:
     league_name = str(match.get("leagueName") or "")
-    home_team = str(match.get("home") or "")
-    away_team = str(match.get("away") or "")
+    matchup = recover_matchup_from_payload(match)
+    home_team = str(matchup.home_team or match.get("home") or "")
+    away_team = str(matchup.away_team or match.get("away") or "")
     league_key = _normalize_league_key(league_name)
     if any(token in league_key.split() for token in ("doubles", "double", "parovi")):
         return True
     return "/" in home_team or "/" in away_team
 
 
-def _parse_tennis_outcome_match(match: dict) -> list[RawOutcomeOffer]:
-    if match.get("live") is True:
-        return []
+def _tennis_live_start_skip_reason(
+    match: dict,
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    if match.get("live") is not True:
+        return None
+
+    raw_kickoff = match.get("kickOffTime")
+    if raw_kickoff in (None, ""):
+        return "missing_start_time"
+
+    kickoff_ms = _parse_int(raw_kickoff)
+    if kickoff_ms is None:
+        return "invalid_start_time"
+
+    now_ms = int((now or current_utc_time()).timestamp() * 1000)
+    if kickoff_ms <= now_ms + _TENNIS_LIVE_START_BUFFER_MS:
+        return "live_near_or_past_start"
+
+    return None
+
+
+def _tennis_skip_reason(match: dict, *, now: datetime | None = None) -> str | None:
     if match.get("blocked") is True:
-        return []
+        return "blocked"
     if _is_tennis_doubles_match(match):
-        return []
+        return "doubles"
 
     matchup = recover_matchup_from_payload(match)
     home_team = matchup.home_team
     away_team = matchup.away_team
     if not home_team or not away_team:
+        return "missing_competitor"
+
+    raw_odds_map = match.get("odds")
+    if raw_odds_map is not None and not isinstance(raw_odds_map, dict):
+        return "invalid_odds_map"
+
+    live_start_reason = _tennis_live_start_skip_reason(match, now=now)
+    if live_start_reason:
+        return live_start_reason
+
+    return None
+
+
+def _parse_tennis_outcome_match(
+    match: dict,
+    *,
+    now: datetime | None = None,
+) -> list[RawOutcomeOffer]:
+    if _tennis_skip_reason(match, now=now):
         return []
+
+    matchup = recover_matchup_from_payload(match)
+    home_team = matchup.home_team
+    away_team = matchup.away_team
     if matchup.recovered:
         logger.debug(
             "365: recovered tennis matchup from %s for match %s",
@@ -809,7 +855,8 @@ class Bookmaker365Scraper(BaseScraper):
         return ["football", "tennis"]
 
     async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
-        cutoff_ms = int(lookahead_cutoff(current_utc_time()).timestamp() * 1000)
+        scrape_now = current_utc_time()
+        cutoff_ms = int(lookahead_cutoff(scrape_now).timestamp() * 1000)
         if sport == "tennis":
             tennis_matches = await self._fetch_bulk_matches(
                 _TENNIS_BULK_URL,
@@ -820,31 +867,23 @@ class Bookmaker365Scraper(BaseScraper):
                 return []
 
             results: list[RawOutcomeOffer] = []
-            skipped_live = 0
-            skipped_blocked = 0
-            skipped_doubles = 0
+            skipped: dict[str, int] = {}
             for match in tennis_matches:
-                if match.get("live") is True:
-                    skipped_live += 1
+                parsed = _parse_tennis_outcome_match(match, now=scrape_now)
+                if not parsed:
+                    reason = _tennis_skip_reason(match, now=scrape_now) or "no_match_winner"
+                    skipped[reason] = skipped.get(reason, 0) + 1
                     continue
-                if match.get("blocked") is True:
-                    skipped_blocked += 1
-                    continue
-                if _is_tennis_doubles_match(match):
-                    skipped_doubles += 1
-                    continue
-                results.extend(_parse_tennis_outcome_match(match))
+                results.extend(parsed)
 
             logger.info(
                 (
                     "365: using tennis bulk feed (%d offers from %d matches; "
-                    "skipped %d live, %d blocked, %d doubles)"
+                    "skipped=%s)"
                 ),
                 len(results),
                 len(tennis_matches),
-                skipped_live,
-                skipped_blocked,
-                skipped_doubles,
+                skipped,
             )
             return results
 
