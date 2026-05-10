@@ -591,13 +591,14 @@ def _subject_group_key(opportunity: Opportunity) -> tuple[str, ...] | None:
     """Group opportunities so multi-leg bookmaker pairs at the same event/market
     collapse into one Telegram message instead of spamming one message per pair.
 
-    Two grouping rules:
+    Three grouping rules:
     - Player-style subjects (subject_type set to a non-event value AND subject_key
       or subject_name present): group across lines for the same
       (event, subject, market_type). Existing behavior.
-    - Event-level (subject_type missing or equal to "event"): group by
-      (event, market_type, line, opportunity_type). Including the line keeps
-      O/U 2.5 separate from O/U 3.5.
+    - Event-level handicap markets: drop the line from the key so all distinct
+      handicap lines on the same event collapse into one message.
+    - Other event-level markets (totals etc.): include the line so O/U 2.5 stays
+      separate from O/U 3.5 — they're independent bets.
     """
 
     event_identity = opportunity.resolved_event_id or opportunity.match_id
@@ -611,6 +612,14 @@ def _subject_group_key(opportunity: Opportunity) -> tuple[str, ...] | None:
             subject_type,
             subject_identity,
             opportunity.market_type,
+        )
+    market_lower = (opportunity.market_type or "").lower()
+    if "handicap" in market_lower:
+        return (
+            "event",
+            event_identity,
+            opportunity.market_type,
+            opportunity.opportunity_type,
         )
     return (
         "event",
@@ -701,9 +710,14 @@ def format_telegram_opportunity_group(items: list[_TelegramDeliveryItem]) -> str
     context = items[0].context
     opportunities = [item.opportunity for item in items]
 
+    distinct_lines = {
+        opp.line for opp in opportunities if opp.line is not None
+    }
+    line_count = len(distinct_lines)
+
     header = _format_alert_header(primary)
     matchup_line = _format_event_context_line(context, sport=primary.sport)
-    descriptor_line = _format_market_descriptor(primary)
+    descriptor_line = _format_market_descriptor(primary, line_count=line_count)
 
     lines: list[str] = [header]
     if matchup_line:
@@ -711,7 +725,7 @@ def format_telegram_opportunity_group(items: list[_TelegramDeliveryItem]) -> str
     if descriptor_line:
         lines.append(descriptor_line)
 
-    table_block = _format_legs_table(opportunities)
+    table_block = _format_legs_table(opportunities, line_count=line_count)
     if table_block:
         lines.append(table_block)
 
@@ -741,7 +755,20 @@ def format_telegram_middle_digest(
     for index, group_items in enumerate(groups, start=1):
         primary = group_items[0].opportunity
         context = group_items[0].context
-        lines.extend(_format_digest_row(index, primary, context, len(group_items)))
+        distinct_lines = {
+            item.opportunity.line
+            for item in group_items
+            if item.opportunity.line is not None
+        }
+        lines.extend(
+            _format_digest_row(
+                index,
+                primary,
+                context,
+                len(group_items),
+                line_count=len(distinct_lines),
+            )
+        )
         lines.append("")
     if remaining_group_count > 0:
         lines.append(f"+{remaining_group_count} matched groups remain eligible later")
@@ -824,20 +851,32 @@ def _format_event_context_line(
     return " · ".join(parts)
 
 
-def _format_market_descriptor(opportunity: Opportunity) -> str:
+def _format_market_descriptor(
+    opportunity: Opportunity,
+    *,
+    line_count: int = 1,
+) -> str:
     """Produce a non-redundant 'Subject · Market · Line' descriptor.
 
     Skips the subject when it would equal the market label (the source of the
     "game total ot - game total ot" duplication in the legacy format).
+
+    When ``line_count > 1`` AND the market is a handicap, replaces the concrete
+    line with ``· N lines`` so the descriptor reflects that the table
+    underneath represents a cluster of related lines instead of a single bet.
     """
 
     market_label = _format_market_label(opportunity.market_type)
+    market_lower = (opportunity.market_type or "").lower()
+    is_multi_line_handicap = line_count > 1 and "handicap" in market_lower
     bits: list[str] = []
     raw_subject = (opportunity.subject_name or opportunity.subject_key or "").strip()
     if raw_subject and raw_subject.lower() != market_label.lower():
         bits.append(html.escape(_trim_text(raw_subject, 80)))
     bits.append(html.escape(market_label))
-    if opportunity.line is not None:
+    if is_multi_line_handicap:
+        bits.append(f"{line_count} lines")
+    elif opportunity.line is not None:
         bits.append(html.escape(_format_number(opportunity.line)))
     return "📊 " + " · ".join(bits)
 
@@ -972,16 +1011,36 @@ def _arbitrage_stake_split(
 # ── Legs table ────────────────────────────────────────────────────────────
 
 
-def _format_legs_table(opportunities: list[Opportunity]) -> str:
+_TELEGRAM_TABLE_MAX_LINES_MULTI = 5
+
+
+def _format_legs_table(
+    opportunities: list[Opportunity],
+    *,
+    line_count: int = 1,
+) -> str:
     """Render the monospace <pre> block listing every distinct leg.
 
-    Strongest pair (the first opportunity) appears first with a stake split
-    column; remaining legs appear underneath with em-dashes in the stake column.
+    Two layouts:
+
+    - Single-line (``line_count <= 1``, or non-handicap regardless): keep the
+      original "strongest pair on top + bookmaker alts underneath" layout. This
+      preserves the Porto-vs-Imortal-style cross-pair collapse.
+
+    - Multi-line handicap (``line_count > 1`` AND market is a handicap): switch
+      to "top-5 lines, strongest pair per line", with stake split computed
+      independently for each line's pair. No bookmaker alts within a line —
+      keeps the table dense and scannable.
     """
 
     if not opportunities:
         return ""
     primary = opportunities[0]
+    market_lower = (primary.market_type or "").lower()
+    use_multi_line_layout = line_count > 1 and "handicap" in market_lower
+    if use_multi_line_layout:
+        return _format_legs_table_multi_line(opportunities)
+
     is_middle = primary.opportunity_type == "middle"
     leg_a, leg_b = primary.legs[0], primary.legs[1]
     primary_stake = (
@@ -1041,6 +1100,73 @@ def _format_legs_table(opportunities: list[Opportunity]) -> str:
     return f"<pre>{html.escape(chr(10).join(body_lines))}</pre>"
 
 
+def _format_legs_table_multi_line(opportunities: list[Opportunity]) -> str:
+    """Render the monospace <pre> table for the multi-line handicap layout.
+
+    For each distinct line, pick the strongest opportunity (max profit_margin
+    or middle_ev) and render its two legs as a row pair with per-line stake
+    split. Lines are sorted by metric desc, capped at
+    ``_TELEGRAM_TABLE_MAX_LINES_MULTI`` with a "+ N more lines" tail.
+    """
+
+    by_line: dict[float, list[Opportunity]] = {}
+    for opp in opportunities:
+        if opp.line is None or len(opp.legs) < 2:
+            continue
+        by_line.setdefault(opp.line, []).append(opp)
+
+    def _best_metric(opp: Opportunity) -> float:
+        if opp.opportunity_type == "middle":
+            value = opp.middle_ev
+        else:
+            value = opp.profit_margin
+        return value if value is not None else _NEGATIVE_INFINITY
+
+    representatives: list[Opportunity] = []
+    for opps_at_line in by_line.values():
+        # Strongest opportunity on this line (deterministic on ties via existing sort key).
+        opps_at_line.sort(key=_opportunity_sort_key)
+        representatives.append(opps_at_line[0])
+    representatives.sort(key=lambda opp: -_best_metric(opp))
+
+    overflow_lines = 0
+    if len(representatives) > _TELEGRAM_TABLE_MAX_LINES_MULTI:
+        overflow_lines = len(representatives) - _TELEGRAM_TABLE_MAX_LINES_MULTI
+        representatives = representatives[:_TELEGRAM_TABLE_MAX_LINES_MULTI]
+
+    rows: list[tuple[str, str, str, str]] = []
+    rows.append(("side", "bookmaker", "odds", "stake"))
+    rows.append(("────", "──────────────", "──────", "──────"))
+    for opp in representatives:
+        leg_a, leg_b = opp.legs[0], opp.legs[1]
+        is_middle = opp.opportunity_type == "middle"
+        stake = (
+            None if is_middle else _arbitrage_stake_split(leg_a.odds, leg_b.odds)
+        )
+        for leg in (leg_a, leg_b):
+            rows.append(
+                (
+                    _outcome_label(
+                        leg.outcome_code, leg.line, market_type=leg.market_type
+                    ),
+                    str(leg.bookmaker_name or leg.bookmaker_id),
+                    _format_number(leg.odds),
+                    _format_stake_cell(leg, leg_a, leg_b, stake),
+                )
+            )
+
+    col_widths = [max(len(str(row[i])) for row in rows) for i in range(4)]
+    body_lines = [
+        "  ".join(str(cell).ljust(col_widths[i]) for i, cell in enumerate(row))
+        for row in rows
+    ]
+    if overflow_lines > 0:
+        body_lines.append(
+            f"+ {overflow_lines} more line{'s' if overflow_lines != 1 else ''} available"
+        )
+    return f"<pre>{html.escape(chr(10).join(body_lines))}</pre>"
+
+
 def _format_stake_cell(
     leg,
     primary_a,
@@ -1064,6 +1190,8 @@ def _format_digest_row(
     primary: Opportunity,
     context: TelegramOpportunityDisplayContext,
     member_count: int,
+    *,
+    line_count: int = 1,
 ) -> list[str]:
     """Render one row of the middle digest in the same visual language as the
     individual alerts (tier emoji + metric headline + matchup), but compactly."""
@@ -1087,7 +1215,7 @@ def _format_digest_row(
         title_bits.append(f"<code>{html.escape(context.fallback_label)}</code>")
     title_line = f"{index}) " + " · ".join(title_bits)
 
-    descriptor = _format_market_descriptor(primary)
+    descriptor = _format_market_descriptor(primary, line_count=line_count)
     leg_a = primary.legs[0] if len(primary.legs) > 0 else None
     leg_b = primary.legs[1] if len(primary.legs) > 1 else None
     legs_summary = ""

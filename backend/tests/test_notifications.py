@@ -24,7 +24,9 @@ from app.services.notifications import (
     TelegramNotificationProvider,
     TelegramOpportunityDisplayContext,
     TelegramSendMessageResult,
+    _TelegramDeliveryItem,
     format_telegram_opportunity,
+    format_telegram_opportunity_group,
     telegram_opportunity_fingerprint,
     telegram_profile_matches_opportunity,
 )
@@ -1017,6 +1019,318 @@ async def test_telegram_provider_collapses_subjectless_event_markets_at_same_lin
     # H1/H2 outcome labels with same line value (no sign flip).
     assert "H1 -1.5" in rendered
     assert "H2 -1.5" in rendered
+
+
+def _make_handicap_arb(
+    *,
+    match_id: str,
+    line: float,
+    profit_margin: float,
+    book_a: str = "365",
+    book_b: str = "pinnbet",
+    odds_a: float = 1.92,
+    odds_b: float = 2.25,
+) -> Opportunity:
+    """Build a same-line handicap arb opportunity for the multi-line tests."""
+
+    return Opportunity(
+        sport="basketball",
+        match_id=match_id,
+        opportunity_type="same_line_arbitrage",
+        market_type="home_handicap_ot",
+        line=line,
+        profit_margin=profit_margin,
+        middle_profit_margin=None,
+        subject_type=None,
+        subject_name=None,
+        legs=[
+            OpportunityLeg(
+                bookmaker_id=book_a,
+                market_type="home_handicap_ot",
+                outcome_code="over",
+                line=line,
+                odds=odds_a,
+            ),
+            OpportunityLeg(
+                bookmaker_id=book_b,
+                market_type="home_handicap_ot",
+                outcome_code="under",
+                line=line,
+                odds=odds_b,
+            ),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_telegram_provider_collapses_handicap_arbs_across_lines_into_one_message():
+    """The handicap-cluster spam case: multiple lines on the same event must
+    collapse into ONE message (not one per line)."""
+
+    await odds_store.create_telegram_notification_profile(
+        TelegramNotificationProfileCreate(
+            label="Main",
+            chat_id="123",
+            min_roi_percent=1,
+        )
+    )
+    calls: list[str] = []
+
+    class StubTelegramClient:
+        async def send_message(self, *, chat_id: str, text: str) -> TelegramSendMessageResult:
+            calls.append(text)
+            return TelegramSendMessageResult(message_id=len(calls))
+
+    opportunities = [
+        _make_handicap_arb(match_id="m1", line=-1.5, profit_margin=0.0435),
+        _make_handicap_arb(match_id="m1", line=-2.5, profit_margin=0.0388, book_a="admiralbet"),
+        _make_handicap_arb(match_id="m1", line=1.5,  profit_margin=0.0253, book_a="maxbet"),
+    ]
+    provider = TelegramNotificationProvider(bot_client=StubTelegramClient())  # type: ignore[arg-type]
+
+    assert await provider.send_opportunities(opportunities, publish_id="pub-1") == 3
+    assert len(calls) == 1  # ← spam-fix invariant
+
+    rendered = calls[0]
+    # Header carries the BEST ROI across lines (4.35% for line -1.5).
+    assert "ROI 4.35%" in rendered
+    # Descriptor announces the cluster, not the concrete line.
+    assert "3 lines" in rendered
+    # All three lines must be visible in the table, with H1/H2 same-sign labels.
+    for line_label in ("H1 -1.5", "H2 -1.5", "H1 -2.5", "H2 -2.5", "H1 +1.5", "H2 +1.5"):
+        assert line_label in rendered, f"missing line label {line_label!r}"
+
+
+@pytest.mark.asyncio
+async def test_telegram_provider_does_not_collapse_non_handicap_event_markets_across_lines():
+    """Regression guard: only handicap markets collapse across lines.
+    Totals at different lines must remain SEPARATE messages."""
+
+    await odds_store.create_telegram_notification_profile(
+        TelegramNotificationProfileCreate(
+            label="Main",
+            chat_id="123",
+            min_roi_percent=1,
+        )
+    )
+    calls: list[str] = []
+
+    class StubTelegramClient:
+        async def send_message(self, *, chat_id: str, text: str) -> TelegramSendMessageResult:
+            calls.append(text)
+            return TelegramSendMessageResult(message_id=len(calls))
+
+    opportunities = [
+        _make_arbitrage_opportunity(
+            "Football Total Goals",
+            match_id="m-totals",
+            market_type="football_total_goals",
+            line=2.5,
+            profit_margin=0.025,
+        ),
+        _make_arbitrage_opportunity(
+            "Football Total Goals",
+            match_id="m-totals",
+            market_type="football_total_goals",
+            line=3.5,
+            profit_margin=0.018,
+        ),
+    ]
+    provider = TelegramNotificationProvider(bot_client=StubTelegramClient())  # type: ignore[arg-type]
+
+    assert await provider.send_opportunities(opportunities, publish_id="pub-1") == 2
+    assert len(calls) == 2  # one message per line stays the rule for totals
+    combined = "\n".join(calls)
+    assert "lines" not in combined  # no multi-line descriptor on either
+
+
+def test_handicap_table_caps_at_top_5_lines():
+    items = [
+        _TelegramDeliveryItem(
+            fingerprint="",
+            opportunity=_make_handicap_arb(match_id="m1", line=line, profit_margin=margin),
+            context=TelegramOpportunityDisplayContext(home_team="A", away_team="B"),
+        )
+        # 7 lines, decreasing ROI 5.0% → 2.0%
+        for line, margin in [(-1.5, 0.05), (-2.5, 0.045), (1.5, 0.04), (2.5, 0.035), (3.5, 0.03), (4.5, 0.025), (5.5, 0.02)]
+    ]
+    text = format_telegram_opportunity_group(items)
+
+    # Top 5 lines visible: -1.5, -2.5, +1.5, +2.5, +3.5.
+    assert "H1 -1.5" in text and "H1 -2.5" in text
+    assert "H1 +1.5" in text and "H1 +2.5" in text and "H1 +3.5" in text
+    # The two weaker lines hidden, replaced by tail.
+    assert "H1 +4.5" not in text and "H1 +5.5" not in text
+    assert "+ 2 more lines" in text
+
+
+def test_handicap_table_picks_strongest_pair_per_line():
+    """For each line, the rendered pair must be the opportunity with max ROI on
+    that line — not just the first one in the input list."""
+
+    weak_pair = _make_handicap_arb(
+        match_id="m1", line=-1.5, profit_margin=0.01,
+        book_a="weakbookA", book_b="weakbookB",
+    )
+    strong_pair = _make_handicap_arb(
+        match_id="m1", line=-1.5, profit_margin=0.05,
+        book_a="strongbookA", book_b="strongbookB",
+    )
+    items = [
+        _TelegramDeliveryItem(fingerprint="", opportunity=weak_pair, context=TelegramOpportunityDisplayContext(home_team="A", away_team="B")),
+        _TelegramDeliveryItem(fingerprint="", opportunity=strong_pair, context=TelegramOpportunityDisplayContext(home_team="A", away_team="B")),
+        _TelegramDeliveryItem(
+            fingerprint="",
+            opportunity=_make_handicap_arb(
+                match_id="m1", line=-2.5, profit_margin=0.03,
+                book_a="bookC", book_b="bookD",
+            ),
+            context=TelegramOpportunityDisplayContext(home_team="A", away_team="B"),
+        ),
+    ]
+    text = format_telegram_opportunity_group(items)
+
+    # The strongest pair on -1.5 must appear; the weak one must NOT.
+    assert "strongbookA" in text and "strongbookB" in text
+    assert "weakbookA" not in text and "weakbookB" not in text
+
+
+def test_handicap_table_stake_split_per_line():
+    """Each shown line's pair must have its own stake split (not just the
+    overall primary's)."""
+
+    items = [
+        _TelegramDeliveryItem(
+            fingerprint="",
+            opportunity=_make_handicap_arb(
+                match_id="m1", line=-1.5, profit_margin=0.05,
+                odds_a=1.99, odds_b=2.15,  # 51.9% / 48.1%
+            ),
+            context=TelegramOpportunityDisplayContext(home_team="A", away_team="B"),
+        ),
+        _TelegramDeliveryItem(
+            fingerprint="",
+            opportunity=_make_handicap_arb(
+                match_id="m1", line=-2.5, profit_margin=0.03,
+                odds_a=1.85, odds_b=2.30,  # 55.4% / 44.6%
+                book_a="otherA", book_b="otherB",
+            ),
+            context=TelegramOpportunityDisplayContext(home_team="A", away_team="B"),
+        ),
+    ]
+    text = format_telegram_opportunity_group(items)
+
+    # Both stake splits must appear independently.
+    assert "51.9%" in text and "48.1%" in text  # line -1.5
+    assert "55.4%" in text and "44.6%" in text  # line -2.5
+
+
+def test_handicap_market_descriptor_shows_line_count_when_multi_line():
+    items = [
+        _TelegramDeliveryItem(
+            fingerprint="",
+            opportunity=_make_handicap_arb(match_id="m1", line=line, profit_margin=margin),
+            context=TelegramOpportunityDisplayContext(home_team="A", away_team="B"),
+        )
+        for line, margin in [(-1.5, 0.04), (-2.5, 0.03)]
+    ]
+    text = format_telegram_opportunity_group(items)
+
+    assert "2 lines" in text
+    # Concrete line value MUST be suppressed when multi-line.
+    assert "Home Handicap Ot · -1.5" not in text
+    assert "Home Handicap Ot · -2.5" not in text
+
+
+def test_handicap_descriptor_no_line_count_when_single_line():
+    """Single-line handicap stays in the single-line layout. The descriptor
+    must show the concrete line and NOT '· 1 lines'."""
+
+    items = [
+        _TelegramDeliveryItem(
+            fingerprint="",
+            opportunity=_make_handicap_arb(match_id="m1", line=-1.5, profit_margin=0.04),
+            context=TelegramOpportunityDisplayContext(home_team="A", away_team="B"),
+        )
+    ]
+    text = format_telegram_opportunity_group(items)
+
+    assert "1 lines" not in text
+    assert "-1.5" in text  # concrete line still shown
+
+
+@pytest.mark.asyncio
+async def test_mixed_handicap_and_total_goals_route_separately():
+    """Same event has both handicap arbs (multi-line, collapse) and total-goals
+    arbs (multi-line, do NOT collapse). Verifies the gate."""
+
+    await odds_store.create_telegram_notification_profile(
+        TelegramNotificationProfileCreate(
+            label="Main",
+            chat_id="123",
+            min_roi_percent=1,
+        )
+    )
+    calls: list[str] = []
+
+    class StubTelegramClient:
+        async def send_message(self, *, chat_id: str, text: str) -> TelegramSendMessageResult:
+            calls.append(text)
+            return TelegramSendMessageResult(message_id=len(calls))
+
+    opportunities = [
+        _make_handicap_arb(match_id="m1", line=-1.5, profit_margin=0.04),
+        _make_handicap_arb(match_id="m1", line=-2.5, profit_margin=0.03),
+        _make_arbitrage_opportunity(
+            "Football Total Goals",
+            match_id="m1",
+            market_type="football_total_goals",
+            line=2.5,
+            profit_margin=0.025,
+        ),
+        _make_arbitrage_opportunity(
+            "Football Total Goals",
+            match_id="m1",
+            market_type="football_total_goals",
+            line=3.5,
+            profit_margin=0.018,
+        ),
+    ]
+    provider = TelegramNotificationProvider(bot_client=StubTelegramClient())  # type: ignore[arg-type]
+
+    assert await provider.send_opportunities(opportunities, publish_id="pub-1") == 4
+    # 1 handicap message + 2 total-goals messages = 3 total.
+    assert len(calls) == 3
+    # The handicap message has the multi-line descriptor; the totals do not.
+    handicap_msg = next(c for c in calls if "Handicap" in c)
+    assert "2 lines" in handicap_msg
+    for c in calls:
+        if "Total" in c:
+            assert "lines" not in c
+
+
+def test_handicap_message_under_soft_limit_with_many_lines():
+    """A pathological case (many lines) must still render under the
+    Telegram soft limit thanks to the top-5 cap."""
+
+    items = [
+        _TelegramDeliveryItem(
+            fingerprint="",
+            opportunity=_make_handicap_arb(
+                match_id="m1",
+                line=line,
+                profit_margin=0.01 + (line + 50) * 0.0005,
+            ),
+            context=TelegramOpportunityDisplayContext(home_team="Long Home Team Name", away_team="Long Away Team Name"),
+        )
+        for line in range(-20, 31)  # 51 distinct lines
+    ]
+    text = format_telegram_opportunity_group(items)
+
+    from app.services.notifications import TELEGRAM_MESSAGE_SOFT_LIMIT
+    assert len(text) <= TELEGRAM_MESSAGE_SOFT_LIMIT
+    # Tail must report the cap-induced overflow (51 - 5 = 46 hidden lines).
+    assert "46 more lines" in text
 
 
 @pytest.mark.asyncio
