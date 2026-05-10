@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 _PLAYER_LIST_URL = "https://www.oktagonbet.com/restapi/offer/sr/sport/SK/mob"
 _TOTALS_LIST_URL = "https://www.oktagonbet.com/restapi/offer/sr/sport/B/mob"
 _FOOTBALL_LIST_URL = "https://www.oktagonbet.com/restapi/offer/sr/sport/S/mob"
+_TENNIS_LIST_URL = "https://www.oktagonbet.com/restapi/offer/sr/sport/T/mob"
+_TENNIS_PAGE_URL = "https://www.oktagonbet.com/sr/sportsko-kladjenje/tenis/T"
 _BULK_URL = "https://www.oktagonbet.com/ibet/offer/prematchesByIds.html"
 # Conservative chunk size — observed 124 IDs/PUT working with ~1.4s latency.
 _BULK_CHUNK_SIZE = 150
@@ -141,6 +143,10 @@ _FOOTBALL_LIST_OUTCOME_CODES: dict[str, tuple[str, str, float | None, str]] = {
     # OktagonBet list rows expose the 2.5 total as fixed "0-2" / "3+" picks.
     "22": ("football_total_goals", "under", 2.5, "0-2"),
     "24": ("football_total_goals", "over", 2.5, "3+"),
+}
+_TENNIS_OUTCOME_CODES: dict[str, tuple[str, str]] = {
+    "1": ("home", "1"),
+    "3": ("away", "2"),
 }
 
 _FOOTBALL_BULK_DOUBLE_CHANCE_CODES: dict[int, tuple[str, str]] = {
@@ -286,6 +292,15 @@ def _extract_league_id(league_name: str, *, default: str = "basketball") -> str:
     if not normalized:
         return default
     return _CANONICAL_LEAGUES.get(normalized, normalized.replace(" ", "_"))
+
+
+def _extract_plain_league_id(league_name: str, default: str) -> str:
+    normalized = " ".join(
+        league_name.lower().replace("_", " ").replace("-", " ").replace("~", " ").split()
+    )
+    if not normalized:
+        return default
+    return normalized.replace(" ", "_")
 
 
 def _build_raw_odds(
@@ -502,6 +517,61 @@ def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
                 outcome_code=outcome_code,
                 odds=odds,
                 line=line,
+                raw_label=raw_label,
+                start_time=start_time,
+            )
+        )
+    return results
+
+
+def _is_tennis_doubles_match(match: dict) -> bool:
+    league_name = str(match.get("leagueName") or "")
+    home_team = str(match.get("home") or "")
+    away_team = str(match.get("away") or "")
+    league_key = " ".join(
+        league_name.lower().replace("_", " ").replace("-", " ").replace("~", " ").split()
+    )
+    if any(token in league_key.split() for token in ("doubles", "double", "parovi")):
+        return True
+    return "/" in home_team or "/" in away_team
+
+
+def _parse_tennis_outcome_match(match: dict) -> list[RawOutcomeOffer]:
+    if match.get("live") is True:
+        return []
+    if match.get("blocked") is True:
+        return []
+    if _is_tennis_doubles_match(match):
+        return []
+
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return []
+
+    odds_map = match.get("odds") or {}
+    if not isinstance(odds_map, dict):
+        return []
+
+    league_id = _extract_plain_league_id(match.get("leagueName", ""), "tennis")
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    results: list[RawOutcomeOffer] = []
+    for code, (outcome_code, raw_label) in _TENNIS_OUTCOME_CODES.items():
+        odds = _coerce_odd(odds_map.get(code))
+        if odds is None:
+            continue
+        results.append(
+            RawOutcomeOffer(
+                bookmaker_id="oktagonbet",
+                league_id=league_id,
+                sport="tennis",
+                home_team=home_team,
+                away_team=away_team,
+                source_url=_TENNIS_PAGE_URL,
+                market_type="tennis_match_winner",
+                outcome_code=outcome_code,
+                odds=odds,
+                line=None,
                 raw_label=raw_label,
                 start_time=start_time,
             )
@@ -742,7 +812,7 @@ class OktagonBetScraper(BaseScraper):
         return list(_SPORT_SPECS.keys())
 
     def get_supported_outcome_sports(self) -> list[str]:
-        return ["football"]
+        return ["football", "tennis"]
 
     async def _fetch_list(self, url: str, label: str) -> dict:
         try:
@@ -896,6 +966,23 @@ class OktagonBetScraper(BaseScraper):
         return results
 
     async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        if sport == "tennis":
+            list_payload = await self._fetch_list(_TENNIS_LIST_URL, "tennis outcomes")
+            results: list[RawOutcomeOffer] = []
+            match_count = 0
+            for match in list_payload.get("esMatches", []) or []:
+                if not isinstance(match, dict):
+                    continue
+                match_count += 1
+                results.extend(_parse_tennis_outcome_match(match))
+
+            logger.info(
+                "OktagonBet scraped %d tennis outcome offers from %d matches",
+                len(results),
+                match_count,
+            )
+            return results
+
         if sport != "football":
             return []
 
