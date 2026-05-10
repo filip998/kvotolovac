@@ -10,6 +10,8 @@ from app.scrapers.mozzart_scraper import (
     MozzartScraper,
     _BASKETBALL_SPORT_ID,
     _FOOTBALL_SPORT_ID,
+    _TENNIS_SPORT_ID,
+    _TENNIS_PAGE_URL,
     _MATCHES_API_URL,
     _SPECIALS_API_URL,
     _MATCHES_HEADERS,
@@ -18,6 +20,7 @@ from app.scrapers.mozzart_scraper import (
     _extract_league_id,
     _extract_player_and_market,
     _parse_football_outcome_match,
+    _parse_tennis_outcome_match,
     _parse_game_total_items,
     _parse_handicap_items,
     _parse_items,
@@ -683,14 +686,68 @@ def _football_match(*, odds_groups: list[dict] | None = None) -> dict:
     }
 
 
+def _tennis_odd(label: str, value: object, *, status: str = "ACTIVE") -> dict:
+    return {
+        "oddStatus": status,
+        "subgame": {"name": label},
+        "value": value,
+    }
+
+
+def _tennis_match(
+    *,
+    home: str = "Prizmic Dino",
+    visitor: str = "Humbert Ugo",
+    competition: str = "ATP Rome",
+    start_time: int = 1778408400000,
+    odds_groups: list[dict] | None = None,
+) -> dict:
+    return {
+        "id": 9409471,
+        "sport": {"id": _TENNIS_SPORT_ID, "name": "Tenis"},
+        "competition": {"id": 43400, "name": competition},
+        "startTime": start_time,
+        "home": {"id": 27683, "name": home},
+        "visitor": {"id": 50772, "name": visitor},
+        "status": {"id": 0, "name": "Nije počeo"},
+        "oddsGroup": odds_groups
+        if odds_groups is not None
+        else [
+            {
+                "groupName": "Konačan ishod",
+                "odds": [
+                    _tennis_odd("1", 1.40),
+                    _tennis_odd("2", 2.95),
+                    _tennis_odd("X", 99.0),
+                ],
+            },
+            {
+                "groupName": "Hendikep setova",
+                "odds": [_tennis_odd("1", 2.10), _tennis_odd("2", 1.70)],
+            },
+        ],
+    }
+
+
 def test_build_matches_request_body_defaults_to_basketball_and_can_target_football():
     default_body = _build_matches_request_body()
     football_body = _build_matches_request_body(current_page=2, sport_id=_FOOTBALL_SPORT_ID)
+    tennis_body = _build_matches_request_body(current_page=1, sport_id=_TENNIS_SPORT_ID)
 
     assert default_body["sportId"] == _BASKETBALL_SPORT_ID
     assert football_body["sportId"] == _FOOTBALL_SPORT_ID
     assert football_body["currentPage"] == 2
     assert football_body["matchTypeId"] == 0
+    assert tennis_body == {
+        "date": "all",
+        "sort": "bycompetition",
+        "currentPage": 1,
+        "pageSize": 50,
+        "sportId": _TENNIS_SPORT_ID,
+        "competitionIds": [],
+        "search": "",
+        "matchTypeId": 0,
+    }
 
 
 def test_parse_football_outcome_match_emits_list_only_target_markets():
@@ -800,7 +857,90 @@ def test_capability_isolation_for_mozzart():
     scraper = MozzartScraper()
 
     assert scraper.get_supported_leagues() == ["basketball"]
-    assert scraper.get_supported_outcome_sports() == ["football"]
+    assert scraper.get_supported_outcome_sports() == ["football", "tennis"]
+
+
+def test_parse_tennis_outcome_match_emits_match_winner_offers():
+    offers = _parse_tennis_outcome_match(_tennis_match())
+
+    assert len(offers) == 2
+    assert all(isinstance(offer, RawOutcomeOffer) for offer in offers)
+    assert {offer.bookmaker_id for offer in offers} == {"mozzart"}
+    assert {offer.sport for offer in offers} == {"tennis"}
+    assert {offer.league_id for offer in offers} == {"atp_rome"}
+    assert {offer.home_team for offer in offers} == {"Prizmic Dino"}
+    assert {offer.away_team for offer in offers} == {"Humbert Ugo"}
+    assert {offer.source_url for offer in offers} == {_TENNIS_PAGE_URL}
+    assert {
+        (offer.market_type, offer.outcome_code, offer.line, offer.raw_label, offer.odds, offer.start_time)
+        for offer in offers
+    } == {
+        ("tennis_match_winner", "home", None, "1", 1.40, "2026-05-10T10:20:00+00:00"),
+        ("tennis_match_winner", "away", None, "2", 2.95, "2026-05-10T10:20:00+00:00"),
+    }
+
+
+def test_parse_tennis_outcome_match_skips_doubles_and_missing_competitors():
+    assert _parse_tennis_outcome_match(
+        _tennis_match(home="Bolelli S/Vavassori A", visitor="Harrison C/King E")
+    ) == []
+    assert _parse_tennis_outcome_match(_tennis_match(competition="ATP Rome(d)")) == []
+    assert _parse_tennis_outcome_match(_tennis_match(competition="WTA Rome (D)")) == []
+    assert _parse_tennis_outcome_match(_tennis_match(competition="ATP Madrid")) != []
+    assert _parse_tennis_outcome_match(_tennis_match(home="", visitor="Humbert Ugo")) == []
+    assert _parse_tennis_outcome_match(_tennis_match(home="Prizmic Dino", visitor="")) == []
+
+
+def test_parse_tennis_outcome_match_skips_invalid_and_duplicate_outcomes():
+    match = _tennis_match(
+        odds_groups=[
+            {
+                "groupName": "Konačan ishod",
+                "odds": [
+                    _tennis_odd("1", 0),
+                    _tennis_odd("2", "bad"),
+                    _tennis_odd("X", 9.9),
+                    _tennis_odd("1", 1.50, status="INACTIVE"),
+                ],
+            },
+            {
+                "groupName": "Konačan ishod",
+                "odds": [
+                    _tennis_odd("1", 1.55),
+                    _tennis_odd("1", 1.60),
+                    _tennis_odd("2", 2.45),
+                ],
+            },
+            {
+                "groupName": "Hendikep setova",
+                "odds": [_tennis_odd("1", 2.10), _tennis_odd("2", 1.70)],
+            },
+        ]
+    )
+
+    assert {
+        (offer.outcome_code, offer.raw_label, offer.odds)
+        for offer in _parse_tennis_outcome_match(match)
+    } == {
+        ("home", "1", 1.55),
+        ("away", "2", 2.45),
+    }
+
+
+def test_parse_tennis_outcome_match_keeps_same_matchup_different_start_times():
+    first = _tennis_match(start_time=1778408400000)
+    second = _tennis_match(start_time=1778412000000)
+
+    offers = [
+        *_parse_tennis_outcome_match(first),
+        *_parse_tennis_outcome_match(second),
+    ]
+
+    assert len(offers) == 4
+    assert sorted({offer.start_time for offer in offers}) == [
+        "2026-05-10T10:20:00+00:00",
+        "2026-05-10T11:20:00+00:00",
+    ]
 
 
 @pytest.mark.asyncio
@@ -834,10 +974,44 @@ async def test_scrape_outcome_offers_uses_only_paginated_matches_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_scrape_outcome_offers_tennis_uses_paginated_matches_endpoint():
+    http_client = AsyncMock()
+    page_one = [_tennis_match()] * 50
+    page_two = [_tennis_match(home="Javia D.", visitor="Milic Ognjen")]
+
+    async def fake_post_json(url: str, *, json_body=None, headers=None):
+        del headers
+        assert url == _MATCHES_API_URL
+        assert json_body is not None
+        assert json_body["sportId"] == _TENNIS_SPORT_ID
+        assert json_body["matchTypeId"] == 0
+        assert json_body["date"] == "all"
+        assert json_body["sort"] == "bycompetition"
+        assert json_body["pageSize"] == 50
+        assert json_body["competitionIds"] == []
+        if json_body["currentPage"] == 0:
+            return {"items": page_one}
+        if json_body["currentPage"] == 1:
+            return {"items": page_two}
+        raise AssertionError(f"Unexpected page: {json_body['currentPage']}")
+
+    http_client.post_json.side_effect = fake_post_json
+
+    offers = await MozzartScraper(http_client=http_client).scrape_outcome_offers("tennis")
+
+    assert len(offers) == 51 * 2
+    assert http_client.post_json.call_count == 2
+    assert {
+        call.kwargs["json_body"]["currentPage"]
+        for call in http_client.post_json.call_args_list
+    } == {0, 1}
+
+
+@pytest.mark.asyncio
 async def test_scrape_outcome_offers_unsupported_sport_does_not_fetch():
     http_client = AsyncMock()
 
-    offers = await MozzartScraper(http_client=http_client).scrape_outcome_offers("tennis")
+    offers = await MozzartScraper(http_client=http_client).scrape_outcome_offers("basketball")
 
     assert offers == []
     http_client.post_json.assert_not_called()
