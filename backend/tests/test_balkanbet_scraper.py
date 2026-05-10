@@ -11,7 +11,10 @@ import pytest
 from app.scrapers.balkanbet_scraper import (
     BalkanBetScraper,
     _BASKETBALL_SPEC,
+    _FOOTBALL_OUTCOME_SPORT_ID,
+    _LIST_URL,
     _SPORT_SPECS,
+    _TENNIS_OUTCOME_SPORT_ID,
     _extract_league_id,
     _format_filter_from,
     _normalize_start_time,
@@ -21,6 +24,7 @@ from app.scrapers.balkanbet_scraper import (
     _parse_handicap_outcome_label,
     _parse_player_name,
     _parse_player_props_list,
+    _parse_tennis_outcome_list,
 )
 from app.models.schemas import RawOddsData, RawOutcomeOffer
 
@@ -240,6 +244,141 @@ def test_parse_football_outcome_list_emits_mvp_markets():
         ("football_total_goals", "over", 2.5, "3+"),
         ("football_total_goals", "over", 3.5, "4+"),
     }
+
+
+def _tennis_event(**overrides) -> dict:
+    event = {
+        "a": 2503680019,
+        "b": 78,
+        "c": 465,
+        "f": 4194,
+        "j": "Ruud, Casper - Lehecka, Jiri",
+        "l": 1,
+        "n": "2026-05-10T09:00:00.000Z",
+        "o": {
+            "314872492": {
+                "a": 314872492,
+                "b": 1955,
+                "d": 1,
+                "g": [],
+                "h": [
+                    {"a": 2378621836, "b": 6275, "c": 1, "e": "1", "g": 1.53},
+                    {"a": 2378621839, "b": 6278, "c": 1, "e": "2", "g": 2.50},
+                    {"a": 2378621840, "b": 9999, "c": 1, "e": "X", "g": 9.99},
+                ],
+            },
+            "314872549": {
+                "a": 314872549,
+                "b": 348,
+                "d": 1,
+                "g": ["22.5"],
+                "h": [{"e": "Više 22.5", "g": 1.87}],
+            },
+        },
+    }
+    event.update(overrides)
+    return event
+
+
+def test_parse_tennis_outcome_list_emits_match_winner_offers():
+    results = _parse_tennis_outcome_list({"data": {"events": [_tennis_event()]}})
+
+    assert len(results) == 2
+    assert all(isinstance(row, RawOutcomeOffer) for row in results)
+    assert {row.bookmaker_id for row in results} == {"balkanbet"}
+    assert {row.sport for row in results} == {"tennis"}
+    assert {row.league_id for row in results} == {"balkanbet_tournament_4194"}
+    assert {row.home_team for row in results} == {"Ruud, Casper"}
+    assert {row.away_team for row in results} == {"Lehecka, Jiri"}
+    assert {row.market_type for row in results} == {"tennis_match_winner"}
+    assert {row.source_url for row in results} == {
+        "https://www.balkanbet.rs/sportsko-kladjenje/tenis"
+    }
+    assert {
+        (row.outcome_code, row.raw_label, row.odds, row.line, row.start_time)
+        for row in results
+    } == {
+        ("home", "1", 1.53, None, "2026-05-10T09:00:00+00:00"),
+        ("away", "2", 2.50, None, "2026-05-10T09:00:00+00:00"),
+    }
+    assert 9.99 not in {row.odds for row in results}
+
+
+def test_parse_tennis_outcome_list_supports_long_key_format_and_missing_flags():
+    data = {
+        "data": {
+            "events": [
+                {
+                    "name": "Keys, Madison - Bartunkova, Nikola",
+                    "startsAt": "2026-05-10T09:00:00.000Z",
+                    "categoryId": 465,
+                    "tournamentId": 4195,
+                    "markets": [
+                        {
+                            "marketId": 1955,
+                            "outcomes": [
+                                {"name": "1", "odd": 1.35},
+                                {"name": "2", "odd": 3.20},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+
+    results = _parse_tennis_outcome_list(data)
+
+    assert [(row.outcome_code, row.odds) for row in results] == [
+        ("home", 1.35),
+        ("away", 3.20),
+    ]
+    assert {row.league_id for row in results} == {"balkanbet_tournament_4195"}
+
+
+def test_parse_tennis_outcome_list_skips_inactive_and_doubles_rows():
+    inactive_event = _tennis_event(l=0)
+    inactive_market = _tennis_event(o={"1": {"b": 1955, "d": 0, "h": [{"e": "1", "g": 1.5}]}})
+    inactive_outcome = _tennis_event(
+        o={"1": {"b": 1955, "d": 1, "h": [{"e": "1", "c": 0, "g": 1.5}]}}
+    )
+    slash_doubles = _tennis_event(j="Cadenasso G / Vasami J - Granollers M / Zeballos H")
+    token_doubles = _tennis_event(
+        name="Team A - Team B",
+        tournamentName="ATP Rome Dublovi",
+    )
+
+    assert _parse_tennis_outcome_list(
+        {
+            "data": {
+                "events": [
+                    inactive_event,
+                    inactive_market,
+                    inactive_outcome,
+                    slash_doubles,
+                    token_doubles,
+                ]
+            }
+        }
+    ) == []
+
+
+def test_parse_tennis_outcome_list_skips_invalid_rows():
+    invalid_name = _tennis_event(j="Ruud, Casper v Lehecka, Jiri")
+    missing_market = _tennis_event(o={"1": {"b": 348, "d": 1, "h": [{"e": "1", "g": 1.5}]}})
+    invalid_odds = _tennis_event(
+        o={
+            "1": {
+                "b": 1955,
+                "d": 1,
+                "h": [{"e": "1", "c": 1, "g": 0}, {"e": "2", "c": 1, "g": "bad"}],
+            }
+        }
+    )
+
+    assert _parse_tennis_outcome_list(
+        {"data": {"events": [invalid_name, missing_market, invalid_odds, []]}}
+    ) == []
 
 
 def test_parse_player_props_list_skips_unparseable_name():
@@ -820,6 +959,81 @@ async def test_scraper_interface():
     assert scraper.get_bookmaker_id() == "balkanbet"
     assert scraper.get_bookmaker_name() == "BalkanBet"
     assert "basketball" in scraper.get_supported_leagues()
+    assert scraper.get_supported_outcome_sports() == ["football", "tennis"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_tennis_uses_one_list_request(monkeypatch):
+    scraper = BalkanBetScraper()
+    captured_urls: list[str] = []
+    captured_params: list[dict] = []
+    fixed_now = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.config.settings.scrape_lookahead_hours", 24)
+    monkeypatch.setattr("app.scrapers.balkanbet_scraper.current_utc_time", lambda: fixed_now)
+
+    async def mock_get(url, **kwargs):
+        captured_urls.append(url)
+        captured_params.append(kwargs.get("params", {}))
+        return {"data": {"events": [_tennis_event()]}}
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_outcome_offers("tennis")
+
+    assert len(results) == 2
+    assert {row.market_type for row in results} == {"tennis_match_winner"}
+    assert captured_urls == [_LIST_URL]
+    assert len(captured_params) == 1
+    assert captured_params[0]["filter[sportId]"] == _TENNIS_OUTCOME_SPORT_ID
+    assert captured_params[0]["filter[from]"] == _format_filter_from(fixed_now)
+    assert captured_params[0]["filter[to]"] == _format_filter_from(
+        fixed_now + timedelta(hours=24)
+    )
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_football_keeps_one_list_request(monkeypatch):
+    scraper = BalkanBetScraper()
+    captured_params: list[dict] = []
+    fixed_now = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.scrapers.balkanbet_scraper.current_utc_time", lambda: fixed_now)
+
+    async def mock_get(url, **kwargs):
+        assert url == _LIST_URL
+        captured_params.append(kwargs.get("params", {}))
+        return {
+            "data": {
+                "events": [
+                    {
+                        "j": "Home - Away",
+                        "n": "2030-01-01T14:00:00.000Z",
+                        "o": {
+                            "1": {
+                                "b": 6,
+                                "h": [{"e": "1", "g": 2.1}, {"e": "X", "g": 3.2}],
+                            }
+                        },
+                    }
+                ]
+            }
+        }
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_outcome_offers("football")
+
+    assert [(row.market_type, row.outcome_code) for row in results] == [
+        ("football_result", "home"),
+        ("football_result", "draw"),
+    ]
+    assert len(captured_params) == 1
+    assert captured_params[0]["filter[sportId]"] == _FOOTBALL_OUTCOME_SPORT_ID
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_unsupported_sport_skips_http():
+    scraper = BalkanBetScraper()
+    with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get:
+        assert await scraper.scrape_outcome_offers("basketball") == []
+    mock_get.assert_not_called()
 
 
 @pytest.mark.asyncio

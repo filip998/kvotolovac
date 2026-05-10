@@ -54,6 +54,9 @@ _BASE_LIST_PARAMS = {
 _REQUEST_TIMEZONE = ZoneInfo("Europe/Belgrade")
 _PLAYER_NAME_RE = re.compile(r"^(.+?)\s*\(([^)]+)\)\s*$")
 _FOOTBALL_OUTCOME_SPORT_ID = "18"
+_TENNIS_OUTCOME_SPORT_ID = "78"
+_TENNIS_MATCH_WINNER_MARKET_ID = 1955
+_TENNIS_PAGE_URL = "https://www.balkanbet.rs/sportsko-kladjenje/tenis"
 _FOOTBALL_OUTCOME_MARKETS = {
     6: {
         "1": ("football_result", "home", None),
@@ -71,6 +74,10 @@ _FOOTBALL_OUTCOME_MARKETS = {
         "3+": ("football_total_goals", "over", 2.5),
         "4+": ("football_total_goals", "over", 3.5),
     },
+}
+_TENNIS_OUTCOME_LABELS = {
+    "1": ("home", "1"),
+    "2": ("away", "2"),
 }
 
 
@@ -245,6 +252,17 @@ def _extract_outcome_price(outcome: dict) -> float | None:
                 return None
             return odds if odds > 0 else None
     return None
+
+
+def _is_active_flag(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    parsed = _coerce_int(value)
+    if parsed is not None:
+        return parsed != 0
+    return True
 
 
 def _extract_over_under_odds(outcomes: list[dict]) -> tuple[float | None, float | None]:
@@ -572,6 +590,99 @@ def _parse_football_outcome_list(data: dict) -> list[RawOutcomeOffer]:
     return results
 
 
+def _event_name(event: dict) -> str:
+    return (event.get("j") or event.get("name") or "").strip()
+
+
+def _is_tennis_doubles_event(event: dict) -> bool:
+    name = _event_name(event)
+    if "/" in name:
+        return True
+
+    matchup = _split_match_name(name)
+    if matchup is not None:
+        home_team, away_team = matchup
+        if "/" in home_team or "/" in away_team:
+            return True
+
+    text_fields = (
+        name,
+        str(event.get("tournamentName") or ""),
+        str(event.get("categoryName") or ""),
+    )
+    searchable = " ".join(text_fields).lower()
+    return any(token in searchable for token in ("doubles", "double", "dublovi", "parovi"))
+
+
+def _parse_tennis_outcome_list(data: dict) -> list[RawOutcomeOffer]:
+    results: list[RawOutcomeOffer] = []
+    events = data.get("data", {}).get("events", [])
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if not _is_active_flag(event.get("l") if event.get("l") is not None else event.get("active")):
+            continue
+        if _is_tennis_doubles_event(event):
+            continue
+
+        matchup = _split_match_name(_event_name(event))
+        if matchup is None:
+            continue
+        home_team, away_team = matchup
+        start_time = _normalize_start_time(event.get("n") or event.get("startsAt"))
+        league_id = _extract_league_id(
+            event.get("c") if event.get("c") is not None else event.get("categoryId"),
+            event.get("f") if event.get("f") is not None else event.get("tournamentId"),
+            {},
+            default="tennis",
+        )
+
+        for market in _iter_list_markets(event):
+            market_id = _coerce_int(market.get("b") or market.get("marketId"))
+            if market_id != _TENNIS_MATCH_WINNER_MARKET_ID:
+                continue
+            if not _is_active_flag(
+                market.get("d") if market.get("d") is not None else market.get("active")
+            ):
+                continue
+
+            outcomes = market.get("h") or market.get("outcomes") or []
+            for outcome in outcomes:
+                if not isinstance(outcome, dict):
+                    continue
+                if not _is_active_flag(
+                    outcome.get("c") if outcome.get("c") is not None else outcome.get("active")
+                ):
+                    continue
+                raw_label = (outcome.get("e") or outcome.get("name") or "").strip()
+                mapping = _TENNIS_OUTCOME_LABELS.get(raw_label)
+                if mapping is None:
+                    continue
+                odds = _extract_outcome_price(outcome)
+                if odds is None:
+                    continue
+                outcome_code, display_label = mapping
+                results.append(
+                    RawOutcomeOffer(
+                        bookmaker_id="balkanbet",
+                        league_id=league_id,
+                        sport="tennis",
+                        home_team=home_team,
+                        away_team=away_team,
+                        market_type="tennis_match_winner",
+                        outcome_code=outcome_code,
+                        odds=odds,
+                        line=None,
+                        raw_label=display_label,
+                        start_time=start_time,
+                        source_url=_TENNIS_PAGE_URL,
+                    )
+                )
+
+    return results
+
+
 # ── Scraper ─────────────────────────────────────────────────────────────
 
 
@@ -596,7 +707,7 @@ class BalkanBetScraper(BaseScraper):
         return list(_SPORT_SPECS.keys())
 
     def get_supported_outcome_sports(self) -> list[str]:
-        return ["football"]
+        return ["football", "tennis"]
 
     async def _fetch_list(self, params: dict, label: str) -> dict:
         try:
@@ -653,20 +764,36 @@ class BalkanBetScraper(BaseScraper):
         return results
 
     async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
-        if sport != "football":
+        if sport == "football":
+            now = current_utc_time()
+            params = {
+                **_BASE_LIST_PARAMS,
+                "filter[sportId]": _FOOTBALL_OUTCOME_SPORT_ID,
+                "filter[from]": _format_filter_from(now),
+                "filter[to]": _format_filter_from(lookahead_cutoff(now)),
+            }
+            data = await self._fetch_list(params, "football outcomes")
+            results = _parse_football_outcome_list(data)
+            logger.info(
+                "BalkanBet scraped %d football outcome offers",
+                len(results),
+            )
+            return results
+
+        if sport != "tennis":
             return []
 
         now = current_utc_time()
         params = {
             **_BASE_LIST_PARAMS,
-            "filter[sportId]": _FOOTBALL_OUTCOME_SPORT_ID,
+            "filter[sportId]": _TENNIS_OUTCOME_SPORT_ID,
             "filter[from]": _format_filter_from(now),
             "filter[to]": _format_filter_from(lookahead_cutoff(now)),
         }
-        data = await self._fetch_list(params, "football outcomes")
-        results = _parse_football_outcome_list(data)
+        data = await self._fetch_list(params, "tennis outcomes")
+        results = _parse_tennis_outcome_list(data)
         logger.info(
-            "BalkanBet scraped %d football outcome offers",
+            "BalkanBet scraped %d tennis outcome offers",
             len(results),
         )
         return results
