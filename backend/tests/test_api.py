@@ -156,6 +156,7 @@ async def test_get_scrape_settings_defaults(client: AsyncClient):
     assert data["applied"]["scrape_market_scope"] == settings.scrape_market_scope
     assert data["applied"]["enabled_sports"] == settings.enabled_sport_list
     assert "football" in data["defaults"]["enabled_sports"]
+    assert "tennis" in data["defaults"]["enabled_sports"]
     assert data["applied"]["analysis_markets"] == ["all"]
     assert data["applied"]["scrape_interval_minutes"] == settings.scrape_interval_minutes
     assert data["defaults"]["scrape_market_scope"] == settings.scrape_market_scope
@@ -550,7 +551,7 @@ async def test_get_scrape_settings_sanitizes_stale_persisted_values(
     assert resp.status_code == 200
     data = resp.json()
     assert data["applied"]["enabled_bookmakers"] == ["mozzart"]
-    assert data["applied"]["enabled_sports"] == ["basketball"]
+    assert data["applied"]["enabled_sports"] == ["basketball", "tennis"]
     assert data["applied"]["analysis_markets"] == ["all"]
     assert data["applied"]["rate_limit_per_second"] == 20.0
 
@@ -2806,6 +2807,17 @@ async def test_legacy_persisted_scrape_settings_without_gate_fields_load_with_sc
     # Schema-level default for enable_fitted_middles is True (legacy preservation).
     assert parsed.enable_fitted_middles is True
     assert parsed.min_fitted_middle_ev_percent == 0.0
+    assert parsed.enabled_sports == ["basketball", "tennis"]
+
+
+def test_current_persisted_scrape_settings_can_disable_tennis():
+    from app.models.schemas import ScrapeRuntimeSettings
+    from app.services.runtime_settings import _settings_from_json, _settings_json
+
+    raw = _settings_json(ScrapeRuntimeSettings(enabled_sports=["basketball"]))
+    parsed = _settings_from_json(raw)
+
+    assert parsed.enabled_sports == ["basketball"]
 
 
 def test_config_module_default_is_off():

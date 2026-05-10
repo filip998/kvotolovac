@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 
 _SETTINGS_ROW_ID = 1
 _SUPPORTED_SPORTS = ("basketball", "football", "tennis")
+_SETTINGS_ROLLOUT_VERSION_KEY = "_enabled_sports_rollout_version"
+_SETTINGS_ROLLOUT_VERSION = 1
+_ROLLOUT_ENABLED_SPORTS = ("tennis",)
 _SCRAPE_INTERVAL_MINUTES_MAX = 24 * 60
 _SCRAPE_LOOKAHEAD_HOURS_MAX = 24 * 365 * 10
 _MAX_MIDDLE_OPPORTUNITIES_PER_MARKET_MAX = 1000
@@ -88,12 +91,18 @@ def default_scrape_runtime_settings(
 
 
 def _settings_json(values: ScrapeRuntimeSettings) -> str:
-    return json.dumps(values.model_dump(), sort_keys=True, separators=(",", ":"))
+    payload = values.model_dump()
+    payload[_SETTINGS_ROLLOUT_VERSION_KEY] = _SETTINGS_ROLLOUT_VERSION
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
 def _settings_from_json(raw: str) -> ScrapeRuntimeSettings:
     try:
         payload = json.loads(raw)
+        apply_enabled_sports_rollout = (
+            isinstance(payload, dict)
+            and payload.get(_SETTINGS_ROLLOUT_VERSION_KEY) != _SETTINGS_ROLLOUT_VERSION
+        )
         if isinstance(payload, dict) and "analysis_markets" not in payload:
             payload["analysis_markets"] = list(
                 legacy_analysis_markets_for_scope(
@@ -104,7 +113,10 @@ def _settings_from_json(raw: str) -> ScrapeRuntimeSettings:
     except (json.JSONDecodeError, TypeError, ValidationError):
         logger.warning("Ignoring invalid persisted scrape runtime settings")
         return default_scrape_runtime_settings()
-    return _sanitize_persisted_scrape_runtime_settings(values)
+    values = _sanitize_persisted_scrape_runtime_settings(values)
+    if apply_enabled_sports_rollout:
+        values = _with_rollout_enabled_sports(values)
+    return values
 
 
 def _unique_ordered(values: Iterable[str]) -> list[str]:
@@ -117,6 +129,19 @@ def _unique_ordered(values: Iterable[str]) -> list[str]:
         seen.add(normalized)
         result.append(normalized)
     return result
+
+
+def _with_rollout_enabled_sports(
+    values: ScrapeRuntimeSettings,
+) -> ScrapeRuntimeSettings:
+    allowed_sports = set(_available_sports())
+    enabled_sports = _unique_ordered(
+        [
+            *values.enabled_sports,
+            *(sport for sport in _ROLLOUT_ENABLED_SPORTS if sport in allowed_sports),
+        ]
+    )
+    return values.model_copy(update={"enabled_sports": enabled_sports})
 
 
 def _registered_bookmaker_names() -> dict[str, str]:

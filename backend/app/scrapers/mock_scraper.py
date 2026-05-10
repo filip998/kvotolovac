@@ -411,6 +411,27 @@ _FOOTBALL_OUTCOME_MARKETS: dict[str, list[dict]] = {
 }
 
 
+_TENNIS_GAMES = [
+    {
+        "league": "atp_dubai",
+        "home": "Novak Djokovic",
+        "away": "Carlos Alcaraz",
+        "start": (datetime.utcnow() + timedelta(hours=6)).isoformat(),
+    },
+]
+
+_TENNIS_OUTCOME_MARKETS: dict[str, list[dict]] = {
+    "maxbet": [
+        {"game": 0, "outcome": "home", "odds": 2.15, "label": "1"},
+        {"game": 0, "outcome": "away", "odds": 1.72, "label": "2"},
+    ],
+    "balkanbet": [
+        {"game": 0, "outcome": "home", "odds": 1.82, "label": "1"},
+        {"game": 0, "outcome": "away", "odds": 2.05, "label": "2"},
+    ],
+}
+
+
 class MockScraper(BaseScraper):
     """Mock scraper returning realistic Euroleague basketball data."""
 
@@ -429,7 +450,12 @@ class MockScraper(BaseScraper):
         return ["euroleague"]
 
     def get_supported_outcome_sports(self) -> list[str]:
-        return ["football"] if self._bookmaker_id in _FOOTBALL_OUTCOME_MARKETS else []
+        sports: list[str] = []
+        if self._bookmaker_id in _FOOTBALL_OUTCOME_MARKETS:
+            sports.append("football")
+        if self._bookmaker_id in _TENNIS_OUTCOME_MARKETS:
+            sports.append("tennis")
+        return sports
 
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         if league_id != "euroleague":
@@ -474,6 +500,28 @@ class MockScraper(BaseScraper):
         return results
 
     async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        if sport == "tennis":
+            markets = _TENNIS_OUTCOME_MARKETS.get(self._bookmaker_id, [])
+            results: list[RawOutcomeOffer] = []
+            for market in markets:
+                game = _TENNIS_GAMES[market["game"]]
+                results.append(
+                    RawOutcomeOffer(
+                        bookmaker_id=self._bookmaker_id,
+                        league_id=game["league"],
+                        sport="tennis",
+                        home_team=game["home"],
+                        away_team=game["away"],
+                        market_type="tennis_match_winner",
+                        outcome_code=market["outcome"],
+                        odds=market["odds"],
+                        line=None,
+                        raw_label=market["label"],
+                        start_time=game["start"],
+                    )
+                )
+            return results
+
         if sport != "football":
             return []
 

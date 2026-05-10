@@ -11,13 +11,15 @@ import EventReviewPanel from '../components/EventReviewPanel';
 import PageShell from '../components/PageShell';
 import { useBookmakerFilter } from '../hooks/useBookmakerFilter';
 
+type ReviewSport = 'basketball' | 'football' | 'tennis';
+
 export default function EventReview() {
   const queryClient = useQueryClient();
   const {
     selectedBookmakerIds,
     updateSelectedBookmakerIds,
   } = useBookmakerFilter();
-  const [sport, setSport] = useState<'basketball' | 'football'>('basketball');
+  const [sport, setSport] = useState<ReviewSport>('basketball');
   const [statusFilter, setStatusFilter] = useState<EventReviewStatus>('pending');
   const [searchQuery, setSearchQuery] = useState('');
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -53,8 +55,8 @@ export default function EventReview() {
         onSuccess: (result) => {
           setActionMessage(
             result.resolved_event_id
-              ? `Event candidate accepted and linked as ${result.resolved_event_id}. Team aliases were not merged.`
-              : 'Event candidate accepted. Team aliases were not merged.'
+              ? `Event candidate accepted and linked as ${result.resolved_event_id}. Competitor aliases were not merged.`
+              : 'Event candidate accepted. Competitor aliases were not merged.'
           );
           void queryClient.invalidateQueries({ queryKey: ['eventReviewCases'] });
           void queryClient.invalidateQueries({ queryKey: ['matches'] });
@@ -90,8 +92,8 @@ export default function EventReview() {
   return (
     <PageShell
       eyebrow="Event review"
-      title="Link bookmaker events without touching canonical team identity."
-      description="Use this queue for game-level equivalence: whether multiple bookmaker source events are the same matchup. Team Review remains the place for aliases and canonical team merges."
+      title="Link bookmaker events without touching canonical competitor identity."
+      description="Use this queue for event-level equivalence: whether multiple bookmaker source events are the same matchup. Competitor Review remains the place for aliases and canonical team/player merges."
     >
       <div className="space-y-6">
         <section className="space-y-4">
@@ -103,7 +105,7 @@ export default function EventReview() {
             <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-muted">
               Sport
             </span>
-            {(['basketball', 'football'] as const).map((nextSport) => (
+            {(['basketball', 'football', 'tennis'] as const).map((nextSport) => (
               <button
                 key={nextSport}
                 type="button"
@@ -114,7 +116,11 @@ export default function EventReview() {
                     : 'text-text-muted hover:text-text'
                 }`}
               >
-                {nextSport === 'basketball' ? 'Basketball' : 'Football'}
+                {nextSport === 'basketball'
+                  ? 'Basketball'
+                  : nextSport === 'football'
+                    ? 'Football'
+                    : 'Tennis'}
               </button>
             ))}
           </div>

@@ -46,7 +46,7 @@ import {
   mockMatches,
   mockOddsOffers,
   mockOpportunities,
-  mockFootballOutcomeOffers,
+  mockOutcomeOffers,
   mockUnresolvedOdds,
   mockSystemStatus,
   mockCanonicalTeams,
@@ -371,7 +371,7 @@ export function useOutcomeOffers(
     queryFn: async () => {
       if (USE_MOCK) {
         await delay();
-        let results = [...mockFootballOutcomeOffers];
+        let results = [...mockOutcomeOffers];
         if (filters.sport) {
           results = results.filter((row) => row.match_id.startsWith(`${filters.sport}-`));
         }
@@ -1120,7 +1120,7 @@ export function useMatchOutcomeOffers(matchId: string) {
     queryFn: async () => {
       if (USE_MOCK) {
         await delay();
-        return mockFootballOutcomeOffers.filter((offer) => offer.match_id === matchId);
+        return mockOutcomeOffers.filter((offer) => offer.match_id === matchId);
       }
       const { data } = await client.get<OutcomeOffer[]>(`/matches/${matchId}/market-offers`);
       return data;
@@ -1137,7 +1137,7 @@ export function useEventOutcomeOffers(eventId: string) {
         await delay();
         const event = mockEvents.find((item) => item.id === eventId);
         const matchIds = new Set(event?.members.map((member) => member.match_id) ?? []);
-        return mockFootballOutcomeOffers.filter((offer) => matchIds.has(offer.match_id));
+        return mockOutcomeOffers.filter((offer) => matchIds.has(offer.match_id));
       }
       const { data } = await client.get<OutcomeOffer[]>(`/events/${eventId}/market-offers`);
       return data;

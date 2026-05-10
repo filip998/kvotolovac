@@ -225,6 +225,7 @@ _BULK_DETAIL_URL = _BASKETBALL_SPEC.bulk_detail_url
 _MATCH_PAGE_URL = "https://www.maxbet.rs/sr/pocetna#/sport/event/{match_id}"
 _FOOTBALL_LIST_URL = "https://www.maxbet.rs/restapi/offer/sr/sport/S/mob"
 _FOOTBALL_BULK_DETAIL_URL = "https://www.maxbet.rs/restapi/offer/sr/matches/by-ids"
+_TENNIS_LIST_URL = "https://www.maxbet.rs/restapi/offer/sr/sport/T/mob"
 _FOOTBALL_OUTCOME_CODES = {
     "1": ("football_result", "home", None, "1"),
     "2": ("football_result", "draw", None, "X"),
@@ -236,6 +237,10 @@ _FOOTBALL_OUTCOME_CODES = {
 _FOOTBALL_TOTAL_GOALS_CODES = {
     "227": "over",
     "228": "under",
+}
+_TENNIS_OUTCOME_CODES = {
+    "1": ("home", "1"),
+    "3": ("away", "2"),
 }
 
 _PLAYER_LEAGUE_PREFIX = _BASKETBALL_SPEC.player_league_prefix
@@ -547,6 +552,61 @@ def _football_total_raw_label(outcome_code: str, line: float) -> str:
     return f"{boundary + 1}+"
 
 
+def _is_tennis_doubles_match(match: dict) -> bool:
+    league_name = str(match.get("leagueName") or "")
+    home_team = str(match.get("home") or "")
+    away_team = str(match.get("away") or "")
+    league_key = _normalize_league_key(league_name)
+    if any(token in league_key.split() for token in ("doubles", "double", "parovi")):
+        return True
+    return "/" in home_team or "/" in away_team
+
+
+def _parse_tennis_outcome_match(match: dict) -> list[RawOutcomeOffer]:
+    if match.get("live") is True:
+        return []
+    if match.get("blocked") is True:
+        return []
+    if _is_tennis_doubles_match(match):
+        return []
+
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
+    if not home_team or not away_team:
+        return []
+
+    odds = match.get("odds") or {}
+    league_id = _extract_plain_league_id(match.get("leagueName", ""), "tennis")
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    source_url = None
+    match_id = match.get("id")
+    if match_id is not None:
+        source_url = _MATCH_PAGE_URL.format(match_id=match_id)
+
+    results: list[RawOutcomeOffer] = []
+    for code, (outcome_code, raw_label) in _TENNIS_OUTCOME_CODES.items():
+        value = _coerce_positive_odds(odds.get(code))
+        if value is None:
+            continue
+        results.append(
+            RawOutcomeOffer(
+                bookmaker_id="maxbet",
+                league_id=league_id,
+                sport="tennis",
+                home_team=home_team,
+                away_team=away_team,
+                source_url=source_url,
+                market_type="tennis_match_winner",
+                outcome_code=outcome_code,
+                odds=value,
+                line=None,
+                raw_label=raw_label,
+                start_time=start_time,
+            )
+        )
+    return results
+
+
 def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
     matchup = recover_matchup_from_payload(match)
     home_team = matchup.home_team
@@ -680,7 +740,7 @@ class MaxBetScraper(BaseScraper):
         return list(_SPORT_SPECS.keys())
 
     def get_supported_outcome_sports(self) -> list[str]:
-        return ["football"]
+        return ["football", "tennis"]
 
     async def _fetch_list(self, url: str, label: str) -> list[dict]:
         try:
@@ -789,6 +849,31 @@ class MaxBetScraper(BaseScraper):
         return results
 
     async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        if sport == "tennis":
+            list_matches = await self._fetch_list(_TENNIS_LIST_URL, "tennis outcomes")
+            results: list[RawOutcomeOffer] = []
+            skipped_doubles = 0
+            skipped_live = 0
+            skipped_blocked = 0
+            for match in list_matches:
+                if match.get("live") is True:
+                    skipped_live += 1
+                elif match.get("blocked") is True:
+                    skipped_blocked += 1
+                elif _is_tennis_doubles_match(match):
+                    skipped_doubles += 1
+                results.extend(_parse_tennis_outcome_match(match))
+            logger.info(
+                "MaxBet scraped %d tennis outcome offers from %d matches "
+                "(skipped %d live, %d blocked, %d doubles)",
+                len(results),
+                len(list_matches),
+                skipped_live,
+                skipped_blocked,
+                skipped_doubles,
+            )
+            return results
+
         if sport != "football":
             return []
 
