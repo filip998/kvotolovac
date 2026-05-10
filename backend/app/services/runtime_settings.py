@@ -501,12 +501,17 @@ def _settings_response(
     pending_at: str | None,
     applied_immediately: bool,
 ) -> ScrapeSettingsResponse:
+    base_defaults = default_scrape_runtime_settings(prefer_registered_bookmakers=False)
+    # The "defaults" returned to the UI represent the maximal "reset to factory"
+    # state — it must list every supported sport so users can opt in to ones
+    # missing from their .env override.
+    response_defaults = base_defaults.model_copy(
+        update={"enabled_sports": list(_SUPPORTED_SPORTS)}
+    )
     return ScrapeSettingsResponse(
         applied=applied,
         pending=pending,
-        defaults=validate_scrape_runtime_settings(
-            default_scrape_runtime_settings(prefer_registered_bookmakers=False)
-        ),
+        defaults=validate_scrape_runtime_settings(response_defaults),
         has_pending_changes=pending is not None,
         applied_at=applied_at,
         pending_at=pending_at,
