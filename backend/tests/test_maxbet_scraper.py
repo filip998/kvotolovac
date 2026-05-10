@@ -14,6 +14,7 @@ from app.scrapers.maxbet_scraper import (
     _parse_game_total_ot_match,
     _parse_handicap_ot_match,
     _parse_football_outcome_match,
+    _parse_tennis_outcome_match,
     _parse_match_detail,
     _get_player_match_ids,
     _parse_start_time,
@@ -404,6 +405,61 @@ def test_parse_football_outcome_match_recovers_missing_away_from_match_label():
         ("Arsenal", "Chelsea")
     }
     assert {row.outcome_code for row in results} == {"over", "under"}
+
+
+def test_parse_tennis_outcome_match_emits_singles_match_winner():
+    match = {
+        "id": 23401849,
+        "leagueName": "ATP Challenger Bengaluru Qual.",
+        "home": "Papa C.",
+        "away": "Shanmugam A.",
+        "kickOffTime": 1778391000000,
+        "live": False,
+        "odds": {"1": 1.73, "3": 2.0, "254": 1.75},
+    }
+
+    results = _parse_tennis_outcome_match(match)
+
+    assert len(results) == 2
+    assert all(isinstance(row, RawOutcomeOffer) for row in results)
+    assert {row.sport for row in results} == {"tennis"}
+    assert {row.market_type for row in results} == {"tennis_match_winner"}
+    assert {(row.outcome_code, row.odds, row.raw_label) for row in results} == {
+        ("home", 1.73, "1"),
+        ("away", 2.0, "2"),
+    }
+    assert {row.league_id for row in results} == {"atp_challenger_bengaluru_qual."}
+    assert str(match["id"]) in (results[0].source_url or "")
+
+
+@pytest.mark.parametrize(
+    "match",
+    [
+        {
+            "leagueName": "ATP Rome Doubles",
+            "home": "Cadenasso G./Vasami J.",
+            "away": "Granollers M./Zeballos H.",
+            "live": False,
+            "odds": {"1": 9.5, "3": 1.05},
+        },
+        {
+            "leagueName": "ATP Challenger Bengaluru Qual.",
+            "home": "Papa C.",
+            "away": "Shanmugam A.",
+            "live": True,
+            "odds": {"1": 1.73, "3": 2.0},
+        },
+        {
+            "leagueName": "ATP Challenger Bengaluru Qual.",
+            "home": "Papa C.",
+            "away": "Shanmugam A.",
+            "blocked": True,
+            "odds": {"1": 1.73, "3": 2.0},
+        },
+    ],
+)
+def test_parse_tennis_outcome_match_skips_doubles_live_and_blocked(match):
+    assert _parse_tennis_outcome_match(match) == []
 
 
 @pytest.mark.parametrize("line", ["0", "2", "not-a-number", None])
@@ -923,6 +979,54 @@ async def test_scraper_unknown_sport_returns_empty():
     scraper = MaxBetScraper()
     assert await scraper.scrape_odds("table_tennis") == []
     assert await scraper.scrape_odds("") == []
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_tennis_uses_list_endpoint_only():
+    scraper = MaxBetScraper()
+    calls: list[str] = []
+
+    async def mock_get(url, **kwargs):
+        calls.append(url)
+        if url.endswith("/sport/T/mob"):
+            return {
+                "esMatches": [
+                    {
+                        "id": 23401849,
+                        "leagueName": "ATP Challenger Bengaluru Qual.",
+                        "home": "Papa C.",
+                        "away": "Shanmugam A.",
+                        "kickOffTime": 1778391000000,
+                        "live": False,
+                        "odds": {"1": 1.73, "3": 2.0},
+                    },
+                    {
+                        "id": 23397652,
+                        "leagueName": "ATP Rome Doubles",
+                        "home": "Cadenasso G./Vasami J.",
+                        "away": "Granollers M./Zeballos H.",
+                        "kickOffTime": 1778391000000,
+                        "live": False,
+                        "odds": {"1": 9.5, "3": 1.05},
+                    },
+                ]
+            }
+        raise AssertionError(f"unexpected url {url}")
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_outcome_offers("tennis")
+
+    assert calls == ["https://www.maxbet.rs/restapi/offer/sr/sport/T/mob"]
+    assert [(row.outcome_code, row.odds) for row in results] == [
+        ("home", 1.73),
+        ("away", 2.0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scraper_outcome_capabilities_include_tennis():
+    scraper = MaxBetScraper()
+    assert scraper.get_supported_outcome_sports() == ["football", "tennis"]
 
 
 @pytest.mark.asyncio

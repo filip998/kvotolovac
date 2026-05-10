@@ -37,6 +37,7 @@ import { normalizeOpportunityMarketType } from '../utils/constants';
 
 type DashboardTab = 'opportunities' | 'tracked' | 'teams' | 'canonical' | 'warnings';
 type SportFilter = 'both' | 'basketball' | 'football' | 'tennis';
+type DiagnosticsSport = Exclude<SportFilter, 'both'>;
 
 const SPORT_FILTER_OPTIONS: { value: SportFilter; label: string }[] = [
   { value: 'both', label: 'All sports' },
@@ -72,7 +73,7 @@ export default function Dashboard() {
   });
   const [activeTab, setActiveTab] = useState<DashboardTab>('opportunities');
   const [searchQuery, setSearchQuery] = useState('');
-  const [diagnosticsSport, setDiagnosticsSport] = useState<'basketball' | 'football'>('basketball');
+  const [diagnosticsSport, setDiagnosticsSport] = useState<DiagnosticsSport>('basketball');
   const [opportunitiesSport, setOpportunitiesSport] = useState<SportFilter>('both');
   const [trackedSport, setTrackedSport] = useState<SportFilter>('both');
   const appliedSearchQuery = useDeferredValue(searchQuery);
@@ -129,7 +130,7 @@ export default function Dashboard() {
     [activeTab]
   );
 
-  const handleDiagnosticsSportChange = useCallback((sport: 'basketball' | 'football') => {
+  const handleDiagnosticsSportChange = useCallback((sport: DiagnosticsSport) => {
     setDiagnosticsSport(sport);
     setCanonicalPageIndex(0);
     setSelectedCanonicalMergeSource(null);
@@ -787,7 +788,7 @@ export default function Dashboard() {
               <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-muted">
                 Sport
               </span>
-              {(['basketball', 'football'] as const).map((sport) => (
+              {(['basketball', 'football', 'tennis'] as const).map((sport) => (
                 <button
                   key={sport}
                   onClick={() => handleDiagnosticsSportChange(sport)}
@@ -797,7 +798,7 @@ export default function Dashboard() {
                       : 'text-text-muted hover:text-text'
                   }`}
                 >
-                  {sport === 'basketball' ? 'Basketball' : 'Football'}
+                  {sport === 'basketball' ? 'Basketball' : sport === 'football' ? 'Football' : 'Tennis'}
                 </button>
               ))}
             </div>

@@ -49,6 +49,29 @@ def _offer(
     )
 
 
+def _tennis_offer(
+    bookmaker_id: str,
+    home_team: str,
+    away_team: str,
+    *,
+    market_type: str = "tennis_match_winner",
+    outcome_code: str = "home",
+) -> RawOutcomeOffer:
+    return RawOutcomeOffer(
+        bookmaker_id=bookmaker_id,
+        league_id="tennis_test_league",
+        sport="tennis",
+        home_team=home_team,
+        away_team=away_team,
+        market_type=market_type,
+        outcome_code=outcome_code,
+        odds=2.1,
+        line=None,
+        raw_label=outcome_code,
+        start_time=START_TIME,
+    )
+
+
 def _proxy_row(
     bookmaker_id: str,
     home_team: str,
@@ -527,6 +550,98 @@ def test_reversed_football_event_swaps_orientation_sensitive_outcomes(team_regis
         for offer in normalized
     } == {("maxbet", "home"), ("balkanbet", "away")}
     assert _auto_review_alias_count() == 0
+
+
+def test_reversed_tennis_match_winner_swaps_home_away_outcomes(team_registry_file):
+    home = create_canonical_team(display_name="Novak Djokovic", sport="tennis")
+    away = create_canonical_team(display_name="Carlos Alcaraz", sport="tennis")
+    remember_team_alias(
+        bookmaker_id="maxbet",
+        raw_team_name="Djokovic N.",
+        team_name="Novak Djokovic",
+        sport="tennis",
+    )
+    remember_team_alias(
+        bookmaker_id="maxbet",
+        raw_team_name="Alcaraz C.",
+        team_name="Carlos Alcaraz",
+        sport="tennis",
+    )
+    expected_match_id = generate_match_id(
+        home.team_id,
+        away.team_id,
+        START_TIME,
+        "tennis",
+    )
+    raw = [
+        _tennis_offer("maxbet", "Djokovic N.", "Alcaraz C.", outcome_code="home"),
+        _tennis_offer(
+            "balkanbet",
+            "Carlos Alcaraz",
+            "Novak Djokovic",
+            outcome_code="home",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert unresolved == []
+    assert review_cases == []
+    assert {offer.match_id for offer in normalized} == {expected_match_id}
+    assert {
+        (offer.bookmaker_id, offer.outcome_code)
+        for offer in normalized
+    } == {("maxbet", "home"), ("balkanbet", "away")}
+
+
+def test_tennis_initial_variants_merge_when_unambiguous(team_registry_file):
+    raw = [
+        _tennis_offer("maxbet", "Djokovic N.", "Alcaraz C.", outcome_code="home"),
+        _tennis_offer(
+            "balkanbet",
+            "Novak Djokovic",
+            "Carlos Alcaraz",
+            outcome_code="away",
+        ),
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 2
+    assert {offer.match_id for offer in normalized} == {normalized[0].match_id}
+    assert unresolved == []
+    assert review_cases == []
+
+
+def test_tennis_shared_surname_initial_collision_remains_unresolved(team_registry_file):
+    raw = [
+        _tennis_offer("maxbet", "Smith J.", "Brown A.", outcome_code="home"),
+        _tennis_offer("balkanbet", "Smith A.", "Brown A.", outcome_code="away"),
+    ]
+
+    normalized, unresolved, _ = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert normalized == []
+    assert {row.reason_code for row in unresolved} == {
+        "unresolved_home_team",
+        "unresolved_away_team",
+    }
+
+
+def test_single_book_tennis_uses_event_resolution_when_competitors_are_known(
+    team_registry_file,
+):
+    create_canonical_team(display_name="Novak Djokovic", sport="tennis")
+    create_canonical_team(display_name="Carlos Alcaraz", sport="tennis")
+    raw = [
+        _tennis_offer("maxbet", "Novak Djokovic", "Carlos Alcaraz", outcome_code="home")
+    ]
+
+    normalized, unresolved, review_cases = normalize_outcome_offers_with_diagnostics(raw)
+
+    assert len(normalized) == 1
+    assert unresolved == []
+    assert review_cases == []
 
 
 def test_close_competing_football_candidates_are_not_auto_matched(team_registry_file):

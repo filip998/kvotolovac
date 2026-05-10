@@ -67,6 +67,8 @@ _EXPLICIT_Z_WOMEN_MARKER_RE = re.compile(
 )
 _SAME_ORIENTATION = "same"
 _REVERSED_ORIENTATION = "reversed"
+_OUTCOME_EVENT_RESOLUTION_SPORTS = frozenset({"football", "tennis"})
+_TENNIS_MATCH_WINNER_MARKETS = frozenset({"tennis_match_winner", "match_winner"})
 
 
 def _elapsed_ms(started_at: float) -> int:
@@ -286,6 +288,125 @@ def _team_similarity(left: str, right: str, *, sport: str | None = None) -> floa
     return float(fuzz.token_sort_ratio(left_key, right_key))
 
 
+_TENNIS_SURNAME_PARTICLES = frozenset(
+    {"da", "de", "del", "della", "di", "du", "la", "le", "van", "von"}
+)
+
+
+def _is_initial_token(token: str) -> bool:
+    return len(token) == 1 and token.isalpha()
+
+
+def _tokens_suffix_compatible(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
+    if left == right:
+        return True
+    if len(left) > len(right):
+        return left[-len(right) :] == right
+    if len(right) > len(left):
+        return right[-len(left) :] == left
+    return False
+
+
+def _tennis_player_name_parts(
+    name: str,
+    *,
+    text_cache: _OutcomeTextCache,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]] | None:
+    tokens = tuple(text_cache.comparison_text(name, sport="tennis").split())
+    if not tokens:
+        return None
+
+    suffix_initial_count = 0
+    for token in reversed(tokens):
+        if not _is_initial_token(token):
+            break
+        suffix_initial_count += 1
+    if suffix_initial_count and suffix_initial_count < len(tokens):
+        return (
+            tokens[: len(tokens) - suffix_initial_count],
+            (),
+            tokens[len(tokens) - suffix_initial_count :],
+        )
+
+    prefix_initial_count = 0
+    for token in tokens:
+        if not _is_initial_token(token):
+            break
+        prefix_initial_count += 1
+    if prefix_initial_count and prefix_initial_count < len(tokens):
+        return (
+            tokens[prefix_initial_count:],
+            (),
+            tokens[:prefix_initial_count],
+        )
+
+    given_tokens = list(tokens[:-1])
+    family_tokens = [tokens[-1]]
+    while given_tokens and given_tokens[-1] in _TENNIS_SURNAME_PARTICLES:
+        family_tokens.insert(0, given_tokens.pop())
+    return (tuple(family_tokens), tuple(given_tokens), ())
+
+
+def _tennis_initials_for(given_tokens: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(token[0] for token in given_tokens if token)
+
+
+def _tennis_name_match_score(
+    left_name: str,
+    right_name: str,
+    *,
+    text_cache: _OutcomeTextCache,
+) -> float | None:
+    left_text = text_cache.comparison_text(left_name, sport="tennis")
+    right_text = text_cache.comparison_text(right_name, sport="tennis")
+    if not left_text or not right_text:
+        return None
+    if left_text == right_text:
+        return 100.0
+    left_tokens = text_cache.significant_tokens(left_name, sport="tennis")
+    right_tokens = text_cache.significant_tokens(right_name, sport="tennis")
+    if left_tokens and left_tokens == right_tokens:
+        return 100.0
+
+    left_parts = _tennis_player_name_parts(left_name, text_cache=text_cache)
+    right_parts = _tennis_player_name_parts(right_name, text_cache=text_cache)
+    if left_parts is None or right_parts is None:
+        return None
+
+    left_family, left_given, left_initials = left_parts
+    right_family, right_given, right_initials = right_parts
+    if not left_family or not right_family:
+        return None
+    if not _tokens_suffix_compatible(left_family, right_family):
+        return None
+
+    left_has_given_evidence = bool(left_given or left_initials)
+    right_has_given_evidence = bool(right_given or right_initials)
+    if not left_has_given_evidence or not right_has_given_evidence:
+        return None
+
+    if left_given and right_given:
+        return 96.0 if left_given == right_given else None
+    if left_initials and right_initials:
+        return 96.0 if left_initials == right_initials else None
+
+    if left_initials:
+        right_given_initials = _tennis_initials_for(right_given)
+        return (
+            96.0
+            if left_initials == right_given_initials[: len(left_initials)]
+            else None
+        )
+    if right_initials:
+        left_given_initials = _tennis_initials_for(left_given)
+        return (
+            96.0
+            if right_initials == left_given_initials[: len(right_initials)]
+            else None
+        )
+    return None
+
+
 def _team_qualifiers(name: str, *, sport: str | None = None) -> set[str]:
     tokens = normalize_identity_text(name).split()
     qualifiers: set[str] = set()
@@ -435,7 +556,9 @@ def _unique_events(raw_list: list[RawOutcomeOffer]) -> list[_OutcomeEvent]:
     seen: set[tuple[str, str, str, str, str]] = set()
     events: list[_OutcomeEvent] = []
     for raw in raw_list:
-        if raw.sport != "football" or raw.start_time is None:
+        if raw.sport not in _OUTCOME_EVENT_RESOLUTION_SPORTS or raw.start_time is None:
+            continue
+        if raw.sport == "tennis" and raw.market_type not in _TENNIS_MATCH_WINNER_MARKETS:
             continue
         key = (
             raw.bookmaker_id,
@@ -472,6 +595,59 @@ def _pair_candidates(
         stats.football_event_pair_candidate_count += 1
     text_cache = text_cache or _OutcomeTextCache(stats)
     candidates: list[_OutcomeEventPair] = []
+    if left.sport == "tennis":
+        if text_cache.same_context(left.home_team, right.home_team, sport=left.sport) and text_cache.same_context(left.away_team, right.away_team, sport=left.sport):
+            home_score = _tennis_name_match_score(
+                left.home_team,
+                right.home_team,
+                text_cache=text_cache,
+            )
+            away_score = _tennis_name_match_score(
+                left.away_team,
+                right.away_team,
+                text_cache=text_cache,
+            )
+            if home_score is not None and away_score is not None:
+                candidates.append(
+                    _OutcomeEventPair(
+                        left=left,
+                        right=right,
+                        home_score=home_score,
+                        away_score=away_score,
+                        orientation=_SAME_ORIENTATION,
+                    )
+                )
+        if text_cache.same_context(left.home_team, right.away_team, sport=left.sport) and text_cache.same_context(left.away_team, right.home_team, sport=left.sport):
+            home_score = _tennis_name_match_score(
+                left.home_team,
+                right.away_team,
+                text_cache=text_cache,
+            )
+            away_score = _tennis_name_match_score(
+                left.away_team,
+                right.home_team,
+                text_cache=text_cache,
+            )
+            if home_score is not None and away_score is not None:
+                candidates.append(
+                    _OutcomeEventPair(
+                        left=left,
+                        right=right,
+                        home_score=home_score,
+                        away_score=away_score,
+                        orientation=_REVERSED_ORIENTATION,
+                    )
+                )
+        if not candidates:
+            return None
+        return max(
+            candidates,
+            key=lambda candidate: (
+                candidate.score,
+                candidate.orientation == _SAME_ORIENTATION,
+            ),
+        )
+
     if text_cache.same_context(left.home_team, right.home_team, sport=left.sport) and text_cache.same_context(left.away_team, right.away_team, sport=left.sport):
         candidates.append(
             _OutcomeEventPair(
@@ -1111,6 +1287,11 @@ def _map_outcome_code_for_orientation(
             "draw_or_away": "home_or_draw",
             "home_or_away": "home_or_away",
         }.get(outcome_code)
+    if market_type in _TENNIS_MATCH_WINNER_MARKETS:
+        return {
+            "home": "away",
+            "away": "home",
+        }.get(outcome_code)
     return None
 
 
@@ -1292,7 +1473,7 @@ def _normalized_offer_from_resolution(
     )
     if outcome_code is None:
         logger.warning(
-            "Skipping reversed football outcome %s/%s for bookmaker %s",
+            "Skipping reversed outcome %s/%s for bookmaker %s",
             raw.market_type,
             raw.outcome_code,
             raw.bookmaker_id,
@@ -1513,6 +1694,26 @@ def normalize_outcome_offers_with_context(
                             available_matchups_same_slot=available_matchups,
                         )
                     )
+            skipped_unresolved_row_count += 1
+            skipped_unresolved_rows_by_bookmaker[raw.bookmaker_id] += 1
+            continue
+
+        if raw.sport == "tennis" and raw.market_type in _TENNIS_MATCH_WINNER_MARKETS:
+            key = _unresolved_outcome_key(
+                raw,
+                raw_team_name=raw.home_team,
+                reason_code="unresolved_event_matchup",
+            )
+            if key not in seen_unresolved:
+                seen_unresolved.add(key)
+                unresolved_diagnostics_by_bookmaker[raw.bookmaker_id] += 1
+                unresolved.append(
+                    _unresolved_team_diagnostic(
+                        raw,
+                        raw_team_name=raw.home_team,
+                        reason_code="unresolved_event_matchup",
+                    )
+                )
             skipped_unresolved_row_count += 1
             skipped_unresolved_rows_by_bookmaker[raw.bookmaker_id] += 1
             continue
