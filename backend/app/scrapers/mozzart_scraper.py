@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from .base import BaseScraper
 from .http_client import HttpClient
 from ..models.schemas import RawOddsData, RawOutcomeOffer
+from ..services.scrape_window import current_utc_time
 from ..services.text_normalizer import normalize_identity_text
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,7 @@ _TENNIS_MATCH_WINNER_OUTCOMES = {
     "1": ("home", "1"),
     "2": ("away", "2"),
 }
+_TENNIS_LIVE_START_BUFFER_MS = 5 * 60 * 1000
 _CANONICAL_LEAGUES = {
     "nba": "nba",
     "usa nba": "nba",
@@ -156,10 +158,20 @@ def _extract_player_and_market(game_name: str) -> tuple[str | None, str]:
     return None, "player_points"
 
 
-def _parse_start_time(epoch_ms: int | None) -> str | None:
-    if not epoch_ms:
+def _parse_int(value: object) -> int | None:
+    if isinstance(value, bool) or value is None:
         return None
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).isoformat()
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_start_time(epoch_ms: object) -> str | None:
+    parsed_epoch_ms = _parse_int(epoch_ms)
+    if parsed_epoch_ms is None or parsed_epoch_ms <= 0:
+        return None
+    return datetime.fromtimestamp(parsed_epoch_ms / 1000, tz=timezone.utc).isoformat()
 
 
 def _normalize_league_key(raw: str | None) -> str:
@@ -505,20 +517,74 @@ def _is_tennis_doubles_match(match: dict) -> bool:
     return bool(set(normalized_context.split()) & _TENNIS_DOUBLES_TOKENS)
 
 
-def _parse_tennis_outcome_match(match: dict) -> list[RawOutcomeOffer]:
+def _is_tennis_live_match(match: dict) -> bool:
     status = match.get("status") or {}
-    if match.get("live") is True or match.get("isLive") is True:
-        return []
-    if match.get("blocked") is True or status.get("live") is True:
-        return []
+    return match.get("live") is True or match.get("isLive") is True or status.get("live") is True
+
+
+def _tennis_live_start_skip_reason(match: dict, *, now: datetime | None = None) -> str | None:
+    if not _is_tennis_live_match(match):
+        return None
+
+    start_time = match.get("startTime")
+    if start_time is None:
+        return "missing_start_time"
+
+    kickoff_ms = _parse_int(start_time)
+    if kickoff_ms is None or kickoff_ms <= 0:
+        return "invalid_start_time"
+
+    now_ms = int((now or current_utc_time()).timestamp() * 1000)
+    if kickoff_ms <= now_ms + _TENNIS_LIVE_START_BUFFER_MS:
+        return "live_near_or_past_start"
+
+    return None
+
+
+def _tennis_skip_reason(match: dict, *, now: datetime | None = None) -> str | None:
+    if match.get("blocked") is True:
+        return "blocked"
+    if _is_tennis_doubles_match(match):
+        return "doubles"
 
     home = ((match.get("home") or {}).get("name") or "").strip()
     visitor = ((match.get("visitor") or {}).get("name") or "").strip()
     if not home or not visitor:
-        return []
-    if _is_tennis_doubles_match(match):
+        return "missing_competitor"
+
+    odds_groups = match.get("oddsGroup")
+    if odds_groups is not None and not isinstance(odds_groups, list):
+        return "invalid_odds_groups"
+
+    live_reason = _tennis_live_start_skip_reason(match, now=now)
+    if live_reason is not None:
+        return live_reason
+
+    for group in odds_groups or []:
+        if not isinstance(group, dict):
+            continue
+        group_name = normalize_identity_text(group.get("groupName"))
+        if group_name not in _TENNIS_MATCH_WINNER_GROUP_NAMES:
+            continue
+        for odd in group.get("odds") or []:
+            if not isinstance(odd, dict) or odd.get("oddStatus") != "ACTIVE":
+                continue
+            subgame = odd.get("subgame")
+            raw_label = ((subgame.get("name") if isinstance(subgame, dict) else "") or "").strip()
+            mapping = _TENNIS_MATCH_WINNER_OUTCOMES.get(raw_label)
+            odds = _coerce_positive_odds(odd.get("value"))
+            if mapping is not None and odds is not None:
+                return None
+
+    return "no_match_winner"
+
+
+def _parse_tennis_outcome_match(match: dict, *, now: datetime | None = None) -> list[RawOutcomeOffer]:
+    if _tennis_skip_reason(match, now=now) is not None:
         return []
 
+    home = ((match.get("home") or {}).get("name") or "").strip()
+    visitor = ((match.get("visitor") or {}).get("name") or "").strip()
     competition = (match.get("competition") or {}).get("name")
     league_id = _extract_tennis_league_id(competition)
     start_time = _parse_start_time(match.get("startTime"))
@@ -526,15 +592,20 @@ def _parse_tennis_outcome_match(match: dict) -> list[RawOutcomeOffer]:
     seen: set[str] = set()
 
     for group in match.get("oddsGroup") or []:
+        if not isinstance(group, dict):
+            continue
         group_name = normalize_identity_text(group.get("groupName"))
         if group_name not in _TENNIS_MATCH_WINNER_GROUP_NAMES:
             continue
 
         for odd in group.get("odds") or []:
+            if not isinstance(odd, dict):
+                continue
             if odd.get("oddStatus") != "ACTIVE":
                 continue
 
-            raw_label = ((odd.get("subgame") or {}).get("name") or "").strip()
+            subgame = odd.get("subgame")
+            raw_label = ((subgame.get("name") if isinstance(subgame, dict) else "") or "").strip()
             mapping = _TENNIS_MATCH_WINNER_OUTCOMES.get(raw_label)
             odds = _coerce_positive_odds(odd.get("value"))
             if mapping is None or odds is None:
@@ -564,10 +635,10 @@ def _parse_tennis_outcome_match(match: dict) -> list[RawOutcomeOffer]:
     return results
 
 
-def _parse_tennis_outcome_items(items: list[dict]) -> list[RawOutcomeOffer]:
+def _parse_tennis_outcome_items(items: list[dict], *, now: datetime | None = None) -> list[RawOutcomeOffer]:
     results: list[RawOutcomeOffer] = []
     for match in items:
-        results.extend(_parse_tennis_outcome_match(match))
+        results.extend(_parse_tennis_outcome_match(match, now=now))
     return results
 
 
@@ -677,11 +748,21 @@ class MozzartScraper(BaseScraper):
                 logger.warning("Mozzart returned 0 tennis prematch matches")
                 return []
 
-            results = _parse_tennis_outcome_items(match_items)
+            scrape_now = current_utc_time()
+            skipped: dict[str, int] = {}
+            results: list[RawOutcomeOffer] = []
+            for match in match_items:
+                reason = _tennis_skip_reason(match, now=scrape_now)
+                if reason is not None:
+                    skipped[reason] = skipped.get(reason, 0) + 1
+                    continue
+                results.extend(_parse_tennis_outcome_match(match, now=scrape_now))
+
             logger.info(
-                "Mozzart scraped %d tennis outcome offers from %d prematch matches",
+                "Mozzart scraped %d tennis outcome offers from %d prematch matches (skipped=%s)",
                 len(results),
                 len(match_items),
+                skipped,
             )
             return results
 

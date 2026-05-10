@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -26,11 +28,13 @@ from app.scrapers.mozzart_scraper import (
     _parse_items,
     _parse_signed_threshold,
     _parse_start_time,
+    _tennis_skip_reason,
 )
 from app.models.schemas import RawOddsData, RawOutcomeOffer
 
 SPECIALS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mozzart_specials.json"
 MATCHES_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mozzart_matches.json"
+TENNIS_NOW = datetime(2026, 5, 10, 10, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture
@@ -86,10 +90,14 @@ def test_parse_start_time():
     result = _parse_start_time(1775775600000)
     assert result is not None
     assert "2026-04" in result
+    assert _parse_start_time("1775775600000") == result
 
 
 def test_parse_start_time_none():
     assert _parse_start_time(None) is None
+    assert _parse_start_time(0) is None
+    assert _parse_start_time("0") is None
+    assert _parse_start_time("bad") is None
 
 
 def test_extract_league_id_known_competitions():
@@ -699,8 +707,12 @@ def _tennis_match(
     home: str = "Prizmic Dino",
     visitor: str = "Humbert Ugo",
     competition: str = "ATP Rome",
-    start_time: int = 1778408400000,
-    odds_groups: list[dict] | None = None,
+    start_time: object = 1778408400000,
+    odds_groups: object = None,
+    live: bool = False,
+    is_live: bool = False,
+    status_live: bool = False,
+    blocked: bool = False,
 ) -> dict:
     return {
         "id": 9409471,
@@ -709,7 +721,10 @@ def _tennis_match(
         "startTime": start_time,
         "home": {"id": 27683, "name": home},
         "visitor": {"id": 50772, "name": visitor},
-        "status": {"id": 0, "name": "Nije počeo"},
+        "live": live,
+        "isLive": is_live,
+        "blocked": blocked,
+        "status": {"id": 0, "name": "Nije počeo", "live": status_live},
         "oddsGroup": odds_groups
         if odds_groups is not None
         else [
@@ -727,6 +742,10 @@ def _tennis_match(
             },
         ],
     }
+
+
+def _tennis_kickoff_ms(minutes_from_now: int) -> int:
+    return int((TENNIS_NOW + timedelta(minutes=minutes_from_now)).timestamp() * 1000)
 
 
 def test_build_matches_request_body_defaults_to_basketball_and_can_target_football():
@@ -943,6 +962,97 @@ def test_parse_tennis_outcome_match_keeps_same_matchup_different_start_times():
     ]
 
 
+@pytest.mark.parametrize(
+    "live_kwargs",
+    [
+        {"live": True},
+        {"is_live": True},
+        {"status_live": True},
+    ],
+)
+def test_parse_tennis_outcome_match_imports_future_live_flags(live_kwargs: dict[str, bool]):
+    match = _tennis_match(start_time=_tennis_kickoff_ms(6), **live_kwargs)
+
+    offers = _parse_tennis_outcome_match(match, now=TENNIS_NOW)
+
+    assert {(offer.outcome_code, offer.raw_label) for offer in offers} == {
+        ("home", "1"),
+        ("away", "2"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("minutes_from_now", "expected_reason"),
+    [
+        (5, "live_near_or_past_start"),
+        (4, "live_near_or_past_start"),
+        (-1, "live_near_or_past_start"),
+    ],
+)
+def test_parse_tennis_outcome_match_skips_live_near_boundary_and_past(
+    minutes_from_now: int,
+    expected_reason: str,
+):
+    match = _tennis_match(live=True, start_time=_tennis_kickoff_ms(minutes_from_now))
+
+    assert _parse_tennis_outcome_match(match, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(match, now=TENNIS_NOW) == expected_reason
+
+
+@pytest.mark.parametrize(
+    ("start_time", "expected_reason"),
+    [
+        (None, "missing_start_time"),
+        ("bad", "invalid_start_time"),
+        ("0", "invalid_start_time"),
+    ],
+)
+def test_parse_tennis_outcome_match_skips_live_missing_and_invalid_start(
+    start_time: object,
+    expected_reason: str,
+):
+    match = _tennis_match(live=True, start_time=start_time)
+
+    assert _parse_tennis_outcome_match(match, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(match, now=TENNIS_NOW) == expected_reason
+
+
+def test_tennis_skip_reason_preserves_precedence_before_live_buffer():
+    assert (
+        _tennis_skip_reason(
+            _tennis_match(live=True, blocked=True, start_time=_tennis_kickoff_ms(1)),
+            now=TENNIS_NOW,
+        )
+        == "blocked"
+    )
+    assert (
+        _tennis_skip_reason(
+            _tennis_match(
+                home="Bolelli S/Vavassori A",
+                visitor="Harrison C/King E",
+                live=True,
+                start_time=_tennis_kickoff_ms(1),
+            ),
+            now=TENNIS_NOW,
+        )
+        == "doubles"
+    )
+    assert (
+        _tennis_skip_reason(
+            _tennis_match(home="", live=True, start_time=_tennis_kickoff_ms(1)),
+            now=TENNIS_NOW,
+        )
+        == "missing_competitor"
+    )
+    assert (
+        _tennis_skip_reason(
+            _tennis_match(live=True, odds_groups={}, start_time=_tennis_kickoff_ms(1)),
+            now=TENNIS_NOW,
+        )
+        == "invalid_odds_groups"
+    )
+
+
 @pytest.mark.asyncio
 async def test_scrape_outcome_offers_uses_only_paginated_matches_endpoint():
     page_one = [_football_match()] * 50
@@ -974,10 +1084,23 @@ async def test_scrape_outcome_offers_uses_only_paginated_matches_endpoint():
 
 
 @pytest.mark.asyncio
-async def test_scrape_outcome_offers_tennis_uses_paginated_matches_endpoint():
+async def test_scrape_outcome_offers_tennis_uses_paginated_matches_endpoint(caplog: pytest.LogCaptureFixture):
     http_client = AsyncMock()
     page_one = [_tennis_match()] * 50
-    page_two = [_tennis_match(home="Javia D.", visitor="Milic Ognjen")]
+    page_two = [
+        _tennis_match(
+            home="Javia D.",
+            visitor="Milic Ognjen",
+            live=True,
+            start_time=_tennis_kickoff_ms(6),
+        ),
+        _tennis_match(
+            home="Near Start",
+            visitor="Skipped Live",
+            live=True,
+            start_time=_tennis_kickoff_ms(1),
+        ),
+    ]
 
     async def fake_post_json(url: str, *, json_body=None, headers=None):
         del headers
@@ -997,7 +1120,11 @@ async def test_scrape_outcome_offers_tennis_uses_paginated_matches_endpoint():
 
     http_client.post_json.side_effect = fake_post_json
 
-    offers = await MozzartScraper(http_client=http_client).scrape_outcome_offers("tennis")
+    with (
+        patch("app.scrapers.mozzart_scraper.current_utc_time", return_value=TENNIS_NOW),
+        caplog.at_level(logging.INFO),
+    ):
+        offers = await MozzartScraper(http_client=http_client).scrape_outcome_offers("tennis")
 
     assert len(offers) == 51 * 2
     assert http_client.post_json.call_count == 2
@@ -1005,6 +1132,7 @@ async def test_scrape_outcome_offers_tennis_uses_paginated_matches_endpoint():
         call.kwargs["json_body"]["currentPage"]
         for call in http_client.post_json.call_args_list
     } == {0, 1}
+    assert "skipped={'live_near_or_past_start': 1}" in caplog.text
 
 
 @pytest.mark.asyncio
