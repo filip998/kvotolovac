@@ -79,12 +79,17 @@ def test_parse_start_time():
     assert "2026-04" in result
 
 
+def test_parse_start_time_numeric_string():
+    assert _parse_start_time("1778407200000") == "2026-05-10T10:00:00+00:00"
+
+
 def test_parse_start_time_none():
     assert _parse_start_time(None) is None
 
 
 def test_parse_start_time_zero():
     assert _parse_start_time(0) is None
+    assert _parse_start_time("0") is None
 
 
 def test_is_player_market_nba():
@@ -994,7 +999,7 @@ def test_parse_tennis_outcome_match_allows_future_live_flagged_prematch():
             "home": "Tiago Pereira",
             "away": "Joao Domingues",
             "leagueName": "ITF M25 ~ Loule (Portugal)",
-            "kickOffTime": _tennis_kickoff_ms(minutes=10),
+            "kickOffTime": str(_tennis_kickoff_ms(minutes=10)),
             "live": True,
             "blocked": False,
             "odds": {"1": 1.4, "3": 2.8},

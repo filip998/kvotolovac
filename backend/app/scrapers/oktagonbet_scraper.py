@@ -252,10 +252,16 @@ _SPORT_SPECS: dict[str, SportSpec] = {
 # ── Helpers (reused by both legacy parsers and bulk parser) ──
 
 
-def _parse_start_time(epoch_ms: int | None) -> str | None:
+def _parse_start_time(epoch_ms: object) -> str | None:
     if not epoch_ms:
         return None
-    return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).isoformat()
+    try:
+        parsed = int(epoch_ms)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return datetime.fromtimestamp(parsed / 1000, tz=timezone.utc).isoformat()
 
 
 def _parse_threshold(threshold_str: str | None) -> float | None:
