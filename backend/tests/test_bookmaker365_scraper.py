@@ -19,15 +19,19 @@ from app.scrapers.bookmaker365_scraper import (
     _REGULAR_BULK_URL,
     _REGULAR_LEAGUES_URL,
     _REGULAR_LEAGUE_PREVIEW_URL,
+    _TENNIS_BULK_URL,
     _build_matchup_index,
     _extract_league_id,
     _parse_football_outcome_match,
     _parse_player_match,
+    _parse_start_time,
+    _parse_tennis_outcome_match,
     _parse_total_match,
     _GAME_TOTAL_LINES,
     _GAME_TOTAL_OT_LINES,
     _HANDICAP_OT_LINES,
 )
+from app.models.schemas import RawOutcomeOffer
 
 REGULAR_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "bookmaker365_regular_league.json"
 PLAYER_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "bookmaker365_player_league.json"
@@ -515,6 +519,67 @@ def test_parse_football_outcome_match_falls_back_to_default_league():
     assert {r.league_id for r in results} == {"football"}
 
 
+def test_parse_tennis_outcome_match_emits_match_winner_offers():
+    match = {
+        "id": 47608215,
+        "leagueName": "WTA Rome",
+        "home": "Pegula J.",
+        "away": "Masarova R.",
+        "kickOffTime": 1778410800000,
+        "live": False,
+        "blocked": False,
+        "odds": {"1": 1.15, "3": 5.4},
+    }
+
+    results = _parse_tennis_outcome_match(match)
+
+    assert len(results) == 2
+    assert all(isinstance(r, RawOutcomeOffer) for r in results)
+    assert {r.bookmaker_id for r in results} == {"365"}
+    assert {r.sport for r in results} == {"tennis"}
+    assert {r.league_id for r in results} == {"wta_rome"}
+    assert {r.home_team for r in results} == {"Pegula J."}
+    assert {r.away_team for r in results} == {"Masarova R."}
+    assert {r.market_type for r in results} == {"tennis_match_winner"}
+    assert {r.source_url for r in results} == {
+        "https://www.365.rs/sr/sportsko-kladjenje/tenis/T"
+    }
+    assert {
+        (r.outcome_code, r.raw_label, r.odds, r.line, r.start_time)
+        for r in results
+    } == {
+        ("home", "1", 1.15, None, _parse_start_time(1778410800000)),
+        ("away", "2", 5.4, None, _parse_start_time(1778410800000)),
+    }
+
+
+def test_parse_tennis_outcome_match_skips_live_blocked_and_doubles():
+    base_match = {
+        "leagueName": "WTA Rome",
+        "home": "Pegula J.",
+        "away": "Masarova R.",
+        "kickOffTime": 1778410800000,
+        "live": False,
+        "blocked": False,
+        "odds": {"1": 1.15, "3": 5.4},
+    }
+
+    assert _parse_tennis_outcome_match({**base_match, "live": True}) == []
+    assert _parse_tennis_outcome_match({**base_match, "blocked": True}) == []
+    assert _parse_tennis_outcome_match({**base_match, "leagueName": "ATP Doubles Rome"}) == []
+    assert _parse_tennis_outcome_match({**base_match, "home": "Player A./Player B."}) == []
+    assert _parse_tennis_outcome_match({**base_match, "away": "Player A./Player B."}) == []
+
+
+def test_parse_tennis_outcome_match_skips_invalid_rows():
+    assert _parse_tennis_outcome_match({"away": "Away", "odds": {"1": 1.9}}) == []
+    assert _parse_tennis_outcome_match({"home": "Home", "odds": {"1": 1.9}}) == []
+    assert _parse_tennis_outcome_match({"home": "Home", "away": "Away", "odds": []}) == []
+    assert _parse_tennis_outcome_match(
+        {"home": "Home", "away": "Away", "odds": {"1": 0, "3": "bad"}}
+    ) == []
+
+
 @pytest.mark.asyncio
 async def test_scrape_outcome_offers_football_prefers_bulk_feed(
     football_league_data,
@@ -678,6 +743,98 @@ async def test_scrape_outcome_offers_non_football_returns_empty():
 
     assert results == []
     http_client.get_json.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_tennis_uses_one_bulk_call_without_fallback(monkeypatch):
+    fixture_start = datetime(2026, 5, 10, 9, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "app.scrapers.bookmaker365_scraper.current_utc_time",
+        lambda: fixture_start - timedelta(hours=1),
+    )
+    monkeypatch.setattr(
+        "app.scrapers.bookmaker365_scraper.lookahead_cutoff",
+        lambda now: now + timedelta(hours=24),
+    )
+    tennis_data = {
+        "esMatches": [
+            {
+                "id": 47608215,
+                "leagueName": "WTA Rome",
+                "home": "Pegula J.",
+                "away": "Masarova R.",
+                "kickOffTime": int(fixture_start.timestamp() * 1000),
+                "live": False,
+                "blocked": False,
+                "odds": {"1": 1.15, "3": 5.4},
+            },
+            {
+                "id": 47600001,
+                "leagueName": "ATP Doubles Rome",
+                "home": "Player A./Player B.",
+                "away": "Player C./Player D.",
+                "kickOffTime": int(fixture_start.timestamp() * 1000),
+                "live": False,
+                "blocked": False,
+                "odds": {"1": 1.5, "3": 2.4},
+            },
+            {
+                "id": 47608760,
+                "leagueName": "ITF Changwon (Žene)",
+                "home": "Chang H.",
+                "away": "Koike E.",
+                "kickOffTime": int(fixture_start.timestamp() * 1000),
+                "live": True,
+                "blocked": False,
+                "odds": {"1": 1.64, "3": 2.1},
+            },
+        ]
+    }
+
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del headers
+        assert params["hours"]
+        if url == _TENNIS_BULK_URL:
+            return tennis_data
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    http_client = AsyncMock()
+    http_client.rate_limit_per_second = 4.0
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = Bookmaker365Scraper(http_client=http_client)
+    results = await scraper.scrape_outcome_offers("tennis")
+
+    assert len(results) == 2
+    assert all(row.sport == "tennis" for row in results)
+    requested_urls = [call.args[0] for call in http_client.get_json.call_args_list]
+    assert requested_urls == [_TENNIS_BULK_URL]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_tennis_has_no_fallback_when_bulk_fails(monkeypatch):
+    fixture_start = datetime(2026, 5, 10, 9, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "app.scrapers.bookmaker365_scraper.current_utc_time",
+        lambda: fixture_start,
+    )
+
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del params, headers
+        if url == _TENNIS_BULK_URL:
+            raise RuntimeError("bulk unavailable")
+        raise AssertionError(f"Unexpected fallback URL: {url}")
+
+    http_client = AsyncMock()
+    http_client.rate_limit_per_second = 4.0
+    http_client.get_json.side_effect = fake_get_json
+
+    scraper = Bookmaker365Scraper(http_client=http_client)
+    results = await scraper.scrape_outcome_offers("tennis")
+
+    assert results == []
+    requested_urls = [call.args[0] for call in http_client.get_json.call_args_list]
+    assert requested_urls == [_TENNIS_BULK_URL]
 
 
 @pytest.mark.asyncio
