@@ -19,6 +19,7 @@ from app.scrapers.superbet_scraper import (
     _extract_threshold,
     _normalize_player_name,
     _parse_event_payload,
+    _split_match_name,
 )
 
 
@@ -856,6 +857,7 @@ async def test_scrape_odds_retries_missing_batch_events_singly():
 from app.scrapers.superbet_scraper import (
     _OUTCOME_SPORT_SPECS,
     _parse_football_event_payload,
+    _parse_tennis_event_payload,
 )
 from app.models.schemas import RawOutcomeOffer
 
@@ -867,6 +869,15 @@ _FOOTBALL_CONTEXT = EventContext(
     away_team="Botafogo SP U20",
     start_time=START_DT.isoformat(),
     source_url="https://superbet.rs/kvote/fudbal/vila-nova-go-u20-vs-botafogo-sp-u20-12850987?mdt=o",
+)
+
+_TENNIS_CONTEXT = EventContext(
+    event_id=13081985,
+    league_id="itf_mbombela",
+    home_team="Romain Faucon",
+    away_team="Alec Beckley",
+    start_time=START_DT.isoformat(),
+    source_url="https://superbet.rs/kvote/tenis/romain-faucon-vs-alec-beckley-13081985?mdt=o",
 )
 
 
@@ -936,6 +947,103 @@ def _football_payload() -> dict:
             },
         ],
     }
+
+
+def _tennis_payload() -> dict:
+    return {
+        "event_id": 13081985,
+        "fixture": {
+            "event_name": "Wrong Player·Wrong Opponent",
+            "utc_date": "2099-12-31T23:59:59Z",
+        },
+        "markets": [
+            {
+                "id": 521,
+                "name": "Konačan ishod",
+                "metadata": {},
+                "odds": [
+                    _odd(
+                        2.10,
+                        code="1",
+                        name="1",
+                        info="Romain Faucon će pobediti u meču",
+                    ),
+                    _odd(
+                        1.70,
+                        code="2",
+                        name="2",
+                        info="Alec Beckley će pobediti u meču",
+                    ),
+                    _odd(
+                        9.90,
+                        code="0",
+                        name="X",
+                        info="Unknown tennis draw code",
+                    ),
+                ],
+            },
+            {
+                "id": 531,
+                "name": "Dupla šansa",
+                "metadata": {},
+                "odds": [
+                    _odd(1.01, code="10", name="1X", info="Off-scope"),
+                ],
+            },
+        ],
+    }
+
+
+def test_split_match_name_preserves_hyphenated_tennis_names():
+    assert _split_match_name("Felix Auger-Aliassime·Stefanos Tsitsipas") == (
+        "Felix Auger-Aliassime",
+        "Stefanos Tsitsipas",
+    )
+
+
+def test_parse_tennis_event_payload_emits_match_winner_offers_from_context():
+    offers = _parse_tennis_event_payload(_tennis_payload(), context=_TENNIS_CONTEXT)
+
+    assert len(offers) == 2
+    assert all(isinstance(offer, RawOutcomeOffer) for offer in offers)
+    assert {offer.bookmaker_id for offer in offers} == {"superbet"}
+    assert {offer.sport for offer in offers} == {"tennis"}
+    assert {offer.home_team for offer in offers} == {"Romain Faucon"}
+    assert {offer.away_team for offer in offers} == {"Alec Beckley"}
+    assert {offer.league_id for offer in offers} == {"itf_mbombela"}
+    assert {offer.source_url for offer in offers} == {_TENNIS_CONTEXT.source_url}
+    assert {offer.start_time for offer in offers} == {_TENNIS_CONTEXT.start_time}
+    assert {
+        (offer.market_type, offer.outcome_code, offer.raw_label, offer.odds, offer.line)
+        for offer in offers
+    } == {
+        ("tennis_match_winner", "home", "1", 2.10, None),
+        ("tennis_match_winner", "away", "2", 1.70, None),
+    }
+
+
+def test_parse_tennis_event_payload_skips_invalid_and_duplicate_odds(caplog):
+    payload = _tennis_payload()
+    payload["markets"][0]["odds"] = [
+        _odd(1.01, code="1", name="1", info="first home"),
+        _odd(1.99, code="1", name="1", info="duplicate home"),
+        _odd(1.00, code="2", name="2", info="too low"),
+        _odd(2.00, code="2", name="2", info="hidden", display=False),
+        _odd(2.10, code="2", name="2", info="inactive", status=0),
+        _odd(9.90, code="0", name="X", info="unknown"),
+    ]
+
+    offers = _parse_tennis_event_payload(payload, context=_TENNIS_CONTEXT)
+
+    assert [(offer.outcome_code, offer.odds) for offer in offers] == [("home", 1.01)]
+    assert "duplicate tennis outcome home" in caplog.text
+
+
+def test_parse_tennis_event_payload_handles_empty_or_missing_market():
+    assert _parse_tennis_event_payload({"event_id": 1, "markets": []}, context=_TENNIS_CONTEXT) == []
+    payload = _tennis_payload()
+    payload["markets"] = [{"id": 999, "name": "Hendikep", "odds": payload["markets"][0]["odds"]}]
+    assert _parse_tennis_event_payload(payload, context=_TENNIS_CONTEXT) == []
 
 
 def test_parse_football_event_payload_emits_three_target_markets():
@@ -1046,8 +1154,9 @@ def test_outcome_spec_does_not_pollute_basketball_league_list():
     """Football must not appear in get_supported_leagues() (basketball lane)."""
     scraper = SuperbetScraper(http_client=AsyncMock())
     assert scraper.get_supported_leagues() == ["basketball"]
-    assert scraper.get_supported_outcome_sports() == ["football"]
+    assert scraper.get_supported_outcome_sports() == ["football", "tennis"]
     assert "football" in _OUTCOME_SPORT_SPECS
+    assert "tennis" in _OUTCOME_SPORT_SPECS
 
 
 def test_extract_league_id_default_kwarg_falls_back_to_sport_scope():
@@ -1066,10 +1175,11 @@ def test_extract_league_id_default_kwarg_falls_back_to_sport_scope():
 
 
 @pytest.mark.asyncio
-async def test_scrape_outcome_offers_only_supports_football():
+async def test_scrape_outcome_offers_unsupported_sport_does_not_fetch():
     scraper = SuperbetScraper(http_client=AsyncMock())
     assert await scraper.scrape_outcome_offers("basketball") == []
-    assert await scraper.scrape_outcome_offers("tennis") == []
+    scraper._http.get_json.assert_not_called()
+    scraper._http.get_sse_json.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1145,6 +1255,103 @@ async def test_scrape_outcome_offers_football_end_to_end():
     totals = [o for o in offers if o.market_type == "football_total_goals"]
     assert {o.line for o in totals} == {2.5}
     assert {o.outcome_code for o in totals} == {"over", "under"}
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_tennis_filters_doubles_and_batches_details():
+    singles = [
+        {
+            "eventId": 20000 + index,
+            "sportId": 2,
+            "matchName": f"Player {index}·Opponent {index}",
+            "tournamentId": 99122,
+            "categoryId": 205,
+            "utcDate": START_Z,
+        }
+        for index in range(17)
+    ]
+    doubles = [
+        {
+            "eventId": 30000,
+            "sportId": 2,
+            "matchName": "C.Gauff/C.McNally·A.Sutjiadi/J.Tjen",
+            "tournamentId": 99122,
+            "categoryId": 205,
+            "utcDate": START_Z,
+        },
+        {
+            "eventId": 30001,
+            "sportId": 2,
+            "matchName": "C.Gauff／C.McNally·A.Sutjiadi／J.Tjen",
+            "tournamentId": 99122,
+            "categoryId": 205,
+            "utcDate": START_Z,
+        },
+        {
+            "eventId": 30002,
+            "sportId": 2,
+            "matchName": "C.Gauff\\C.McNally·A.Sutjiadi\\J.Tjen",
+            "tournamentId": 99122,
+            "categoryId": 205,
+            "utcDate": START_Z,
+        },
+    ]
+    doubles_ids = {event["eventId"] for event in doubles}
+
+    async def fake_get_json(url: str, *, params=None, headers=None):
+        del headers
+        if url == _STRUCTURE_URL:
+            return {
+                "data": {
+                    "tournaments": [
+                        {"id": 99122, "localNames": {"sr-Latn-RS": "ITF Mbombela"}},
+                    ],
+                    "categories": [
+                        {"id": 205, "localNames": {"sr-Latn-RS": "ITF"}},
+                    ],
+                }
+            }
+        if url == _MARKET_GROUPS_URL.format(sport_id=2):
+            raise AssertionError("Tennis lane must not request market-groups")
+        if url == _EVENTS_BY_DATE_URL:
+            assert params is not None
+            assert params["sportId"] == "2"
+            assert params["offerState"] == "prematch"
+            return {"data": [*singles, *doubles]}
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    async def fake_get_sse_json(url: str, *, params=None, headers=None, max_messages=1, read_timeout=None):
+        del headers
+        assert url == _EVENT_SUBSCRIPTION_URL
+        assert max_messages == 1
+        assert read_timeout == 10.0
+        assert params is not None
+        event_ids = [int(value) for value in params["events"].split(",")]
+        assert doubles_ids.isdisjoint(event_ids)
+        payloads = []
+        for event_id in event_ids:
+            payload = _tennis_payload()
+            payload["event_id"] = event_id
+            payloads.append(payload)
+        return [payloads]
+
+    http_client = AsyncMock()
+    http_client.get_json.side_effect = fake_get_json
+    http_client.get_sse_json.side_effect = fake_get_sse_json
+
+    scraper = SuperbetScraper(http_client=http_client)
+    offers = await scraper.scrape_outcome_offers("tennis")
+
+    assert len(offers) == 17 * 2
+    assert {offer.sport for offer in offers} == {"tennis"}
+    assert {offer.market_type for offer in offers} == {"tennis_match_winner"}
+    assert {offer.league_id for offer in offers} == {"itf_mbombela"}
+    assert http_client.get_json.call_count == 2
+    assert http_client.get_sse_json.call_count == 2
+    requested_batches = [
+        call.kwargs["params"]["events"] for call in http_client.get_sse_json.call_args_list
+    ]
+    assert [len(batch.split(",")) for batch in requested_batches] == [16, 1]
 
 
 @pytest.mark.asyncio

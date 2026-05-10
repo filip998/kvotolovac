@@ -149,6 +149,7 @@ _PLAYER_TURNOVERS_MARKET_NAMES = {
 _FOOTBALL_RESULT_MARKET_ID = 547
 _FOOTBALL_DOUBLE_CHANCE_MARKET_ID = 531
 _FOOTBALL_TOTAL_GOALS_MARKET_ID = 200734
+_TENNIS_MATCH_WINNER_MARKET_ID = 521
 _FOOTBALL_TARGET_TOTAL_LINE = 2.5
 
 _FOOTBALL_RESULT_OUTCOMES: dict[str, tuple[str, str]] = {
@@ -161,6 +162,10 @@ _FOOTBALL_DOUBLE_CHANCE_OUTCOMES: dict[str, tuple[str, str]] = {
     "10": ("home_or_draw", "1X"),
     "12": ("home_or_away", "12"),
     "02": ("draw_or_away", "X2"),
+}
+_TENNIS_MATCH_WINNER_OUTCOMES: dict[str, tuple[str, str]] = {
+    "1": ("home", "1"),
+    "2": ("away", "2"),
 }
 
 # Side detection for ``Ukupno golova`` is based on the localized prefix
@@ -227,6 +232,12 @@ _OUTCOME_SPORT_SPECS: dict[str, SportSpec] = {
         sport_name="football",
         sport_id=5,
         route_slug="fudbal",
+    ),
+    "tennis": SportSpec(
+        scope_id="tennis",
+        sport_name="tennis",
+        sport_id=2,
+        route_slug="tenis",
     ),
 }
 
@@ -298,6 +309,27 @@ def _build_source_url(spec: SportSpec, event_id: int, home_team: str, away_team:
     if not home_slug or not away_slug:
         return None
     return f"https://superbet.rs/kvote/{spec.route_slug}/{home_slug}-vs-{away_slug}-{event_id}?mdt=o"
+
+
+_TENNIS_DOUBLES_TOKENS = {"doubles", "double", "dublovi", "parovi"}
+_TENNIS_DOUBLES_SEPARATORS = ("/", "／", "\\")
+
+
+def _has_tennis_doubles_separator(value: str) -> bool:
+    cleaned = value.replace("\xa0", " ")
+    return any(separator in cleaned for separator in _TENNIS_DOUBLES_SEPARATORS)
+
+
+def _is_tennis_doubles_event_name(
+    raw_match_name: str | None,
+    home_team: str,
+    away_team: str,
+) -> bool:
+    if _has_tennis_doubles_separator(home_team) or _has_tennis_doubles_separator(away_team):
+        return True
+
+    normalized_name = normalize_identity_text(raw_match_name)
+    return bool(set(normalized_name.split()) & _TENNIS_DOUBLES_TOKENS)
 
 
 def _split_match_name(value: str | None) -> tuple[str, str] | None:
@@ -623,6 +655,74 @@ def _parse_football_event_payload(
     return results
 
 
+def _parse_tennis_event_payload(
+    event_payload: dict,
+    *,
+    context: EventContext,
+    bookmaker_id: str = _BOOKMAKER_ID,
+) -> list[RawOutcomeOffer]:
+    markets = event_payload.get("markets")
+    if not isinstance(markets, list):
+        return []
+
+    results: list[RawOutcomeOffer] = []
+    seen: set[str] = set()
+
+    for market in markets:
+        if not isinstance(market, dict):
+            continue
+        market_id = _parse_int(market.get("id"))
+        if market_id != _TENNIS_MATCH_WINNER_MARKET_ID:
+            continue
+
+        odds = market.get("odds")
+        if not isinstance(odds, list):
+            continue
+
+        for odd in odds:
+            if not isinstance(odd, dict) or not _odd_is_displayable(odd):
+                continue
+            price = _parse_float(odd.get("price"))
+            if price is None or price <= 1.0:
+                continue
+            metadata = odd.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+
+            code = metadata.get("code")
+            mapping = _TENNIS_MATCH_WINNER_OUTCOMES.get(str(code) if code is not None else "")
+            if mapping is None:
+                continue
+            outcome_code, raw_label = mapping
+            if outcome_code in seen:
+                logger.warning(
+                    "Superbet: duplicate tennis outcome %s for event %s",
+                    outcome_code,
+                    context.event_id,
+                )
+                continue
+            seen.add(outcome_code)
+
+            results.append(
+                RawOutcomeOffer(
+                    bookmaker_id=bookmaker_id,
+                    league_id=context.league_id,
+                    sport="tennis",
+                    home_team=context.home_team,
+                    away_team=context.away_team,
+                    source_url=context.source_url,
+                    market_type="tennis_match_winner",
+                    outcome_code=outcome_code,
+                    odds=price,
+                    line=None,
+                    raw_label=raw_label,
+                    start_time=context.start_time,
+                )
+            )
+
+    return results
+
+
 def _parse_football_odd(
     *,
     market_id: int,
@@ -885,6 +985,13 @@ class SuperbetScraper(BaseScraper):
                 continue
 
             home_team, away_team = matchup
+            if spec.scope_id == "tennis" and _is_tennis_doubles_event_name(
+                event.get("matchName"),
+                home_team,
+                away_team,
+            ):
+                continue
+
             tournament_id = _parse_int(event.get("tournamentId"))
             category_id = _parse_int(event.get("categoryId"))
 
@@ -1042,13 +1149,14 @@ class SuperbetScraper(BaseScraper):
             detail_by_event.update(batch)
 
         offers: list[RawOutcomeOffer] = []
+        parser = _parse_tennis_event_payload if sport == "tennis" else _parse_football_event_payload
         for event_id in event_ids:
             payload = detail_by_event.get(event_id)
             context = contexts.get(event_id)
             if payload is None or context is None:
                 continue
             offers.extend(
-                _parse_football_event_payload(
+                parser(
                     payload,
                     context=context,
                     bookmaker_id=_BOOKMAKER_ID,
