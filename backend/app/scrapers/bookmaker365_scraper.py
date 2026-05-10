@@ -33,6 +33,8 @@ _FOOTBALL_LEAGUE_PREVIEW_URL = (
     "https://ibet2.365.rs/restapi/offer/sr/sport/S/league/{league_id}/mob"
 )
 _FOOTBALL_BULK_URL = "https://ibet2.365.rs/restapi/offer/sr/sport/S/mob"
+_TENNIS_BULK_URL = "https://ibet2.365.rs/restapi/offer/sr/sport/T/mob"
+_TENNIS_PAGE_URL = "https://www.365.rs/sr/sportsko-kladjenje/tenis/T"
 
 _DEFAULT_HEADERS: dict[str, str] = {
     "Accept": "application/json",
@@ -173,6 +175,10 @@ _FOOTBALL_OUTCOME_CODES: dict[str, tuple[str, str, float | None, str]] = {
     "9": ("football_double_chance", "draw_or_away", None, "X2"),
     "22": ("football_total_goals", "under", 2.5, "0-2"),
     "24": ("football_total_goals", "over", 2.5, "3+"),
+}
+_TENNIS_OUTCOME_CODES: dict[str, tuple[str, str]] = {
+    "1": ("home", "1"),
+    "3": ("away", "2"),
 }
 _CANONICAL_LEAGUES: dict[str, str] = {
     "nba play off": "nba",
@@ -463,6 +469,66 @@ def _parse_football_outcome_match(match: dict) -> list[RawOutcomeOffer]:
     return results
 
 
+def _is_tennis_doubles_match(match: dict) -> bool:
+    league_name = str(match.get("leagueName") or "")
+    home_team = str(match.get("home") or "")
+    away_team = str(match.get("away") or "")
+    league_key = _normalize_league_key(league_name)
+    if any(token in league_key.split() for token in ("doubles", "double", "parovi")):
+        return True
+    return "/" in home_team or "/" in away_team
+
+
+def _parse_tennis_outcome_match(match: dict) -> list[RawOutcomeOffer]:
+    if match.get("live") is True:
+        return []
+    if match.get("blocked") is True:
+        return []
+    if _is_tennis_doubles_match(match):
+        return []
+
+    matchup = recover_matchup_from_payload(match)
+    home_team = matchup.home_team
+    away_team = matchup.away_team
+    if not home_team or not away_team:
+        return []
+    if matchup.recovered:
+        logger.debug(
+            "365: recovered tennis matchup from %s for match %s",
+            matchup.source,
+            match.get("id") or match.get("matchCode"),
+        )
+
+    odds_map = match.get("odds") or {}
+    if not isinstance(odds_map, dict):
+        return []
+
+    league_id = _extract_league_id(match.get("leagueName", ""), default="tennis")
+    start_time = _parse_start_time(match.get("kickOffTime"))
+    results: list[RawOutcomeOffer] = []
+    for code, (outcome_code, raw_label) in _TENNIS_OUTCOME_CODES.items():
+        odds = _coerce_positive_odds(odds_map.get(code))
+        if odds is None:
+            continue
+        results.append(
+            RawOutcomeOffer(
+                bookmaker_id=_BOOKMAKER_ID,
+                league_id=league_id,
+                sport="tennis",
+                home_team=home_team,
+                away_team=away_team,
+                source_url=_TENNIS_PAGE_URL,
+                market_type="tennis_match_winner",
+                outcome_code=outcome_code,
+                odds=odds,
+                line=None,
+                raw_label=raw_label,
+                start_time=start_time,
+            )
+        )
+    return results
+
+
 def _parse_basketball_matches(
     regular_matches: list[dict],
     player_matches: list[dict],
@@ -740,13 +806,51 @@ class Bookmaker365Scraper(BaseScraper):
         return parsed.rows
 
     def get_supported_outcome_sports(self) -> list[str]:
-        return ["football"]
+        return ["football", "tennis"]
 
     async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        cutoff_ms = int(lookahead_cutoff(current_utc_time()).timestamp() * 1000)
+        if sport == "tennis":
+            tennis_matches = await self._fetch_bulk_matches(
+                _TENNIS_BULK_URL,
+                label="tennis",
+                cutoff_ms=cutoff_ms,
+            )
+            if tennis_matches is None:
+                return []
+
+            results: list[RawOutcomeOffer] = []
+            skipped_live = 0
+            skipped_blocked = 0
+            skipped_doubles = 0
+            for match in tennis_matches:
+                if match.get("live") is True:
+                    skipped_live += 1
+                    continue
+                if match.get("blocked") is True:
+                    skipped_blocked += 1
+                    continue
+                if _is_tennis_doubles_match(match):
+                    skipped_doubles += 1
+                    continue
+                results.extend(_parse_tennis_outcome_match(match))
+
+            logger.info(
+                (
+                    "365: using tennis bulk feed (%d offers from %d matches; "
+                    "skipped %d live, %d blocked, %d doubles)"
+                ),
+                len(results),
+                len(tennis_matches),
+                skipped_live,
+                skipped_blocked,
+                skipped_doubles,
+            )
+            return results
+
         if sport != "football":
             return []
 
-        cutoff_ms = int(lookahead_cutoff(current_utc_time()).timestamp() * 1000)
         bulk_matches = await self._fetch_bulk_matches(
             _FOOTBALL_BULK_URL,
             label="football",
