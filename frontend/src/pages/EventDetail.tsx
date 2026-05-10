@@ -1,31 +1,11 @@
 import { useParams, Link } from 'react-router-dom';
 import { useEvent, useEventOdds, useEventOutcomeOffers } from '../api/hooks';
 import { formatDateTime } from '../utils/format';
-import { MARKET_TYPE_LABELS } from '../utils/constants';
-import OddsTable from '../components/OddsTable';
-import OutcomeOffersTable from '../components/OutcomeOffersTable';
 import LoadingSpinner from '../components/LoadingSpinner';
 import PageShell from '../components/PageShell';
-import type { EventOddsOffer, OutcomeOffer } from '../api/types';
 import BookmakerFilterDeck from '../components/BookmakerFilterDeck';
 import { useBookmakerFilter } from '../hooks/useBookmakerFilter';
-
-interface MarketGroup {
-  key: string;
-  title: string;
-  offers: EventOddsOffer[];
-}
-
-interface OutcomeMarketGroup {
-  key: string;
-  title: string;
-  offers: OutcomeOffer[];
-}
-
-function formatOutcomeGroupTitle(offer: OutcomeOffer): string {
-  const typeLabel = MARKET_TYPE_LABELS[offer.market_type] || offer.market_type;
-  return offer.line === null ? typeLabel : `${typeLabel} ${offer.line.toFixed(1)}`;
-}
+import EventOddsLayout from '../components/EventOddsLayout';
 
 function eventTitle(homeTeam?: string | null, awayTeam?: string | null): string {
   if (homeTeam && awayTeam) return `${homeTeam} vs ${awayTeam}`;
@@ -65,51 +45,15 @@ export default function EventDetail() {
     );
   }
 
-  const marketGroups: MarketGroup[] = [];
-  const marketMap = new Map<string, EventOddsOffer[]>();
-  const outcomeMarketGroups: OutcomeMarketGroup[] = [];
-  const outcomeMarketMap = new Map<string, OutcomeOffer[]>();
-
-  for (const offer of filteredOdds) {
-    const playerKey = offer.event_scoped_player_key ?? (offer.player_name ? `raw:${offer.player_name}` : '');
-    const key = `${offer.market_type}|${playerKey}`;
-    if (!marketMap.has(key)) marketMap.set(key, []);
-    marketMap.get(key)!.push(offer);
-  }
-
-  for (const [key, offers] of marketMap) {
-    const { market_type: marketType } = offers[0];
-    const playerName = offers[0].event_player_display_name ?? offers[0].player_name;
-    const typeLabel = MARKET_TYPE_LABELS[marketType] || marketType;
-    const title = playerName ? `${playerName} — ${typeLabel}` : typeLabel;
-    marketGroups.push({ key, title, offers });
-  }
-
-  for (const offer of filteredOutcomeOffers) {
-    const key = `${offer.market_type}|${offer.line ?? ''}`;
-    if (!outcomeMarketMap.has(key)) outcomeMarketMap.set(key, []);
-    outcomeMarketMap.get(key)!.push(offer);
-  }
-
-  for (const [key, offers] of outcomeMarketMap) {
-    outcomeMarketGroups.push({
-      key,
-      title: formatOutcomeGroupTitle(offers[0]),
-      offers,
-    });
-  }
-
-  const visiblePlayerKeys = new Set(
-    filteredOdds
-      .map((offer) => offer.event_scoped_player_key)
-      .filter((key): key is string => Boolean(key))
-  );
-  const trackedPlayers = event.players
-    .filter((player) => visiblePlayerKeys.has(player.key))
-    .map((player) => player.display_name)
-    .sort((a, b) => a.localeCompare(b));
   const visibleOfferCount = filteredOdds.length + filteredOutcomeOffers.length;
   const title = eventTitle(event.display_home_team, event.display_away_team);
+
+  // Latest scraped_at across the visible offers (for the wire/ticker).
+  const lastUpdated =
+    [
+      ...filteredOutcomeOffers.map((o) => o.scraped_at).filter((s): s is string => Boolean(s)),
+      ...filteredOdds.map((o) => o.scraped_at).filter((s): s is string => Boolean(s)),
+    ].sort().slice(-1)[0] ?? event.updated_at ?? event.created_at ?? null;
 
   return (
     <div className="space-y-6">
@@ -133,10 +77,6 @@ export default function EventDetail() {
             </span>
           </div>
           <div className="flex items-baseline gap-1.5">
-            <span className="font-mono text-lg font-semibold text-text">{trackedPlayers.length}</span>
-            <span className="text-xs text-text-muted">canonical players</span>
-          </div>
-          <div className="flex items-baseline gap-1.5">
             <span className="font-mono text-lg font-semibold text-text">{event.members.length}</span>
             <span className="text-xs text-text-muted">member books</span>
           </div>
@@ -147,65 +87,11 @@ export default function EventDetail() {
           onChange={updateSelectedBookmakerIds}
         />
 
-        {trackedPlayers.length > 0 && (
-          <section>
-            <h3 className="mb-3 text-[11px] font-medium uppercase tracking-wider text-text-muted">
-              Canonical players
-            </h3>
-            <div className="flex flex-wrap gap-1.5">
-              {trackedPlayers.map((player) => (
-                <span
-                  key={player}
-                  className="rounded-md border border-border bg-surface px-3 py-1.5 text-xs text-text-secondary"
-                >
-                  {player}
-                </span>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {marketGroups.length === 0 && outcomeMarketGroups.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center">
-            <p className="text-sm text-text-muted">
-              {selectedBookmakerIds.length
-                ? 'No odds from the selected bookmakers for this event right now.'
-                : 'No odds data available for this event yet.'}
-            </p>
-          </div>
-        ) : (
-          <>
-            {outcomeMarketGroups.length > 0 && (
-              <section className="space-y-4">
-                <h3 className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-                  Market offers
-                </h3>
-                {outcomeMarketGroups.map((group) => (
-                  <OutcomeOffersTable
-                    key={group.key}
-                    title={group.title}
-                    offers={group.offers}
-                  />
-                ))}
-              </section>
-            )}
-
-            {marketGroups.length > 0 && (
-              <section className="space-y-4">
-                <h3 className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-                  Player markets & odds
-                </h3>
-                {marketGroups.map((group) => (
-                  <OddsTable
-                    key={group.key}
-                    title={group.title}
-                    offers={group.offers}
-                  />
-                ))}
-              </section>
-            )}
-          </>
-        )}
+        <EventOddsLayout
+          outcomeOffers={filteredOutcomeOffers}
+          oddsOffers={filteredOdds}
+          lastUpdated={lastUpdated}
+        />
       </PageShell>
     </div>
   );
