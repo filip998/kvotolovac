@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -13,6 +15,7 @@ from app.scrapers.merkurxtip_scraper import (
     _parse_handicap_ot_match,
     _parse_football_outcome_match,
     _parse_tennis_outcome_match,
+    _tennis_skip_reason,
     _get_player_matches,
     _get_total_match_ids,
     _parse_start_time,
@@ -25,6 +28,11 @@ LEAGUE_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "merkurxtip_league.js
 MATCH_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "merkurxtip_match.json"
 TOTALS_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "merkurxtip_game_total_ot.json"
 FOOTBALL_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "merkurxtip_football_offer.json"
+TENNIS_NOW = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
+
+
+def _tennis_kickoff_ms(**delta_kwargs) -> int:
+    return int((TENNIS_NOW + timedelta(**delta_kwargs)).timestamp() * 1000)
 
 
 @pytest.fixture
@@ -70,12 +78,17 @@ def test_parse_start_time():
     assert "2026" in result
 
 
+def test_parse_start_time_numeric_string():
+    assert _parse_start_time("1778407200000") == "2026-05-10T10:00:00+00:00"
+
+
 def test_parse_start_time_none():
     assert _parse_start_time(None) is None
 
 
 def test_parse_start_time_zero():
     assert _parse_start_time(0) is None
+    assert _parse_start_time("0") is None
 
 
 # ── _extract_league_id ────────────────────────────────────
@@ -682,28 +695,98 @@ def test_parse_tennis_outcome_match_emits_match_winner_offers():
     }
 
 
-def test_parse_tennis_outcome_match_skips_live_blocked_and_doubles():
+def test_parse_tennis_outcome_match_allows_future_live_flagged_prematch():
+    results = _parse_tennis_outcome_match(
+        {
+            "id": 133125569,
+            "home": "C. Ruud",
+            "away": "J. Lehecka",
+            "leagueName": "Rome Masters",
+            "kickOffTime": str(_tennis_kickoff_ms(minutes=10)),
+            "live": True,
+            "blocked": False,
+            "odds": {"1": 1.55, "3": 2.3, "251": 1.82},
+        },
+        now=TENNIS_NOW,
+    )
+
+    assert len(results) == 2
+    assert {row.outcome_code for row in results} == {"home", "away"}
+    assert {row.start_time for row in results} == {"2026-05-10T12:10:00+00:00"}
+
+
+@pytest.mark.parametrize(
+    ("delta_kwargs", "expected_reason"),
+    [
+        ({"minutes": 5}, "live_near_or_past_start"),
+        ({"seconds": 35}, "live_near_or_past_start"),
+        ({"minutes": -1}, "live_near_or_past_start"),
+    ],
+)
+def test_parse_tennis_outcome_match_skips_live_rows_near_start_or_past(
+    delta_kwargs,
+    expected_reason,
+):
+    match = {
+        "home": "C. Ruud",
+        "away": "J. Lehecka",
+        "leagueName": "Rome Masters",
+        "kickOffTime": _tennis_kickoff_ms(**delta_kwargs),
+        "live": True,
+        "blocked": False,
+        "odds": {"1": 1.55, "3": 2.3},
+    }
+
+    assert _parse_tennis_outcome_match(match, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(match, now=TENNIS_NOW) == expected_reason
+
+
+def test_parse_tennis_outcome_match_skips_live_rows_with_bad_start_time():
+    missing_start = {
+        "home": "C. Ruud",
+        "away": "J. Lehecka",
+        "leagueName": "Rome Masters",
+        "live": True,
+        "blocked": False,
+        "odds": {"1": 1.55, "3": 2.3},
+    }
+    invalid_start = {**missing_start, "kickOffTime": "not-an-epoch"}
+
+    assert _parse_tennis_outcome_match(missing_start, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(missing_start, now=TENNIS_NOW) == "missing_start_time"
+    assert _parse_tennis_outcome_match(invalid_start, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(invalid_start, now=TENNIS_NOW) == "invalid_start_time"
+
+
+def test_parse_tennis_outcome_match_applies_skip_precedence():
     base_match = {
         "home": "C. Ruud",
         "away": "J. Lehecka",
         "leagueName": "Rome",
-        "kickOffTime": 1778403600000,
+        "kickOffTime": _tennis_kickoff_ms(minutes=10),
         "live": False,
         "blocked": False,
         "odds": {"1": 1.55, "3": 2.3},
     }
 
-    assert _parse_tennis_outcome_match({**base_match, "live": True}) == []
+    assert _parse_tennis_outcome_match({**base_match, "live": True}, now=TENNIS_NOW) != []
     assert _parse_tennis_outcome_match({**base_match, "blocked": True}) == []
+    assert _tennis_skip_reason({**base_match, "blocked": True}, now=TENNIS_NOW) == "blocked"
     assert _parse_tennis_outcome_match({**base_match, "leagueName": "Rome Doubles"}) == []
+    assert _tennis_skip_reason({**base_match, "leagueName": "Rome Doubles"}, now=TENNIS_NOW) == "doubles"
     assert _parse_tennis_outcome_match({**base_match, "home": "A. Player/B. Player"}) == []
+    assert _tennis_skip_reason({**base_match, "home": "A. Player/B. Player"}, now=TENNIS_NOW) == "doubles"
     assert _parse_tennis_outcome_match({**base_match, "away": "A. Player/B. Player"}) == []
+    assert _tennis_skip_reason({**base_match, "away": "A. Player/B. Player"}, now=TENNIS_NOW) == "doubles"
 
 
 def test_parse_tennis_outcome_match_skips_invalid_rows():
     assert _parse_tennis_outcome_match({"away": "Away", "odds": {"1": 1.9}}) == []
+    assert _tennis_skip_reason({"away": "Away", "odds": {"1": 1.9}}) == "missing_competitor"
     assert _parse_tennis_outcome_match({"home": "Home", "odds": {"1": 1.9}}) == []
+    assert _tennis_skip_reason({"home": "Home", "odds": {"1": 1.9}}) == "missing_competitor"
     assert _parse_tennis_outcome_match({"home": "Home", "away": "Away", "odds": []}) == []
+    assert _tennis_skip_reason({"home": "Home", "away": "Away", "odds": []}) == "invalid_odds_map"
     assert _parse_tennis_outcome_match(
         {"home": "Home", "away": "Away", "odds": {"1": 0, "3": "bad"}}
     ) == []
@@ -824,9 +907,10 @@ async def test_scrape_outcome_offers_non_football_returns_empty():
 
 
 @pytest.mark.asyncio
-async def test_scrape_outcome_offers_tennis_uses_one_sport_listing():
+async def test_scrape_outcome_offers_tennis_uses_one_sport_listing(caplog):
     scraper = MerkurXTipScraper()
     calls: list[tuple[str, dict]] = []
+    caplog.set_level(logging.INFO)
     tennis_data = {
         "esMatches": [
             {
@@ -838,6 +922,26 @@ async def test_scrape_outcome_offers_tennis_uses_one_sport_listing():
                 "live": False,
                 "blocked": False,
                 "odds": {"1": 1.55, "3": 2.3},
+            },
+            {
+                "id": 133125570,
+                "home": "Future H.",
+                "away": "Future A.",
+                "leagueName": "Rome",
+                "kickOffTime": _tennis_kickoff_ms(minutes=10),
+                "live": True,
+                "blocked": False,
+                "odds": {"1": 1.8, "3": 1.95},
+            },
+            {
+                "id": 133125571,
+                "home": "Soon H.",
+                "away": "Soon A.",
+                "leagueName": "Rome",
+                "kickOffTime": _tennis_kickoff_ms(minutes=5),
+                "live": True,
+                "blocked": False,
+                "odds": {"1": 1.8, "3": 1.95},
             },
             {
                 "id": 133125545,
@@ -860,14 +964,18 @@ async def test_scrape_outcome_offers_tennis_uses_one_sport_listing():
             pytest.fail("tennis match winner import should not fetch per-match details")
         raise AssertionError(f"Unexpected URL: {url}")
 
-    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+    with (
+        patch("app.scrapers.merkurxtip_scraper.current_utc_time", return_value=TENNIS_NOW),
+        patch.object(scraper._http, "get_json", side_effect=mock_get),
+    ):
         results = await scraper.scrape_outcome_offers("tennis")
 
-    assert len(results) == 2
+    assert len(results) == 4
     assert all(r.sport == "tennis" for r in results)
     assert len(calls) == 1
     assert calls[0][0].endswith("/sport/T/mob")
     assert calls[0][1]["hours"]
+    assert "skipped={'live_near_or_past_start': 1, 'doubles': 1}" in caplog.text
 
 
 @pytest.mark.asyncio
