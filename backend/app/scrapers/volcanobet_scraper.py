@@ -19,6 +19,7 @@ _OFFER_BASE_URL = f"{_BASE_URL}/offer/GetOfferBase"
 _FIXTURES_URL = f"{_BASE_URL}/offer/GetFixtures"
 _EVENT_MARKETS_URL = f"{_BASE_URL}/Offer/GetEventMarkets"
 _SOURCE_URL = "https://www.volcanobet.rs/sport-v2/prematch/events"
+_TENNIS_SOURCE_URL = "https://www.volcanobet.rs/sport-v2/prematch/events?sportId=2"
 
 _BOOKMAKER_ID = "volcanobet"
 _LANG = "sr"
@@ -26,6 +27,7 @@ _CLIENT_TYPE = "WebConsumer"
 _DATA_PROVIDER_ID = "3c2ce91e-5abe-46df-8120-17007b544ff1-V3"
 _FALLBACK_BASKETBALL_SPORT_ID = "3"
 _FALLBACK_FOOTBALL_SPORT_ID = "1"
+_FALLBACK_TENNIS_SPORT_ID = "2"
 
 _DEFAULT_HEADERS: dict[str, str] = {
     "Accept": "application/json, text/plain, */*",
@@ -38,6 +40,7 @@ _DEFAULT_HEADERS: dict[str, str] = {
 }
 
 _EVENT_BATCH_SIZE = 24
+_TENNIS_EVENT_BATCH_SIZE = 128
 _EVENT_BATCH_CONCURRENCY = 4
 
 _PLAYER_POINTS_MARKET_NAME = "broj poena igraca uklj prod"
@@ -49,11 +52,13 @@ _FALLBACK_GAME_HANDICAP_OT_MARKET_IDS = ("223",)
 _FALLBACK_FOOTBALL_RESULT_MARKET_IDS = ("1",)
 _FALLBACK_FOOTBALL_DOUBLE_CHANCE_MARKET_IDS = ("10",)
 _FALLBACK_FOOTBALL_TOTAL_GOALS_MARKET_IDS = ("18",)
+_FALLBACK_TENNIS_MATCH_WINNER_MARKET_IDS = ("186",)
 
 _FOOTBALL_RESULT_MARKET_NAME = "osnovna ponuda"
 _FOOTBALL_DOUBLE_CHANCE_MARKET_NAME = "dupla sansa"
 _FOOTBALL_TOTAL_GOALS_MARKET_NAME = "zbir golova"
 _FOOTBALL_TOTAL_GOALS_LINE = 2.5
+_TENNIS_MATCH_WINNER_MARKET_NAME = "pobednik"
 _FOOTBALL_RESULT_OUTCOMES: dict[str, tuple[str, str]] = {
     "1": ("home", "1"),
     "x": ("draw", "X"),
@@ -68,6 +73,12 @@ _FOOTBALL_TOTAL_GOALS_OUTCOMES: dict[str, tuple[str, str]] = {
     "under": ("under", "0-2"),
     "over": ("over", "3+"),
 }
+_TENNIS_MATCH_WINNER_OUTCOMES: dict[str, tuple[str, str]] = {
+    "1": ("home", "1"),
+    "2": ("away", "2"),
+}
+_TENNIS_DOUBLES_TOKENS = frozenset({"doubles", "double", "dublovi", "parovi"})
+_TENNIS_DOUBLES_SEPARATORS = ("/", "／", "\\")
 
 _CANONICAL_LEAGUES: dict[str, str] = {
     "nba": "nba",
@@ -103,6 +114,11 @@ class OfferBaseLookup:
     football_total_goals_market_ids: tuple[
         str, ...
     ] = _FALLBACK_FOOTBALL_TOTAL_GOALS_MARKET_IDS
+    tennis_sport_id: str = _FALLBACK_TENNIS_SPORT_ID
+    tennis_league_names: dict[str, str] = field(default_factory=dict)
+    tennis_match_winner_market_ids: tuple[
+        str, ...
+    ] = _FALLBACK_TENNIS_MATCH_WINNER_MARKET_IDS
 
 
 @dataclass(frozen=True)
@@ -254,6 +270,7 @@ def _build_offer_base_lookup(data: object) -> OfferBaseLookup:
     sports = payload.get("s") or []
     basketball_sport_id = _FALLBACK_BASKETBALL_SPORT_ID
     football_sport_id = _FALLBACK_FOOTBALL_SPORT_ID
+    tennis_sport_id = _FALLBACK_TENNIS_SPORT_ID
     for sport in sports:
         if not isinstance(sport, dict):
             continue
@@ -265,10 +282,13 @@ def _build_offer_base_lookup(data: object) -> OfferBaseLookup:
             basketball_sport_id = sport_id
         elif normalized_sport_name == "fudbal":
             football_sport_id = sport_id
+        elif normalized_sport_name == "tenis":
+            tennis_sport_id = sport_id
 
     leagues = payload.get("le") or []
     league_names = _extract_league_names(leagues, basketball_sport_id)
     football_league_names = _extract_league_names(leagues, football_sport_id)
+    tennis_league_names = _extract_league_names(leagues, tennis_sport_id)
 
     markets = payload.get("m") or []
     player_points_market_ids = _extract_market_ids(
@@ -306,6 +326,12 @@ def _build_offer_base_lookup(data: object) -> OfferBaseLookup:
         sport_id=football_sport_id,
         normalized_name=_FOOTBALL_TOTAL_GOALS_MARKET_NAME,
     )
+    tennis_match_winner_market_ids = _extract_market_ids(
+        markets,
+        sport_id=tennis_sport_id,
+        normalized_name=_TENNIS_MATCH_WINNER_MARKET_NAME,
+        expected_bet_options=frozenset({"1", "2"}),
+    )
 
     return OfferBaseLookup(
         basketball_sport_id=basketball_sport_id,
@@ -331,10 +357,20 @@ def _build_offer_base_lookup(data: object) -> OfferBaseLookup:
         football_total_goals_market_ids=(
             football_total_goals_market_ids or _FALLBACK_FOOTBALL_TOTAL_GOALS_MARKET_IDS
         ),
+        tennis_sport_id=tennis_sport_id,
+        tennis_league_names=tennis_league_names,
+        tennis_match_winner_market_ids=(
+            tennis_match_winner_market_ids
+            or _FALLBACK_TENNIS_MATCH_WINNER_MARKET_IDS
+        ),
     )
 
 
-def _extract_teams(participants: object) -> tuple[str, str] | None:
+def _extract_teams(
+    participants: object,
+    *,
+    require_explicit_order: bool = False,
+) -> tuple[str, str] | None:
     if not isinstance(participants, list):
         return None
 
@@ -345,13 +381,27 @@ def _extract_teams(participants: object) -> tuple[str, str] | None:
         name = _clean_text(participant.get("n"))
         if name is None:
             continue
+        raw_order = participant.get("p")
+        if require_explicit_order and (raw_order is None or str(raw_order).strip() == ""):
+            return None
         try:
-            order = int(str(participant.get("p") or index + 1))
+            order = int(str(raw_order or index + 1))
         except ValueError:
+            if require_explicit_order:
+                return None
             order = index + 1
         ordered.append((order, index, name))
 
     ordered.sort()
+    if require_explicit_order:
+        ordered_by_position: dict[int, str] = {}
+        for order, _index, name in ordered:
+            if order in ordered_by_position:
+                return None
+            ordered_by_position[order] = name
+        if set(ordered_by_position) != {1, 2}:
+            return None
+        return ordered_by_position[1], ordered_by_position[2]
     if len(ordered) < 2:
         return None
     return ordered[0][2], ordered[1][2]
@@ -364,6 +414,8 @@ def _extract_fixture_contexts(
     sport_id: str | None = None,
     league_names: dict[str, str] | None = None,
     default_league_id: str = "basketball",
+    source_url: str = _SOURCE_URL,
+    require_explicit_participant_order: bool = False,
     now: datetime | None = None,
 ) -> list[FixtureContext]:
     payload = data.get("f") if isinstance(data, dict) else None
@@ -394,7 +446,10 @@ def _extract_fixture_contexts(
         if start_dt < current_time or start_dt > cutoff:
             continue
 
-        teams = _extract_teams(fixture.get("p"))
+        teams = _extract_teams(
+            fixture.get("p"),
+            require_explicit_order=require_explicit_participant_order,
+        )
         if teams is None:
             continue
         home_team, away_team = teams
@@ -410,7 +465,7 @@ def _extract_fixture_contexts(
                 home_team=home_team,
                 away_team=away_team,
                 start_time=start_time,
-                source_url=_SOURCE_URL,
+                source_url=source_url,
             )
         )
 
@@ -545,6 +600,32 @@ def _append_football_offer(
     )
 
 
+def _append_tennis_offer(
+    results: list[RawOutcomeOffer],
+    *,
+    context: FixtureContext,
+    outcome_code: str,
+    odds: float,
+    raw_label: str,
+) -> None:
+    results.append(
+        RawOutcomeOffer(
+            bookmaker_id=_BOOKMAKER_ID,
+            league_id=context.league_id,
+            sport="tennis",
+            home_team=context.home_team,
+            away_team=context.away_team,
+            source_url=context.source_url,
+            market_type="tennis_match_winner",
+            outcome_code=outcome_code,
+            odds=odds,
+            line=None,
+            raw_label=raw_label,
+            start_time=context.start_time,
+        )
+    )
+
+
 def _parse_football_outcome_markets(
     item: object,
     *,
@@ -626,6 +707,73 @@ def _parse_football_outcome_markets(
                 )
 
     return results
+
+
+def _parse_tennis_outcome_markets(
+    item: object,
+    *,
+    context: FixtureContext,
+    match_winner_market_ids: set[str],
+) -> list[RawOutcomeOffer]:
+    if not isinstance(item, dict):
+        return []
+
+    markets = item.get("m")
+    if not isinstance(markets, list):
+        return []
+
+    results: list[RawOutcomeOffer] = []
+    seen_outcomes: set[str] = set()
+    for market in markets:
+        if not isinstance(market, dict):
+            continue
+        market_id = _clean_text(market.get("id"))
+        if market_id not in match_winner_market_ids:
+            continue
+        bets = market.get("b")
+        if not isinstance(bets, list):
+            continue
+
+        for bet in bets:
+            if not isinstance(bet, dict) or not _is_open_bet(bet):
+                continue
+            odds = _parse_odd_value(bet.get("od"))
+            if odds is None:
+                continue
+            outcome_key = str(bet.get("id") or bet.get("n") or "").strip().lower()
+            mapped_result = _TENNIS_MATCH_WINNER_OUTCOMES.get(outcome_key)
+            if mapped_result is None:
+                continue
+            outcome_code, raw_label = mapped_result
+            if outcome_code in seen_outcomes:
+                logger.warning(
+                    "VolcanoBet: skipping duplicate tennis %s outcome for %s",
+                    outcome_code,
+                    context.event_id,
+                )
+                continue
+            seen_outcomes.add(outcome_code)
+            _append_tennis_offer(
+                results,
+                context=context,
+                outcome_code=outcome_code,
+                odds=odds,
+                raw_label=raw_label,
+            )
+
+    return results
+
+
+def _is_tennis_doubles_context(context: FixtureContext) -> bool:
+    if any(
+        separator in text
+        for text in (context.home_team, context.away_team)
+        for separator in _TENNIS_DOUBLES_SEPARATORS
+    ):
+        return True
+
+    normalized_league = normalize_identity_text(context.league_id.replace("_", " "))
+    return any(token in _TENNIS_DOUBLES_TOKENS for token in normalized_league.split())
 
 
 def _parse_event_markets(
@@ -750,7 +898,7 @@ class VolcanoBetScraper(BaseScraper):
         return ["basketball"]
 
     def get_supported_outcome_sports(self) -> list[str]:
-        return ["football"]
+        return ["football", "tennis"]
 
     def _get_offer_base_lock(self) -> asyncio.Lock:
         if self._offer_base_lock is None:
@@ -945,11 +1093,87 @@ class VolcanoBetScraper(BaseScraper):
         return results
 
     async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
-        if sport != "football":
+        if sport not in {"football", "tennis"}:
             return []
 
         lookup = await self._get_offer_base_lookup()
         fixtures_data = await self._fetch_fixtures()
+        if sport == "tennis":
+            fixture_contexts = _extract_fixture_contexts(
+                fixtures_data,
+                lookup=lookup,
+                sport_id=lookup.tennis_sport_id,
+                league_names=lookup.tennis_league_names,
+                default_league_id="tennis",
+                source_url=_TENNIS_SOURCE_URL,
+                require_explicit_participant_order=True,
+            )
+            fixture_contexts = [
+                context
+                for context in fixture_contexts
+                if not _is_tennis_doubles_context(context)
+            ]
+            if not fixture_contexts:
+                logger.info("VolcanoBet: no tennis fixtures within the current lookahead window")
+                return []
+
+            market_ids = tuple(dict.fromkeys(lookup.tennis_match_winner_market_ids))
+            if not market_ids:
+                logger.info("VolcanoBet: no supported tennis outcome market ids discovered")
+                return []
+
+            semaphore = asyncio.Semaphore(_EVENT_BATCH_CONCURRENCY)
+            batches = _chunked(fixture_contexts, _TENNIS_EVENT_BATCH_SIZE)
+            batch_results = await asyncio.gather(
+                *(
+                    self._fetch_event_markets_batch(
+                        [context.event_id for context in batch],
+                        market_ids,
+                        semaphore=semaphore,
+                    )
+                    for batch in batches
+                )
+            )
+
+            context_by_event_id = {
+                context.event_id: context
+                for context in fixture_contexts
+            }
+            match_winner_market_ids = set(lookup.tennis_match_winner_market_ids)
+
+            results: list[RawOutcomeOffer] = []
+            match_winner_events: set[str] = set()
+            for batch in batch_results:
+                for item in batch:
+                    event_id = _clean_text(item.get("e"))
+                    if event_id is None:
+                        continue
+                    context = context_by_event_id.get(event_id)
+                    if context is None:
+                        continue
+
+                    parsed = _parse_tennis_outcome_markets(
+                        item,
+                        context=context,
+                        match_winner_market_ids=match_winner_market_ids,
+                    )
+                    if not parsed:
+                        continue
+
+                    results.extend(parsed)
+                    if any(row.market_type == "tennis_match_winner" for row in parsed):
+                        match_winner_events.add(event_id)
+
+            logger.info(
+                "VolcanoBet scraped %d tennis outcome offers (%d match winner from %d "
+                "events across %d fixtures)",
+                len(results),
+                sum(row.market_type == "tennis_match_winner" for row in results),
+                len(match_winner_events),
+                len(fixture_contexts),
+            )
+            return results
+
         fixture_contexts = _extract_fixture_contexts(
             fixtures_data,
             lookup=lookup,

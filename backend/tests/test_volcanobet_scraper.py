@@ -16,12 +16,15 @@ from app.scrapers.volcanobet_scraper import (
     _FIXTURES_URL,
     _OFFER_BASE_URL,
     _SOURCE_URL,
+    _TENNIS_SOURCE_URL,
     _build_offer_base_lookup,
     _extract_fixture_contexts,
     _extract_handicap_side,
+    _is_tennis_doubles_context,
     _parse_event_markets,
     _parse_football_outcome_markets,
     _parse_game_handicap_ot_bet,
+    _parse_tennis_outcome_markets,
 )
 
 PLAYER_POINTS_FIXTURE_PATH = (
@@ -697,6 +700,44 @@ def _football_offer_base() -> dict:
     }
 
 
+def _tennis_offer_base() -> dict:
+    return {
+        "o": {
+            "s": [
+                {"i": "1", "n": "Fudbal"},
+                {"i": "2", "n": "Tenis"},
+                {"i": "3", "n": "Košarka"},
+                {"i": "9", "n": "Stoni tenis"},
+            ],
+            "le": [
+                {"i": "64", "si": "3", "n": "NBA"},
+                {"i": "TEN1", "si": "2", "n": "ATP Rome"},
+                {"i": "TEND", "si": "2", "n": "WTA Rome Doubles"},
+            ],
+            "m": [
+                {
+                    "i": "186",
+                    "n": "Pobednik",
+                    "b": [{"p": "1"}, {"p": "2"}],
+                    "st": [{"s": "2", "n": "Pobednik"}],
+                },
+                {
+                    "i": "202",
+                    "n": "Pobednik navedenog seta",
+                    "b": [{"p": "1"}, {"p": "2"}],
+                    "st": [{"s": "2", "n": "Pobednik navedenog seta"}],
+                },
+                {
+                    "i": "999",
+                    "n": "Pobednik",
+                    "b": [{"p": "1"}, {"p": "x"}, {"p": "2"}],
+                    "st": [{"s": "2", "n": "Pobednik"}],
+                },
+            ],
+        }
+    }
+
+
 def test_build_offer_base_lookup_discovers_football_market_ids_and_leagues():
     lookup = _build_offer_base_lookup(_football_offer_base())
 
@@ -706,6 +747,17 @@ def test_build_offer_base_lookup_discovers_football_market_ids_and_leagues():
     assert lookup.football_double_chance_market_ids == ("10",)
     assert lookup.football_total_goals_market_ids == ("18",)
     assert lookup.league_names == {"64": "NBA"}
+
+
+def test_build_offer_base_lookup_discovers_tennis_market_ids_and_leagues():
+    lookup = _build_offer_base_lookup(_tennis_offer_base())
+
+    assert lookup.tennis_sport_id == "2"
+    assert lookup.tennis_league_names == {
+        "TEN1": "ATP Rome",
+        "TEND": "WTA Rome Doubles",
+    }
+    assert lookup.tennis_match_winner_market_ids == ("186",)
 
 
 def test_extract_fixture_contexts_filters_to_upcoming_football_events():
@@ -769,6 +821,86 @@ def test_extract_fixture_contexts_filters_to_upcoming_football_events():
             away_team="Hostoun",
             start_time="2026-05-06T15:00:00+00:00",
             source_url=_SOURCE_URL,
+        )
+    ]
+
+
+def test_extract_tennis_fixture_contexts_require_order_and_identify_doubles():
+    lookup = _build_offer_base_lookup(_tennis_offer_base())
+    fixtures = {
+        "f": [
+            {
+                "ai": "TENNIS1",
+                "sd": "2026-05-06T15:00:00Z",
+                "s": "NSY",
+                "si": "2",
+                "lei": "TEN1",
+                "p": [
+                    {"n": "L.Musetti", "p": "1"},
+                    {"n": "F.Cerundolo", "p": "2"},
+                ],
+            },
+            {
+                "ai": "DOUBLE1",
+                "sd": "2026-05-06T16:00:00Z",
+                "s": "NSY",
+                "si": "2",
+                "lei": "TEND",
+                "p": [
+                    {"n": "S.Hunter/J.Pegula", "p": "1"},
+                    {"n": "J.Ostapenko/E.Routliffe", "p": "2"},
+                ],
+            },
+            {
+                "ai": "NOORDER1",
+                "sd": "2026-05-06T17:00:00Z",
+                "s": "NSY",
+                "si": "2",
+                "lei": "TEN1",
+                "p": [
+                    {"n": "B.Shick"},
+                    {"n": "A.Matusevich"},
+                ],
+            },
+            {
+                "ai": "BADORDER1",
+                "sd": "2026-05-06T18:00:00Z",
+                "s": "NSY",
+                "si": "2",
+                "lei": "TEN1",
+                "p": [
+                    {"n": "B.Loh", "p": "home"},
+                    {"n": "J.Staley", "p": "2"},
+                ],
+            },
+        ]
+    }
+
+    with patch(
+        "app.scrapers.volcanobet_scraper.lookahead_cutoff",
+        return_value=datetime(2026, 5, 7, 12, 0, tzinfo=timezone.utc),
+    ):
+        contexts = _extract_fixture_contexts(
+            fixtures,
+            lookup=lookup,
+            sport_id=lookup.tennis_sport_id,
+            league_names=lookup.tennis_league_names,
+            default_league_id="tennis",
+            source_url=_TENNIS_SOURCE_URL,
+            require_explicit_participant_order=True,
+            now=datetime(2026, 5, 6, 12, 0, tzinfo=timezone.utc),
+        )
+
+    assert [context.event_id for context in contexts] == ["TENNIS1", "DOUBLE1"]
+    singles = [context for context in contexts if not _is_tennis_doubles_context(context)]
+    assert singles == [
+        FixtureContext(
+            event_id="TENNIS1",
+            league_id="atp_rome",
+            home_team="L.Musetti",
+            away_team="F.Cerundolo",
+            start_time="2026-05-06T15:00:00+00:00",
+            source_url=_TENNIS_SOURCE_URL,
         )
     ]
 
@@ -869,6 +1001,85 @@ def test_parse_football_outcome_markets_skips_invalid_or_closed_totals():
         )
         == []
     )
+
+
+def test_parse_tennis_outcome_markets_returns_match_winner_offers():
+    context = FixtureContext(
+        event_id="TENNIS1",
+        league_id="atp_rome",
+        home_team="L.Musetti",
+        away_team="F.Cerundolo",
+        start_time="2026-05-06T15:00:00+00:00",
+        source_url=_TENNIS_SOURCE_URL,
+    )
+    payload = {
+        "e": "TENNIS1",
+        "m": [
+            {
+                "id": "186",
+                "b": [
+                    {"id": "1", "n": "1", "od": 1.93, "s": "O"},
+                    {"id": "2", "n": "2", "od": 1.95, "s": "O"},
+                ],
+            }
+        ],
+    }
+
+    results = _parse_tennis_outcome_markets(
+        payload,
+        context=context,
+        match_winner_market_ids={"186"},
+    )
+
+    assert len(results) == 2
+    by_outcome = {row.outcome_code: row for row in results}
+    assert by_outcome["home"].bookmaker_id == "volcanobet"
+    assert by_outcome["home"].sport == "tennis"
+    assert by_outcome["home"].market_type == "tennis_match_winner"
+    assert by_outcome["home"].raw_label == "1"
+    assert by_outcome["home"].odds == 1.93
+    assert by_outcome["away"].raw_label == "2"
+    assert by_outcome["away"].odds == 1.95
+    assert all(row.line is None for row in results)
+    assert all(row.source_url == _TENNIS_SOURCE_URL for row in results)
+
+
+def test_parse_tennis_outcome_markets_skips_invalid_rows_and_duplicates():
+    context = FixtureContext(
+        event_id="TENNIS1",
+        league_id="tennis",
+        home_team="Home Player",
+        away_team="Away Player",
+        start_time="2026-05-06T15:00:00+00:00",
+        source_url=_TENNIS_SOURCE_URL,
+    )
+    payload = {
+        "e": "TENNIS1",
+        "m": [
+            {
+                "id": "202",
+                "b": [{"id": "1", "od": 1.5, "s": "O"}],
+            },
+            {
+                "id": "186",
+                "b": [
+                    {"id": "1", "od": 1.75, "s": "O"},
+                    {"id": "1", "od": 1.8, "s": "O"},
+                    {"id": "2", "od": 1.95, "s": "C"},
+                    {"id": "2", "od": 1.0, "s": "O"},
+                    {"id": "x", "od": 3.5, "s": "O"},
+                ],
+            },
+        ],
+    }
+
+    results = _parse_tennis_outcome_markets(
+        payload,
+        context=context,
+        match_winner_market_ids={"186"},
+    )
+
+    assert [(row.outcome_code, row.odds) for row in results] == [("home", 1.75)]
 
 
 @pytest.mark.asyncio
@@ -977,7 +1188,157 @@ async def test_scrape_outcome_offers_batches_football_event_markets():
     assert sum(row.market_type == "football_double_chance" for row in results) == 3
     assert sum(row.market_type == "football_total_goals" for row in results) == 2
     assert scraper.get_supported_leagues() == ["basketball"]
-    assert scraper.get_supported_outcome_sports() == ["football"]
+    assert scraper.get_supported_outcome_sports() == ["football", "tennis"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_fetches_tennis_match_winner_once_and_skips_doubles():
+    fixtures = {
+        "f": [
+            {
+                "ai": "TENNIS1",
+                "sd": "2026-05-06T15:00:00Z",
+                "s": "NSY",
+                "si": "2",
+                "lei": "TEN1",
+                "p": [
+                    {"n": "L.Musetti", "p": "1"},
+                    {"n": "F.Cerundolo", "p": "2"},
+                ],
+            },
+            {
+                "ai": "DOUBLE1",
+                "sd": "2026-05-06T16:00:00Z",
+                "s": "NSY",
+                "si": "2",
+                "lei": "TEND",
+                "p": [
+                    {"n": "S.Hunter/J.Pegula", "p": "1"},
+                    {"n": "J.Ostapenko/E.Routliffe", "p": "2"},
+                ],
+            },
+        ]
+    }
+    batch_payload = [
+        {
+            "e": "TENNIS1",
+            "m": [
+                {
+                    "id": "186",
+                    "b": [
+                        {"id": "1", "od": 1.93, "s": "O"},
+                        {"id": "2", "od": 1.95, "s": "O"},
+                    ],
+                }
+            ],
+        }
+    ]
+    captured_urls: list[str] = []
+
+    async def mock_get_json(url, *, params=None, headers=None):
+        if url == _OFFER_BASE_URL:
+            return _tennis_offer_base()
+        if url == _FIXTURES_URL:
+            return fixtures
+        captured_urls.append(url)
+        assert url.startswith(_EVENT_MARKETS_URL)
+        assert params is None
+        return batch_payload
+
+    http_client = AsyncMock()
+    http_client.get_json.side_effect = mock_get_json
+    scraper = VolcanoBetScraper(http_client=http_client)
+
+    with patch(
+        "app.scrapers.volcanobet_scraper.current_utc_time",
+        return_value=datetime(2026, 5, 6, 12, 0, tzinfo=timezone.utc),
+    ):
+        results = await scraper.scrape_outcome_offers("tennis")
+
+    assert len(captured_urls) == 1
+    event_markets_url = captured_urls[0]
+    assert "eventIds=TENNIS1" in event_markets_url
+    assert "eventIds=DOUBLE1" not in event_markets_url
+    assert "marketIds=186" in event_markets_url
+    assert "marketIds=202" not in event_markets_url
+    assert len(results) == 2
+    assert {row.outcome_code for row in results} == {"home", "away"}
+    assert all(row.sport == "tennis" for row in results)
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_uses_large_tennis_batch_for_many_singles():
+    tennis_fixtures = [
+        {
+            "ai": f"TENNIS{index}",
+            "sd": "2026-05-06T15:00:00Z",
+            "s": "NSY",
+            "si": "2",
+            "lei": "TEN1",
+            "p": [
+                {"n": f"Home {index}", "p": "1"},
+                {"n": f"Away {index}", "p": "2"},
+            ],
+        }
+        for index in range(30)
+    ]
+    fixtures = {
+        "f": [
+            *tennis_fixtures,
+            {
+                "ai": "DOUBLE1",
+                "sd": "2026-05-06T16:00:00Z",
+                "s": "NSY",
+                "si": "2",
+                "lei": "TEND",
+                "p": [
+                    {"n": "Home One/Home Two", "p": "1"},
+                    {"n": "Away One/Away Two", "p": "2"},
+                ],
+            },
+        ]
+    }
+    captured_urls: list[str] = []
+
+    async def mock_get_json(url, *, params=None, headers=None):
+        if url == _OFFER_BASE_URL:
+            return _tennis_offer_base()
+        if url == _FIXTURES_URL:
+            return fixtures
+        captured_urls.append(url)
+        assert url.startswith(_EVENT_MARKETS_URL)
+        return [
+            {
+                "e": f"TENNIS{index}",
+                "m": [
+                    {
+                        "id": "186",
+                        "b": [
+                            {"id": "1", "od": 1.8, "s": "O"},
+                            {"id": "2", "od": 2.0, "s": "O"},
+                        ],
+                    }
+                ],
+            }
+            for index in range(30)
+        ]
+
+    http_client = AsyncMock()
+    http_client.get_json.side_effect = mock_get_json
+    scraper = VolcanoBetScraper(http_client=http_client)
+
+    with patch(
+        "app.scrapers.volcanobet_scraper.current_utc_time",
+        return_value=datetime(2026, 5, 6, 12, 0, tzinfo=timezone.utc),
+    ):
+        results = await scraper.scrape_outcome_offers("tennis")
+
+    assert len(captured_urls) == 1
+    event_markets_url = captured_urls[0]
+    assert "eventIds=TENNIS0" in event_markets_url
+    assert "eventIds=TENNIS29" in event_markets_url
+    assert "eventIds=DOUBLE1" not in event_markets_url
+    assert len(results) == 60
 
 
 @pytest.mark.asyncio
