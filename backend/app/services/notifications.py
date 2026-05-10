@@ -7,6 +7,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -21,7 +22,15 @@ TELEGRAM_MAX_INDIVIDUAL_MESSAGES_PER_PROFILE = 5
 TELEGRAM_MIDDLE_DIGEST_LIMIT = 10
 TELEGRAM_GROUP_SUMMARY_LIMIT = 6
 TELEGRAM_MESSAGE_SOFT_LIMIT = 3900
+TELEGRAM_TABLE_MAX_ROWS = 8
 _NEGATIVE_INFINITY = -1_000_000_000.0
+_BELGRADE_TZ = ZoneInfo("Europe/Belgrade")
+
+# Urgency tier thresholds. Index 0=calm, 1=good, 2=hot, 3=premium.
+_TIER_LABELS = ("calm", "good", "hot", "premium")
+_ARB_TIER_THRESHOLDS = (0.02, 0.04, 0.07)
+_MIDDLE_TIER_THRESHOLDS = (0.05, 0.10, 0.20)
+_TIER_EMOJI = ("🟢", "🟡⚡", "🔥", "🚨🔥")
 
 
 @dataclass(frozen=True)
@@ -579,18 +588,36 @@ def _telegram_opportunity_groups(
 
 
 def _subject_group_key(opportunity: Opportunity) -> tuple[str, ...] | None:
-    if not opportunity.subject_type:
-        return None
-    subject_identity = opportunity.subject_key or opportunity.subject_name
-    if not subject_identity:
-        return None
+    """Group opportunities so multi-leg bookmaker pairs at the same event/market
+    collapse into one Telegram message instead of spamming one message per pair.
+
+    Two grouping rules:
+    - Player-style subjects (subject_type set to a non-event value AND subject_key
+      or subject_name present): group across lines for the same
+      (event, subject, market_type). Existing behavior.
+    - Event-level (subject_type missing or equal to "event"): group by
+      (event, market_type, line, opportunity_type). Including the line keeps
+      O/U 2.5 separate from O/U 3.5.
+    """
+
     event_identity = opportunity.resolved_event_id or opportunity.match_id
+    subject_type = (opportunity.subject_type or "").strip()
+    has_subject_type = bool(subject_type) and subject_type.lower() != "event"
+    subject_identity = opportunity.subject_key or opportunity.subject_name
+    if has_subject_type and subject_identity:
+        return (
+            "subject",
+            event_identity,
+            subject_type,
+            subject_identity,
+            opportunity.market_type,
+        )
     return (
-        "subject",
+        "event",
         event_identity,
-        opportunity.subject_type,
-        subject_identity,
         opportunity.market_type,
+        opportunity.opportunity_type,
+        _stable_float(opportunity.line) or "",
     )
 
 
@@ -663,38 +690,36 @@ def format_telegram_opportunity(
 
 
 def format_telegram_opportunity_group(items: list[_TelegramDeliveryItem]) -> str:
+    """Render a single Telegram alert message for one or more opportunities at the
+    same event/market/subject. Multiple opportunities are collapsed into one
+    monospace <pre> table listing every distinct leg.
+    """
+
     if not items:
         return ""
     primary = items[0].opportunity
     context = items[0].context
-    subject = _format_subject(primary)
-    market = _format_market_label(primary.market_type)
-    lines = [
-        f"<b>{html.escape(subject)} - {html.escape(market)}</b>",
-        _format_context_line(context),
-        _format_metric_line(primary),
-    ]
-    lines.append("")
-    lines.extend(_format_numbered_legs(primary))
+    opportunities = [item.opportunity for item in items]
 
-    extra_items = items[1:]
-    if extra_items:
-        lines.extend(["", "More new options:"])
-        omitted = 0
-        shown = 0
-        for item in extra_items:
-            summary = _format_compact_opportunity(item.opportunity)
-            if shown >= TELEGRAM_GROUP_SUMMARY_LIMIT:
-                omitted += 1
-                continue
-            if _message_length([*lines, summary]) > TELEGRAM_MESSAGE_SOFT_LIMIT:
-                omitted += 1
-                continue
-            lines.append(summary)
-            shown += 1
-        if omitted:
-            lines.append(f"+{omitted} more new options in this group")
-    return "\n".join(lines)
+    header = _format_alert_header(primary)
+    matchup_line = _format_event_context_line(context, sport=primary.sport)
+    descriptor_line = _format_market_descriptor(primary)
+
+    lines: list[str] = [header]
+    if matchup_line:
+        lines.append(matchup_line)
+    if descriptor_line:
+        lines.append(descriptor_line)
+
+    table_block = _format_legs_table(opportunities)
+    if table_block:
+        lines.append(table_block)
+
+    rendered = "\n".join(lines)
+    if len(rendered) > TELEGRAM_MESSAGE_SOFT_LIMIT:
+        # Defensive: truncate the last block if combined output overflows.
+        rendered = rendered[: TELEGRAM_MESSAGE_SOFT_LIMIT - 20].rstrip() + "\n…"
+    return rendered
 
 
 def format_telegram_middle_digest(
@@ -704,8 +729,10 @@ def format_telegram_middle_digest(
     matched_group_count: int | None = None,
     remaining_group_count: int = 0,
 ) -> str:
-    matched_group_count = matched_group_count if matched_group_count is not None else len(groups)
-    lines = [
+    matched_group_count = (
+        matched_group_count if matched_group_count is not None else len(groups)
+    )
+    lines: list[str] = [
         "<b>KvotoLovac middle digest</b>",
         f"<b>{html.escape(profile.label)}</b>",
         f"Showing {len(groups)} new middle groups of {matched_group_count} matched",
@@ -714,131 +741,392 @@ def format_telegram_middle_digest(
     for index, group_items in enumerate(groups, start=1):
         primary = group_items[0].opportunity
         context = group_items[0].context
-        lines.extend(
-            [
-                f"{index}) <b>{html.escape(_format_subject(primary))} - {html.escape(_format_market_label(primary.market_type))}</b>",
-                f"   {_format_context_line(context)}",
-                f"   {_format_metric_line(primary, bold=False)}",
-                f"   {_format_inline_legs(primary)}",
-            ]
-        )
-        if len(group_items) > 1:
-            lines.append(f"   +{len(group_items) - 1} more new options in this group")
-    if remaining_group_count > 0:
+        lines.extend(_format_digest_row(index, primary, context, len(group_items)))
         lines.append("")
+    if remaining_group_count > 0:
         lines.append(f"+{remaining_group_count} matched groups remain eligible later")
-    return "\n".join(lines)
+
+    rendered = "\n".join(line for line in lines if line is not None)
+    if len(rendered) > TELEGRAM_MESSAGE_SOFT_LIMIT:
+        rendered = rendered[: TELEGRAM_MESSAGE_SOFT_LIMIT - 20].rstrip() + "\n…"
+    return rendered
 
 
-def _format_subject(opportunity: Opportunity) -> str:
-    return _trim_text(
-        opportunity.subject_name
-        or opportunity.subject_key
-        or _format_market_label(opportunity.market_type),
-        80,
+# ── Tier classifier ───────────────────────────────────────────────────────
+
+
+def _opportunity_urgency_tier(opportunity: Opportunity) -> int:
+    """Return urgency tier 0..3 from ROI (arb) or middle EV. Used for visual
+    escalation only; profile thresholds still gate eligibility upstream."""
+
+    if opportunity.opportunity_type == "middle":
+        value = opportunity.middle_ev
+        thresholds = _MIDDLE_TIER_THRESHOLDS
+    else:
+        value = opportunity.profit_margin
+        thresholds = _ARB_TIER_THRESHOLDS
+    if value is None:
+        return 0
+    for idx, threshold in enumerate(thresholds):
+        if value < threshold:
+            return idx
+    return 3
+
+
+# ── Header / context / market line ────────────────────────────────────────
+
+
+def _format_alert_header(opportunity: Opportunity) -> str:
+    tier = _opportunity_urgency_tier(opportunity)
+    emoji = _TIER_EMOJI[tier]
+    is_middle = opportunity.opportunity_type == "middle"
+    metric_label = "EV" if is_middle else "ROI"
+    metric_value = _format_percent(
+        opportunity.middle_ev if is_middle else opportunity.profit_margin
     )
+    metric_value = metric_value or "—"
+    kind = "MIDDLE" if is_middle else "ARBITRAGE"
+    if tier == 3:
+        body = f"PREMIUM {kind} · {metric_label} {metric_value}"
+        return f"{emoji} <b>{html.escape(body)}</b> {emoji}"
+    if tier == 2:
+        body = f"{kind} · {metric_label} {metric_value}"
+        return f"{emoji} <b>{html.escape(body)}</b>"
+    body = f"{kind.lower()} · {metric_label} {metric_value}"
+    return f"{emoji} <b>{html.escape(body)}</b>"
+
+
+def _format_event_context_line(
+    context: TelegramOpportunityDisplayContext,
+    *,
+    sport: str | None = None,
+) -> str:
+    parts: list[str] = []
+    if context.home_team and context.away_team:
+        teams = (
+            f"{_trim_text(context.home_team, 80)} vs {_trim_text(context.away_team, 80)}"
+        )
+        matchup = f"<b>{html.escape(teams)}</b>"
+        sport_emoji = _sport_icon(sport)
+        if sport_emoji:
+            matchup = f"{sport_emoji} {matchup}"
+        parts.append(matchup)
+    elif context.home_team:
+        parts.append(f"<b>{html.escape(_trim_text(context.home_team, 80))}</b>")
+    if context.league_name:
+        parts.append(f"🏆 {html.escape(_trim_text(context.league_name, 80))}")
+    when = _format_belgrade_time(context.start_time)
+    if when:
+        parts.append(f"🕑 {html.escape(when)}")
+    if not parts:
+        fallback = context.fallback_label or "unknown"
+        return f"Event: <code>{html.escape(fallback)}</code>"
+    return " · ".join(parts)
+
+
+def _format_market_descriptor(opportunity: Opportunity) -> str:
+    """Produce a non-redundant 'Subject · Market · Line' descriptor.
+
+    Skips the subject when it would equal the market label (the source of the
+    "game total ot - game total ot" duplication in the legacy format).
+    """
+
+    market_label = _format_market_label(opportunity.market_type)
+    bits: list[str] = []
+    raw_subject = (opportunity.subject_name or opportunity.subject_key or "").strip()
+    if raw_subject and raw_subject.lower() != market_label.lower():
+        bits.append(html.escape(_trim_text(raw_subject, 80)))
+    bits.append(html.escape(market_label))
+    if opportunity.line is not None:
+        bits.append(html.escape(_format_number(opportunity.line)))
+    return "📊 " + " · ".join(bits)
+
+
+def _format_belgrade_time(start_time: str | None) -> str | None:
+    if not start_time:
+        return None
+    raw = start_time.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return raw
+    # Naive datetimes are treated as UTC, matching the frontend convention
+    # in frontend/src/utils/format.ts where naive ISO strings are normalized
+    # by appending "Z" before parsing.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    local = dt.astimezone(_BELGRADE_TZ)
+    return local.strftime("%a %d %b %H:%M")
+
+
+# ── Sport icon ────────────────────────────────────────────────────────────
+
+
+_SPORT_ICONS = {
+    "basketball": "🏀",
+    "football": "⚽",
+    "soccer": "⚽",
+    "tennis": "🎾",
+    "hockey": "🏒",
+    "baseball": "⚾",
+    "volleyball": "🏐",
+    "handball": "🤾",
+    "rugby": "🏉",
+    "american_football": "🏈",
+}
+
+
+def _sport_icon(sport: str | None) -> str | None:
+    if not sport:
+        return None
+    return _SPORT_ICONS.get(sport.strip().lower())
+
+
+# ── Outcome labelling ─────────────────────────────────────────────────────
+
+
+def _format_signed_line(value: float) -> str:
+    if value > 0:
+        return f"+{_format_number(value)}"
+    return _format_number(value)
+
+
+def _outcome_label(code: str, line: float | None, *, market_type: str) -> str:
+    """Render an outcome label for a leg.
+
+    Conventions:
+    - Handicap markets (`*handicap*`): `H1 <line>` / `H2 <line>` — the SAME
+      numeric value on both sides (no sign flip), per Serbian-bookmaker
+      convention. `+` prefix for positive lines for visual clarity.
+    - Match winner: `1` / `2` / `X`.
+    - Double-chance markets (`*double_chance*`): `1X` / `12` / `X2`.
+    - Other markets (totals, player props): `O<line>` / `U<line>`.
+    """
+
+    code_lower = (code or "").lower()
+    market_lower = (market_type or "").lower()
+    if "double_chance" in market_lower:
+        if code_lower in {"home_or_draw", "1x"}:
+            return "1X"
+        if code_lower in {"home_or_away", "12"}:
+            return "12"
+        if code_lower in {"draw_or_away", "x2"}:
+            return "X2"
+    if "handicap" in market_lower:
+        if code_lower in {"over", "home", "1"}:
+            if line is None:
+                return "H1"
+            return f"H1 {_format_signed_line(line)}"
+        if code_lower in {"under", "away", "2"}:
+            if line is None:
+                return "H2"
+            return f"H2 {_format_signed_line(line)}"
+    if market_lower == "match_winner" or market_lower == "football_result":
+        if code_lower in {"home", "1"}:
+            return "1"
+        if code_lower in {"away", "2"}:
+            return "2"
+        if code_lower in {"draw", "x"}:
+            return "X"
+    if code_lower in {"over", "o"}:
+        base = "O"
+    elif code_lower in {"under", "u"}:
+        base = "U"
+    elif code_lower in {"home", "1"}:
+        base = "1"
+    elif code_lower in {"away", "2"}:
+        base = "2"
+    elif code_lower in {"draw", "x"}:
+        base = "X"
+    elif code_lower == "home_or_draw":
+        base = "1X"
+    elif code_lower == "home_or_away":
+        base = "12"
+    elif code_lower == "draw_or_away":
+        base = "X2"
+    else:
+        base = (code or "").replace("_", " ").title() or "?"
+    if line is None:
+        return base
+    return f"{base}{_format_number(line)}"
+
+
+# ── Stake split (arbitrage only) ──────────────────────────────────────────
+
+
+def _arbitrage_stake_split(
+    odds_a: float | None, odds_b: float | None
+) -> tuple[float, float] | None:
+    if odds_a is None or odds_b is None or odds_a <= 0 or odds_b <= 0:
+        return None
+    inv_a = 1.0 / odds_a
+    inv_b = 1.0 / odds_b
+    total = inv_a + inv_b
+    if total <= 0:
+        return None
+    return inv_a / total, inv_b / total
+
+
+# ── Legs table ────────────────────────────────────────────────────────────
+
+
+def _format_legs_table(opportunities: list[Opportunity]) -> str:
+    """Render the monospace <pre> block listing every distinct leg.
+
+    Strongest pair (the first opportunity) appears first with a stake split
+    column; remaining legs appear underneath with em-dashes in the stake column.
+    """
+
+    if not opportunities:
+        return ""
+    primary = opportunities[0]
+    is_middle = primary.opportunity_type == "middle"
+    leg_a, leg_b = primary.legs[0], primary.legs[1]
+    primary_stake = (
+        None if is_middle else _arbitrage_stake_split(leg_a.odds, leg_b.odds)
+    )
+    rows: list[tuple[str, str, str, str]] = []
+    rows.append(("side", "bookmaker", "odds", "stake"))
+    rows.append(("────", "──────────────", "──────", "──────"))
+    primary_legs = [leg_a, leg_b]
+    for leg in primary_legs:
+        rows.append(
+            (
+                _outcome_label(leg.outcome_code, leg.line, market_type=leg.market_type),
+                str(leg.bookmaker_name or leg.bookmaker_id),
+                _format_number(leg.odds),
+                _format_stake_cell(leg, leg_a, leg_b, primary_stake),
+            )
+        )
+
+    seen: set[tuple[str, str, str]] = {
+        (leg_a.outcome_code, leg_a.bookmaker_id, _stable_float(leg_a.line) or ""),
+        (leg_b.outcome_code, leg_b.bookmaker_id, _stable_float(leg_b.line) or ""),
+    }
+    for opp in opportunities[1:]:
+        for leg in opp.legs[:2]:
+            key = (
+                leg.outcome_code,
+                leg.bookmaker_id,
+                _stable_float(leg.line) or "",
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                (
+                    _outcome_label(
+                        leg.outcome_code, leg.line, market_type=leg.market_type
+                    ),
+                    str(leg.bookmaker_name or leg.bookmaker_id),
+                    _format_number(leg.odds),
+                    "──",
+                )
+            )
+
+    overflow = 0
+    if len(rows) > 2 + TELEGRAM_TABLE_MAX_ROWS:
+        overflow = len(rows) - (2 + TELEGRAM_TABLE_MAX_ROWS)
+        rows = rows[: 2 + TELEGRAM_TABLE_MAX_ROWS]
+
+    col_widths = [max(len(str(row[i])) for row in rows) for i in range(4)]
+    body_lines = [
+        "  ".join(str(cell).ljust(col_widths[i]) for i, cell in enumerate(row))
+        for row in rows
+    ]
+    if overflow > 0:
+        body_lines.append(f"+ {overflow} more leg{'s' if overflow != 1 else ''}")
+    return f"<pre>{html.escape(chr(10).join(body_lines))}</pre>"
+
+
+def _format_stake_cell(
+    leg,
+    primary_a,
+    primary_b,
+    stake: tuple[float, float] | None,
+) -> str:
+    if stake is None:
+        return "──"
+    if leg is primary_a:
+        return f"{stake[0] * 100:.1f}%"
+    if leg is primary_b:
+        return f"{stake[1] * 100:.1f}%"
+    return "──"
+
+
+# ── Digest row ────────────────────────────────────────────────────────────
+
+
+def _format_digest_row(
+    index: int,
+    primary: Opportunity,
+    context: TelegramOpportunityDisplayContext,
+    member_count: int,
+) -> list[str]:
+    """Render one row of the middle digest in the same visual language as the
+    individual alerts (tier emoji + metric headline + matchup), but compactly."""
+
+    tier = _opportunity_urgency_tier(primary)
+    emoji = _TIER_EMOJI[tier]
+    is_middle = primary.opportunity_type == "middle"
+    metric_label = "EV" if is_middle else "ROI"
+    metric_value = _format_percent(
+        primary.middle_ev if is_middle else primary.profit_margin
+    ) or "—"
+    title_bits: list[str] = [f"{emoji} <b>{metric_label} {metric_value}</b>"]
+    if context.home_team and context.away_team:
+        teams = (
+            f"{_trim_text(context.home_team, 60)} vs {_trim_text(context.away_team, 60)}"
+        )
+        sport_emoji = _sport_icon(primary.sport)
+        teams_html = html.escape(teams)
+        title_bits.append(f"{sport_emoji} {teams_html}" if sport_emoji else teams_html)
+    elif context.fallback_label:
+        title_bits.append(f"<code>{html.escape(context.fallback_label)}</code>")
+    title_line = f"{index}) " + " · ".join(title_bits)
+
+    descriptor = _format_market_descriptor(primary)
+    leg_a = primary.legs[0] if len(primary.legs) > 0 else None
+    leg_b = primary.legs[1] if len(primary.legs) > 1 else None
+    legs_summary = ""
+    if leg_a and leg_b:
+        a_label = _outcome_label(leg_a.outcome_code, leg_a.line, market_type=leg_a.market_type)
+        b_label = _outcome_label(leg_b.outcome_code, leg_b.line, market_type=leg_b.market_type)
+        legs_summary = (
+            f"   <b>{html.escape(str(leg_a.bookmaker_name or leg_a.bookmaker_id))}</b> "
+            f"{html.escape(a_label)} @ {html.escape(_format_number(leg_a.odds))}  ↔  "
+            f"<b>{html.escape(str(leg_b.bookmaker_name or leg_b.bookmaker_id))}</b> "
+            f"{html.escape(b_label)} @ {html.escape(_format_number(leg_b.odds))}"
+        )
+
+    meta_bits: list[str] = []
+    if context.league_name:
+        meta_bits.append(f"🏆 {html.escape(_trim_text(context.league_name, 60))}")
+    when = _format_belgrade_time(context.start_time)
+    if when:
+        meta_bits.append(f"🕑 {html.escape(when)}")
+    if member_count > 1:
+        meta_bits.append(f"+{member_count - 1} more option{'s' if member_count != 2 else ''}")
+    meta_line = ("   " + " · ".join(meta_bits)) if meta_bits else None
+
+    out = [title_line, "   " + descriptor]
+    if legs_summary:
+        out.append(legs_summary)
+    if meta_line:
+        out.append(meta_line)
+    return out
+
+
+# ── Misc helpers ──────────────────────────────────────────────────────────
 
 
 def _format_market_label(market_type: str) -> str:
     label = market_type
     if label.startswith("player_"):
         label = label[len("player_") :]
-    return label.replace("_", " ")
-
-
-def _format_opportunity_type(opportunity_type: str) -> str:
-    labels = {
-        "same_line_arbitrage": "same-line arb",
-        "complementary_outcomes": "complementary",
-        "middle": "middle",
-    }
-    return labels.get(opportunity_type, opportunity_type.replace("_", " "))
-
-
-def _format_context_line(context: TelegramOpportunityDisplayContext) -> str:
-    if context.home_team and context.away_team:
-        return (
-            f"{html.escape(_trim_text(context.home_team, 80))} vs "
-            f"{html.escape(_trim_text(context.away_team, 80))}"
-        )
-    fallback = context.fallback_label or "unknown"
-    return f"Event: <code>{html.escape(fallback)}</code>"
-
-
-def _format_metric_line(opportunity: Opportunity, *, bold: bool = True) -> str:
-    parts: list[str] = []
-    if opportunity.opportunity_type == "middle":
-        ev = _format_percent(opportunity.middle_ev)
-        if ev is not None:
-            parts.append(_bold(f"EV {ev}", enabled=bold))
-        else:
-            parts.append(_bold("Middle", enabled=bold))
-        gap = _opportunity_gap(opportunity)
-        if gap is not None:
-            parts.append(f"gap {_format_number(gap)}")
-        hit_probability = _format_percent(opportunity.middle_hit_probability)
-        if hit_probability is not None:
-            parts.append(f"hit {hit_probability}")
-        payout = _format_percent(opportunity.middle_profit_margin)
-        if payout is not None:
-            parts.append(f"payout {payout}")
-    else:
-        roi = _format_percent(opportunity.profit_margin)
-        if roi is not None:
-            parts.append(_bold(f"ROI {roi}", enabled=bold))
-        else:
-            parts.append(_bold("Opportunity", enabled=bold))
-    parts.append(_format_opportunity_type(opportunity.opportunity_type))
-    parts.append(f"{len({leg.bookmaker_id for leg in opportunity.legs[:2]})} books")
-    return " | ".join(html.escape(part) if "<b>" not in part else part for part in parts)
-
-
-def _bold(value: str, *, enabled: bool = True) -> str:
-    escaped = html.escape(value)
-    return f"<b>{escaped}</b>" if enabled else escaped
-
-
-def _format_numbered_legs(opportunity: Opportunity) -> list[str]:
-    return [
-        f"{index}) {_format_leg(leg)}"
-        for index, leg in enumerate(opportunity.legs[:2], start=1)
-    ]
-
-
-def _format_inline_legs(opportunity: Opportunity) -> str:
-    return " / ".join(_format_leg(leg, bold_bookmaker=False) for leg in opportunity.legs[:2])
-
-
-def _format_compact_opportunity(opportunity: Opportunity) -> str:
-    return f"- {_format_short_metric(opportunity)} | {_format_inline_legs(opportunity)}"
-
-
-def _format_short_metric(opportunity: Opportunity) -> str:
-    if opportunity.opportunity_type == "middle":
-        ev = _format_percent(opportunity.middle_ev)
-        gap = _opportunity_gap(opportunity)
-        parts = ["EV " + ev if ev is not None else "middle"]
-        if gap is not None:
-            parts.append(f"gap {_format_number(gap)}")
-        return " | ".join(parts)
-    roi = _format_percent(opportunity.profit_margin)
-    return f"ROI {roi}" if roi is not None else _format_opportunity_type(opportunity.opportunity_type)
-
-
-def _format_leg(leg, *, bold_bookmaker: bool = True) -> str:
-    bookmaker = leg.bookmaker_name or leg.bookmaker_id
-    bookmaker_text = html.escape(_trim_text(str(bookmaker), 40))
-    if bold_bookmaker:
-        bookmaker_text = f"<b>{bookmaker_text}</b>"
-    outcome = html.escape(leg.outcome_code.replace("_", " ").title())
-    line = "" if leg.line is None else f" {_format_number(leg.line)}"
-    raw_label = ""
-    if leg.raw_label:
-        raw_label = f" ({html.escape(_trim_text(leg.raw_label, 80))})"
-    return (
-        f"{bookmaker_text} {outcome}{html.escape(line)} @ "
-        f"{html.escape(_format_number(leg.odds))}{raw_label}"
-    )
+    return label.replace("_", " ").title()
 
 
 def _trim_text(value: str, max_length: int) -> str:

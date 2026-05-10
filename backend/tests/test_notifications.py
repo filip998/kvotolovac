@@ -269,15 +269,25 @@ def test_telegram_formatter_uses_matchup_and_escapes_html():
         TelegramOpportunityDisplayContext(
             home_team="Gran <Canaria>",
             away_team="Valencia & Co",
+            league_name="ACB",
             fallback_label="evt_hidden",
         ),
     )
 
-    assert "<b>Aaron &lt;Doornekamp&gt; - rebounds</b>" in text
-    assert "Gran &lt;Canaria&gt; vs Valencia &amp; Co" in text
-    assert "ROI 10.60%" in text
-    assert "1) <b>mozzart</b> Over 2.5 @ 2.1" in text
-    assert "evt_hidden" not in text
+    # New format: tier-aware header + matchup with HTML escaping + market
+    # descriptor + monospace <pre> table.
+    assert "ROI 10.60%" in text  # in the header
+    assert "<b>Gran &lt;Canaria&gt; vs Valencia &amp; Co</b>" in text
+    assert "🏆 ACB" in text
+    assert "Aaron &lt;Doornekamp&gt;" in text  # subject in market descriptor
+    assert "Rebounds" in text  # market label
+    assert "<pre>" in text and "</pre>" in text
+    assert "mozzart" in text and "meridian" in text
+    assert "evt_hidden" not in text  # matchup present, fallback unused
+    # Redundant meta from the old format must not be present.
+    assert "same-line arb" not in text
+    assert "2 books" not in text
+    assert " - rebounds" not in text  # no duplicate-style header
 
 
 def test_telegram_formatter_falls_back_to_internal_event_id():
@@ -293,6 +303,262 @@ def test_telegram_formatter_falls_back_to_internal_event_id():
     )
 
     assert "Event: <code>evt_8fda3e10a634</code>" in text
+
+
+def test_telegram_formatter_handicap_uses_h1_h2_with_same_line_value():
+    opportunity = _make_arbitrage_opportunity(
+        "Event handicap",
+        market_type="home_handicap_ot",
+        line=-4.5,
+        profit_margin=0.04,
+    )
+    text = format_telegram_opportunity(opportunity)
+
+    # Both sides display the same -4.5 line (no sign flip on H2).
+    assert "H1 -4.5" in text
+    assert "H2 -4.5" in text
+    # No O/U remnants from the old labelling.
+    assert "Over -4.5" not in text and "Under -4.5" not in text
+
+
+def test_telegram_formatter_match_winner_uses_one_two_labels():
+    opportunity = _make_arbitrage_opportunity(
+        "Match winner",
+        market_type="match_winner",
+        line=None,
+        profit_margin=0.02,
+    )
+    # Override default leg outcomes for a match-winner shape.
+    legs = [
+        OpportunityLeg(
+            bookmaker_id="mozzart",
+            market_type="match_winner",
+            outcome_code="home",
+            line=None,
+            odds=2.1,
+        ),
+        OpportunityLeg(
+            bookmaker_id="meridian",
+            market_type="match_winner",
+            outcome_code="away",
+            line=None,
+            odds=2.1,
+        ),
+    ]
+    opportunity = replace(opportunity, line=None, legs=legs)
+    text = format_telegram_opportunity(opportunity)
+
+    # Match-winner uses "1"/"2" labels with no line suffix.
+    rendered_lines = text.split("\n")
+    assert any(line.lstrip().startswith("1") and "mozzart" in line for line in rendered_lines)
+    assert any(line.lstrip().startswith("2") and "meridian" in line for line in rendered_lines)
+    assert "Home" not in text and "Away" not in text  # raw outcome codes hidden
+
+
+def test_telegram_formatter_premium_tier_uses_uppercase_and_emoji():
+    opportunity = _make_arbitrage_opportunity(
+        "Event totals",
+        market_type="football_total_goals",
+        profit_margin=0.085,
+    )
+    text = format_telegram_opportunity(opportunity)
+    first_line = text.split("\n", 1)[0]
+
+    assert "🚨" in first_line and "🔥" in first_line
+    assert "PREMIUM ARBITRAGE" in first_line
+    assert "ROI 8.50%" in first_line
+
+
+def test_telegram_formatter_calm_tier_does_not_yell():
+    opportunity = _make_arbitrage_opportunity(
+        "Event totals",
+        market_type="football_total_goals",
+        profit_margin=0.015,
+    )
+    text = format_telegram_opportunity(opportunity)
+    first_line = text.split("\n", 1)[0]
+
+    assert "🟢" in first_line
+    assert "🚨" not in first_line and "🔥" not in first_line
+    assert "PREMIUM" not in first_line
+    assert "ROI 1.50%" in first_line
+
+
+def test_telegram_formatter_arb_includes_stake_split():
+    opportunity = replace(
+        _make_arbitrage_opportunity(
+            "Event totals",
+            market_type="football_total_goals",
+            profit_margin=0.04,
+        ),
+        legs=[
+            OpportunityLeg(
+                bookmaker_id="mozzart",
+                market_type="football_total_goals",
+                outcome_code="over",
+                line=2.5,
+                odds=1.99,
+            ),
+            OpportunityLeg(
+                bookmaker_id="meridian",
+                market_type="football_total_goals",
+                outcome_code="under",
+                line=2.5,
+                odds=2.15,
+            ),
+        ],
+    )
+    text = format_telegram_opportunity(opportunity)
+
+    # Stake proportions = (1/1.99) / (1/1.99 + 1/2.15) = 51.9% / 48.1%.
+    assert "51.9%" in text
+    assert "48.1%" in text
+
+
+def test_telegram_formatter_includes_league_and_start_time():
+    opportunity = _make_arbitrage_opportunity(
+        "Aaron Doornekamp",
+        market_type="player_rebounds",
+        subject_type="player",
+        profit_margin=0.04,
+    )
+    text = format_telegram_opportunity(
+        opportunity,
+        TelegramOpportunityDisplayContext(
+            home_team="Gran Canaria",
+            away_team="Valencia",
+            league_name="ACB",
+            start_time="2026-05-08T18:00:00+00:00",  # 20:00 Belgrade
+        ),
+    )
+
+    assert "🏆 ACB" in text
+    assert "🕑" in text
+    assert "20:00" in text  # Europe/Belgrade is UTC+2 in May (CEST)
+
+
+def test_telegram_formatter_double_chance_uses_1x_12_x2_labels():
+    """Complementary outcome opportunities pair a single result (e.g. away)
+    with a double chance leg (e.g. home_or_draw). The double-chance leg must
+    render as 1X / 12 / X2 in the table."""
+
+    opp = Opportunity(
+        sport="football",
+        match_id="m1",
+        opportunity_type="complementary_outcomes",
+        market_type="football_result_double_chance",
+        line=None,
+        profit_margin=0.03,
+        middle_profit_margin=None,
+        legs=[
+            OpportunityLeg(
+                bookmaker_id="mozzart",
+                market_type="football_result",
+                outcome_code="away",
+                line=None,
+                odds=2.4,
+            ),
+            OpportunityLeg(
+                bookmaker_id="meridian",
+                market_type="football_double_chance",
+                outcome_code="home_or_draw",
+                line=None,
+                odds=1.7,
+            ),
+        ],
+    )
+    text = format_telegram_opportunity(
+        opp,
+        TelegramOpportunityDisplayContext(home_team="Roma", away_team="Lazio"),
+    )
+
+    rendered_lines = text.split("\n")
+    assert any("2 " in line and "mozzart" in line for line in rendered_lines)
+    assert any("1X" in line and "meridian" in line for line in rendered_lines)
+    # The raw outcome codes must not leak into the rendered text.
+    assert "home_or_draw" not in text
+    assert "Home_Or_Draw" not in text
+
+
+def test_telegram_formatter_treats_naive_start_time_as_utc():
+    """Naive ISO datetimes must be treated as UTC (matching frontend
+    formatDateTime in frontend/src/utils/format.ts), not as Belgrade local."""
+
+    opportunity = _make_arbitrage_opportunity(
+        "Aaron Doornekamp",
+        market_type="player_rebounds",
+        subject_type="player",
+        profit_margin=0.04,
+    )
+    text = format_telegram_opportunity(
+        opportunity,
+        TelegramOpportunityDisplayContext(
+            home_team="Gran Canaria",
+            away_team="Valencia",
+            start_time="2026-05-08T18:00:00",  # naive → UTC → 20:00 Belgrade in May
+        ),
+    )
+
+    assert "20:00" in text
+    assert "18:00" not in text
+
+
+def test_telegram_formatter_includes_sport_icon():
+    basketball_opp = replace(
+        _make_arbitrage_opportunity(
+            "Aaron Doornekamp",
+            market_type="player_rebounds",
+            subject_type="player",
+            profit_margin=0.04,
+        ),
+        sport="basketball",
+    )
+    text = format_telegram_opportunity(
+        basketball_opp,
+        TelegramOpportunityDisplayContext(
+            home_team="Gran Canaria", away_team="Valencia", league_name="ACB"
+        ),
+    )
+    assert "🏀" in text
+
+    football_opp = replace(basketball_opp, sport="football")
+    football_text = format_telegram_opportunity(
+        football_opp,
+        TelegramOpportunityDisplayContext(home_team="Roma", away_team="Lazio"),
+    )
+    assert "⚽" in football_text
+
+    tennis_opp = replace(basketball_opp, sport="tennis")
+    tennis_text = format_telegram_opportunity(
+        tennis_opp,
+        TelegramOpportunityDisplayContext(home_team="Castro", away_team="Falabella"),
+    )
+    assert "🎾" in tennis_text
+
+
+def test_telegram_formatter_skips_duplicate_subject_when_equal_to_market():
+    """For event-level totals where subject_name is None, the descriptor must
+    not double-print the market label as both subject and market."""
+
+    opportunity = _make_arbitrage_opportunity(
+        # _make_arbitrage_opportunity sets subject_name to the first arg even
+        # when subject_type is None. Use the market label to trigger the
+        # duplicate-suppression branch.
+        "Football Total Goals",
+        match_id="match_42",
+        market_type="football_total_goals",
+        profit_margin=0.03,
+    )
+    text = format_telegram_opportunity(
+        opportunity,
+        TelegramOpportunityDisplayContext(home_team="Roma", away_team="Lazio"),
+    )
+
+    # Must not contain "X · X" / "X - X" duplicates.
+    assert "Football Total Goals · Football Total Goals" not in text
+    assert "Football Total Goals - Football Total Goals" not in text
+    # The market label must still appear once.
+    assert text.count("Football Total Goals") == 1
 
 
 @pytest.mark.asyncio
@@ -588,9 +854,19 @@ async def test_telegram_provider_groups_same_player_event_market_in_one_message(
 
     assert await provider.send_opportunities(opportunities, publish_id="pub-1") == 2
     assert len(calls) == 1
-    assert "<b>Aaron Doornekamp - rebounds</b>" in calls[0]
-    assert "More new options:" in calls[0]
-    assert "ROI 7.44%" in calls[0]
+    rendered = calls[0]
+    # New format: tier-aware header carries the strongest ROI, table includes
+    # legs from BOTH lines so the alternative pair is visible.
+    assert "ROI 10.60%" in rendered  # primary's profit_margin
+    assert "Aaron Doornekamp" in rendered  # subject in market descriptor
+    assert "Rebounds" in rendered  # market label
+    assert "<pre>" in rendered and "</pre>" in rendered
+    assert "O4.5" in rendered and "U4.5" in rendered
+    assert "O5.5" in rendered and "U5.5" in rendered  # alt-line legs collapsed
+    # Old-format remnants must not appear.
+    assert "More new options:" not in rendered
+    assert "same-line arb" not in rendered
+    assert " - rebounds" not in rendered  # no duplicate-style header
 
     rows = await (await get_db()).execute_fetchall(
         """SELECT telegram_message_id, COUNT(*) AS c
@@ -675,6 +951,75 @@ async def test_telegram_provider_does_not_group_subjectless_event_markets():
 
 
 @pytest.mark.asyncio
+async def test_telegram_provider_collapses_subjectless_event_markets_at_same_line():
+    """The original spam case: multiple bookmaker pairs at the same event/market/line
+    must collapse into ONE message (not one per pair)."""
+
+    await odds_store.create_telegram_notification_profile(
+        TelegramNotificationProfileCreate(
+            label="Main",
+            chat_id="123",
+            min_roi_percent=1,
+        )
+    )
+    calls: list[str] = []
+
+    class StubTelegramClient:
+        async def send_message(self, *, chat_id: str, text: str) -> TelegramSendMessageResult:
+            calls.append(text)
+            return TelegramSendMessageResult(message_id=len(calls))
+
+    def _make_pair(book_a: str, book_b: str, *, profit: float = 0.03) -> Opportunity:
+        return Opportunity(
+            sport="basketball",
+            match_id="m1",
+            opportunity_type="same_line_arbitrage",
+            market_type="home_handicap_ot",
+            line=-1.5,
+            profit_margin=profit,
+            middle_profit_margin=None,
+            subject_type=None,
+            subject_name=None,
+            legs=[
+                OpportunityLeg(
+                    bookmaker_id=book_a,
+                    market_type="home_handicap_ot",
+                    outcome_code="over",
+                    line=-1.5,
+                    odds=1.92,
+                ),
+                OpportunityLeg(
+                    bookmaker_id=book_b,
+                    market_type="home_handicap_ot",
+                    outcome_code="under",
+                    line=-1.5,
+                    odds=2.25,
+                ),
+            ],
+        )
+
+    opportunities = [
+        _make_pair("admiralbet", "maxbet", profit=0.036),
+        _make_pair("pinnbet", "maxbet", profit=0.030),
+        _make_pair("soccerbet", "maxbet", profit=0.024),
+        _make_pair("betole", "maxbet", profit=0.024),
+    ]
+    provider = TelegramNotificationProvider(bot_client=StubTelegramClient())  # type: ignore[arg-type]
+
+    assert await provider.send_opportunities(opportunities, publish_id="pub-1") == 4
+    assert len(calls) == 1  # ← the spam-fix invariant
+    rendered = calls[0]
+    # All four bookmakers must appear in the single rendered table.
+    for book in ("admiralbet", "pinnbet", "soccerbet", "betole", "maxbet"):
+        assert book in rendered
+    # Header reflects the strongest pair's ROI (3.60%).
+    assert "ROI 3.60%" in rendered
+    # H1/H2 outcome labels with same line value (no sign flip).
+    assert "H1 -1.5" in rendered
+    assert "H2 -1.5" in rendered
+
+
+@pytest.mark.asyncio
 async def test_telegram_provider_applies_top_limit_to_groups_not_raw_options():
     await odds_store.create_telegram_notification_profile(
         TelegramNotificationProfileCreate(
@@ -725,7 +1070,10 @@ async def test_telegram_provider_applies_top_limit_to_groups_not_raw_options():
     for expected in ("Player A", "Player B", "Player C", "Player D", "Player E"):
         assert expected in combined
     assert "Player F" not in combined
-    assert calls[0].index("ROI 29.00%") < calls[0].index("ROI 28.00%")
+    # The strongest pair in Player A's group (line 4.5, ROI 30%) leads the
+    # message; alt-line legs at 5.5 and 6.5 collapse into the same table.
+    assert "ROI 30.00%" in calls[0]
+    assert "O4.5" in calls[0] and "O5.5" in calls[0] and "O6.5" in calls[0]
 
 
 @pytest.mark.asyncio
