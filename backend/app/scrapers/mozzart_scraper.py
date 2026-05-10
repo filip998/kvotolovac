@@ -50,10 +50,12 @@ _PLAYER_GROUP_KEYWORDS = [
 
 _BASKETBALL_SPORT_ID = 2
 _FOOTBALL_SPORT_ID = 1
+_TENNIS_SPORT_ID = 5
 _MATCHES_MATCH_TYPE = 0
 _SPECIALS_MATCH_TYPE = 2
 _MATCHES_DATE = "all"
 _PAGE_SIZE = 50
+_TENNIS_PAGE_URL = "https://www.mozzartbet.com/sr/kladjenje/tenis"
 _FOOTBALL_TOTAL_GOALS_LINE = 2.5
 _GAME_TOTAL_GROUP_NAMES = {
     "ukupno poena na meču",
@@ -80,6 +82,11 @@ _FOOTBALL_TOTAL_GOALS_OUTCOMES = {
 _FOOTBALL_TOTAL_GOALS_LABELS = {
     "under": "0-2",
     "over": "3+",
+}
+_TENNIS_MATCH_WINNER_GROUP_NAMES = {"konacan ishod"}
+_TENNIS_MATCH_WINNER_OUTCOMES = {
+    "1": ("home", "1"),
+    "2": ("away", "2"),
 }
 _CANONICAL_LEAGUES = {
     "nba": "nba",
@@ -175,6 +182,11 @@ def _extract_league_id(competition_name: str | None) -> str:
 def _extract_football_league_id(competition_name: str | None) -> str:
     normalized = normalize_identity_text(competition_name)
     return normalized.replace(" ", "_") or "football"
+
+
+def _extract_tennis_league_id(competition_name: str | None) -> str:
+    normalized = normalize_identity_text(competition_name)
+    return normalized.replace(" ", "_") or "tennis"
 
 
 def _parse_threshold(raw_value: object) -> float | None:
@@ -476,6 +488,89 @@ def _parse_football_outcome_items(items: list[dict]) -> list[RawOutcomeOffer]:
     return results
 
 
+_TENNIS_DOUBLES_TOKENS = {"doubles", "double", "dublovi", "parovi"}
+
+
+def _is_tennis_doubles_match(match: dict) -> bool:
+    home = ((match.get("home") or {}).get("name") or "").strip()
+    visitor = ((match.get("visitor") or {}).get("name") or "").strip()
+    competition = ((match.get("competition") or {}).get("name") or "").strip()
+
+    if "/" in home or "/" in visitor:
+        return True
+    if "(d)" in competition.lower():
+        return True
+
+    normalized_context = normalize_identity_text(f"{home} {visitor} {competition}")
+    return bool(set(normalized_context.split()) & _TENNIS_DOUBLES_TOKENS)
+
+
+def _parse_tennis_outcome_match(match: dict) -> list[RawOutcomeOffer]:
+    status = match.get("status") or {}
+    if match.get("live") is True or match.get("isLive") is True:
+        return []
+    if match.get("blocked") is True or status.get("live") is True:
+        return []
+
+    home = ((match.get("home") or {}).get("name") or "").strip()
+    visitor = ((match.get("visitor") or {}).get("name") or "").strip()
+    if not home or not visitor:
+        return []
+    if _is_tennis_doubles_match(match):
+        return []
+
+    competition = (match.get("competition") or {}).get("name")
+    league_id = _extract_tennis_league_id(competition)
+    start_time = _parse_start_time(match.get("startTime"))
+    results: list[RawOutcomeOffer] = []
+    seen: set[str] = set()
+
+    for group in match.get("oddsGroup") or []:
+        group_name = normalize_identity_text(group.get("groupName"))
+        if group_name not in _TENNIS_MATCH_WINNER_GROUP_NAMES:
+            continue
+
+        for odd in group.get("odds") or []:
+            if odd.get("oddStatus") != "ACTIVE":
+                continue
+
+            raw_label = ((odd.get("subgame") or {}).get("name") or "").strip()
+            mapping = _TENNIS_MATCH_WINNER_OUTCOMES.get(raw_label)
+            odds = _coerce_positive_odds(odd.get("value"))
+            if mapping is None or odds is None:
+                continue
+
+            outcome_code, canonical_label = mapping
+            if outcome_code in seen:
+                continue
+            seen.add(outcome_code)
+            results.append(
+                RawOutcomeOffer(
+                    bookmaker_id="mozzart",
+                    league_id=league_id,
+                    sport="tennis",
+                    home_team=home,
+                    away_team=visitor,
+                    source_url=_TENNIS_PAGE_URL,
+                    market_type="tennis_match_winner",
+                    outcome_code=outcome_code,
+                    odds=odds,
+                    line=None,
+                    raw_label=canonical_label,
+                    start_time=start_time,
+                )
+            )
+
+    return results
+
+
+def _parse_tennis_outcome_items(items: list[dict]) -> list[RawOutcomeOffer]:
+    results: list[RawOutcomeOffer] = []
+    for match in items:
+        results.extend(_parse_tennis_outcome_match(match))
+    return results
+
+
 class MozzartScraper(BaseScraper):
     """Real scraper for Mozzart player props and game total over/under odds."""
 
@@ -541,7 +636,7 @@ class MozzartScraper(BaseScraper):
             current_page += 1
 
     def get_supported_outcome_sports(self) -> list[str]:
-        return ["football"]
+        return ["football", "tennis"]
 
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         if league_id != "basketball":
@@ -573,6 +668,23 @@ class MozzartScraper(BaseScraper):
         return results
 
     async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        if sport == "tennis":
+            match_items = await self._fetch_match_items(
+                sport_id=_TENNIS_SPORT_ID,
+                label="tennis match",
+            )
+            if not match_items:
+                logger.warning("Mozzart returned 0 tennis prematch matches")
+                return []
+
+            results = _parse_tennis_outcome_items(match_items)
+            logger.info(
+                "Mozzart scraped %d tennis outcome offers from %d prematch matches",
+                len(results),
+                len(match_items),
+            )
+            return results
+
         if sport != "football":
             return []
 
