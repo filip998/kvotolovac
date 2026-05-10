@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,6 +27,7 @@ from app.scrapers.bookmaker365_scraper import (
     _parse_player_match,
     _parse_start_time,
     _parse_tennis_outcome_match,
+    _tennis_skip_reason,
     _parse_total_match,
     _GAME_TOTAL_LINES,
     _GAME_TOTAL_OT_LINES,
@@ -41,6 +43,11 @@ FOOTBALL_CATEGORIES_FIXTURE_PATH = (
 FOOTBALL_LEAGUE_FIXTURE_PATH = (
     Path(__file__).parent / "fixtures" / "bookmaker365_football_league.json"
 )
+TENNIS_NOW = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
+
+
+def _tennis_kickoff_ms(**delta_kwargs) -> int:
+    return int((TENNIS_NOW + timedelta(**delta_kwargs)).timestamp() * 1000)
 
 REGULAR_LEAGUES_RESPONSE = {
     "categories": [
@@ -98,6 +105,12 @@ def test_extract_league_id_strips_player_suffixes():
     assert _extract_league_id("NBA / Mućkalica Igrači") == "nba"
     assert _extract_league_id("Evroliga") == "euroleague"
     assert _extract_league_id("Evroliga / Play Off") == "euroleague"
+
+
+def test_parse_start_time_handles_numeric_strings_and_zero():
+    assert _parse_start_time("1778407200000") == "2026-05-10T10:00:00+00:00"
+    assert _parse_start_time(0) is None
+    assert _parse_start_time("0") is None
 
 
 def test_parse_total_match_returns_regular_and_ot_lines(regular_preview_data):
@@ -553,28 +566,119 @@ def test_parse_tennis_outcome_match_emits_match_winner_offers():
     }
 
 
-def test_parse_tennis_outcome_match_skips_live_blocked_and_doubles():
+def test_parse_tennis_outcome_match_allows_future_live_flagged_prematch():
+    results = _parse_tennis_outcome_match(
+        {
+            "id": 47608215,
+            "leagueName": "WTA Rome",
+            "home": "Pegula J.",
+            "away": "Masarova R.",
+            "kickOffTime": str(_tennis_kickoff_ms(minutes=10)),
+            "live": True,
+            "blocked": False,
+            "odds": {"1": 1.15, "3": 5.4},
+        },
+        now=TENNIS_NOW,
+    )
+
+    assert len(results) == 2
+    assert {row.outcome_code for row in results} == {"home", "away"}
+    assert {row.start_time for row in results} == {"2026-05-10T12:10:00+00:00"}
+
+
+def test_parse_tennis_outcome_match_allows_future_live_after_matchup_recovery():
+    results = _parse_tennis_outcome_match(
+        {
+            "id": 47608215,
+            "leagueName": "WTA Rome",
+            "home": "",
+            "away": "",
+            "name": "Pegula J. - Masarova R.",
+            "kickOffTime": _tennis_kickoff_ms(minutes=10),
+            "live": True,
+            "blocked": False,
+            "odds": {"1": 1.15, "3": 5.4},
+        },
+        now=TENNIS_NOW,
+    )
+
+    assert len(results) == 2
+    assert {row.home_team for row in results} == {"Pegula J."}
+    assert {row.away_team for row in results} == {"Masarova R."}
+
+
+@pytest.mark.parametrize(
+    ("delta_kwargs", "expected_reason"),
+    [
+        ({"minutes": 5}, "live_near_or_past_start"),
+        ({"seconds": 35}, "live_near_or_past_start"),
+        ({"minutes": -1}, "live_near_or_past_start"),
+    ],
+)
+def test_parse_tennis_outcome_match_skips_live_rows_near_start_or_past(
+    delta_kwargs,
+    expected_reason,
+):
+    match = {
+        "leagueName": "WTA Rome",
+        "home": "Pegula J.",
+        "away": "Masarova R.",
+        "kickOffTime": _tennis_kickoff_ms(**delta_kwargs),
+        "live": True,
+        "blocked": False,
+        "odds": {"1": 1.15, "3": 5.4},
+    }
+
+    assert _parse_tennis_outcome_match(match, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(match, now=TENNIS_NOW) == expected_reason
+
+
+def test_parse_tennis_outcome_match_skips_live_rows_with_bad_start_time():
+    missing_start = {
+        "leagueName": "WTA Rome",
+        "home": "Pegula J.",
+        "away": "Masarova R.",
+        "live": True,
+        "blocked": False,
+        "odds": {"1": 1.15, "3": 5.4},
+    }
+    invalid_start = {**missing_start, "kickOffTime": "not-an-epoch"}
+
+    assert _parse_tennis_outcome_match(missing_start, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(missing_start, now=TENNIS_NOW) == "missing_start_time"
+    assert _parse_tennis_outcome_match(invalid_start, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(invalid_start, now=TENNIS_NOW) == "invalid_start_time"
+
+
+def test_parse_tennis_outcome_match_applies_skip_precedence():
     base_match = {
         "leagueName": "WTA Rome",
         "home": "Pegula J.",
         "away": "Masarova R.",
-        "kickOffTime": 1778410800000,
+        "kickOffTime": _tennis_kickoff_ms(minutes=10),
         "live": False,
         "blocked": False,
         "odds": {"1": 1.15, "3": 5.4},
     }
 
-    assert _parse_tennis_outcome_match({**base_match, "live": True}) == []
+    assert _parse_tennis_outcome_match({**base_match, "live": True}, now=TENNIS_NOW) != []
     assert _parse_tennis_outcome_match({**base_match, "blocked": True}) == []
+    assert _tennis_skip_reason({**base_match, "blocked": True}, now=TENNIS_NOW) == "blocked"
     assert _parse_tennis_outcome_match({**base_match, "leagueName": "ATP Doubles Rome"}) == []
+    assert _tennis_skip_reason({**base_match, "leagueName": "ATP Doubles Rome"}, now=TENNIS_NOW) == "doubles"
     assert _parse_tennis_outcome_match({**base_match, "home": "Player A./Player B."}) == []
+    assert _tennis_skip_reason({**base_match, "home": "Player A./Player B."}, now=TENNIS_NOW) == "doubles"
     assert _parse_tennis_outcome_match({**base_match, "away": "Player A./Player B."}) == []
+    assert _tennis_skip_reason({**base_match, "away": "Player A./Player B."}, now=TENNIS_NOW) == "doubles"
 
 
 def test_parse_tennis_outcome_match_skips_invalid_rows():
     assert _parse_tennis_outcome_match({"away": "Away", "odds": {"1": 1.9}}) == []
+    assert _tennis_skip_reason({"away": "Away", "odds": {"1": 1.9}}) == "missing_competitor"
     assert _parse_tennis_outcome_match({"home": "Home", "odds": {"1": 1.9}}) == []
+    assert _tennis_skip_reason({"home": "Home", "odds": {"1": 1.9}}) == "missing_competitor"
     assert _parse_tennis_outcome_match({"home": "Home", "away": "Away", "odds": []}) == []
+    assert _tennis_skip_reason({"home": "Home", "away": "Away", "odds": []}) == "invalid_odds_map"
     assert _parse_tennis_outcome_match(
         {"home": "Home", "away": "Away", "odds": {"1": 0, "3": "bad"}}
     ) == []
@@ -746,11 +850,16 @@ async def test_scrape_outcome_offers_non_football_returns_empty():
 
 
 @pytest.mark.asyncio
-async def test_scrape_outcome_offers_tennis_uses_one_bulk_call_without_fallback(monkeypatch):
+async def test_scrape_outcome_offers_tennis_uses_one_bulk_call_without_fallback(
+    monkeypatch,
+    caplog,
+):
     fixture_start = datetime(2026, 5, 10, 9, 0, tzinfo=timezone.utc)
+    scrape_now = fixture_start - timedelta(hours=1)
+    caplog.set_level(logging.INFO)
     monkeypatch.setattr(
         "app.scrapers.bookmaker365_scraper.current_utc_time",
-        lambda: fixture_start - timedelta(hours=1),
+        lambda: scrape_now,
     )
     monkeypatch.setattr(
         "app.scrapers.bookmaker365_scraper.lookahead_cutoff",
@@ -788,6 +897,16 @@ async def test_scrape_outcome_offers_tennis_uses_one_bulk_call_without_fallback(
                 "blocked": False,
                 "odds": {"1": 1.64, "3": 2.1},
             },
+            {
+                "id": 47608761,
+                "leagueName": "ITF Changwon (Žene)",
+                "home": "Soon H.",
+                "away": "Soon E.",
+                "kickOffTime": int((scrape_now + timedelta(minutes=5)).timestamp() * 1000),
+                "live": True,
+                "blocked": False,
+                "odds": {"1": 1.64, "3": 2.1},
+            },
         ]
     }
 
@@ -805,10 +924,11 @@ async def test_scrape_outcome_offers_tennis_uses_one_bulk_call_without_fallback(
     scraper = Bookmaker365Scraper(http_client=http_client)
     results = await scraper.scrape_outcome_offers("tennis")
 
-    assert len(results) == 2
+    assert len(results) == 4
     assert all(row.sport == "tennis" for row in results)
     requested_urls = [call.args[0] for call in http_client.get_json.call_args_list]
     assert requested_urls == [_TENNIS_BULK_URL]
+    assert "skipped={'doubles': 1, 'live_near_or_past_start': 1}" in caplog.text
 
 
 @pytest.mark.asyncio
