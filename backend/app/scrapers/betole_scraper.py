@@ -58,6 +58,7 @@ def _list_params() -> dict[str, str]:
 
 
 _BOOKMAKER_ID = "betole"
+_TENNIS_LIVE_START_BUFFER_MS = 5 * 60 * 1000
 
 
 @dataclass(frozen=True)
@@ -474,23 +475,62 @@ def _is_tennis_doubles_match(match: dict) -> bool:
     return "/" in home_team or "/" in away_team
 
 
-def _parse_tennis_outcome_match(match: dict) -> list[RawOutcomeOffer]:
-    if match.get("live") is True:
-        return []
+def _tennis_live_start_skip_reason(
+    match: dict,
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    if match.get("live") is not True:
+        return None
+
+    raw_kickoff = match.get("kickOffTime")
+    if raw_kickoff in (None, ""):
+        return "missing_start_time"
+
+    kickoff_ms = _parse_int(raw_kickoff)
+    if kickoff_ms is None:
+        return "invalid_start_time"
+
+    now_ms = int((now or current_utc_time()).timestamp() * 1000)
+    if kickoff_ms <= now_ms + _TENNIS_LIVE_START_BUFFER_MS:
+        return "live_near_or_past_start"
+
+    return None
+
+
+def _tennis_skip_reason(match: dict, *, now: datetime | None = None) -> str | None:
     if match.get("blocked") is True:
-        return []
+        return "blocked"
     if _is_tennis_doubles_match(match):
-        return []
+        return "doubles"
 
     home_team = (match.get("home") or "").strip()
     away_team = (match.get("away") or "").strip()
     if not home_team or not away_team:
+        return "missing_competitor"
+
+    raw_odds_map = match.get("odds")
+    if raw_odds_map is not None and not isinstance(raw_odds_map, dict):
+        return "invalid_odds_map"
+
+    live_start_reason = _tennis_live_start_skip_reason(match, now=now)
+    if live_start_reason:
+        return live_start_reason
+
+    return None
+
+
+def _parse_tennis_outcome_match(
+    match: dict,
+    *,
+    now: datetime | None = None,
+) -> list[RawOutcomeOffer]:
+    if _tennis_skip_reason(match, now=now):
         return []
 
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
     odds_map = match.get("odds") or {}
-    if not isinstance(odds_map, dict):
-        return []
-
     league_id = _extract_league_id(match.get("leagueName"), default="tennis")
     start_time = _parse_start_time(match.get("kickOffTime"))
     results: list[RawOutcomeOffer] = []
@@ -764,32 +804,25 @@ class BetOleScraper(BaseScraper):
 
         if sport == "tennis":
             tennis_matches = await self._fetch_tennis_list()
+            scrape_now = current_utc_time()
             results: list[RawOutcomeOffer] = []
-            skipped_live = 0
-            skipped_blocked = 0
-            skipped_doubles = 0
+            skipped: dict[str, int] = {}
             for match in tennis_matches:
-                if match.get("live") is True:
-                    skipped_live += 1
+                parsed = _parse_tennis_outcome_match(match, now=scrape_now)
+                if not parsed:
+                    reason = _tennis_skip_reason(match, now=scrape_now) or "no_match_winner"
+                    skipped[reason] = skipped.get(reason, 0) + 1
                     continue
-                if match.get("blocked") is True:
-                    skipped_blocked += 1
-                    continue
-                if _is_tennis_doubles_match(match):
-                    skipped_doubles += 1
-                    continue
-                results.extend(_parse_tennis_outcome_match(match))
+                results.extend(parsed)
 
             logger.info(
                 (
                     "BetOle scraped %d tennis outcome offers from %d matches "
-                    "(skipped %d live, %d blocked, %d doubles)"
+                    "with skipped=%s"
                 ),
                 len(results),
                 len(tennis_matches),
-                skipped_live,
-                skipped_blocked,
-                skipped_doubles,
+                skipped,
             )
             return results
 
