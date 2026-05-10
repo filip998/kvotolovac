@@ -11,6 +11,7 @@ from .http_client import HttpClient
 from .outcome_team_recovery import recover_matchup_from_payload
 from ..config import settings
 from ..models.schemas import RawOddsData, RawOutcomeOffer
+from ..services.scrape_window import current_utc_time
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ _BULK_HEADERS = {
     **_DEFAULT_HEADERS,
     "Content-Type": "application/json",
 }
+_TENNIS_LIVE_START_BUFFER_MS = 5 * 60 * 1000
 
 # ── Tip-type code constants (numeric IDs are stable across restapi/ibet) ──
 _OVER_CODE = "51679"    # player scores MORE points
@@ -536,23 +538,63 @@ def _is_tennis_doubles_match(match: dict) -> bool:
     return "/" in home_team or "/" in away_team
 
 
-def _parse_tennis_outcome_match(match: dict) -> list[RawOutcomeOffer]:
-    if match.get("live") is True:
-        return []
+def _tennis_live_start_skip_reason(
+    match: dict,
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    if match.get("live") is not True:
+        return None
+
+    raw_kickoff = match.get("kickOffTime")
+    if raw_kickoff in (None, ""):
+        return "missing_start_time"
+
+    try:
+        kickoff_ms = int(raw_kickoff)
+    except (TypeError, ValueError):
+        return "invalid_start_time"
+
+    now_ms = int((now or current_utc_time()).timestamp() * 1000)
+    if kickoff_ms <= now_ms + _TENNIS_LIVE_START_BUFFER_MS:
+        return "live_near_or_past_start"
+
+    return None
+
+
+def _tennis_skip_reason(match: dict, *, now: datetime | None = None) -> str | None:
     if match.get("blocked") is True:
-        return []
+        return "blocked"
     if _is_tennis_doubles_match(match):
-        return []
+        return "doubles"
 
     home_team = (match.get("home") or "").strip()
     away_team = (match.get("away") or "").strip()
     if not home_team or not away_team:
+        return "missing_competitor"
+
+    raw_odds_map = match.get("odds")
+    if raw_odds_map is not None and not isinstance(raw_odds_map, dict):
+        return "invalid_odds_map"
+
+    live_start_reason = _tennis_live_start_skip_reason(match, now=now)
+    if live_start_reason:
+        return live_start_reason
+
+    return None
+
+
+def _parse_tennis_outcome_match(
+    match: dict,
+    *,
+    now: datetime | None = None,
+) -> list[RawOutcomeOffer]:
+    if _tennis_skip_reason(match, now=now):
         return []
 
+    home_team = (match.get("home") or "").strip()
+    away_team = (match.get("away") or "").strip()
     odds_map = match.get("odds") or {}
-    if not isinstance(odds_map, dict):
-        return []
-
     league_id = _extract_plain_league_id(match.get("leagueName", ""), "tennis")
     start_time = _parse_start_time(match.get("kickOffTime"))
     results: list[RawOutcomeOffer] = []
@@ -968,18 +1010,26 @@ class OktagonBetScraper(BaseScraper):
     async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
         if sport == "tennis":
             list_payload = await self._fetch_list(_TENNIS_LIST_URL, "tennis outcomes")
+            scrape_now = current_utc_time()
             results: list[RawOutcomeOffer] = []
+            skipped: dict[str, int] = {}
             match_count = 0
             for match in list_payload.get("esMatches", []) or []:
                 if not isinstance(match, dict):
                     continue
                 match_count += 1
-                results.extend(_parse_tennis_outcome_match(match))
+                parsed = _parse_tennis_outcome_match(match, now=scrape_now)
+                if not parsed:
+                    reason = _tennis_skip_reason(match, now=scrape_now) or "no_match_winner"
+                    skipped[reason] = skipped.get(reason, 0) + 1
+                    continue
+                results.extend(parsed)
 
             logger.info(
-                "OktagonBet scraped %d tennis outcome offers from %d matches",
+                "OktagonBet scraped %d tennis outcome offers from %d matches; skipped=%s",
                 len(results),
                 match_count,
+                skipped,
             )
             return results
 

@@ -23,6 +23,7 @@ from app.scrapers.betole_scraper import (
     _parse_regular_match,
     _parse_start_time,
     _parse_tennis_outcome_match,
+    _tennis_skip_reason,
 )
 from app.models.schemas import RawOutcomeOffer
 from app.services.league_registry import resolve_league
@@ -31,6 +32,7 @@ REGULAR_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "betole_regular_leag
 PLAYER_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "betole_players_league.json"
 FOOTBALL_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "betole_football_offer.json"
 FOOTBALL_DETAIL_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "betole_football_match.json"
+TENNIS_NOW = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
 
 EXTRA_REGULAR_LEAGUE = {
     "id": "2265038",
@@ -39,6 +41,11 @@ EXTRA_REGULAR_LEAGUE = {
     "url": "B",
     "count": 7,
 }
+
+
+def _tennis_kickoff_ms(*, seconds: int = 0, minutes: int = 0) -> int:
+    kickoff = TENNIS_NOW + timedelta(seconds=seconds, minutes=minutes)
+    return int(kickoff.timestamp() * 1000)
 
 
 @pytest.fixture
@@ -559,24 +566,93 @@ def test_parse_tennis_outcome_match_emits_available_one_sided_odds():
     assert [(row.outcome_code, row.odds) for row in results] == [("home", 1.2)]
 
 
-def test_parse_tennis_outcome_match_skips_live_blocked_and_doubles():
+def test_parse_tennis_outcome_match_allows_future_live_flagged_prematch():
+    results = _parse_tennis_outcome_match(
+        {
+            "home": "Tiago Pereira",
+            "away": "Joao Domingues",
+            "leagueName": "ITF Men, M25 Loule (Portugal), hard",
+            "kickOffTime": _tennis_kickoff_ms(minutes=10),
+            "live": True,
+            "blocked": False,
+            "odds": {"1": 1.4, "3": 2.8},
+        },
+        now=TENNIS_NOW,
+    )
+
+    assert len(results) == 2
+    assert {row.outcome_code for row in results} == {"home", "away"}
+    assert {row.start_time for row in results} == {"2026-05-10T12:10:00+00:00"}
+
+
+def test_parse_tennis_outcome_match_skips_live_rows_near_start_or_past():
     base_match = {
         "home": "Tiago Pereira",
         "away": "Joao Domingues",
         "leagueName": "ITF Men, M25 Loule (Portugal), hard",
-        "kickOffTime": 1778407200000,
+        "kickOffTime": _tennis_kickoff_ms(seconds=35),
         "live": False,
         "blocked": False,
         "odds": {"1": 1.4, "3": 2.8},
     }
 
-    assert _parse_tennis_outcome_match({**base_match, "live": True}) == []
-    assert _parse_tennis_outcome_match({**base_match, "blocked": True}) == []
-    assert _parse_tennis_outcome_match(
-        {**base_match, "leagueName": "ATP Doubles, Rome (Italy), clay"}
-    ) == []
-    assert _parse_tennis_outcome_match({**base_match, "home": "A. Player/B. Player"}) == []
-    assert _parse_tennis_outcome_match({**base_match, "away": "A. Player/B. Player"}) == []
+    near_start = {**base_match, "live": True}
+    past_start = {
+        **base_match,
+        "live": True,
+        "kickOffTime": _tennis_kickoff_ms(minutes=-1),
+    }
+
+    assert _parse_tennis_outcome_match(near_start, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(near_start, now=TENNIS_NOW) == "live_near_or_past_start"
+    assert _parse_tennis_outcome_match(past_start, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(past_start, now=TENNIS_NOW) == "live_near_or_past_start"
+
+
+def test_parse_tennis_outcome_match_skips_live_rows_with_bad_start_time():
+    missing_start = {
+        "home": "Tiago Pereira",
+        "away": "Joao Domingues",
+        "leagueName": "ITF Men, M25 Loule (Portugal), hard",
+        "live": True,
+        "blocked": False,
+        "odds": {"1": 1.4, "3": 2.8},
+    }
+    invalid_start = {**missing_start, "kickOffTime": "not-an-epoch"}
+
+    assert _parse_tennis_outcome_match(missing_start, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(missing_start, now=TENNIS_NOW) == "missing_start_time"
+    assert _parse_tennis_outcome_match(invalid_start, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(invalid_start, now=TENNIS_NOW) == "invalid_start_time"
+
+
+def test_parse_tennis_outcome_match_skip_precedence_for_blocked_and_doubles():
+    future_live_match = {
+        "home": "Tiago Pereira",
+        "away": "Joao Domingues",
+        "leagueName": "ITF Men, M25 Loule (Portugal), hard",
+        "kickOffTime": _tennis_kickoff_ms(minutes=10),
+        "live": True,
+        "blocked": False,
+        "odds": {"1": 1.4, "3": 2.8},
+    }
+
+    blocked = {**future_live_match, "blocked": True}
+    doubles_league = {**future_live_match, "leagueName": "ATP Doubles, Rome (Italy), clay"}
+    doubles_home = {**future_live_match, "home": "A. Player/B. Player"}
+    missing_home = {**future_live_match, "home": ""}
+    invalid_odds = {**future_live_match, "odds": []}
+
+    assert _parse_tennis_outcome_match(blocked, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(blocked, now=TENNIS_NOW) == "blocked"
+    assert _parse_tennis_outcome_match(doubles_league, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(doubles_league, now=TENNIS_NOW) == "doubles"
+    assert _parse_tennis_outcome_match(doubles_home, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(doubles_home, now=TENNIS_NOW) == "doubles"
+    assert _parse_tennis_outcome_match(missing_home, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(missing_home, now=TENNIS_NOW) == "missing_competitor"
+    assert _parse_tennis_outcome_match(invalid_odds, now=TENNIS_NOW) == []
+    assert _tennis_skip_reason(invalid_odds, now=TENNIS_NOW) == "invalid_odds_map"
 
 
 def test_parse_tennis_outcome_match_skips_invalid_rows():
@@ -848,7 +924,10 @@ async def test_scrape_outcome_offers_tennis_uses_one_list_call_without_details()
                 "home": "Taisei Ichikawa",
                 "away": "Uisung Park",
                 "leagueName": "ITF Men, M15 Wuning (China), hard",
-                "kickOffTime": 1778378400000,
+                "kickOffTime": int(
+                    (datetime.now(tz=timezone.utc) + timedelta(minutes=10)).timestamp()
+                    * 1000
+                ),
                 "live": True,
                 "blocked": False,
                 "odds": {"1": 2.8, "3": 1.4},
@@ -870,10 +949,11 @@ async def test_scrape_outcome_offers_tennis_uses_one_list_call_without_details()
     scraper = BetOleScraper(http_client=http_client, detail_mode="full")
     results = await scraper.scrape_outcome_offers("tennis")
 
-    assert len(results) == 2
+    assert len(results) == 4
     assert all(row.sport == "tennis" for row in results)
     requested_urls = [call.args[0] for call in http_client.get_json.call_args_list]
     assert requested_urls == [_TENNIS_LIST_URL]
+    assert http_client.get_json.call_count == 1
 
 
 def test_scheduler_applies_betole_detail_mode_and_analysis_markets():
