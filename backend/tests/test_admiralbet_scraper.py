@@ -9,6 +9,7 @@ import pytest
 
 from app.scrapers.admiralbet_scraper import (
     AdmiralBetScraper,
+    _BET_TENNIS_MATCH_WINNER,
     _parse_event,
     _parse_event_name,
     _parse_start_time,
@@ -20,9 +21,12 @@ from app.scrapers.admiralbet_scraper import (
     _parse_handicap_ot_event,
     _extract_league_id,
     _parse_football_outcome_event,
+    _parse_tennis_outcome_event,
     _parse_total_line,
     _resolve_total_line,
     _FOOTBALL_OUTCOME_PARAMS,
+    _TENNIS_OUTCOME_PARAMS,
+    _TENNIS_PAGE_URL,
     _LIST_URL,
 )
 from app.models.schemas import RawOddsData, RawOutcomeOffer
@@ -973,17 +977,168 @@ def test_extract_league_id_default_kwarg_falls_back_for_empty_inputs():
     assert _extract_league_id(None) == "basketball"
 
 
+def _tennis_event(**overrides) -> dict:
+    event = {
+        "id": 6314006,
+        "name": "Yasmine Mansouri - Victoria Milovanova",
+        "competitionId": 37210,
+        "regionId": 185,
+        "sportId": 3,
+        "systemStatus": 1,
+        "feedStatus": 1,
+        "isInOffer": True,
+        "isPlayable": True,
+        "dateTime": "2026-05-10T09:17:00",
+        "bets": [
+            {
+                "betTypeId": 214,
+                "betTypeName": "1.set - Pobednik",
+                "isPlayable": True,
+                "isInOffer": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.8, "isPlayable": True, "isInOffer": True},
+                    {"name": "2", "odd": 1.9, "isPlayable": True, "isInOffer": True},
+                ],
+            },
+            {
+                "betTypeId": _BET_TENNIS_MATCH_WINNER,
+                "betTypeName": "Pobednik",
+                "isPlayable": True,
+                "isInOffer": True,
+                "betOutcomes": [
+                    {"name": "1", "odd": 1.77, "isPlayable": True, "isInOffer": True},
+                    {"name": "2", "odd": 1.98, "isPlayable": True, "isInOffer": True},
+                    {"name": "X", "odd": 99.0, "isPlayable": True, "isInOffer": True},
+                ],
+            },
+        ],
+        "shortName": "Yasmine M-Victoria ",
+        "isLive": False,
+        "competitionName": "Monastir Ž",
+        "regionName": "ITF Žene",
+        "sportName": "Tenis",
+    }
+    event.update(overrides)
+    return event
+
+
+def test_parse_tennis_outcome_event_emits_match_winner_offers():
+    offers = _parse_tennis_outcome_event(_tennis_event())
+
+    assert len(offers) == 2
+    assert all(isinstance(offer, RawOutcomeOffer) for offer in offers)
+    assert {offer.bookmaker_id for offer in offers} == {"admiralbet"}
+    assert {offer.sport for offer in offers} == {"tennis"}
+    assert {offer.league_id for offer in offers} == {"monastir ž"}
+    assert {offer.home_team for offer in offers} == {"Yasmine Mansouri"}
+    assert {offer.away_team for offer in offers} == {"Victoria Milovanova"}
+    assert {offer.market_type for offer in offers} == {"tennis_match_winner"}
+    assert {offer.source_url for offer in offers} == {_TENNIS_PAGE_URL}
+    assert {
+        (offer.outcome_code, offer.raw_label, offer.odds, offer.line, offer.start_time)
+        for offer in offers
+    } == {
+        ("home", "1", 1.77, None, "2026-05-10T09:17:00+00:00"),
+        ("away", "2", 1.98, None, "2026-05-10T09:17:00+00:00"),
+    }
+    assert 99.0 not in {offer.odds for offer in offers}
+    assert 1.8 not in {offer.odds for offer in offers}
+
+
+def test_parse_tennis_outcome_event_skips_event_level_exclusions():
+    assert _parse_tennis_outcome_event(_tennis_event(isLive=True)) == []
+    assert _parse_tennis_outcome_event(_tennis_event(isPlayable=False)) == []
+    assert _parse_tennis_outcome_event(_tennis_event(isInOffer=False)) == []
+    assert _parse_tennis_outcome_event(
+        _tennis_event(name="Player One/Player Two - Player Three/Player Four")
+    ) == []
+    assert _parse_tennis_outcome_event(
+        _tennis_event(name="Player One - Player Two - Player Three")
+    ) == []
+    assert _parse_tennis_outcome_event(_tennis_event(name="NoSeparator")) == []
+
+
+def test_parse_tennis_outcome_event_skips_bet_and_outcome_level_exclusions():
+    assert _parse_tennis_outcome_event(
+        _tennis_event(
+            bets=[
+                {
+                    "betTypeId": _BET_TENNIS_MATCH_WINNER,
+                    "betTypeName": "Pobednik",
+                    "isPlayable": False,
+                    "isInOffer": True,
+                    "betOutcomes": [{"name": "1", "odd": 1.7, "isPlayable": True}],
+                }
+            ]
+        )
+    ) == []
+    assert _parse_tennis_outcome_event(
+        _tennis_event(
+            bets=[
+                {
+                    "betTypeId": _BET_TENNIS_MATCH_WINNER,
+                    "betTypeName": "Pobednik",
+                    "isPlayable": True,
+                    "isInOffer": False,
+                    "betOutcomes": [{"name": "1", "odd": 1.7, "isPlayable": True}],
+                }
+            ]
+        )
+    ) == []
+    assert _parse_tennis_outcome_event(
+        _tennis_event(
+            bets=[
+                {
+                    "betTypeId": _BET_TENNIS_MATCH_WINNER,
+                    "betTypeName": "1.set - Pobednik",
+                    "isPlayable": True,
+                    "isInOffer": True,
+                    "betOutcomes": [{"name": "1", "odd": 1.7, "isPlayable": True}],
+                },
+                {
+                    "betTypeId": _BET_TENNIS_MATCH_WINNER,
+                    "betTypeName": "Pobednik",
+                    "isPlayable": True,
+                    "isInOffer": True,
+                    "betOutcomes": [
+                        {"name": "1", "odd": 1.5, "isPlayable": False, "isInOffer": True},
+                        {"name": "2", "odd": 1.9, "isPlayable": True, "isInOffer": False},
+                        {"name": "1", "odd": 0, "isPlayable": True, "isInOffer": True},
+                        {"name": "2", "odd": "bad", "isPlayable": True, "isInOffer": True},
+                    ],
+                },
+            ]
+        )
+    ) == []
+
+
+def test_parse_tennis_outcome_event_keeps_same_matchup_different_start_times():
+    first = _tennis_event(dateTime="2026-05-10T09:17:00")
+    second = _tennis_event(id=6314007, dateTime="2026-05-10T11:17:00")
+
+    offers = [
+        *_parse_tennis_outcome_event(first),
+        *_parse_tennis_outcome_event(second),
+    ]
+
+    assert len(offers) == 4
+    assert sorted({offer.start_time for offer in offers}) == [
+        "2026-05-10T09:17:00+00:00",
+        "2026-05-10T11:17:00+00:00",
+    ]
+
+
 def test_get_supported_outcome_sports_isolates_football_from_basketball_capability():
     scraper = AdmiralBetScraper()
     # threshold-odds lane: basketball only — football MUST NOT leak here,
     # otherwise the unified pipeline would call scrape_odds("football") every cycle.
     assert scraper.get_supported_leagues() == ["basketball"]
-    # outcome-offer lane: football
-    assert scraper.get_supported_outcome_sports() == ["football"]
+    # outcome-offer lane: football + tennis
+    assert scraper.get_supported_outcome_sports() == ["football", "tennis"]
 
 
 @pytest.mark.asyncio
-async def test_scrape_outcome_offers_returns_empty_for_non_football_without_http():
+async def test_scrape_outcome_offers_returns_empty_for_unsupported_sport_without_http():
     scraper = AdmiralBetScraper()
     with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get:
         results = await scraper.scrape_outcome_offers("basketball")
@@ -1027,6 +1182,42 @@ async def test_scrape_outcome_offers_uses_football_params_and_24h_window(
     }
     # End-to-end UTC-naive pin: AdmiralBet treats naive datetimes as UTC.
     assert all(o.start_time == "2026-05-06T02:00:00+00:00" for o in results)
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_tennis_uses_one_list_request(monkeypatch):
+    scraper = AdmiralBetScraper()
+    captured: dict = {}
+    fixed_now = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.config.settings.scrape_lookahead_hours", 24)
+    monkeypatch.setattr("app.scrapers.admiralbet_scraper.current_utc_time", lambda: fixed_now)
+
+    async def mock_get(url, **kwargs):
+        captured["url"] = url
+        captured["params"] = kwargs.get("params", {})
+        return [_tennis_event()]
+
+    with patch.object(scraper._http, "get_json", side_effect=mock_get):
+        results = await scraper.scrape_outcome_offers("tennis")
+
+    assert len(results) == 2
+    assert captured["url"] == _LIST_URL
+    params = captured["params"]
+    assert params["pageId"] == _TENNIS_OUTCOME_PARAMS["pageId"] == "3"
+    assert params["sportId"] == _TENNIS_OUTCOME_PARAMS["sportId"] == "3"
+    assert params["isLive"] == "false"
+    assert params["dateFrom"] == "2030-01-01T12:00:00"
+    assert params["dateTo"] == "2030-01-02T12:00:00"
+    assert params["eventMappingTypes"] == ["1", "2", "3", "4", "5"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_outcome_offers_tennis_handles_non_list_response():
+    scraper = AdmiralBetScraper()
+    with patch.object(scraper._http, "get_json", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = {"error": "bad request"}
+        results = await scraper.scrape_outcome_offers("tennis")
+    assert results == []
 
 
 @pytest.mark.asyncio

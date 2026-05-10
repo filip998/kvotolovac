@@ -47,6 +47,15 @@ _FOOTBALL_OUTCOME_PARAMS = {
     "eventMappingTypes": ["1", "2", "3", "4", "5"],
 }
 
+_TENNIS_OUTCOME_PARAMS = {
+    "pageId": "3",
+    "sportId": "3",
+    "isLive": "false",
+    "dateFrom": "",  # filled at scrape time
+    "dateTo": "",  # filled at scrape time
+    "eventMappingTypes": ["1", "2", "3", "4", "5"],
+}
+
 _DEFAULT_HEADERS = {
     "accept": "application/utf8+json, application/json;q=0.9",
     "language": "sr-Latn",
@@ -65,6 +74,8 @@ _BET_HANDICAP_OT = 191  # "Hendikep (+OT)" — signed sBV is team1's Asian handi
 _BET_FOOTBALL_RESULT = 135  # "Konacan ishod"
 _BET_FOOTBALL_DOUBLE_CHANCE = 152  # "Dupla sansa"
 _BET_FOOTBALL_TOTAL_GOALS = 137  # "Ukupno golova"
+_BET_TENNIS_MATCH_WINNER = 1723  # "Pobednik"
+_TENNIS_PAGE_URL = "https://admiralbet.rs/sport-prematch?sport=Tenis"
 
 # Only the 2.5 line is in scope for football_total_goals.
 _FOOTBALL_TARGET_TOTAL_LINE = 2.5
@@ -80,6 +91,10 @@ _FOOTBALL_DOUBLE_CHANCE_OUTCOMES: dict[str, tuple[str, str]] = {
     "1X": ("home_or_draw", "1X"),
     "12": ("home_or_away", "12"),
     "X2": ("draw_or_away", "X2"),
+}
+_TENNIS_MATCH_WINNER_OUTCOMES: dict[str, tuple[str, str]] = {
+    "1": ("home", "1"),
+    "2": ("away", "2"),
 }
 
 # Total-goals side classification keyed off accent/case-insensitive name.
@@ -474,6 +489,16 @@ def _resolve_total_line(bet: dict, outcome: dict) -> float | None:
     return bet_line if bet_line is not None else outcome_line
 
 
+def _coerce_positive_odds(value: object) -> float | None:
+    try:
+        odds = float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    if odds is None or odds <= 0:
+        return None
+    return odds
+
+
 def _parse_football_outcome_event(event: dict, *, source_url: str | None = None) -> list[RawOutcomeOffer]:
     """Parse a single AdmiralBet football event into RawOutcomeOffer rows.
 
@@ -568,6 +593,80 @@ def _parse_football_outcome_event(event: dict, *, source_url: str | None = None)
     return results
 
 
+_TENNIS_DOUBLES_TOKENS = {"doubles", "double", "dublovi", "parovi"}
+
+
+def _is_tennis_doubles_event(event: dict) -> bool:
+    name = (event.get("name") or "").strip()
+    competition_name = (event.get("competitionName") or "").strip()
+    normalized_context = normalize_identity_text(f"{name} {competition_name}")
+    if set(normalized_context.split()) & _TENNIS_DOUBLES_TOKENS:
+        return True
+    if name.count(" - ") > 1:
+        return True
+    home_team, away_team = _parse_event_name(name)
+    if not home_team or not away_team:
+        return False
+    return "/" in home_team or "/" in away_team
+
+
+def _parse_tennis_outcome_event(event: dict) -> list[RawOutcomeOffer]:
+    if event.get("isLive") is True:
+        return []
+    if event.get("isPlayable") is False or event.get("isInOffer") is False:
+        return []
+
+    name = event.get("name", "")
+    home_team, away_team = _parse_event_name(name)
+    if not home_team or not away_team:
+        return []
+    if _is_tennis_doubles_event(event):
+        return []
+
+    start_time = _parse_start_time(event.get("dateTime"))
+    league_id = _extract_league_id(event.get("competitionName"), default="tennis")
+    results: list[RawOutcomeOffer] = []
+
+    for bet in event.get("bets", []):
+        if bet.get("betTypeId") != _BET_TENNIS_MATCH_WINNER:
+            continue
+        if normalize_identity_text(bet.get("betTypeName") or "") != "pobednik":
+            continue
+        if bet.get("isPlayable") is False or bet.get("isInOffer") is False:
+            continue
+
+        for outcome in bet.get("betOutcomes", []):
+            if outcome.get("isPlayable") is False or outcome.get("isInOffer") is False:
+                continue
+            odds = _coerce_positive_odds(outcome.get("odd"))
+            if odds is None:
+                continue
+
+            raw_name = (outcome.get("name") or "").strip()
+            mapping = _TENNIS_MATCH_WINNER_OUTCOMES.get(raw_name)
+            if mapping is None:
+                continue
+            outcome_code, raw_label = mapping
+            results.append(
+                RawOutcomeOffer(
+                    bookmaker_id="admiralbet",
+                    league_id=league_id,
+                    sport="tennis",
+                    home_team=home_team,
+                    away_team=away_team,
+                    source_url=_TENNIS_PAGE_URL,
+                    market_type="tennis_match_winner",
+                    outcome_code=outcome_code,
+                    odds=odds,
+                    line=None,
+                    raw_label=raw_label,
+                    start_time=start_time,
+                )
+            )
+
+    return results
+
+
 class AdmiralBetScraper(BaseScraper):
     """Scraper for AdmiralBet player props and OT-inclusive game totals.
 
@@ -588,7 +687,7 @@ class AdmiralBetScraper(BaseScraper):
         return ["basketball"]
 
     def get_supported_outcome_sports(self) -> list[str]:
-        return ["football"]
+        return ["football", "tennis"]
 
     async def _fetch_list(self, params: dict, label: str) -> list[dict]:
         try:
@@ -657,6 +756,28 @@ class AdmiralBetScraper(BaseScraper):
         return results
 
     async def scrape_outcome_offers(self, sport: str) -> list[RawOutcomeOffer]:
+        if sport == "tennis":
+            now = current_utc_time()
+            cutoff = lookahead_cutoff(now)
+            params = {
+                **_TENNIS_OUTCOME_PARAMS,
+                "dateFrom": format_utc_naive_seconds(now),
+                "dateTo": format_utc_naive_seconds(cutoff),
+            }
+
+            events = await self._fetch_list(params, "tennis events list")
+
+            results: list[RawOutcomeOffer] = []
+            for event in events:
+                results.extend(_parse_tennis_outcome_event(event))
+
+            logger.info(
+                "AdmiralBet scraped %d tennis outcome offers from %d events",
+                len(results),
+                len(events),
+            )
+            return results
+
         if sport != "football":
             return []
 
