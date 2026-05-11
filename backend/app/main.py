@@ -29,6 +29,11 @@ from .scrapers.http_client import HttpClient
 from .scrapers.registry import registry
 from .services.scheduler import scheduler
 from .services.runtime_settings import ensure_scrape_settings_seeded
+from .services.telegram_commands import (
+    TelegramCommandPoller,
+    create_telegram_command_poller,
+    wait_for_telegram_command_tasks,
+)
 from .store import odds_store
 from .migrations.runner import migrate_database_to_head
 
@@ -192,9 +197,18 @@ async def lifespan(app: FastAPI):
     await scheduler.start()
     logger.info("Scheduler background loop started")
 
+    telegram_command_poller: TelegramCommandPoller | None = None
+    if settings.telegram_commands_enabled and settings.telegram_bot_token.strip():
+        telegram_command_poller = create_telegram_command_poller(scheduler)
+        telegram_command_poller.start()
+        logger.info("Telegram command poller started")
+
     yield
 
     # Shutdown
+    if telegram_command_poller is not None:
+        await telegram_command_poller.stop()
+    await wait_for_telegram_command_tasks()
     await scheduler.stop()
     await _shutdown_resources(managed_clients)
     logger.info("Shutdown complete")

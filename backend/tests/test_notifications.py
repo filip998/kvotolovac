@@ -25,6 +25,7 @@ from app.services.notifications import (
     TelegramOpportunityDisplayContext,
     TelegramSendMessageResult,
     _TelegramDeliveryItem,
+    build_telegram_opportunity_messages,
     format_telegram_opportunity,
     format_telegram_opportunity_group,
     telegram_opportunity_fingerprint,
@@ -624,6 +625,51 @@ async def test_telegram_bot_client_sends_html_message_with_link_previews_disable
 
 
 @pytest.mark.asyncio
+async def test_telegram_bot_client_supports_inbound_bot_api_methods():
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/getUpdates"):
+            return httpx.Response(
+                200,
+                json={"ok": True, "result": [{"update_id": 12, "message": {}}]},
+            )
+        if request.url.path.endswith("/getMe"):
+            return httpx.Response(
+                200,
+                json={"ok": True, "result": {"id": 1, "username": "KvotoLovacBot"}},
+            )
+        if request.url.path.endswith("/deleteWebhook"):
+            return httpx.Response(200, json={"ok": True, "result": True})
+        return httpx.Response(404, json={"ok": False, "description": "not found"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = TelegramBotClient(
+            token="secret-token",
+            api_base_url="https://telegram.test",
+            http_client=http_client,
+        )
+        updates = await client.get_updates(offset=10, timeout_seconds=25)
+        me = await client.get_me()
+        deleted = await client.delete_webhook(drop_pending_updates=False)
+
+    assert updates == [{"update_id": 12, "message": {}}]
+    assert me["username"] == "KvotoLovacBot"
+    assert deleted is True
+    assert [request.url.path for request in requests] == [
+        "/botsecret-token/getUpdates",
+        "/botsecret-token/getMe",
+        "/botsecret-token/deleteWebhook",
+    ]
+    get_updates_payload = json_payload(requests[0])
+    assert get_updates_payload["offset"] == 10
+    assert get_updates_payload["timeout"] == 25
+    assert get_updates_payload["allowed_updates"] == ["message"]
+    assert json_payload(requests[2])["drop_pending_updates"] is False
+
+
+@pytest.mark.asyncio
 async def test_telegram_bot_client_redacts_token_from_api_errors():
     async def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"ok": False, "description": "Unauthorized"})
@@ -647,6 +693,16 @@ async def test_telegram_bot_client_missing_token():
 
     with pytest.raises(TelegramBotConfigError):
         await client.send_message(chat_id="123", text="Hello")
+
+
+def test_build_telegram_opportunity_messages_uses_public_deduped_builder():
+    first = _make_opportunity(2.0, match_id="m1", middle_ev=0.08)
+    duplicate = _make_opportunity(2.0, match_id="m1", middle_ev=0.08)
+
+    messages = build_telegram_opportunity_messages([first, duplicate], limit=10)
+
+    assert len(messages) == 1
+    assert "middle" in messages[0]
 
 
 @pytest.mark.asyncio

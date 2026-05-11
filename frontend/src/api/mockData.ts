@@ -1740,6 +1740,8 @@ export const mockTelegramSettings: TelegramSettingsResponse = {
       min_roi_percent: 5,
       min_middle_ev_percent: 1,
       bookmaker_ids: ['mozzart', 'meridian', 'maxbet'],
+      command_permission_preset: 'none',
+      allowed_commands: [],
       rate_limited_until: null,
       last_delivery_error: null,
       created_at: ago(30),

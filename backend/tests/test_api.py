@@ -287,6 +287,8 @@ async def test_telegram_settings_crud_redacts_token(client: AsyncClient):
     assert profile["id"] == 1
     assert profile["bookmaker_ids"] == ["mozzart", "meridian"]
     assert profile["min_middle_ev_percent"] == 1.25
+    assert profile["command_permission_preset"] == "none"
+    assert profile["allowed_commands"] == []
     assert "token" not in json.dumps(profile).lower()
 
     patch_resp = await client.patch(
@@ -318,6 +320,36 @@ async def test_telegram_settings_rejects_invalid_profile(client: AsyncClient):
 
     assert resp.status_code == 422
     assert "Unknown bookmaker ids" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_telegram_settings_rejects_duplicate_command_profile_chat(
+    client: AsyncClient,
+):
+    first_resp = await client.post(
+        "/api/v1/settings/telegram/profiles",
+        json={
+            "label": "Main",
+            "chat_id": "12345",
+            "command_permission_preset": "admin",
+        },
+    )
+    assert first_resp.status_code == 201
+
+    duplicate_resp = await client.post(
+        "/api/v1/settings/telegram/profiles",
+        json={
+            "label": "Second",
+            "chat_id": "12345",
+            "command_permission_preset": "custom",
+            "allowed_commands": ["notifications"],
+        },
+    )
+
+    assert duplicate_resp.status_code == 409
+    assert "Only one enabled Telegram profile with command access" in duplicate_resp.json()[
+        "detail"
+    ]
 
 
 @pytest.mark.asyncio

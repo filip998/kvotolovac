@@ -7,6 +7,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -70,6 +71,12 @@ class _TelegramOpportunityGroup:
     key: tuple[str, ...]
     opportunities: tuple[Opportunity, ...]
     context: TelegramOpportunityDisplayContext
+
+
+@dataclass(frozen=True)
+class TelegramOpportunityMessage:
+    key: str
+    text: str
 
 
 class NotificationProvider(abc.ABC):
@@ -156,27 +163,22 @@ class TelegramBotClient:
     def api_base_url(self) -> str:
         return self._api_base_url
 
-    async def send_message(
+    async def _post_json(
         self,
+        method: str,
+        payload: dict[str, Any],
         *,
-        chat_id: str,
-        text: str,
-    ) -> TelegramSendMessageResult:
+        timeout: float | httpx.Timeout = 10.0,
+    ) -> dict[str, Any]:
         if not self._token:
             raise TelegramBotConfigError("Telegram bot token is not configured")
 
-        url = f"{self._api_base_url}/bot{self._token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "link_preview_options": {"is_disabled": True},
-        }
+        url = f"{self._api_base_url}/bot{self._token}/{method}"
         try:
             if self._http_client is not None:
                 response = await self._http_client.post(url, json=payload)
             else:
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                async with httpx.AsyncClient(timeout=timeout) as client:
                     response = await client.post(url, json=payload)
         except httpx.HTTPError as exc:
             raise TelegramBotAPIError(
@@ -194,12 +196,69 @@ class TelegramBotClient:
         if response_payload.get("ok") is not True:
             description = response_payload.get("description") or "Telegram API returned ok=false"
             raise TelegramBotAPIError(str(description))
+        return response_payload
 
+    async def send_message(
+        self,
+        *,
+        chat_id: str,
+        text: str,
+    ) -> TelegramSendMessageResult:
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "link_preview_options": {"is_disabled": True},
+        }
+        response_payload = await self._post_json("sendMessage", payload)
         result = response_payload.get("result")
         message_id = result.get("message_id") if isinstance(result, dict) else None
         return TelegramSendMessageResult(
             message_id=int(message_id) if message_id is not None else None
         )
+
+    async def get_updates(
+        self,
+        *,
+        offset: int | None = None,
+        timeout_seconds: int = 25,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        payload: dict[str, Any] = {
+            "timeout": timeout_seconds,
+            "limit": limit,
+            "allowed_updates": ["message"],
+        }
+        if offset is not None:
+            payload["offset"] = offset
+        response_payload = await self._post_json(
+            "getUpdates",
+            payload,
+            timeout=httpx.Timeout(
+                connect=10.0,
+                read=float(timeout_seconds) + 10.0,
+                write=10.0,
+                pool=10.0,
+            ),
+        )
+        result = response_payload.get("result")
+        if not isinstance(result, list):
+            raise TelegramBotAPIError("Telegram getUpdates returned a non-list result")
+        return [item for item in result if isinstance(item, dict)]
+
+    async def get_me(self) -> dict[str, Any]:
+        response_payload = await self._post_json("getMe", {})
+        result = response_payload.get("result")
+        if not isinstance(result, dict):
+            raise TelegramBotAPIError("Telegram getMe returned a non-object result")
+        return result
+
+    async def delete_webhook(self, *, drop_pending_updates: bool = False) -> bool:
+        response_payload = await self._post_json(
+            "deleteWebhook",
+            {"drop_pending_updates": drop_pending_updates},
+        )
+        return bool(response_payload.get("result"))
 
 
 class TelegramNotificationProvider(OpportunityNotificationProvider):
@@ -511,8 +570,86 @@ def telegram_opportunity_fingerprint(opportunity: Opportunity) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def build_telegram_opportunity_messages(
+    opportunities: list[Any],
+    *,
+    limit: int = 10,
+) -> list[str]:
+    """Build bounded Telegram opportunity messages without delivery bookkeeping."""
+
+    return [
+        message.text
+        for message in build_telegram_opportunity_message_items(
+            opportunities,
+            limit=limit,
+        )
+    ]
+
+
+def build_telegram_opportunity_message_items(
+    opportunities: list[Any],
+    *,
+    limit: int = 10,
+) -> list[TelegramOpportunityMessage]:
+    """Build bounded Telegram messages keyed by stable opportunity fingerprints."""
+
+    candidate_opportunities = [
+        opportunity for opportunity in opportunities if len(opportunity.legs) == 2
+    ]
+    if not candidate_opportunities:
+        return []
+
+    display_contexts = {
+        _opportunity_context_key(opportunity): _context_from_opportunity_fields(
+            opportunity
+        )
+        for opportunity in candidate_opportunities
+    }
+    messages: list[TelegramOpportunityMessage] = []
+    seen_fingerprints: set[str] = set()
+    for group in _telegram_opportunity_groups(candidate_opportunities, display_contexts):
+        if len(messages) >= limit:
+            break
+        items: list[_TelegramDeliveryItem] = []
+        for opportunity in group.opportunities:
+            fingerprint = telegram_opportunity_fingerprint(opportunity)
+            if fingerprint in seen_fingerprints:
+                continue
+            seen_fingerprints.add(fingerprint)
+            items.append(
+                _TelegramDeliveryItem(
+                    fingerprint=fingerprint,
+                    opportunity=opportunity,
+                    context=_display_context_for(opportunity, display_contexts),
+                )
+            )
+        if items:
+            message_key = hashlib.sha256(
+                "\n".join(sorted(item.fingerprint for item in items)).encode("utf-8")
+            ).hexdigest()
+            messages.append(
+                TelegramOpportunityMessage(
+                    key=message_key,
+                    text=format_telegram_opportunity_group(items),
+                )
+            )
+    return messages
+
+
 def _opportunity_context_key(opportunity: Opportunity) -> tuple[str | None, str]:
     return (opportunity.resolved_event_id, opportunity.match_id)
+
+
+def _context_from_opportunity_fields(
+    opportunity: Any,
+) -> TelegramOpportunityDisplayContext:
+    return TelegramOpportunityDisplayContext(
+        home_team=getattr(opportunity, "home_team", None),
+        away_team=getattr(opportunity, "away_team", None),
+        league_name=getattr(opportunity, "league_name", None),
+        start_time=getattr(opportunity, "start_time", None),
+        fallback_label=opportunity.resolved_event_id or opportunity.match_id,
+    )
 
 
 async def _load_telegram_display_contexts(

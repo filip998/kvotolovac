@@ -15,6 +15,7 @@ import type {
   ScrapeSettingsMarketOption,
   ScraperDetailMode,
   ScrapeSettingsOptions,
+  TelegramCommandPermissionPreset,
   TelegramNotificationProfile,
   TelegramNotificationProfileInput,
 } from '../api/types';
@@ -44,7 +45,22 @@ const EMPTY_TELEGRAM_PROFILE: TelegramNotificationProfileInput = {
   min_roi_percent: 0,
   min_middle_ev_percent: 0,
   bookmaker_ids: [],
+  command_permission_preset: 'none',
+  allowed_commands: [],
 };
+
+const TELEGRAM_COMMAND_OPTIONS = [
+  {
+    id: 'refresh',
+    label: '/refresh',
+    description: 'Start a scrape and analysis cycle.',
+  },
+  {
+    id: 'notifications',
+    label: '/notifications',
+    description: 'Return current top opportunities.',
+  },
+];
 
 function toggleValue(values: string[], value: string): string[] {
   return values.includes(value)
@@ -60,6 +76,7 @@ function telegramProfileKey(values: TelegramNotificationProfileInput): string {
   return JSON.stringify({
     ...values,
     bookmaker_ids: [...values.bookmaker_ids].sort(),
+    allowed_commands: [...values.allowed_commands].sort(),
   });
 }
 
@@ -386,6 +403,8 @@ function profileToInput(profile: TelegramNotificationProfile): TelegramNotificat
     min_roi_percent: profile.min_roi_percent,
     min_middle_ev_percent: profile.min_middle_ev_percent,
     bookmaker_ids: profile.bookmaker_ids,
+    command_permission_preset: profile.command_permission_preset,
+    allowed_commands: profile.allowed_commands,
   };
 }
 
@@ -407,6 +426,19 @@ function telegramProfileStatus(profile: TelegramNotificationProfile): string | n
     return `Last delivery error: ${profile.last_delivery_error}`;
   }
   return null;
+}
+
+function summarizeTelegramCommandAccess(values: TelegramNotificationProfileInput): string {
+  if (values.command_permission_preset === 'none') {
+    return 'Commands off';
+  }
+  if (values.command_permission_preset === 'admin') {
+    return 'Admin commands';
+  }
+  if (values.allowed_commands.length === 0) {
+    return 'Custom commands · none selected';
+  }
+  return `Custom commands · ${values.allowed_commands.map((command) => `/${command}`).join(', ')}`;
 }
 
 function TelegramBookmakerSelector({
@@ -455,6 +487,78 @@ function TelegramBookmakerSelector({
           </ChoiceChip>
         ))}
       </div>
+    </div>
+  );
+}
+
+function TelegramCommandAccessSelector({
+  value,
+  allowedCommands,
+  onChange,
+}: {
+  value: TelegramCommandPermissionPreset;
+  allowedCommands: string[];
+  onChange: (next: {
+    command_permission_preset: TelegramCommandPermissionPreset;
+    allowed_commands: string[];
+  }) => void;
+}) {
+  const setPreset = (preset: TelegramCommandPermissionPreset) => {
+    onChange({
+      command_permission_preset: preset,
+      allowed_commands: preset === 'custom' ? allowedCommands : [],
+    });
+  };
+
+  return (
+    <div className="space-y-3 rounded-2xl border border-border bg-surface/80 px-4 py-3">
+      <div>
+        <div className="text-sm font-semibold text-text">Command access</div>
+        <div className="mt-0.5 text-sm text-text-secondary">
+          Only one enabled command profile may exist per chat ID.
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <ChoiceChip selected={value === 'none'} onClick={() => setPreset('none')}>
+          None
+        </ChoiceChip>
+        <ChoiceChip selected={value === 'admin'} onClick={() => setPreset('admin')}>
+          Admin
+        </ChoiceChip>
+        <ChoiceChip selected={value === 'custom'} onClick={() => setPreset('custom')}>
+          Custom
+        </ChoiceChip>
+      </div>
+      {value === 'custom' && (
+        <div className="space-y-2">
+          <div className="text-xs font-semibold uppercase tracking-[0.2em] text-text-muted">
+            Allowed commands
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {TELEGRAM_COMMAND_OPTIONS.map((command) => (
+              <ChoiceChip
+                key={command.id}
+                selected={allowedCommands.includes(command.id)}
+                onClick={() =>
+                  onChange({
+                    command_permission_preset: 'custom',
+                    allowed_commands: toggleValue(allowedCommands, command.id),
+                  })
+                }
+              >
+                {command.label}
+              </ChoiceChip>
+            ))}
+          </div>
+          <div className="grid gap-2 text-sm text-text-secondary sm:grid-cols-2">
+            {TELEGRAM_COMMAND_OPTIONS.map((command) => (
+              <div key={command.id}>
+                <span className="font-medium text-text">{command.label}</span> — {command.description}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -514,7 +618,7 @@ function TelegramProfileEditor({
       summary={`${draft.enabled ? 'Enabled' : 'Paused'} · ${summarizeTelegramBookmakers(
         draft.bookmaker_ids,
         options
-      )}`}
+      )} · ${summarizeTelegramCommandAccess(draft)}`}
     >
       <div className="space-y-3">
         {status && (
@@ -623,6 +727,17 @@ function TelegramProfileEditor({
             setDraft((current) => ({
               ...current,
               bookmaker_ids: bookmakerIds,
+            }))
+          }
+        />
+
+        <TelegramCommandAccessSelector
+          value={draft.command_permission_preset}
+          allowedCommands={draft.allowed_commands}
+          onChange={(commandAccess) =>
+            setDraft((current) => ({
+              ...current,
+              ...commandAccess,
             }))
           }
         />
@@ -823,6 +938,17 @@ function TelegramSection({ options }: { options: ScrapeSettingsOptions }) {
                 setDraft((current) => ({
                   ...current,
                   bookmaker_ids: bookmakerIds,
+                }))
+              }
+            />
+
+            <TelegramCommandAccessSelector
+              value={draft.command_permission_preset}
+              allowedCommands={draft.allowed_commands}
+              onChange={(commandAccess) =>
+                setDraft((current) => ({
+                  ...current,
+                  ...commandAccess,
                 }))
               }
             />

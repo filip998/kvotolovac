@@ -44,6 +44,9 @@ async def test_upgrade_database_creates_current_schema(tmp_path):
         "team_aliases",
         "telegram_notification_profiles",
         "telegram_notification_deliveries",
+        "telegram_command_state",
+        "telegram_command_executions",
+        "telegram_command_message_deliveries",
     }.issubset(table_names)
     assert ("resolved_event_id", "resolved_events") in {
         (row[3], row[2]) for row in opportunity_fks
@@ -84,7 +87,46 @@ def test_migrate_database_to_head_upgrades_stale_database(tmp_path):
                 "PRAGMA table_info(telegram_notification_profiles)"
             ).fetchall()
         }
+        index_names = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA index_list(telegram_notification_profiles)"
+            ).fetchall()
+        }
     assert "min_middle_ev_percent" in profile_columns
+    assert "command_permission_preset" in profile_columns
+    assert "allowed_commands" in profile_columns
+    assert "ux_telegram_profiles_command_chat" in index_names
+
+
+def test_telegram_command_migration_does_not_grant_admin_by_label(tmp_path):
+    db_path = tmp_path / "telegram-command-admin.db"
+    upgrade_database(str(db_path), "0006_telegram_middle_ev_threshold")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO telegram_notification_profiles (
+                   label,
+                   chat_id,
+                   enabled,
+                   min_gap,
+                   min_roi_percent,
+                   min_middle_ev_percent,
+                   bookmaker_ids
+               ) VALUES (
+                   'FilipTanic', '12345', 1, 0, 0, 0, '[]'
+               )"""
+        )
+
+    migrate_database_to_head(str(db_path))
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """SELECT command_permission_preset, allowed_commands
+               FROM telegram_notification_profiles
+               WHERE label = 'FilipTanic'"""
+        ).fetchone()
+
+    assert row == ("none", "[]")
 
 
 @pytest.mark.asyncio

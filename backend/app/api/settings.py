@@ -61,7 +61,10 @@ async def create_telegram_profile(
     payload: TelegramNotificationProfileCreate,
 ) -> TelegramNotificationProfileOut:
     _validate_telegram_profile_payload(payload)
-    return await odds_store.create_telegram_notification_profile(payload)
+    try:
+        return await odds_store.create_telegram_notification_profile(payload)
+    except odds_store.TelegramCommandProfileConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.patch(
@@ -73,7 +76,10 @@ async def update_telegram_profile(
     payload: TelegramNotificationProfileUpdate,
 ) -> TelegramNotificationProfileOut:
     _validate_telegram_profile_payload(payload)
-    profile = await odds_store.update_telegram_notification_profile(profile_id, payload)
+    try:
+        profile = await odds_store.update_telegram_notification_profile(profile_id, payload)
+    except odds_store.TelegramCommandProfileConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if profile is None:
         raise HTTPException(status_code=404, detail="Telegram profile not found")
     return profile

@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     persist_inapp_notifications: bool = False
     telegram_bot_token: str = ""
     telegram_api_base_url: str = "https://api.telegram.org"
+    telegram_commands_enabled: bool = False
+    telegram_poll_interval_seconds: float = Field(default=1.0, ge=0)
+    telegram_poll_timeout_seconds: int = Field(default=25, ge=1, le=50)
     notification_retention_days: int = 3
     odds_history_retention_days: int = 7
     team_review_retention_days: int = 90

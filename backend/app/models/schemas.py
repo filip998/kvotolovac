@@ -437,6 +437,9 @@ class NotificationOut(BaseModel):
     created_at: Optional[str] = None
 
 
+TelegramCommandPermissionPreset = Literal["none", "admin", "custom"]
+
+
 class TelegramNotificationProfileBase(BaseModel):
     label: str = Field(..., min_length=1, max_length=120)
     chat_id: str = Field(..., min_length=1, max_length=120)
@@ -445,6 +448,8 @@ class TelegramNotificationProfileBase(BaseModel):
     min_roi_percent: float = Field(default=0.0, ge=0)
     min_middle_ev_percent: float = Field(default=0.0, ge=0)
     bookmaker_ids: list[str] = Field(default_factory=list)
+    command_permission_preset: TelegramCommandPermissionPreset = "none"
+    allowed_commands: list[str] = Field(default_factory=list)
 
 
 class TelegramNotificationProfileCreate(TelegramNotificationProfileBase):
@@ -459,6 +464,8 @@ class TelegramNotificationProfileUpdate(BaseModel):
     min_roi_percent: Optional[float] = Field(default=None, ge=0)
     min_middle_ev_percent: Optional[float] = Field(default=None, ge=0)
     bookmaker_ids: Optional[list[str]] = None
+    command_permission_preset: Optional[TelegramCommandPermissionPreset] = None
+    allowed_commands: Optional[list[str]] = None
 
 
 class TelegramNotificationProfileOut(TelegramNotificationProfileBase):

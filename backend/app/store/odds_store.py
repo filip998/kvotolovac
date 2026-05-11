@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 import unicodedata
 import uuid
@@ -4572,6 +4573,13 @@ async def get_notifications(unread_only: bool = False, limit: int = 50) -> list[
 
 # ── Telegram notification settings ─────────────────────────
 
+_TELEGRAM_COMMAND_PRESETS = {"none", "admin", "custom"}
+
+
+class TelegramCommandProfileConflictError(ValueError):
+    """Raised when more than one command-enabled profile targets one chat."""
+
+
 def _normalize_telegram_bookmaker_ids(bookmaker_ids: list[str] | None) -> list[str]:
     if not bookmaker_ids:
         return []
@@ -4586,9 +4594,48 @@ def _normalize_telegram_bookmaker_ids(bookmaker_ids: list[str] | None) -> list[s
     return normalized
 
 
+def _normalize_telegram_command_permission_preset(value: object) -> str:
+    preset = str(value or "none").strip().lower()
+    if preset not in _TELEGRAM_COMMAND_PRESETS:
+        raise ValueError(f"Unsupported Telegram command permission preset: {preset!r}")
+    return preset
+
+
+def _normalize_telegram_allowed_commands(commands: list[str] | None) -> list[str]:
+    if not commands:
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for command in commands:
+        item = str(command).strip().lower()
+        if item.startswith("/"):
+            item = item[1:]
+        if "@" in item:
+            item = item.split("@", 1)[0]
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+    return normalized
+
+
+async def _raise_telegram_command_profile_conflict(exc: BaseException) -> None:
+    db = await get_db()
+    await db.rollback()
+    raise TelegramCommandProfileConflictError(
+        "Only one enabled Telegram profile with command access may use a given chat_id"
+    ) from exc
+
+
 def _row_to_telegram_profile(row: aiosqlite.Row) -> TelegramNotificationProfileOut:
     data = _row_to_dict(row)
     data["bookmaker_ids"] = _json_list(data.get("bookmaker_ids"))
+    data["command_permission_preset"] = _normalize_telegram_command_permission_preset(
+        data.get("command_permission_preset")
+    )
+    data["allowed_commands"] = _normalize_telegram_allowed_commands(
+        _json_list(data.get("allowed_commands"))
+    )
     data["enabled"] = bool(data.get("enabled"))
     return TelegramNotificationProfileOut(**data)
 
@@ -4625,27 +4672,38 @@ async def create_telegram_notification_profile(
 ) -> TelegramNotificationProfileOut:
     db = await get_db()
     bookmaker_ids = _normalize_telegram_bookmaker_ids(profile.bookmaker_ids)
-    cursor = await db.execute(
-        """INSERT INTO telegram_notification_profiles (
-               label,
-               chat_id,
-               enabled,
-               min_gap,
-               min_roi_percent,
-               min_middle_ev_percent,
-               bookmaker_ids
-           )
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (
-            profile.label.strip(),
-            profile.chat_id.strip(),
-            profile.enabled,
-            profile.min_gap,
-            profile.min_roi_percent,
-            profile.min_middle_ev_percent,
-            json.dumps(bookmaker_ids),
-        ),
+    allowed_commands = _normalize_telegram_allowed_commands(profile.allowed_commands)
+    command_permission_preset = _normalize_telegram_command_permission_preset(
+        profile.command_permission_preset
     )
+    try:
+        cursor = await db.execute(
+            """INSERT INTO telegram_notification_profiles (
+                   label,
+                   chat_id,
+                   enabled,
+                   min_gap,
+                   min_roi_percent,
+                   min_middle_ev_percent,
+                   bookmaker_ids,
+                   command_permission_preset,
+                   allowed_commands
+               )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                profile.label.strip(),
+                profile.chat_id.strip(),
+                profile.enabled,
+                profile.min_gap,
+                profile.min_roi_percent,
+                profile.min_middle_ev_percent,
+                json.dumps(bookmaker_ids),
+                command_permission_preset,
+                json.dumps(allowed_commands),
+            ),
+        )
+    except (aiosqlite.IntegrityError, sqlite3.IntegrityError) as exc:
+        await _raise_telegram_command_profile_conflict(exc)
     await db.commit()
     created = await get_telegram_notification_profile(cursor.lastrowid or 0)
     if created is None:
@@ -4665,30 +4723,41 @@ async def update_telegram_notification_profile(
     updates = patch.model_dump(exclude_unset=True)
     values.update(updates)
     bookmaker_ids = _normalize_telegram_bookmaker_ids(values.get("bookmaker_ids"))
+    allowed_commands = _normalize_telegram_allowed_commands(values.get("allowed_commands"))
+    command_permission_preset = _normalize_telegram_command_permission_preset(
+        values.get("command_permission_preset")
+    )
 
     db = await get_db()
-    await db.execute(
-        """UPDATE telegram_notification_profiles
-           SET label = ?,
-               chat_id = ?,
-               enabled = ?,
-               min_gap = ?,
-               min_roi_percent = ?,
-               min_middle_ev_percent = ?,
-               bookmaker_ids = ?,
-               updated_at = CURRENT_TIMESTAMP
-           WHERE id = ?""",
-        (
-            str(values["label"]).strip(),
-            str(values["chat_id"]).strip(),
-            bool(values["enabled"]),
-            values["min_gap"],
-            values["min_roi_percent"],
-            values["min_middle_ev_percent"],
-            json.dumps(bookmaker_ids),
-            profile_id,
-        ),
-    )
+    try:
+        await db.execute(
+            """UPDATE telegram_notification_profiles
+               SET label = ?,
+                   chat_id = ?,
+                   enabled = ?,
+                   min_gap = ?,
+                   min_roi_percent = ?,
+                   min_middle_ev_percent = ?,
+                   bookmaker_ids = ?,
+                   command_permission_preset = ?,
+                   allowed_commands = ?,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (
+                str(values["label"]).strip(),
+                str(values["chat_id"]).strip(),
+                bool(values["enabled"]),
+                values["min_gap"],
+                values["min_roi_percent"],
+                values["min_middle_ev_percent"],
+                json.dumps(bookmaker_ids),
+                command_permission_preset,
+                json.dumps(allowed_commands),
+                profile_id,
+            ),
+        )
+    except (aiosqlite.IntegrityError, sqlite3.IntegrityError) as exc:
+        await _raise_telegram_command_profile_conflict(exc)
     await db.commit()
     return await get_telegram_notification_profile(profile_id)
 
@@ -4701,6 +4770,110 @@ async def delete_telegram_notification_profile(profile_id: int) -> bool:
     )
     await db.commit()
     return (cursor.rowcount or 0) > 0
+
+
+async def list_telegram_command_profiles_for_chat(
+    chat_id: str,
+) -> list[TelegramNotificationProfileOut]:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT *
+           FROM telegram_notification_profiles
+           WHERE enabled = TRUE
+             AND command_permission_preset != 'none'
+             AND chat_id = ?
+           ORDER BY id ASC""",
+        (chat_id.strip(),),
+    )
+    return [_row_to_telegram_profile(row) for row in rows]
+
+
+async def get_telegram_command_last_update_id() -> int | None:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT last_update_id FROM telegram_command_state WHERE id = 1"
+    )
+    if not rows or rows[0]["last_update_id"] is None:
+        return None
+    return int(rows[0]["last_update_id"])
+
+
+async def set_telegram_command_last_update_id(update_id: int) -> None:
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO telegram_command_state (id, last_update_id)
+           VALUES (1, ?)
+           ON CONFLICT(id) DO UPDATE SET
+               last_update_id = excluded.last_update_id,
+               updated_at = CURRENT_TIMESTAMP""",
+        (update_id,),
+    )
+    await db.commit()
+
+
+async def begin_telegram_command_execution(
+    *,
+    update_id: int,
+    chat_id: str,
+    command: str,
+) -> bool:
+    db = await get_db()
+    cursor = await db.execute(
+        """INSERT OR IGNORE INTO telegram_command_executions (
+               update_id,
+               chat_id,
+               command
+           )
+           VALUES (?, ?, ?)""",
+        (update_id, chat_id.strip(), command.strip().lower()),
+    )
+    await db.commit()
+    return (cursor.rowcount or 0) > 0
+
+
+async def list_telegram_command_delivered_message_keys(
+    *,
+    update_id: int,
+    command: str,
+) -> set[str]:
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        """SELECT message_key
+           FROM telegram_command_message_deliveries
+           WHERE update_id = ?
+             AND command = ?""",
+        (update_id, command.strip().lower()),
+    )
+    return {str(row["message_key"]) for row in rows}
+
+
+async def mark_telegram_command_message_delivered(
+    *,
+    update_id: int,
+    command: str,
+    message_key: str,
+    message_index: int,
+    telegram_message_id: int | None,
+) -> None:
+    db = await get_db()
+    await db.execute(
+        """INSERT OR IGNORE INTO telegram_command_message_deliveries (
+               update_id,
+               command,
+               message_key,
+               message_index,
+               telegram_message_id
+           )
+           VALUES (?, ?, ?, ?, ?)""",
+        (
+            update_id,
+            command.strip().lower(),
+            message_key,
+            message_index,
+            telegram_message_id,
+        ),
+    )
+    await db.commit()
 
 
 async def get_telegram_delivery_status(
