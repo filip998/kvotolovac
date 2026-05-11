@@ -133,9 +133,38 @@ function nextMockTelegramProfileId(): number {
   return Math.max(0, ...mockTelegramSettings.profiles.map((profile) => profile.id)) + 1;
 }
 
+function mockTelegramProfileHasCommandAccess(
+  profile: Pick<TelegramNotificationProfileInput, 'enabled' | 'command_permission_preset'>
+): boolean {
+  return profile.enabled && profile.command_permission_preset !== 'none';
+}
+
+function assertMockTelegramCommandProfileUnique(
+  profile: Pick<
+    TelegramNotificationProfileInput,
+    'chat_id' | 'enabled' | 'command_permission_preset'
+  >,
+  profileId?: number
+) {
+  if (!mockTelegramProfileHasCommandAccess(profile)) {
+    return;
+  }
+  const chatId = profile.chat_id.trim();
+  const conflict = mockTelegramSettings.profiles.find(
+    (item) =>
+      item.id !== profileId &&
+      item.chat_id.trim() === chatId &&
+      mockTelegramProfileHasCommandAccess(item)
+  );
+  if (conflict) {
+    throw new Error('Only one enabled Telegram profile with command access may use a given chat_id');
+  }
+}
+
 function createMockTelegramProfile(
   payload: TelegramNotificationProfileInput
 ): TelegramNotificationProfile {
+  assertMockTelegramCommandProfileUnique(payload);
   const now = new Date().toISOString();
   const profile: TelegramNotificationProfile = {
     ...payload,
@@ -157,7 +186,12 @@ function updateMockTelegramProfile(
   if (!profile) {
     throw new Error('Telegram profile not found');
   }
-  Object.assign(profile, payload, { updated_at: new Date().toISOString() });
+  const updatedProfile = {
+    ...profile,
+    ...payload,
+  };
+  assertMockTelegramCommandProfileUnique(updatedProfile, profileId);
+  Object.assign(profile, updatedProfile, { updated_at: new Date().toISOString() });
   return JSON.parse(JSON.stringify(profile)) as TelegramNotificationProfile;
 }
 

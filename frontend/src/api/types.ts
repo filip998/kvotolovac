@@ -458,6 +458,8 @@ export interface ScrapeSettingsResponse {
   options: ScrapeSettingsOptions;
 }
 
+export type TelegramCommandPermissionPreset = 'none' | 'admin' | 'custom';
+
 export interface TelegramNotificationProfile {
   id: number;
   label: string;
@@ -467,6 +469,8 @@ export interface TelegramNotificationProfile {
   min_roi_percent: number;
   min_middle_ev_percent: number;
   bookmaker_ids: string[];
+  command_permission_preset: TelegramCommandPermissionPreset;
+  allowed_commands: string[];
   rate_limited_until: string | null;
   last_delivery_error: string | null;
   created_at: string | null;
@@ -481,6 +485,8 @@ export interface TelegramNotificationProfileInput {
   min_roi_percent: number;
   min_middle_ev_percent: number;
   bookmaker_ids: string[];
+  command_permission_preset: TelegramCommandPermissionPreset;
+  allowed_commands: string[];
 }
 
 export type TelegramNotificationProfileUpdate = Partial<TelegramNotificationProfileInput>;
