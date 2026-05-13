@@ -680,6 +680,59 @@ async def test_notifications_command_returns_empty_state(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("argument", "expected_count"), [("1", 1), ("20", 20)])
+async def test_notifications_command_respects_count_argument(
+    monkeypatch: pytest.MonkeyPatch,
+    argument: str,
+    expected_count: int,
+):
+    await create_command_profile(
+        preset="custom",
+        allowed_commands=[TELEGRAM_COMMAND_NOTIFICATIONS],
+    )
+
+    async def fake_get_opportunities(**_: object) -> list[OpportunityOut]:
+        return [make_opportunity(opportunity_id) for opportunity_id in range(25)]
+
+    monkeypatch.setattr(odds_store, "get_opportunities", fake_get_opportunities)
+    bot = StubBotClient()
+    dispatcher = TelegramCommandDispatcher(
+        bot_client=bot,  # type: ignore[arg-type]
+        scheduler=StubScheduler(),
+    )
+
+    await dispatcher.dispatch_update(telegram_update(f"/notifications {argument}"))
+
+    assert len(bot.messages) == expected_count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("argument", ["0", "21", "abc", "1.5", "1 2", "²"])
+async def test_notifications_command_rejects_invalid_count_argument(
+    monkeypatch: pytest.MonkeyPatch,
+    argument: str,
+):
+    await create_command_profile(
+        preset="custom",
+        allowed_commands=[TELEGRAM_COMMAND_NOTIFICATIONS],
+    )
+
+    async def fail_get_opportunities(**_: object) -> list[OpportunityOut]:
+        raise AssertionError("invalid /notifications limit should not load opportunities")
+
+    monkeypatch.setattr(odds_store, "get_opportunities", fail_get_opportunities)
+    bot = StubBotClient()
+    dispatcher = TelegramCommandDispatcher(
+        bot_client=bot,  # type: ignore[arg-type]
+        scheduler=StubScheduler(),
+    )
+
+    await dispatcher.dispatch_update(telegram_update(f"/notifications {argument}"))
+
+    assert bot.messages == [("123", "Usage: /notifications [1-20]")]
+
+
+@pytest.mark.asyncio
 async def test_notifications_retry_skips_already_delivered_messages(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -698,6 +751,7 @@ async def test_notifications_retry_skips_already_delivered_messages(
         fake_load_matching_opportunities,
     )
     build_attempts = 0
+    limits: list[int] = []
 
     def fake_build_messages(
         opportunities: list[OpportunityOut],
@@ -706,6 +760,7 @@ async def test_notifications_retry_skips_already_delivered_messages(
     ) -> list[TelegramOpportunityMessage]:
         nonlocal build_attempts
         build_attempts += 1
+        limits.append(limit)
         if build_attempts == 1:
             return [
                 TelegramOpportunityMessage(key="a", text="A"),
@@ -726,12 +781,13 @@ async def test_notifications_retry_skips_already_delivered_messages(
         bot_client=bot,  # type: ignore[arg-type]
         scheduler=StubScheduler(),
     )
-    update = telegram_update("/notifications", update_id=71)
+    update = telegram_update("/notifications 3", update_id=71)
 
     with pytest.raises(RuntimeError, match="telegram send failed"):
         await dispatcher.dispatch_update(update)
     await dispatcher.dispatch_update(update)
 
+    assert limits == [3, 3]
     assert bot.messages == [("123", "A"), ("123", "C"), ("123", "B")]
 
 

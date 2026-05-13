@@ -30,6 +30,9 @@ TELEGRAM_CONFIGURABLE_COMMANDS = (
 )
 _BACKGROUND_REFRESH_TASKS: set[asyncio.Task[Any]] = set()
 _NOTIFICATION_OPPORTUNITY_PAGE_SIZE = 500
+_NOTIFICATIONS_MIN_LIMIT = 1
+_NOTIFICATIONS_MAX_LIMIT = 20
+_NOTIFICATIONS_USAGE = "Usage: /notifications [1-20]"
 
 
 async def wait_for_telegram_command_tasks() -> None:
@@ -183,12 +186,19 @@ class NotificationsCommand:
     help_text = "Return the current top opportunity groups."
 
     async def execute(self, context: TelegramCommandContext, args: str) -> None:
+        effective_limit, usage_error = _parse_notifications_limit(
+            args,
+            default=context.notifications_limit,
+        )
+        if usage_error is not None:
+            await context.reply(usage_error)
+            return
         matching_opportunities = await _load_matching_notification_opportunities(
             context.profile
         )
         messages = build_telegram_opportunity_message_items(
             matching_opportunities,
-            limit=context.notifications_limit,
+            limit=effective_limit,
         )
         if not messages:
             await context.reply("No current opportunities match this Telegram profile.")
@@ -583,6 +593,22 @@ def profile_allows_telegram_command(
     if profile.command_permission_preset == "custom":
         return command in {item.strip().lower() for item in profile.allowed_commands}
     return False
+
+
+def _parse_notifications_limit(args: str, *, default: int) -> tuple[int, str | None]:
+    normalized = args.strip()
+    if not normalized:
+        return default, None
+    parts = normalized.split()
+    if len(parts) != 1:
+        return default, _NOTIFICATIONS_USAGE
+    token = parts[0]
+    if not token.isascii() or not token.isdigit():
+        return default, _NOTIFICATIONS_USAGE
+    limit = int(token)
+    if not _NOTIFICATIONS_MIN_LIMIT <= limit <= _NOTIFICATIONS_MAX_LIMIT:
+        return default, _NOTIFICATIONS_USAGE
+    return limit, None
 
 
 def _split_command_mention(command_token: str) -> tuple[str, str | None]:
