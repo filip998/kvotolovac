@@ -51,6 +51,11 @@ const EMPTY_TELEGRAM_PROFILE: TelegramNotificationProfileInput = {
 
 const TELEGRAM_COMMAND_OPTIONS = [
   {
+    id: 'status',
+    label: '/status',
+    description: 'Show backend and scrape status.',
+  },
+  {
     id: 'refresh',
     label: '/refresh',
     description: 'Start a scrape and analysis cycle.',

@@ -8,6 +8,7 @@ from app.models.schemas import (
     OpportunityLeg,
     OpportunityOut,
     ScanProgressOut,
+    SystemStatus,
     TelegramNotificationProfileCreate,
     TelegramNotificationProfileUpdate,
 )
@@ -16,6 +17,7 @@ from app.services.notifications import TelegramOpportunityMessage
 from app.services.telegram_commands import (
     TELEGRAM_COMMAND_NOTIFICATIONS,
     TELEGRAM_COMMAND_REFRESH,
+    TELEGRAM_COMMAND_STATUS,
     TelegramCommandDispatcher,
     TelegramCommandPoller,
     parse_telegram_command_update,
@@ -152,10 +154,15 @@ class RecordingDispatcher:
 
 
 class StubScheduler:
-    def __init__(self, *, in_progress: bool = False) -> None:
+    def __init__(self, *, in_progress: bool = False, is_running: bool = True) -> None:
         self._in_progress = in_progress
+        self._is_running = is_running
         self.run_count = 0
         self.finished = asyncio.Event()
+
+    @property
+    def is_running(self) -> bool:
+        return self._is_running
 
     @property
     def is_cycle_in_progress(self) -> bool:
@@ -357,6 +364,7 @@ async def test_dispatcher_dedupes_update_ids():
     await dispatcher.dispatch_update(update)
 
     assert len(bot.messages) == 1
+    assert "/status" in bot.messages[0][1]
     assert "/refresh" in bot.messages[0][1]
 
 
@@ -370,13 +378,130 @@ async def test_custom_profile_allows_only_configured_commands():
     assert profile_allows_telegram_command(
         profile,
         TELEGRAM_COMMAND_NOTIFICATIONS,
-        registered_commands={"help", "refresh", "notifications"},
+        registered_commands={"help", "status", "refresh", "notifications"},
     )
     assert not profile_allows_telegram_command(
         profile,
         TELEGRAM_COMMAND_REFRESH,
-        registered_commands={"help", "refresh", "notifications"},
+        registered_commands={"help", "status", "refresh", "notifications"},
     )
+    assert not profile_allows_telegram_command(
+        profile,
+        TELEGRAM_COMMAND_STATUS,
+        registered_commands={"help", "status", "refresh", "notifications"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_custom_profile_can_allow_status_command():
+    profile = await create_command_profile(
+        preset="custom",
+        allowed_commands=[TELEGRAM_COMMAND_STATUS],
+    )
+
+    assert profile_allows_telegram_command(
+        profile,
+        TELEGRAM_COMMAND_STATUS,
+        registered_commands={"help", "status", "refresh", "notifications"},
+    )
+    assert not profile_allows_telegram_command(
+        profile,
+        TELEGRAM_COMMAND_REFRESH,
+        registered_commands={"help", "status", "refresh", "notifications"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_status_command_returns_idle_system_status(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await create_command_profile()
+
+    async def fake_get_system_status(
+        *,
+        scheduler_running: bool = False,
+        scan_progress: ScanProgressOut | None = None,
+    ) -> SystemStatus:
+        return SystemStatus(
+            status="ok <safe>",
+            last_scrape_at="2026-05-13T17:15:32<&",
+            total_matches=824,
+            total_odds=26186,
+            total_opportunities=89,
+            active_bookmakers=13,
+            scheduler_running=scheduler_running,
+            scan=scan_progress or ScanProgressOut(),
+        )
+
+    monkeypatch.setattr(odds_store, "get_system_status", fake_get_system_status)
+    bot = StubBotClient()
+    dispatcher = TelegramCommandDispatcher(
+        bot_client=bot,  # type: ignore[arg-type]
+        scheduler=StubScheduler(is_running=False),
+    )
+
+    await dispatcher.dispatch_update(telegram_update("/status"))
+
+    assert len(bot.messages) == 1
+    message = bot.messages[0][1]
+    assert "<b>KvotoLovac status</b>" in message
+    assert "Backend: OK &lt;SAFE&gt;" in message
+    assert "Scheduler: stopped" in message
+    assert "Last scrape: 2026-05-13T17:15:32&lt;&amp;" in message
+    assert "Totals: 824 matches · 26186 odds · 89 opportunities · 13 bookmakers" in message
+    assert "Cycle: idle" in message
+
+
+@pytest.mark.asyncio
+async def test_status_command_returns_in_progress_system_status(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await create_command_profile()
+
+    async def fake_get_system_status(
+        *,
+        scheduler_running: bool = False,
+        scan_progress: ScanProgressOut | None = None,
+    ) -> SystemStatus:
+        return SystemStatus(
+            status="ok",
+            total_matches=10,
+            total_odds=20,
+            total_opportunities=3,
+            active_bookmakers=2,
+            scheduler_running=scheduler_running,
+            scan=scan_progress or ScanProgressOut(),
+        )
+
+    monkeypatch.setattr(odds_store, "get_system_status", fake_get_system_status)
+    bot = StubBotClient()
+    dispatcher = TelegramCommandDispatcher(
+        bot_client=bot,  # type: ignore[arg-type]
+        scheduler=StubScheduler(in_progress=True, is_running=True),
+    )
+
+    await dispatcher.dispatch_update(telegram_update("/status"))
+
+    message = bot.messages[0][1]
+    assert "Scheduler: running" in message
+    assert "Cycle: scraping — 2/5 completed, 1 active, 1 failed" in message
+
+
+@pytest.mark.asyncio
+async def test_status_command_respects_custom_profile_allowlist():
+    await create_command_profile(
+        preset="custom",
+        allowed_commands=[TELEGRAM_COMMAND_NOTIFICATIONS],
+    )
+    bot = StubBotClient()
+    dispatcher = TelegramCommandDispatcher(
+        bot_client=bot,  # type: ignore[arg-type]
+        scheduler=StubScheduler(),
+    )
+
+    await dispatcher.dispatch_update(telegram_update("/status"))
+
+    assert bot.messages == [("123", "/status is not enabled for Main.")]
 
 
 @pytest.mark.asyncio

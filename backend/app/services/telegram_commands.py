@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ..config import settings
-from ..models.schemas import ScanProgressOut, TelegramNotificationProfileOut
+from ..models.schemas import ScanProgressOut, SystemStatus, TelegramNotificationProfileOut
 from ..store import odds_store
 from .notifications import (
     TelegramBotAPIError,
@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 TELEGRAM_COMMAND_REFRESH = "refresh"
 TELEGRAM_COMMAND_NOTIFICATIONS = "notifications"
 TELEGRAM_COMMAND_HELP = "help"
+TELEGRAM_COMMAND_STATUS = "status"
 TELEGRAM_CONFIGURABLE_COMMANDS = (
+    TELEGRAM_COMMAND_STATUS,
     TELEGRAM_COMMAND_REFRESH,
     TELEGRAM_COMMAND_NOTIFICATIONS,
 )
@@ -37,6 +39,10 @@ async def wait_for_telegram_command_tasks() -> None:
 
 
 class TelegramCommandScheduler(Protocol):
+    @property
+    def is_running(self) -> bool:
+        ...
+
     @property
     def is_cycle_in_progress(self) -> bool:
         ...
@@ -158,6 +164,18 @@ class RefreshCommand:
         _BACKGROUND_REFRESH_TASKS.add(task)
         task.add_done_callback(_finish_background_refresh_task)
         await context.reply("Refresh started. I will not send a completion follow-up.")
+
+
+class StatusCommand:
+    name = TELEGRAM_COMMAND_STATUS
+    help_text = "Show backend and scrape status."
+
+    async def execute(self, context: TelegramCommandContext, args: str) -> None:
+        status = await odds_store.get_system_status(
+            scheduler_running=context.scheduler.is_running,
+            scan_progress=context.scheduler.progress_snapshot(),
+        )
+        await context.reply(_format_system_status(status))
 
 
 class NotificationsCommand:
@@ -444,6 +462,7 @@ def default_telegram_command_registry() -> TelegramCommandRegistry:
     return TelegramCommandRegistry(
         [
             HelpCommand(),
+            StatusCommand(),
             RefreshCommand(),
             NotificationsCommand(),
         ]
@@ -600,6 +619,37 @@ def _format_refresh_in_progress(snapshot: ScanProgressOut) -> str:
     else:
         progress = "cycle is starting"
     return f"Refresh already in progress ({html.escape(snapshot.phase)}): {progress}."
+
+
+def _format_system_status(status: SystemStatus) -> str:
+    scheduler_state = "running" if status.scheduler_running else "stopped"
+    last_scrape = status.last_scrape_at or "never"
+    lines = [
+        "<b>KvotoLovac status</b>",
+        f"Backend: {html.escape(str(status.status).upper())}",
+        f"Scheduler: {scheduler_state}",
+        f"Last scrape: {html.escape(last_scrape)}",
+        (
+            "Totals: "
+            f"{status.total_matches} matches · "
+            f"{status.total_odds} odds · "
+            f"{status.total_opportunities} opportunities · "
+            f"{status.active_bookmakers} bookmakers"
+        ),
+    ]
+    scan = status.scan
+    if scan.in_progress:
+        if scan.total_tasks > 0:
+            progress = (
+                f"{scan.completed_tasks}/{scan.total_tasks} completed, "
+                f"{scan.active_tasks} active, {scan.failed_tasks} failed"
+            )
+        else:
+            progress = "cycle is starting"
+        lines.append(f"Cycle: {html.escape(scan.phase)} — {progress}")
+    else:
+        lines.append("Cycle: idle")
+    return "\n".join(lines)
 
 
 def _finish_background_refresh_task(task: asyncio.Task[Any]) -> None:
