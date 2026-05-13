@@ -34,6 +34,125 @@ async def test_upsert_and_get_bookmaker():
 
 
 @pytest.mark.asyncio
+async def test_get_bookmaker_coverage_counts_current_snapshot_without_double_counting():
+    stale_snapshot_at = "2026-05-13T17:00:00+00:00"
+    current_snapshot_at = "2026-05-13T18:00:00+00:00"
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_bookmaker("empty", "Empty")
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("shared", "euroleague", "Home A", "Away A")
+    await odds_store.upsert_match("offer-only", "euroleague", "Home B", "Away B")
+    await odds_store.upsert_match("stale", "euroleague", "Home C", "Away C")
+
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="shared",
+            bookmaker_id="mozzart",
+            league_id="euroleague",
+            home_team="Home A",
+            away_team="Away A",
+            market_type="player_points",
+            player_name="Player One",
+            threshold=10.5,
+            over_odds=1.9,
+            under_odds=1.9,
+        ),
+        scraped_at=current_snapshot_at,
+    )
+    await odds_store.upsert_outcome_offer(
+        NormalizedOutcomeOffer(
+            match_id="shared",
+            bookmaker_id="mozzart",
+            league_id="euroleague",
+            sport="basketball",
+            home_team="Home A",
+            away_team="Away A",
+            market_type="home_away",
+            outcome_code="home",
+            odds=1.8,
+        ),
+        scraped_at=current_snapshot_at,
+    )
+    await odds_store.upsert_outcome_offer(
+        NormalizedOutcomeOffer(
+            match_id="offer-only",
+            bookmaker_id="mozzart",
+            league_id="euroleague",
+            sport="basketball",
+            home_team="Home B",
+            away_team="Away B",
+            market_type="home_away",
+            outcome_code="home",
+            odds=1.7,
+        ),
+        scraped_at=current_snapshot_at,
+    )
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="stale",
+            bookmaker_id="meridian",
+            league_id="euroleague",
+            home_team="Home C",
+            away_team="Away C",
+            market_type="player_points",
+            player_name="Player Two",
+            threshold=8.5,
+            over_odds=1.9,
+            under_odds=1.9,
+        ),
+        scraped_at=stale_snapshot_at,
+    )
+    await odds_store.set_current_snapshot(current_snapshot_at)
+
+    coverage = await odds_store.get_bookmaker_coverage()
+    coverage_by_id = {bookmaker.id: bookmaker for bookmaker in coverage}
+
+    assert [bookmaker.id for bookmaker in coverage] == ["mozzart", "empty", "meridian"]
+    assert coverage_by_id["mozzart"].current_match_count == 2
+    assert coverage_by_id["mozzart"].last_seen_at == current_snapshot_at
+    assert coverage_by_id["mozzart"].current_snapshot_at == current_snapshot_at
+    assert coverage_by_id["meridian"].current_match_count == 0
+    assert coverage_by_id["meridian"].last_seen_at == stale_snapshot_at
+    assert coverage_by_id["empty"].current_match_count == 0
+    assert coverage_by_id["empty"].last_seen_at is None
+
+
+@pytest.mark.asyncio
+async def test_get_bookmaker_coverage_uses_legacy_current_snapshot_filter():
+    scraped_at = "2026-05-13T18:00:00+00:00"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_match("legacy-match", "euroleague", "Home", "Away")
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="legacy-match",
+            bookmaker_id="meridian",
+            league_id="euroleague",
+            home_team="Home",
+            away_team="Away",
+            market_type="player_points",
+            player_name="Player One",
+            threshold=10.5,
+            over_odds=1.9,
+            under_odds=1.9,
+        ),
+        scraped_at=scraped_at,
+    )
+    db = await get_db()
+    await db.execute("DELETE FROM scrape_state")
+    await db.execute("DELETE FROM scrape_snapshots")
+    await db.commit()
+
+    coverage = await odds_store.get_bookmaker_coverage()
+
+    assert coverage[0].id == "meridian"
+    assert coverage[0].current_match_count == 1
+    assert coverage[0].last_seen_at == scraped_at
+    assert coverage[0].current_snapshot_at == scraped_at
+
+
+@pytest.mark.asyncio
 async def test_upsert_and_get_league():
     await odds_store.upsert_league("euroleague", "Euroleague", "basketball", "Europe")
     leagues = await odds_store.get_leagues()

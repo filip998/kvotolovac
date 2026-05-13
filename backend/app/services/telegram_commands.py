@@ -8,7 +8,12 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ..config import settings
-from ..models.schemas import ScanProgressOut, SystemStatus, TelegramNotificationProfileOut
+from ..models.schemas import (
+    BookmakerCoverageOut,
+    ScanProgressOut,
+    SystemStatus,
+    TelegramNotificationProfileOut,
+)
 from ..store import odds_store
 from .notifications import (
     TelegramBotAPIError,
@@ -23,8 +28,10 @@ TELEGRAM_COMMAND_REFRESH = "refresh"
 TELEGRAM_COMMAND_NOTIFICATIONS = "notifications"
 TELEGRAM_COMMAND_HELP = "help"
 TELEGRAM_COMMAND_STATUS = "status"
+TELEGRAM_COMMAND_BOOKMAKERS = "bookmakers"
 TELEGRAM_CONFIGURABLE_COMMANDS = (
     TELEGRAM_COMMAND_STATUS,
+    TELEGRAM_COMMAND_BOOKMAKERS,
     TELEGRAM_COMMAND_REFRESH,
     TELEGRAM_COMMAND_NOTIFICATIONS,
 )
@@ -33,6 +40,7 @@ _NOTIFICATION_OPPORTUNITY_PAGE_SIZE = 500
 _NOTIFICATIONS_MIN_LIMIT = 1
 _NOTIFICATIONS_MAX_LIMIT = 20
 _NOTIFICATIONS_USAGE = "Usage: /notifications [1-20]"
+_BOOKMAKERS_USAGE = "Usage: /bookmakers"
 
 
 async def wait_for_telegram_command_tasks() -> None:
@@ -179,6 +187,18 @@ class StatusCommand:
             scan_progress=context.scheduler.progress_snapshot(),
         )
         await context.reply(_format_system_status(status))
+
+
+class BookmakersCommand:
+    name = TELEGRAM_COMMAND_BOOKMAKERS
+    help_text = "Show bookmaker coverage and last-seen status."
+
+    async def execute(self, context: TelegramCommandContext, args: str) -> None:
+        if args.strip():
+            await context.reply(_BOOKMAKERS_USAGE)
+            return
+        coverage = await odds_store.get_bookmaker_coverage()
+        await context.reply(_format_bookmaker_coverage(coverage))
 
 
 class NotificationsCommand:
@@ -473,6 +493,7 @@ def default_telegram_command_registry() -> TelegramCommandRegistry:
         [
             HelpCommand(),
             StatusCommand(),
+            BookmakersCommand(),
             RefreshCommand(),
             NotificationsCommand(),
         ]
@@ -676,6 +697,45 @@ def _format_system_status(status: SystemStatus) -> str:
     else:
         lines.append("Cycle: idle")
     return "\n".join(lines)
+
+
+def _format_bookmaker_coverage(bookmakers: list[BookmakerCoverageOut]) -> str:
+    if not bookmakers:
+        return "No active bookmakers configured."
+
+    current_snapshot = bookmakers[0].current_snapshot_at or "never"
+    lines = [
+        "<b>Bookmaker coverage</b>",
+        f"Current snapshot: {html.escape(current_snapshot)}",
+    ]
+    for bookmaker in sorted(
+        bookmakers,
+        key=lambda item: (
+            item.current_match_count <= 0,
+            item.name.lower(),
+            item.id,
+        ),
+    ):
+        if bookmaker.current_match_count > 0:
+            icon = "✅"
+            current_label = _pluralize_matches(bookmaker.current_match_count)
+        elif bookmaker.last_seen_at:
+            icon = "⚠️"
+            current_label = "no current rows"
+        else:
+            icon = "⚪"
+            current_label = "no current rows"
+        last_seen = bookmaker.last_seen_at or "never"
+        lines.append(
+            f"{icon} {html.escape(bookmaker.name)} — {current_label} · "
+            f"last seen {html.escape(last_seen)}"
+        )
+    return "\n".join(lines)
+
+
+def _pluralize_matches(count: int) -> str:
+    suffix = "match" if count == 1 else "matches"
+    return f"{count} current {suffix}"
 
 
 def _finish_background_refresh_task(task: asyncio.Task[Any]) -> None:

@@ -56,6 +56,11 @@ const TELEGRAM_COMMAND_OPTIONS = [
     description: 'Show backend and scrape status.',
   },
   {
+    id: 'bookmakers',
+    label: '/bookmakers',
+    description: 'Show bookmaker coverage and last-seen status.',
+  },
+  {
     id: 'refresh',
     label: '/refresh',
     description: 'Start a scrape and analysis cycle.',

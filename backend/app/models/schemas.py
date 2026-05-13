@@ -14,6 +14,15 @@ class BookmakerOut(BaseModel):
     is_active: bool = True
 
 
+class BookmakerCoverageOut(BaseModel):
+    id: str
+    name: str
+    is_active: bool = True
+    current_match_count: int = 0
+    last_seen_at: Optional[str] = None
+    current_snapshot_at: Optional[str] = None
+
+
 class MatchBookmakerOut(BaseModel):
     id: str
     name: str

@@ -13,6 +13,7 @@ import aiosqlite
 from ..config import settings
 from ..database import get_db
 from ..models.schemas import (
+    BookmakerCoverageOut,
     BookmakerOut,
     CanonicalOffer,
     CanonicalTeamOut,
@@ -242,6 +243,98 @@ async def get_bookmakers(active_only: bool = True) -> list[BookmakerOut]:
         q += " WHERE is_active = TRUE"
     rows = await db.execute_fetchall(q)
     return [BookmakerOut(**_row_to_dict(r)) for r in rows]
+
+
+async def get_bookmaker_coverage() -> list[BookmakerCoverageOut]:
+    db = await get_db()
+    current_snapshot_id, current_snapshot_at = await _get_current_snapshot(db)
+    if current_snapshot_at is None and not await _has_scrape_snapshots(db):
+        legacy_window = await _get_legacy_snapshot_cutoff(db)
+        if legacy_window is not None:
+            current_snapshot_at = legacy_window[0]
+
+    current_match_counts = await _get_current_bookmaker_match_counts(db)
+    last_seen_by_bookmaker = await _get_bookmaker_last_seen_timestamps(db)
+    bookmakers = await get_bookmakers(active_only=True)
+
+    return [
+        BookmakerCoverageOut(
+            id=bookmaker.id,
+            name=bookmaker.name,
+            is_active=bookmaker.is_active,
+            current_match_count=current_match_counts.get(bookmaker.id, 0),
+            last_seen_at=last_seen_by_bookmaker.get(bookmaker.id),
+            current_snapshot_at=current_snapshot_at,
+        )
+        for bookmaker in sorted(
+            bookmakers,
+            key=lambda item: (
+                current_match_counts.get(item.id, 0) <= 0,
+                item.name.lower(),
+                item.id,
+            ),
+        )
+    ]
+
+
+async def _get_current_bookmaker_match_counts(
+    db: aiosqlite.Connection,
+) -> dict[str, int]:
+    odds_filter, odds_params = await _current_or_legacy_snapshot_filter(db, "o")
+    offers_filter, offers_params = await _current_or_legacy_snapshot_filter(db, "oo")
+    union_parts: list[str] = []
+    params: list[object] = []
+    if odds_filter is not None:
+        union_parts.append(
+            f"""SELECT o.bookmaker_id, o.match_id
+                FROM odds o
+                WHERE {odds_filter}
+                  AND o.match_id IS NOT NULL"""
+        )
+        params.extend(odds_params)
+    if offers_filter is not None:
+        union_parts.append(
+            f"""SELECT oo.bookmaker_id, oo.match_id
+                FROM outcome_offers oo
+                WHERE {offers_filter}
+                  AND oo.match_id IS NOT NULL"""
+        )
+        params.extend(offers_params)
+    if not union_parts:
+        return {}
+
+    rows = await db.execute_fetchall(
+        f"""SELECT bookmaker_id, COUNT(DISTINCT match_id) AS current_match_count
+            FROM (
+                {" UNION ".join(union_parts)}
+            ) current_bookmaker_matches
+            GROUP BY bookmaker_id""",
+        params,
+    )
+    return {str(row["bookmaker_id"]): int(row["current_match_count"] or 0) for row in rows}
+
+
+async def _get_bookmaker_last_seen_timestamps(
+    db: aiosqlite.Connection,
+) -> dict[str, str]:
+    rows = await db.execute_fetchall(
+        """SELECT bookmaker_id, MAX(scraped_at) AS last_seen_at
+           FROM (
+               SELECT bookmaker_id, scraped_at
+               FROM odds
+               WHERE scraped_at IS NOT NULL
+               UNION ALL
+               SELECT bookmaker_id, scraped_at
+               FROM outcome_offers
+               WHERE scraped_at IS NOT NULL
+           ) bookmaker_seen_rows
+           GROUP BY bookmaker_id"""
+    )
+    return {
+        str(row["bookmaker_id"]): str(row["last_seen_at"])
+        for row in rows
+        if row["last_seen_at"] is not None
+    }
 
 
 # ── Leagues ────────────────────────────────────────────────
