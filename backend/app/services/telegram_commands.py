@@ -5,10 +5,12 @@ import html
 import logging
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from ..config import settings
 from ..models.schemas import (
+    BookmakerOut,
     BookmakerCoverageOut,
     ScanProgressOut,
     SystemStatus,
@@ -29,8 +31,10 @@ TELEGRAM_COMMAND_NOTIFICATIONS = "notifications"
 TELEGRAM_COMMAND_HELP = "help"
 TELEGRAM_COMMAND_STATUS = "status"
 TELEGRAM_COMMAND_BOOKMAKERS = "bookmakers"
+TELEGRAM_COMMAND_PROFILE = "profile"
 TELEGRAM_CONFIGURABLE_COMMANDS = (
     TELEGRAM_COMMAND_STATUS,
+    TELEGRAM_COMMAND_PROFILE,
     TELEGRAM_COMMAND_BOOKMAKERS,
     TELEGRAM_COMMAND_REFRESH,
     TELEGRAM_COMMAND_NOTIFICATIONS,
@@ -41,6 +45,8 @@ _NOTIFICATIONS_MIN_LIMIT = 1
 _NOTIFICATIONS_MAX_LIMIT = 20
 _NOTIFICATIONS_USAGE = "Usage: /notifications [1-20]"
 _BOOKMAKERS_USAGE = "Usage: /bookmakers"
+_PROFILE_USAGE = "Usage: /profile"
+_PROFILE_DELIVERY_ERROR_MAX_LENGTH = 160
 
 
 async def wait_for_telegram_command_tasks() -> None:
@@ -199,6 +205,21 @@ class BookmakersCommand:
             return
         coverage = await odds_store.get_bookmaker_coverage()
         await context.reply(_format_bookmaker_coverage(coverage))
+
+
+class ProfileCommand:
+    name = TELEGRAM_COMMAND_PROFILE
+    help_text = "Show this chat's Telegram notification profile."
+
+    async def execute(self, context: TelegramCommandContext, args: str) -> None:
+        if args.strip():
+            await context.reply(_PROFILE_USAGE)
+            return
+        bookmaker_names: dict[str, str] = {}
+        if context.profile.bookmaker_ids:
+            bookmakers = await odds_store.get_bookmakers(active_only=False)
+            bookmaker_names = _bookmaker_name_lookup(bookmakers)
+        await context.reply(_format_telegram_profile(context.profile, bookmaker_names))
 
 
 class NotificationsCommand:
@@ -493,6 +514,7 @@ def default_telegram_command_registry() -> TelegramCommandRegistry:
         [
             HelpCommand(),
             StatusCommand(),
+            ProfileCommand(),
             BookmakersCommand(),
             RefreshCommand(),
             NotificationsCommand(),
@@ -731,6 +753,94 @@ def _format_bookmaker_coverage(bookmakers: list[BookmakerCoverageOut]) -> str:
             f"last seen {html.escape(last_seen)}"
         )
     return "\n".join(lines)
+
+
+def _format_telegram_profile(
+    profile: TelegramNotificationProfileOut,
+    bookmaker_names: dict[str, str],
+) -> str:
+    lines = [
+        "<b>Telegram profile</b>",
+        f"Label: {html.escape(profile.label)}",
+        "Opportunity filters:",
+        f"ROI ≥ {_format_profile_number(profile.min_roi_percent)}%",
+        f"Middle EV ≥ {_format_profile_number(profile.min_middle_ev_percent)}%",
+        f"Middle gap ≥ {_format_profile_number(profile.min_gap)}",
+        f"Bookmakers: {_format_profile_bookmakers(profile, bookmaker_names)}",
+        f"Commands: {_format_profile_commands(profile)}",
+    ]
+    rate_limited_until = _profile_rate_limited_until(profile)
+    if rate_limited_until is not None:
+        lines.append(
+            f"Rate limited until: {html.escape(_format_profile_datetime(rate_limited_until))}"
+        )
+    delivery_error = _format_profile_delivery_error(profile.last_delivery_error)
+    if delivery_error is not None:
+        lines.append(f"Last delivery error: {html.escape(delivery_error)}")
+    return "\n".join(lines)
+
+
+def _bookmaker_name_lookup(bookmakers: list[BookmakerOut]) -> dict[str, str]:
+    return {bookmaker.id: bookmaker.name for bookmaker in bookmakers}
+
+
+def _format_profile_bookmakers(
+    profile: TelegramNotificationProfileOut,
+    bookmaker_names: dict[str, str],
+) -> str:
+    if not profile.bookmaker_ids:
+        return "all"
+    labels = [
+        bookmaker_names.get(bookmaker_id, bookmaker_id)
+        for bookmaker_id in profile.bookmaker_ids
+    ]
+    return html.escape(", ".join(labels))
+
+
+def _format_profile_commands(profile: TelegramNotificationProfileOut) -> str:
+    if profile.command_permission_preset == "admin":
+        return "admin (all commands)"
+    if profile.command_permission_preset == "none":
+        return "none"
+    if not profile.allowed_commands:
+        return "custom — no commands"
+    commands = ", ".join(f"/{command}" for command in profile.allowed_commands)
+    return f"custom — {html.escape(commands)}"
+
+
+def _format_profile_delivery_error(error: str | None) -> str | None:
+    if error is None:
+        return None
+    normalized = " ".join(error.split())
+    if not normalized:
+        return None
+    if len(normalized) <= _PROFILE_DELIVERY_ERROR_MAX_LENGTH:
+        return normalized
+    return f"{normalized[: _PROFILE_DELIVERY_ERROR_MAX_LENGTH - 3]}..."
+
+
+def _profile_rate_limited_until(profile: TelegramNotificationProfileOut) -> datetime | None:
+    if not profile.rate_limited_until:
+        return None
+    try:
+        until = datetime.fromisoformat(profile.rate_limited_until)
+    except ValueError:
+        return None
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+    if until <= datetime.now(timezone.utc):
+        return None
+    return until
+
+
+def _format_profile_datetime(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace(
+        "+00:00", "Z"
+    )
+
+
+def _format_profile_number(value: float) -> str:
+    return f"{value:g}"
 
 
 def _pluralize_matches(count: int) -> str:

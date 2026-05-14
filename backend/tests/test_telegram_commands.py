@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from app.models.schemas import (
+    BookmakerOut,
     BookmakerCoverageOut,
     OpportunityLeg,
     OpportunityOut,
@@ -18,6 +19,7 @@ from app.services.notifications import TelegramOpportunityMessage
 from app.services.telegram_commands import (
     TELEGRAM_COMMAND_BOOKMAKERS,
     TELEGRAM_COMMAND_NOTIFICATIONS,
+    TELEGRAM_COMMAND_PROFILE,
     TELEGRAM_COMMAND_REFRESH,
     TELEGRAM_COMMAND_STATUS,
     TelegramCommandDispatcher,
@@ -55,6 +57,16 @@ class StubBotClient:
             raise RuntimeError("telegram send failed")
         self.messages.append((chat_id, text))
         return TelegramSendMessageResult(message_id=len(self.messages))
+
+
+REGISTERED_COMMANDS = {
+    "help",
+    "status",
+    "profile",
+    "bookmakers",
+    "refresh",
+    "notifications",
+}
 
 
 class PollerBotClient:
@@ -380,22 +392,27 @@ async def test_custom_profile_allows_only_configured_commands():
     assert profile_allows_telegram_command(
         profile,
         TELEGRAM_COMMAND_NOTIFICATIONS,
-        registered_commands={"help", "status", "bookmakers", "refresh", "notifications"},
+        registered_commands=REGISTERED_COMMANDS,
     )
     assert not profile_allows_telegram_command(
         profile,
         TELEGRAM_COMMAND_REFRESH,
-        registered_commands={"help", "status", "bookmakers", "refresh", "notifications"},
+        registered_commands=REGISTERED_COMMANDS,
     )
     assert not profile_allows_telegram_command(
         profile,
         TELEGRAM_COMMAND_STATUS,
-        registered_commands={"help", "status", "bookmakers", "refresh", "notifications"},
+        registered_commands=REGISTERED_COMMANDS,
     )
     assert not profile_allows_telegram_command(
         profile,
         TELEGRAM_COMMAND_BOOKMAKERS,
-        registered_commands={"help", "status", "bookmakers", "refresh", "notifications"},
+        registered_commands=REGISTERED_COMMANDS,
+    )
+    assert not profile_allows_telegram_command(
+        profile,
+        TELEGRAM_COMMAND_PROFILE,
+        registered_commands=REGISTERED_COMMANDS,
     )
 
 
@@ -409,12 +426,12 @@ async def test_custom_profile_can_allow_status_command():
     assert profile_allows_telegram_command(
         profile,
         TELEGRAM_COMMAND_STATUS,
-        registered_commands={"help", "status", "bookmakers", "refresh", "notifications"},
+        registered_commands=REGISTERED_COMMANDS,
     )
     assert not profile_allows_telegram_command(
         profile,
         TELEGRAM_COMMAND_REFRESH,
-        registered_commands={"help", "status", "bookmakers", "refresh", "notifications"},
+        registered_commands=REGISTERED_COMMANDS,
     )
 
 
@@ -630,6 +647,206 @@ async def test_help_includes_bookmakers_for_custom_profile():
 
     assert "/bookmakers" in bot.messages[0][1]
     assert "/notifications" not in bot.messages[0][1]
+
+
+@pytest.mark.asyncio
+async def test_profile_command_admin_returns_current_profile(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await create_command_profile(chat_id="secret-chat-789")
+
+    async def fail_get_bookmakers(active_only: bool = True) -> list[BookmakerOut]:
+        raise AssertionError("/profile with all bookmakers should not load names")
+
+    monkeypatch.setattr(odds_store, "get_bookmakers", fail_get_bookmakers)
+    bot = StubBotClient()
+    dispatcher = TelegramCommandDispatcher(
+        bot_client=bot,  # type: ignore[arg-type]
+        scheduler=StubScheduler(),
+    )
+
+    await dispatcher.dispatch_update(
+        telegram_update("/profile", chat_id="secret-chat-789")
+    )
+
+    assert len(bot.messages) == 1
+    message = bot.messages[0][1]
+    assert "<b>Telegram profile</b>" in message
+    assert "Label: Main" in message
+    assert "ROI ≥ 0%" in message
+    assert "Middle EV ≥ 0%" in message
+    assert "Middle gap ≥ 0" in message
+    assert "Bookmakers: all" in message
+    assert "Commands: admin (all commands)" in message
+    assert "secret-chat-789" not in message
+
+
+@pytest.mark.asyncio
+async def test_profile_command_returns_filters_commands_and_delivery_state(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    profile = await create_command_profile(
+        chat_id="profile-chat-456",
+        preset="custom",
+        allowed_commands=[TELEGRAM_COMMAND_PROFILE, TELEGRAM_COMMAND_STATUS],
+    )
+    await odds_store.update_telegram_notification_profile(
+        profile.id,
+        TelegramNotificationProfileUpdate(
+            label="Ops <main>",
+            chat_id=profile.chat_id,
+            min_gap=2.5,
+            min_roi_percent=1.25,
+            min_middle_ev_percent=3.5,
+            bookmaker_ids=["mozzart", "unknown"],
+            command_permission_preset="custom",
+            allowed_commands=[TELEGRAM_COMMAND_PROFILE, TELEGRAM_COMMAND_STATUS],
+        ),
+    )
+    await odds_store.mark_telegram_profile_rate_limited(
+        profile_id=profile.id,
+        retry_after_seconds=3600,
+        error="Telegram <bad>\nretry",
+    )
+    get_bookmakers_calls: list[bool] = []
+
+    async def fake_get_bookmakers(active_only: bool = True) -> list[BookmakerOut]:
+        get_bookmakers_calls.append(active_only)
+        return [
+            BookmakerOut(
+                id="mozzart",
+                name="Mozzart <safe>",
+                is_active=False,
+            )
+        ]
+
+    monkeypatch.setattr(odds_store, "get_bookmakers", fake_get_bookmakers)
+    bot = StubBotClient()
+    dispatcher = TelegramCommandDispatcher(
+        bot_client=bot,  # type: ignore[arg-type]
+        scheduler=StubScheduler(),
+    )
+
+    await dispatcher.dispatch_update(
+        telegram_update("/profile", chat_id="profile-chat-456")
+    )
+
+    assert get_bookmakers_calls == [False]
+    message = bot.messages[0][1]
+    assert "Label: Ops &lt;main&gt;" in message
+    assert "ROI ≥ 1.25%" in message
+    assert "Middle EV ≥ 3.5%" in message
+    assert "Middle gap ≥ 2.5" in message
+    assert "Bookmakers: Mozzart &lt;safe&gt;, unknown" in message
+    assert "Commands: custom — /profile, /status" in message
+    assert "Rate limited until:" in message
+    rate_limit_line = next(
+        line for line in message.splitlines() if line.startswith("Rate limited until:")
+    )
+    assert rate_limit_line.endswith("Z")
+    assert "Last delivery error: Telegram &lt;bad&gt; retry" in message
+    assert "profile-chat-456" not in message
+
+
+@pytest.mark.asyncio
+async def test_profile_command_hides_expired_rate_limit():
+    profile = await create_command_profile()
+    await odds_store.mark_telegram_profile_rate_limited(
+        profile_id=profile.id,
+        retry_after_seconds=-3600,
+        error="old error",
+    )
+    bot = StubBotClient()
+    dispatcher = TelegramCommandDispatcher(
+        bot_client=bot,  # type: ignore[arg-type]
+        scheduler=StubScheduler(),
+    )
+
+    await dispatcher.dispatch_update(telegram_update("/profile"))
+
+    message = bot.messages[0][1]
+    assert "Rate limited until:" not in message
+    assert "Last delivery error: old error" in message
+
+
+@pytest.mark.asyncio
+async def test_profile_command_rejects_arguments(monkeypatch: pytest.MonkeyPatch):
+    profile = await create_command_profile()
+    await odds_store.update_telegram_notification_profile(
+        profile.id,
+        TelegramNotificationProfileUpdate(
+            label=profile.label,
+            chat_id=profile.chat_id,
+            bookmaker_ids=["mozzart"],
+        ),
+    )
+
+    async def fail_get_bookmakers(active_only: bool = True) -> list[BookmakerOut]:
+        raise AssertionError("/profile arguments should not load bookmakers")
+
+    monkeypatch.setattr(odds_store, "get_bookmakers", fail_get_bookmakers)
+    bot = StubBotClient()
+    dispatcher = TelegramCommandDispatcher(
+        bot_client=bot,  # type: ignore[arg-type]
+        scheduler=StubScheduler(),
+    )
+
+    await dispatcher.dispatch_update(telegram_update("/profile full"))
+
+    assert bot.messages == [("123", "Usage: /profile")]
+
+
+@pytest.mark.asyncio
+async def test_profile_command_respects_custom_profile_allowlist():
+    await create_command_profile(
+        preset="custom",
+        allowed_commands=[TELEGRAM_COMMAND_NOTIFICATIONS],
+    )
+    bot = StubBotClient()
+    dispatcher = TelegramCommandDispatcher(
+        bot_client=bot,  # type: ignore[arg-type]
+        scheduler=StubScheduler(),
+    )
+
+    await dispatcher.dispatch_update(telegram_update("/profile"))
+
+    assert bot.messages == [("123", "/profile is not enabled for Main.")]
+
+
+@pytest.mark.asyncio
+async def test_help_includes_profile_for_custom_profile():
+    await create_command_profile(
+        preset="custom",
+        allowed_commands=[TELEGRAM_COMMAND_PROFILE],
+    )
+    bot = StubBotClient()
+    dispatcher = TelegramCommandDispatcher(
+        bot_client=bot,  # type: ignore[arg-type]
+        scheduler=StubScheduler(),
+    )
+
+    await dispatcher.dispatch_update(telegram_update("/help"))
+
+    assert "/profile" in bot.messages[0][1]
+    assert "/notifications" not in bot.messages[0][1]
+
+
+@pytest.mark.asyncio
+async def test_help_excludes_profile_when_custom_profile_does_not_allow_it():
+    await create_command_profile(
+        preset="custom",
+        allowed_commands=[TELEGRAM_COMMAND_NOTIFICATIONS],
+    )
+    bot = StubBotClient()
+    dispatcher = TelegramCommandDispatcher(
+        bot_client=bot,  # type: ignore[arg-type]
+        scheduler=StubScheduler(),
+    )
+
+    await dispatcher.dispatch_update(telegram_update("/help"))
+
+    assert "/notifications" in bot.messages[0][1]
+    assert "/profile" not in bot.messages[0][1]
 
 
 @pytest.mark.asyncio
