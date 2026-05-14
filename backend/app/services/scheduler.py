@@ -112,7 +112,7 @@ FOOTBALL_FORMAT_ALIAS_AFFIX_TOKENS = frozenset(
     }
 )
 FOOTBALL_FORMAT_ALIAS_PAGE_SIZE = 1000
-_DETAIL_MODE_BOOKMAKERS = ("betole", "merkurxtip", "pinnbet", "soccerbet")
+_DETAIL_MODE_BOOKMAKERS = ("betole", "merkurxtip", "pinnbet", "soccerbet", "starbet")
 AUTO_RESOLUTION_RERUN_MIN_ALIAS_AFFECTED_ROWS = 10
 AUTO_RESOLUTION_RERUN_MIN_MERGE_AFFECTED_ROWS = 10
 _TEAM_RESOLUTION_UNRESOLVED_REASONS = frozenset(
@@ -732,6 +732,8 @@ def _runtime_detail_mode_for_scraper(
         return runtime_settings.pinnbet_detail_mode
     if bookmaker_id == "betole":
         return runtime_settings.betole_detail_mode
+    if bookmaker_id == "starbet":
+        return runtime_settings.starbet_detail_mode
     return None
 
 
@@ -1890,6 +1892,8 @@ class Scheduler:
             scraper.set_runtime_detail_mode(runtime_settings.pinnbet_detail_mode)
         if bookmaker_id == "betole":
             scraper.set_runtime_detail_mode(runtime_settings.betole_detail_mode)
+        if bookmaker_id == "starbet":
+            scraper.set_runtime_detail_mode(runtime_settings.starbet_detail_mode)
 
     def _configure_notification_service_for_runtime_settings(
         self,

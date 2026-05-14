@@ -176,6 +176,7 @@ def _runtime_metadata(
             "soccerbet": runtime_settings.soccerbet_detail_mode,
             "merkurxtip": runtime_settings.merkurxtip_detail_mode,
             "pinnbet": runtime_settings.pinnbet_detail_mode,
+            "starbet": runtime_settings.starbet_detail_mode,
         },
         proxies_configured=proxy_count > 0,
         proxy_count=proxy_count,

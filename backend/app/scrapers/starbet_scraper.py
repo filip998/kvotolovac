@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from .base import BaseScraper
 from .http_client import HttpClient
+from ..config import settings
 from ..models.schemas import RawOddsData, RawOutcomeOffer
 from ..services.text_normalizer import normalize_identity_text
 
@@ -20,6 +22,7 @@ _BASE_URL = "https://starbet.rs"
 _SOURCE_URL = f"{_BASE_URL}/Bet"
 _SPORT_TREE_URL = f"{_BASE_URL}/Oblozuvanje.aspx/GetSportoviSoLigi"
 _GET_LIGA_URL = f"{_BASE_URL}/Oblozuvanje.aspx/GetLiga"
+_GET_TIPOVI_V2_URL = f"{_BASE_URL}/Oblozuvanje.aspx/GetTipoviV2"
 
 _BOOKMAKER_ID = "starbet"
 _BOOKMAKER_NAME = "StarBet"
@@ -27,6 +30,12 @@ _BOOKMAKER_NAME = "StarBet"
 _FOOTBALL_SID = 0
 _BASKETBALL_SID = 22
 _TENNIS_SID = 37
+
+# Concurrency for the full-mode per-player GetTipoviV2 fan-out.  At the default
+# RATE_LIMIT_PER_SECOND=1.0 a higher value here is throttled by the HttpClient's
+# token bucket anyway; under bumped per-bookmaker rate limits 4 keeps the burst
+# polite while still completing a 24-player league in under a second.
+_PLAYER_DETAIL_CONCURRENCY = 4
 
 
 _DEFAULT_HEADERS: dict[str, str] = {
@@ -75,6 +84,28 @@ _TENNIS_MATCH_WINNER_TIDS: dict[int, tuple[str, str]] = {
 # the parser must skip those duplicates.
 _BASKETBALL_TOTAL_UNDER_TID = 103
 _BASKETBALL_TOTAL_OVER_TID = 105
+
+
+# ── Player-prop markets exposed via per-player GetTipoviV2 (full mode) ──
+# Each ID below is the StarBet IgraWebID / IgraID for a market group; the
+# corresponding under/over TipID pair is what we read to extract the line and
+# the two odds.  These values were confirmed across the full live NBA Players
+# special during discovery; the platform reuses them for every player pair.
+_PLAYER_DETAIL_MARKETS: tuple[tuple[int, int, int, str], ...] = (
+    # (igra_id, under_tip_id, over_tip_id, canonical_market_type)
+    (54, _BASKETBALL_TOTAL_UNDER_TID, _BASKETBALL_TOTAL_OVER_TID, "player_points"),
+    (254, 1391, 1392, "player_rebounds"),
+    (255, 1393, 1394, "player_assists"),
+    (256, 1395, 1396, "player_3points"),
+    (257, 1397, 1398, "player_points_rebounds_assists"),
+)
+
+# Lookup tables derived from _PLAYER_DETAIL_MARKETS, keyed by IgraID for fast
+# match-by-group inside the parser.
+_PLAYER_DETAIL_MARKET_BY_IGRA_ID: dict[int, tuple[int, int, str]] = {
+    igra_id: (under_tid, over_tid, market_type)
+    for igra_id, under_tid, over_tid, market_type in _PLAYER_DETAIL_MARKETS
+}
 
 
 # ── Doubles / canonical leagues ────────────────────────────
@@ -743,17 +774,54 @@ class _PlayerPointsExtraction:
     ambiguous_samples: list[tuple[str, str, str]] = field(default_factory=list)
 
 
-def _extract_basketball_player_points(
+@dataclass(frozen=True)
+class _PlayerCandidate:
+    """A player special whose preview row was successfully joined to a regular
+    basketball fixture.  Carries everything the full-mode `GetTipoviV2`
+    enrichment step needs to issue and parse the per-player detail call."""
+
+    pair_pid: int
+    player_name: str
+    fixture: _Fixture
+    preview_row: RawOddsData
+
+
+@dataclass
+class _PlayerCollectionResult:
+    """Output of `_collect_basketball_player_candidates`.
+
+    `extraction.rows` already contains the preview-derived `player_points` rows
+    (one per resolved player) — partial mode returns this verbatim.  Full mode
+    instead consumes `candidates` to fetch per-player detail and emits the
+    richer set of markets.
+    """
+
+    extraction: _PlayerPointsExtraction = field(default_factory=_PlayerPointsExtraction)
+    candidates: list[_PlayerCandidate] = field(default_factory=list)
+
+
+def _collect_basketball_player_candidates(
     leagues_payload: object,
     descriptors: dict[int, _LeagueDescriptor],
     by_team_start_league: dict[tuple[str, str, str], _Fixture],
     ambiguity_counts: dict[tuple[str, str], int] | None = None,
-) -> _PlayerPointsExtraction:
-    extraction = _PlayerPointsExtraction()
+) -> _PlayerCollectionResult:
+    """Single-pass walk of player-special leagues that yields:
+
+    * preview-derived `player_points` rows (the partial-mode output);
+    * `_PlayerCandidate` entries identifying every successfully joined player
+      whose ``GetTipoviV2`` detail call would unlock the four additional
+      player markets (rebounds, assists, 3-pointers, PRA).
+
+    Counts unresolved and ambiguous joins identically to the previous helper.
+    """
+
+    result = _PlayerCollectionResult()
+    extraction = result.extraction
     ambiguity_counts = ambiguity_counts or {}
 
     if not isinstance(leagues_payload, list):
-        return extraction
+        return result
 
     for league in leagues_payload:
         if not isinstance(league, dict):
@@ -771,12 +839,13 @@ def _extract_basketball_player_points(
             continue
         target_league_id = _infer_target_league_id(league_name)
         if not target_league_id:
-            # The special's name carried no recognisable league prefix;
-            # we cannot safely attach its players to any fixture.
             continue
 
         for pair in league.get("P") or []:
             if not isinstance(pair, dict):
+                continue
+            pid = pair.get("PID")
+            if not isinstance(pid, int):
                 continue
             split = _split_pair_name(_clean_text(pair.get("PN")))
             if split is None:
@@ -794,10 +863,6 @@ def _extract_basketball_player_points(
                 (normalized_team, start_iso, target_league_id)
             )
             if fixture is None:
-                # No fixture in the target league for this team at this minute.
-                # Surface the ambiguity (same team+time in another league) as
-                # a separate signal so it cannot be confused with "team simply
-                # not playing" failures.
                 two_key = (normalized_team, start_iso)
                 if ambiguity_counts.get(two_key, 0) > 1:
                     extraction.ambiguous_count += 1
@@ -818,20 +883,27 @@ def _extract_basketball_player_points(
             if totals is None:
                 continue
             line, over_odds, under_odds = totals
-            extraction.rows.append(
-                RawOddsData(
-                    bookmaker_id=_BOOKMAKER_ID,
-                    league_id=fixture.league_id,
-                    sport="basketball",
-                    home_team=fixture.home_team,
-                    away_team=fixture.away_team,
-                    source_url=_SOURCE_URL,
-                    market_type="player_points",
+            preview_row = RawOddsData(
+                bookmaker_id=_BOOKMAKER_ID,
+                league_id=fixture.league_id,
+                sport="basketball",
+                home_team=fixture.home_team,
+                away_team=fixture.away_team,
+                source_url=_SOURCE_URL,
+                market_type="player_points",
+                player_name=player_name,
+                threshold=line,
+                over_odds=over_odds,
+                under_odds=under_odds,
+                start_time=fixture.start_time_iso,
+            )
+            extraction.rows.append(preview_row)
+            result.candidates.append(
+                _PlayerCandidate(
+                    pair_pid=pid,
                     player_name=player_name,
-                    threshold=line,
-                    over_odds=over_odds,
-                    under_odds=under_odds,
-                    start_time=fixture.start_time_iso,
+                    fixture=fixture,
+                    preview_row=preview_row,
                 )
             )
 
@@ -844,7 +916,109 @@ def _extract_basketball_player_points(
             row.threshold,
         )
     )
-    return extraction
+    return result
+
+
+def _extract_basketball_player_points(
+    leagues_payload: object,
+    descriptors: dict[int, _LeagueDescriptor],
+    by_team_start_league: dict[tuple[str, str, str], _Fixture],
+    ambiguity_counts: dict[tuple[str, str], int] | None = None,
+) -> _PlayerPointsExtraction:
+    """Backwards-compatible wrapper that returns only the partial-mode
+    preview-derived rows.  Kept for tests that exercise the preview path
+    in isolation; the scraper itself uses `_collect_basketball_player_candidates`
+    so it can branch on detail mode without re-walking the payload."""
+
+    return _collect_basketball_player_candidates(
+        leagues_payload,
+        descriptors,
+        by_team_start_league,
+        ambiguity_counts,
+    ).extraction
+
+
+def _parse_player_detail_response(
+    payload: object,
+    *,
+    player_name: str,
+    fixture: _Fixture,
+) -> list[RawOddsData]:
+    """Parse a single player's `GetTipoviV2` response into RawOddsData rows.
+
+    The response is a list of market groups; each known group's TipID pair
+    yields one canonical player market row (with both over and under
+    populated when present).  Unknown groups and incomplete pairs are
+    silently skipped so future StarBet additions never crash the parser.
+    """
+
+    if not isinstance(payload, list):
+        return []
+
+    rows: list[RawOddsData] = []
+    for group in payload:
+        if not isinstance(group, dict):
+            continue
+        igra_id = group.get("ID")
+        if not isinstance(igra_id, int):
+            continue
+        market_info = _PLAYER_DETAIL_MARKET_BY_IGRA_ID.get(igra_id)
+        if market_info is None:
+            continue
+        under_tid, over_tid, market_type = market_info
+
+        tips = group.get("T")
+        if not isinstance(tips, list):
+            continue
+        # Same isG semantics as the bulk preview — defensive even though
+        # discovery showed the per-player detail endpoint never sets it.
+        under_row: dict | None = None
+        over_row: dict | None = None
+        for tip in tips:
+            if not isinstance(tip, dict) or tip.get("isG"):
+                continue
+            tip_id = tip.get("TipID")
+            if tip_id == under_tid and under_row is None:
+                under_row = tip
+            elif tip_id == over_tid and over_row is None:
+                over_row = tip
+            if under_row is not None and over_row is not None:
+                break
+
+        if under_row is None or over_row is None:
+            continue
+
+        under_line = _parse_threshold(under_row.get("G"))
+        over_line = _parse_threshold(over_row.get("G"))
+        if (
+            under_line is None
+            or over_line is None
+            or abs(under_line - over_line) > 1e-6
+        ):
+            continue
+
+        under_odds = _parse_odds(under_row.get("Kvota"))
+        over_odds = _parse_odds(over_row.get("Kvota"))
+        if under_odds is None or over_odds is None:
+            continue
+
+        rows.append(
+            RawOddsData(
+                bookmaker_id=_BOOKMAKER_ID,
+                league_id=fixture.league_id,
+                sport="basketball",
+                home_team=fixture.home_team,
+                away_team=fixture.away_team,
+                source_url=_SOURCE_URL,
+                market_type=market_type,
+                player_name=player_name,
+                threshold=under_line,
+                over_odds=over_odds,
+                under_odds=under_odds,
+                start_time=fixture.start_time_iso,
+            )
+        )
+    return rows
 
 
 # ── Scraper class ──────────────────────────────────────────
@@ -860,8 +1034,15 @@ class StarBetScraper(BaseScraper):
     basketball + tennis ships in **4 HTTP calls per cycle**.
     """
 
-    def __init__(self, http_client: HttpClient | None = None) -> None:
+    def __init__(
+        self,
+        http_client: HttpClient | None = None,
+        detail_mode: Literal["partial", "full"] | None = None,
+    ) -> None:
         self._http = http_client or HttpClient(default_headers=_DEFAULT_HEADERS)
+        self._detail_mode: Literal["partial", "full"] = (
+            detail_mode or settings.starbet_detail_mode
+        )
         self._sport_tree_task: asyncio.Task[_SportTree] | None = None
         self._sport_tree_lock: asyncio.Lock | None = None
 
@@ -946,6 +1127,108 @@ class StarBetScraper(BaseScraper):
         payload = await self._fetch_leagues(league_ids)
         return payload, descriptors
 
+    async def _fetch_player_detail(self, pair_pid: int) -> Any:
+        """Fetch the per-pair `GetTipoviV2` payload.  Returns `None` on
+        any HTTP/parse failure so callers can transparently fall back to
+        the preview-derived `player_points` row."""
+
+        try:
+            return await self._http.post_json(
+                _GET_TIPOVI_V2_URL,
+                json_body={"PairId": pair_pid},
+                headers=_DEFAULT_HEADERS,
+            )
+        except Exception:
+            logger.exception(
+                "StarBet GetTipoviV2 failed for player pair PID=%s — "
+                "falling back to preview row for that player",
+                pair_pid,
+            )
+            return None
+
+    async def _collect_full_mode_player_rows(
+        self,
+        candidates: list[_PlayerCandidate],
+    ) -> tuple[list[RawOddsData], int, int]:
+        """Fan out `GetTipoviV2` across `candidates` with bounded concurrency
+        and parse each response into per-market RawOddsData rows.
+
+        Returns `(rows, enriched_count, fallback_count)`:
+        * `rows`       — every row that should be emitted (detail rows when
+                         the per-player fetch succeeded, otherwise the
+                         preview's `player_points` row for that player so
+                         the bookmaker keeps at least one player market on
+                         transient failures);
+        * `enriched_count` — number of candidates whose detail call yielded
+                         at least one detail row;
+        * `fallback_count` — number of candidates whose detail call failed or
+                         returned nothing parseable.
+        """
+
+        if not candidates:
+            return [], 0, 0
+
+        semaphore = asyncio.Semaphore(_PLAYER_DETAIL_CONCURRENCY)
+
+        async def _run(candidate: _PlayerCandidate) -> list[RawOddsData] | None:
+            async with semaphore:
+                payload = await self._fetch_player_detail(candidate.pair_pid)
+            if payload is None:
+                return None
+            parsed = _parse_player_detail_response(
+                payload,
+                player_name=candidate.player_name,
+                fixture=candidate.fixture,
+            )
+            return parsed
+
+        results = await asyncio.gather(*(_run(c) for c in candidates))
+
+        rows: list[RawOddsData] = []
+        enriched = 0
+        fallback = 0
+        for candidate, parsed in zip(candidates, results):
+            if not parsed:
+                rows.append(candidate.preview_row)
+                fallback += 1
+                logger.warning(
+                    "StarBet: detail enrichment for %s (PID=%d) returned no "
+                    "rows; falling back to preview-derived player_points only",
+                    candidate.player_name,
+                    candidate.pair_pid,
+                )
+                continue
+
+            rows.extend(parsed)
+            enriched += 1
+            # Detail may contain rebounds/assists/etc. yet be missing the
+            # player_points group (or have it in a malformed shape we
+            # already skipped).  In that case we must still emit the
+            # preview row so full mode never drops a market that partial
+            # mode would have emitted.
+            if not any(row.market_type == "player_points" for row in parsed):
+                rows.append(candidate.preview_row)
+                logger.warning(
+                    "StarBet: detail for %s (PID=%d) yielded markets %s "
+                    "without a parseable player_points pair; backfilling "
+                    "the preview-derived player_points row",
+                    candidate.player_name,
+                    candidate.pair_pid,
+                    sorted({row.market_type for row in parsed}),
+                )
+
+        rows.sort(
+            key=lambda row: (
+                row.start_time or "",
+                row.home_team,
+                row.away_team,
+                row.player_name or "",
+                row.market_type,
+                row.threshold,
+            )
+        )
+        return rows, enriched, fallback
+
     async def scrape_odds(self, league_id: str) -> list[RawOddsData]:
         if league_id != "basketball":
             return []
@@ -961,9 +1244,10 @@ class StarBetScraper(BaseScraper):
         game_total_rows = _extract_basketball_game_totals(
             payload, descriptors, fixtures
         )
-        player_extraction = _extract_basketball_player_points(
+        collection = _collect_basketball_player_candidates(
             payload, descriptors, by_team_start_league, ambiguity_counts
         )
+        player_extraction = collection.extraction
 
         if player_extraction.unresolved_count:
             logger.warning(
@@ -982,10 +1266,31 @@ class StarBetScraper(BaseScraper):
                 player_extraction.ambiguous_samples,
             )
 
+        if self._detail_mode == "full" and collection.candidates:
+            player_rows, enriched, fallback = await self._collect_full_mode_player_rows(
+                collection.candidates,
+            )
+            logger.info(
+                "StarBet scraped %d basketball rows (%d game_total* across "
+                "%d fixtures, %d player_props across %d players "
+                "[%d enriched via GetTipoviV2, %d fell back to preview, "
+                "%d unresolved, %d ambiguous])",
+                len(game_total_rows) + len(player_rows),
+                len(game_total_rows),
+                len({row.start_time for row in game_total_rows}),
+                len(player_rows),
+                len({row.player_name for row in player_rows if row.player_name}),
+                enriched,
+                fallback,
+                player_extraction.unresolved_count,
+                player_extraction.ambiguous_count,
+            )
+            return game_total_rows + player_rows
+
         logger.info(
             "StarBet scraped %d basketball rows (%d game_total* across %d fixtures, "
             "%d player_points across %d players resolved out of %d candidates "
-            "[%d unresolved, %d ambiguous])",
+            "[%d unresolved, %d ambiguous]) [detail_mode=%s]",
             len(game_total_rows) + len(player_extraction.rows),
             len(game_total_rows),
             len({row.start_time for row in game_total_rows}),
@@ -996,6 +1301,7 @@ class StarBetScraper(BaseScraper):
             + player_extraction.ambiguous_count,
             player_extraction.unresolved_count,
             player_extraction.ambiguous_count,
+            self._detail_mode,
         )
         return game_total_rows + player_extraction.rows
 
@@ -1030,9 +1336,12 @@ __all__ = [
     "_SOURCE_URL",
     "_SPORT_TREE_URL",
     "_GET_LIGA_URL",
+    "_GET_TIPOVI_V2_URL",
     "_DEFAULT_HEADERS",
     "_LeagueDescriptor",
     "_Fixture",
+    "_PlayerCandidate",
+    "_PlayerCollectionResult",
     "_parse_starbet_dt",
     "_parse_sport_tree",
     "_extract_football_offers",
@@ -1040,6 +1349,11 @@ __all__ = [
     "_index_basketball_fixtures",
     "_extract_basketball_game_totals",
     "_extract_basketball_player_points",
+    "_collect_basketball_player_candidates",
+    "_parse_player_detail_response",
+    "_PLAYER_DETAIL_MARKETS",
+    "_PLAYER_DETAIL_MARKET_BY_IGRA_ID",
+    "_PLAYER_DETAIL_CONCURRENCY",
     "_infer_target_league_id",
     "_looks_like_player_special",
     "_is_nba_league",

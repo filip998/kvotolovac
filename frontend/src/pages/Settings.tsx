@@ -1422,6 +1422,23 @@ function SettingsForm({
                 />
               </SettingRow>
 
+              <SettingRow
+                label="Detail mode · StarBet"
+                description="Full mode also fetches per-player GetTipoviV2 detail for the NBA Players special to add player rebounds, assists, 3-pointers, and points+rebounds+assists."
+              >
+                <SelectControl
+                  value={draft.starbet_detail_mode}
+                  options={options.detail_modes}
+                  getLabel={(mode) => detailModeLabels[mode]}
+                  onChange={(mode) =>
+                    setDraft((current) => ({
+                      ...current,
+                      starbet_detail_mode: mode,
+                    }))
+                  }
+                />
+              </SettingRow>
+
               <SettingRow label="Min gap to notify" description="Smaller values can create more pings.">
                 <NumberControl
                   value={draft.notification_gap_threshold}
