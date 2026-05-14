@@ -82,6 +82,7 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
         "merkurxtip": settings.merkurxtip_detail_mode,
         "pinnbet": settings.pinnbet_detail_mode,
         "soccerbet": settings.soccerbet_detail_mode,
+        "starbet": settings.starbet_detail_mode,
     }
     assert (
         body["metadata"]["max_middle_opportunities_per_market"]

@@ -411,6 +411,7 @@ export interface ScrapeRuntimeSettings {
   merkurxtip_detail_mode: ScraperDetailMode;
   pinnbet_detail_mode: ScraperDetailMode;
   betole_detail_mode: ScraperDetailMode;
+  starbet_detail_mode: ScraperDetailMode;
   notification_gap_threshold: number;
   persist_inapp_notifications: boolean;
 }

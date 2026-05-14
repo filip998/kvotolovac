@@ -11,9 +11,11 @@ from app.scrapers import starbet_scraper as sbs
 from app.scrapers.starbet_scraper import (
     _BOOKMAKER_ID,
     _GET_LIGA_URL,
+    _GET_TIPOVI_V2_URL,
     _SOURCE_URL,
     _SPORT_TREE_URL,
     StarBetScraper,
+    _collect_basketball_player_candidates,
     _extract_basketball_game_totals,
     _extract_basketball_player_points,
     _extract_football_offers,
@@ -21,6 +23,7 @@ from app.scrapers.starbet_scraper import (
     _index_basketball_fixtures,
     _is_nba_league,
     _looks_like_player_special,
+    _parse_player_detail_response,
     _parse_sport_tree,
     _parse_starbet_dt,
     _select_total_points_pair,
@@ -892,3 +895,365 @@ def test_module_constants_are_stable() -> None:
     assert sbs._SOURCE_URL.startswith("https://starbet.rs")
     assert sbs._SPORT_TREE_URL.endswith("/GetSportoviSoLigi")
     assert sbs._GET_LIGA_URL.endswith("/GetLiga")
+
+
+# ── Full / partial detail mode (player-prop enrichment) ────
+
+
+def _player_detail_response(
+    *,
+    points_line: float = 26.5,
+    points_under: float = 1.87,
+    points_over: float = 1.87,
+    rebounds_line: float = 5.5,
+    rebounds_under: float = 1.65,
+    rebounds_over: float = 2.15,
+    assists_line: float = 8.5,
+    assists_under: float = 2.0,
+    assists_over: float = 1.75,
+    threes_line: float = 2.5,
+    threes_under: float = 1.65,
+    threes_over: float = 2.15,
+    pra_line: float = 40.5,
+    pra_under: float = 1.95,
+    pra_over: float = 1.8,
+):
+    """Mimic the live `GetTipoviV2` shape for one player special pair."""
+
+    return [
+        {
+            "ID": 54,
+            "IgraNaziv": "Ukupno Poena",
+            "T": [
+                {"TipID": 103, "Kvota": points_under, "G": points_line, "isG": False},
+                {"TipID": 105, "Kvota": points_over, "G": points_line, "isG": False},
+            ],
+        },
+        {
+            "ID": 254,
+            "IgraNaziv": "Igrač ukupno skokova",
+            "T": [
+                {"TipID": 1391, "Kvota": rebounds_under, "G": rebounds_line, "isG": False},
+                {"TipID": 1392, "Kvota": rebounds_over, "G": rebounds_line, "isG": False},
+            ],
+        },
+        {
+            "ID": 255,
+            "IgraNaziv": "Igrač ukupno asistencija",
+            "T": [
+                {"TipID": 1393, "Kvota": assists_under, "G": assists_line, "isG": False},
+                {"TipID": 1394, "Kvota": assists_over, "G": assists_line, "isG": False},
+            ],
+        },
+        {
+            "ID": 256,
+            "IgraNaziv": "Igrač ukupno trojke",
+            "T": [
+                {"TipID": 1395, "Kvota": threes_under, "G": threes_line, "isG": False},
+                {"TipID": 1396, "Kvota": threes_over, "G": threes_line, "isG": False},
+            ],
+        },
+        {
+            "ID": 257,
+            "IgraNaziv": "Igrač Poena+Skokova+Asistencija",
+            "T": [
+                {"TipID": 1397, "Kvota": pra_under, "G": pra_line, "isG": False},
+                {"TipID": 1398, "Kvota": pra_over, "G": pra_line, "isG": False},
+            ],
+        },
+    ]
+
+
+def test_collect_basketball_player_candidates_returns_candidates_with_preview_rows(
+    sport_tree_fixture, basketball_liga_fixture,
+):
+    descriptors = {
+        desc.lid: desc for desc in _parse_sport_tree(sport_tree_fixture).leagues_by_sport[22]
+    }
+    _, by_team_start_league, ambiguity_counts = _index_basketball_fixtures(
+        basketball_liga_fixture, descriptors
+    )
+    result = _collect_basketball_player_candidates(
+        basketball_liga_fixture, descriptors, by_team_start_league, ambiguity_counts
+    )
+    assert result.candidates, "fixture must produce at least one resolved player candidate"
+    # extraction.rows count must equal candidates count — one preview row per candidate.
+    assert len(result.extraction.rows) == len(result.candidates)
+    for candidate, preview_row in zip(result.candidates, result.extraction.rows[: len(result.candidates)]):
+        # Every candidate carries the matching preview row reference.
+        assert candidate.preview_row.player_name == candidate.player_name
+        assert candidate.preview_row.market_type == "player_points"
+        # Candidate fixture is the regular NBA game.
+        assert candidate.fixture.league_id == "nba"
+
+
+def test_extract_basketball_player_points_wrapper_matches_collector(
+    sport_tree_fixture, basketball_liga_fixture,
+):
+    descriptors = {
+        desc.lid: desc for desc in _parse_sport_tree(sport_tree_fixture).leagues_by_sport[22]
+    }
+    _, by_team_start_league, ambiguity_counts = _index_basketball_fixtures(
+        basketball_liga_fixture, descriptors
+    )
+    wrapper = _extract_basketball_player_points(
+        basketball_liga_fixture, descriptors, by_team_start_league, ambiguity_counts
+    )
+    collector = _collect_basketball_player_candidates(
+        basketball_liga_fixture, descriptors, by_team_start_league, ambiguity_counts
+    )
+    assert len(wrapper.rows) == len(collector.extraction.rows)
+    assert wrapper.unresolved_count == collector.extraction.unresolved_count
+    assert wrapper.ambiguous_count == collector.extraction.ambiguous_count
+
+
+def test_parse_player_detail_response_emits_all_five_markets() -> None:
+    fixture = sbs._Fixture(
+        pid=5104075,
+        home_team="Cleveland Cavaliers",
+        away_team="Detroit Pistons",
+        league_id="nba",
+        league_name="Basketball NBA Play Offs",
+        start_time_utc=datetime(2026, 5, 15, 23, 0, tzinfo=timezone.utc),
+        start_time_iso="2026-05-15T23:00:00+00:00",
+        raw_league_name="Basketball NBA Play Offs",
+    )
+    payload = _player_detail_response()
+    rows = _parse_player_detail_response(payload, player_name="Cunningham Cade", fixture=fixture)
+    markets = {row.market_type for row in rows}
+    assert markets == {
+        "player_points",
+        "player_rebounds",
+        "player_assists",
+        "player_3points",
+        "player_points_rebounds_assists",
+    }
+    for row in rows:
+        assert row.bookmaker_id == _BOOKMAKER_ID
+        assert row.player_name == "Cunningham Cade"
+        assert row.league_id == "nba"
+        assert row.home_team == "Cleveland Cavaliers"
+        assert row.away_team == "Detroit Pistons"
+        assert row.over_odds and row.over_odds > 1.0
+        assert row.under_odds and row.under_odds > 1.0
+        assert row.threshold > 0
+
+
+def test_parse_player_detail_response_skips_unknown_groups_and_incomplete_pairs() -> None:
+    fixture = sbs._Fixture(
+        pid=1,
+        home_team="A",
+        away_team="B",
+        league_id="nba",
+        league_name="NBA",
+        start_time_utc=datetime(2026, 5, 15, 23, 0, tzinfo=timezone.utc),
+        start_time_iso="2026-05-15T23:00:00+00:00",
+        raw_league_name="NBA",
+    )
+    payload = [
+        # Unknown group ID — skipped.
+        {"ID": 9999, "IgraNaziv": "Made up", "T": [{"TipID": 1391, "Kvota": 1.5, "G": 5.5}]},
+        # Known group but only under leg present → incomplete pair, skipped.
+        {"ID": 254, "IgraNaziv": "Igrač ukupno skokova", "T": [
+            {"TipID": 1391, "Kvota": 1.65, "G": 5.5, "isG": False},
+        ]},
+        # isG=True duplicate must NOT be picked as the live pair.
+        {"ID": 256, "IgraNaziv": "Igrač ukupno trojke", "T": [
+            {"TipID": 1395, "Kvota": 9.9, "G": 2.5, "isG": True},
+            {"TipID": 1395, "Kvota": 1.65, "G": 2.5, "isG": False},
+            {"TipID": 1396, "Kvota": 2.15, "G": 2.5, "isG": False},
+        ]},
+        # Pair with mismatched lines → skipped.
+        {"ID": 255, "IgraNaziv": "Igrač ukupno asistencija", "T": [
+            {"TipID": 1393, "Kvota": 2.0, "G": 8.5, "isG": False},
+            {"TipID": 1394, "Kvota": 1.75, "G": 9.5, "isG": False},
+        ]},
+    ]
+    rows = _parse_player_detail_response(payload, player_name="P", fixture=fixture)
+    market_types = [row.market_type for row in rows]
+    assert market_types == ["player_3points"]
+    only = rows[0]
+    # isG=False under wins over the isG=True row (the parser skipped 9.9).
+    assert only.under_odds == 1.65
+    assert only.over_odds == 2.15
+
+
+@pytest.mark.asyncio
+async def test_scrape_odds_partial_mode_unchanged(
+    sport_tree_fixture, basketball_liga_fixture, football_liga_fixture, tennis_liga_fixture,
+):
+    scraper = StarBetScraper(http_client=AsyncMock(), detail_mode="partial")
+    scraper._http.post_json = AsyncMock(
+        side_effect=_http_router(
+            sport_tree_fixture, basketball_liga_fixture, football_liga_fixture, tennis_liga_fixture,
+        )
+    )
+    rows = await scraper.scrape_odds("basketball")
+    types = {row.market_type for row in rows}
+    # Partial mode emits only the bulk-preview markets.
+    assert types == {"game_total", "game_total_ot", "player_points"}
+    # And it MUST NOT call GetTipoviV2.
+    called_urls = [call.args[0] for call in scraper._http.post_json.call_args_list]
+    assert _GET_TIPOVI_V2_URL not in called_urls
+
+
+@pytest.mark.asyncio
+async def test_scrape_odds_full_mode_emits_four_extra_player_markets(
+    sport_tree_fixture, basketball_liga_fixture, football_liga_fixture, tennis_liga_fixture,
+):
+    base_router = _http_router(
+        sport_tree_fixture, basketball_liga_fixture, football_liga_fixture, tennis_liga_fixture,
+    )
+    detail_calls: list[int] = []
+
+    async def router(url, *, json_body, headers=None):
+        if url == _GET_TIPOVI_V2_URL:
+            detail_calls.append(json_body["PairId"])
+            return _player_detail_response()
+        return await base_router(url, json_body=json_body, headers=headers)
+
+    scraper = StarBetScraper(http_client=AsyncMock(), detail_mode="full")
+    scraper._http.post_json = AsyncMock(side_effect=router)
+
+    rows = await scraper.scrape_odds("basketball")
+    market_types = {row.market_type for row in rows}
+    # Full mode must add the four player-prop markets on top of partial output.
+    assert {
+        "player_points",
+        "player_rebounds",
+        "player_assists",
+        "player_3points",
+        "player_points_rebounds_assists",
+    } <= market_types
+    # Each candidate produced one detail call; for the fixture that's 3 players.
+    assert detail_calls and len(detail_calls) >= 3
+    # All player rows preserve the joined NBA league.
+    nba_player_rows = [
+        row
+        for row in rows
+        if row.player_name and row.league_id == "nba"
+    ]
+    assert nba_player_rows
+    assert all(row.home_team == "Cleveland Cavaliers" and row.away_team == "Detroit Pistons"
+               for row in nba_player_rows)
+
+
+@pytest.mark.asyncio
+async def test_scrape_odds_full_mode_falls_back_to_preview_when_detail_fails(
+    sport_tree_fixture, basketball_liga_fixture, football_liga_fixture, tennis_liga_fixture,
+):
+    """If GetTipoviV2 fails for a player, the player's preview-derived
+    `player_points` row must still be emitted so the bookmaker keeps at
+    least one player market on transient errors."""
+
+    base_router = _http_router(
+        sport_tree_fixture, basketball_liga_fixture, football_liga_fixture, tennis_liga_fixture,
+    )
+
+    async def router(url, *, json_body, headers=None):
+        if url == _GET_TIPOVI_V2_URL:
+            raise RuntimeError("simulated 503")
+        return await base_router(url, json_body=json_body, headers=headers)
+
+    scraper = StarBetScraper(http_client=AsyncMock(), detail_mode="full")
+    scraper._http.post_json = AsyncMock(side_effect=router)
+
+    rows = await scraper.scrape_odds("basketball")
+    player_rows = [r for r in rows if r.player_name]
+    assert player_rows, "full mode must fall back to preview rows when detail fails"
+    # Only `player_points` survives the fallback — no rebounds/assists/etc.
+    assert {r.market_type for r in player_rows} == {"player_points"}
+
+
+@pytest.mark.asyncio
+async def test_scrape_odds_full_mode_with_no_candidates_does_not_call_detail(
+    sport_tree_fixture, football_liga_fixture, tennis_liga_fixture,
+):
+    """When the basketball payload has no player-special leagues, full mode
+    must not issue any GetTipoviV2 calls — there is nothing to enrich."""
+
+    # Strip player-special league from the basketball fixture.
+    base_router_payload = json.loads(json.dumps(_load("starbet_basketball_liga.json")))
+    no_specials_payload = [l for l in base_router_payload if l["LID"] != 607]
+
+    async def router(url, *, json_body, headers=None):
+        if url == _SPORT_TREE_URL:
+            return sport_tree_fixture
+        if url == _GET_LIGA_URL:
+            lids = set(json_body.get("LigaID", []))
+            if 1345 in lids:
+                return football_liga_fixture
+            if {1751, 741} & lids:
+                return tennis_liga_fixture
+            return no_specials_payload
+        if url == _GET_TIPOVI_V2_URL:
+            raise AssertionError("detail call should not fire when no candidates")
+        raise AssertionError(f"unexpected url: {url}")
+
+    scraper = StarBetScraper(http_client=AsyncMock(), detail_mode="full")
+    scraper._http.post_json = AsyncMock(side_effect=router)
+    rows = await scraper.scrape_odds("basketball")
+    # No player rows.
+    assert not any(row.player_name for row in rows)
+
+
+def test_scraper_constructor_detail_mode_defaults_from_settings() -> None:
+    # Default config: partial mode.
+    s = StarBetScraper(http_client=AsyncMock())
+    assert s._detail_mode == "partial"
+    # Explicit override.
+    s2 = StarBetScraper(http_client=AsyncMock(), detail_mode="full")
+    assert s2._detail_mode == "full"
+
+
+def test_scraper_set_runtime_detail_mode_flips_the_flag() -> None:
+    s = StarBetScraper(http_client=AsyncMock(), detail_mode="partial")
+    assert s._detail_mode == "partial"
+    s.set_runtime_detail_mode("full")
+    assert s._detail_mode == "full"
+    s.set_runtime_detail_mode("partial")
+    assert s._detail_mode == "partial"
+
+
+@pytest.mark.asyncio
+async def test_scrape_odds_full_mode_backfills_preview_when_detail_missing_player_points(
+    sport_tree_fixture, basketball_liga_fixture, football_liga_fixture, tennis_liga_fixture,
+):
+    """Regression guard for round-1 review finding: if GetTipoviV2 returns
+    rebounds/assists but the player_points group is missing or malformed,
+    full mode must still emit the preview-derived player_points row so it
+    never drops a market that partial mode would have emitted."""
+
+    base_router = _http_router(
+        sport_tree_fixture, basketball_liga_fixture, football_liga_fixture, tennis_liga_fixture,
+    )
+
+    async def router(url, *, json_body, headers=None):
+        if url == _GET_TIPOVI_V2_URL:
+            # Return ONLY the rebounds group — no Ukupno Poena pair anywhere.
+            return [
+                {
+                    "ID": 254,
+                    "IgraNaziv": "Igrač ukupno skokova",
+                    "T": [
+                        {"TipID": 1391, "Kvota": 1.65, "G": 5.5, "isG": False},
+                        {"TipID": 1392, "Kvota": 2.15, "G": 5.5, "isG": False},
+                    ],
+                }
+            ]
+        return await base_router(url, json_body=json_body, headers=headers)
+
+    scraper = StarBetScraper(http_client=AsyncMock(), detail_mode="full")
+    scraper._http.post_json = AsyncMock(side_effect=router)
+    rows = await scraper.scrape_odds("basketball")
+    player_rows = [r for r in rows if r.player_name]
+    market_types = {r.market_type for r in player_rows}
+    # Both the detail-derived rebounds AND the backfilled preview player_points
+    # must be present.
+    assert "player_rebounds" in market_types
+    assert "player_points" in market_types
+    # Backfill applies per-player — no duplicate player_points rows for the
+    # same (player, threshold) combination.
+    pp_rows = [r for r in player_rows if r.market_type == "player_points"]
+    keys = [(r.player_name, r.threshold) for r in pp_rows]
+    assert len(keys) == len(set(keys))

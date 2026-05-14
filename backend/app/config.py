@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     # partial = football list feed only (result + 2.5 totals); full = list feed
     # plus per-event detail fetch to also emit double chance.
     betole_detail_mode: Literal["partial", "full"] = "partial"
+    # partial = bulk preview only (game_total + game_total_ot + player_points
+    # headline); full = per-player GetTipoviV2 enrichment that also emits
+    # player_rebounds, player_assists, player_3points, and
+    # player_points_rebounds_assists for each NBA-Players special pair.
+    starbet_detail_mode: Literal["partial", "full"] = "partial"
     scrape_lookahead_hours: int = Field(default=24, ge=0)
     benchmark_dir: str = str(
         Path(__file__).resolve().parent.parent / "benchmarks"
