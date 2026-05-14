@@ -12,6 +12,7 @@ const BOOKMAKER_CONFIG: Record<string, { initials: string; logoSrc?: string }> =
   betole: { initials: 'BO' },
   365: { initials: '365' },
   volcanobet: { initials: 'VB' },
+  starbet: { initials: 'ST' },
 };
 
 function normalizeBookmakerKey(name: string) {

@@ -1,0 +1,560 @@
+[
+  {
+    "LID": 1345,
+    "NW": "FIFA World Cup",
+    "SID": 0,
+    "NG": "FIFA",
+    "ILK": false,
+    "STA": true,
+    "LN": "FIFA World Cup",
+    "HD": {
+      "HI": [
+        {
+          "IN": "Kona\u010dan ishod",
+          "BT": 3,
+          "TCID": 0
+        },
+        {
+          "IN": "Dupla \u0161ansa",
+          "BT": 2,
+          "TCID": 1
+        },
+        {
+          "IN": "Poluvreme/kraj",
+          "BT": 2,
+          "TCID": 2
+        },
+        {
+          "IN": "Ukupno golova",
+          "BT": 3,
+          "TCID": 3
+        },
+        {
+          "IN": "GG/NG kombin.",
+          "BT": 2,
+          "TCID": 4
+        },
+        {
+          "IN": "Tim Golova",
+          "BT": 2,
+          "TCID": 5
+        },
+        {
+          "IN": "Kombinacije",
+          "BT": 2,
+          "TCID": 0
+        }
+      ],
+      "HT": [
+        {
+          "TP": "1",
+          "TID": 1,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "X",
+          "TID": 2,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "2",
+          "TID": 10,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "1X",
+          "TID": 83,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "X2",
+          "TID": 85,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "1-1",
+          "TID": 75,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "2-2",
+          "TID": 126,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "0-2",
+          "TID": 70,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "3+",
+          "TID": 74,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "4+",
+          "TID": 89,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "GG",
+          "TID": 112,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "GG i 3+",
+          "TID": 114,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "T1 2+",
+          "TID": 110,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "T2 2+",
+          "TID": 111,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "1 & 3+",
+          "TID": 131,
+          "SOSP": "tb1345",
+          "SID": 0
+        },
+        {
+          "TP": "2 & 3+",
+          "TID": 132,
+          "SOSP": "tb1345",
+          "SID": 0
+        }
+      ]
+    },
+    "P": [
+      {
+        "PID": 5047790,
+        "PN": "Mexico : South Africa",
+        "DP": "14.05.2026",
+        "DI": "2026-06-11T21:00:00.0000000+02:00",
+        "S": 6000,
+        "PK": "",
+        "LN": "FIFA World Cup",
+        "BT": 617,
+        "IPID": 5047790,
+        "T": [
+          {
+            "Z": "0",
+            "TV": "1",
+            "K": 1.52,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "1",
+            "TID": 1,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "0",
+            "K": 3.9,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "X",
+            "TID": 2,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "2",
+            "K": 6.75,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "2",
+            "TID": 10,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "4",
+            "TV": "10",
+            "K": 1.08,
+            "G": 0,
+            "IN": "Dupla \u0160ansa",
+            "TP": "1X",
+            "TID": 83,
+            "isG": false,
+            "IWID": 9,
+            "E": 0
+          },
+          {
+            "Z": "4",
+            "TV": "02",
+            "K": 2.45,
+            "G": 0,
+            "IN": "Dupla \u0160ansa",
+            "TP": "X2",
+            "TID": 85,
+            "isG": false,
+            "IWID": 9,
+            "E": 0
+          },
+          {
+            "Z": "2",
+            "TV": "11",
+            "K": 2.4,
+            "G": 0,
+            "IN": "Poluvreme/Kraj",
+            "TP": "1-1",
+            "TID": 75,
+            "isG": false,
+            "IWID": 3,
+            "E": 0
+          },
+          {
+            "Z": "2",
+            "TV": "22",
+            "K": 12.5,
+            "G": 0,
+            "IN": "Poluvreme/Kraj",
+            "TP": "2-2",
+            "TID": 126,
+            "isG": false,
+            "IWID": 3,
+            "E": 0
+          },
+          {
+            "Z": "1",
+            "TV": "02",
+            "K": 1.78,
+            "G": 0,
+            "IN": "Ukupno Golova",
+            "TP": "0-2 golova",
+            "TID": 70,
+            "isG": false,
+            "IWID": 14,
+            "E": 0
+          },
+          {
+            "Z": "1",
+            "TV": "3",
+            "K": 2.03,
+            "G": 0,
+            "IN": "Ukupno Golova",
+            "TP": "3+",
+            "TID": 74,
+            "isG": false,
+            "IWID": 14,
+            "E": 0
+          },
+          {
+            "Z": "1",
+            "TV": "4",
+            "K": 3.6,
+            "G": 0,
+            "IN": "Ukupno Golova",
+            "TP": "4+",
+            "TID": 89,
+            "isG": false,
+            "IWID": 14,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "21",
+            "K": 2.13,
+            "G": 0,
+            "IN": "Oba tima daju gol (GG/NG)",
+            "TP": "GG",
+            "TID": 112,
+            "isG": false,
+            "IWID": 25,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "23",
+            "K": 2.85,
+            "G": 0,
+            "IN": "GG/NG - Kombinacije",
+            "TP": "GG i 3+",
+            "TID": 114,
+            "isG": false,
+            "IWID": 26,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "1",
+            "K": 1.72,
+            "G": 0,
+            "IN": "Tim 1 Golova",
+            "TP": "T1 2+",
+            "TID": 110,
+            "isG": false,
+            "IWID": 27,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "2",
+            "K": 5.6,
+            "G": 0,
+            "IN": "Tim 2 Golova",
+            "TP": "T2 2+",
+            "TID": 111,
+            "isG": false,
+            "IWID": 32,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "13",
+            "K": 2.55,
+            "G": 0,
+            "IN": "Kona\u010dan Ishod - Kombinacije",
+            "TP": "1 & 3+",
+            "TID": 131,
+            "isG": false,
+            "IWID": 2,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "23",
+            "K": 14.25,
+            "G": 0,
+            "IN": "Kona\u010dan Ishod - Kombinacije",
+            "TP": "2 & 3+",
+            "TID": 132,
+            "isG": false,
+            "IWID": 2,
+            "E": 0
+          }
+        ]
+      },
+      {
+        "PID": 5047791,
+        "PN": "South Korea : Czech Rep.",
+        "DP": "14.05.2026",
+        "DI": "2026-06-12T04:00:00.0000000+02:00",
+        "S": 6819,
+        "PK": "",
+        "LN": "FIFA World Cup",
+        "BT": 622,
+        "IPID": 5047791,
+        "T": [
+          {
+            "Z": "0",
+            "TV": "1",
+            "K": 2.6,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "1",
+            "TID": 1,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "0",
+            "K": 3.2,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "X",
+            "TID": 2,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "2",
+            "K": 2.8,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "2",
+            "TID": 10,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "4",
+            "TV": "10",
+            "K": 1.41,
+            "G": 0,
+            "IN": "Dupla \u0160ansa",
+            "TP": "1X",
+            "TID": 83,
+            "isG": false,
+            "IWID": 9,
+            "E": 0
+          },
+          {
+            "Z": "4",
+            "TV": "02",
+            "K": 1.47,
+            "G": 0,
+            "IN": "Dupla \u0160ansa",
+            "TP": "X2",
+            "TID": 85,
+            "isG": false,
+            "IWID": 9,
+            "E": 0
+          },
+          {
+            "Z": "2",
+            "TV": "11",
+            "K": 4.45,
+            "G": 0,
+            "IN": "Poluvreme/Kraj",
+            "TP": "1-1",
+            "TID": 75,
+            "isG": false,
+            "IWID": 3,
+            "E": 0
+          },
+          {
+            "Z": "2",
+            "TV": "22",
+            "K": 4.75,
+            "G": 0,
+            "IN": "Poluvreme/Kraj",
+            "TP": "2-2",
+            "TID": 126,
+            "isG": false,
+            "IWID": 3,
+            "E": 0
+          },
+          {
+            "Z": "1",
+            "TV": "02",
+            "K": 1.66,
+            "G": 0,
+            "IN": "Ukupno Golova",
+            "TP": "0-2 golova",
+            "TID": 70,
+            "isG": false,
+            "IWID": 14,
+            "E": 0
+          },
+          {
+            "Z": "1",
+            "TV": "3",
+            "K": 2.2,
+            "G": 0,
+            "IN": "Ukupno Golova",
+            "TP": "3+",
+            "TID": 74,
+            "isG": false,
+            "IWID": 14,
+            "E": 0
+          },
+          {
+            "Z": "1",
+            "TV": "4",
+            "K": 4.1,
+            "G": 0,
+            "IN": "Ukupno Golova",
+            "TP": "4+",
+            "TID": 89,
+            "isG": false,
+            "IWID": 14,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "21",
+            "K": 1.89,
+            "G": 0,
+            "IN": "Oba tima daju gol (GG/NG)",
+            "TP": "GG",
+            "TID": 112,
+            "isG": false,
+            "IWID": 25,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "23",
+            "K": 2.6,
+            "G": 0,
+            "IN": "GG/NG - Kombinacije",
+            "TP": "GG i 3+",
+            "TID": 114,
+            "isG": false,
+            "IWID": 26,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "1",
+            "K": 2.7,
+            "G": 0,
+            "IN": "Tim 1 Golova",
+            "TP": "T1 2+",
+            "TID": 110,
+            "isG": false,
+            "IWID": 27,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "2",
+            "K": 2.85,
+            "G": 0,
+            "IN": "Tim 2 Golova",
+            "TP": "T2 2+",
+            "TID": 111,
+            "isG": false,
+            "IWID": 32,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "13",
+            "K": 4.75,
+            "G": 0,
+            "IN": "Kona\u010dan Ishod - Kombinacije",
+            "TP": "1 & 3+",
+            "TID": 131,
+            "isG": false,
+            "IWID": 2,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "23",
+            "K": 5.15,
+            "G": 0,
+            "IN": "Kona\u010dan Ishod - Kombinacije",
+            "TP": "2 & 3+",
+            "TID": 132,
+            "isG": false,
+            "IWID": 2,
+            "E": 0
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -16,6 +16,7 @@ const bookmakers = [
   'BetOle',
   '365',
   'VolcanoBet',
+  'StarBet',
 ];
 
 const pillars = [

@@ -43,6 +43,7 @@ export const mockBookmakers: Bookmaker[] = [
   { id: '365', name: '365', is_active: true },
   { id: 'pinnbet', name: 'PinnBet', is_active: true },
   { id: 'volcanobet', name: 'VolcanoBet', is_active: true },
+  { id: 'starbet', name: 'StarBet', is_active: true },
 ];
 
 export const mockMatches: Match[] = [
@@ -180,6 +181,7 @@ export const mockMatches: Match[] = [
       { id: 'admiralbet', name: 'AdmiralBet' },
       { id: 'pinnbet', name: 'PinnBet' },
       { id: 'volcanobet', name: 'VolcanoBet' },
+      { id: 'starbet', name: 'StarBet' },
     ],
   },
   {
@@ -204,6 +206,7 @@ export const mockMatches: Match[] = [
       { id: 'admiralbet', name: 'AdmiralBet' },
       { id: 'pinnbet', name: 'PinnBet' },
       { id: 'volcanobet', name: 'VolcanoBet' },
+      { id: 'starbet', name: 'StarBet' },
     ],
   },
   {
@@ -852,6 +855,10 @@ export const mockOddsOffers: OddsOffer[] = [
   { id: 36, match_id: 'match-1', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', source_url: 'https://www.volcanobet.rs/sport-v2/prematch/events', market_type: 'player_points', player_name: 'Sasha Vezenkov', threshold: 19.0, over_odds: 1.86, under_odds: 1.92, scraped_at: ago(2) },
   { id: 37, match_id: 'match-1', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', source_url: 'https://www.volcanobet.rs/sport-v2/prematch/events', market_type: 'game_total_ot', player_name: null, threshold: 157.5, over_odds: 1.89, under_odds: 1.88, scraped_at: ago(2) },
   { id: 38, match_id: 'match-2', bookmaker_id: 'volcanobet', bookmaker_name: 'VolcanoBet', source_url: 'https://www.volcanobet.rs/sport-v2/prematch/events', market_type: 'player_points', player_name: 'Nigel Hayes-Davis', threshold: 16.0, over_odds: 1.87, under_odds: 1.91, scraped_at: ago(1) },
+  // StarBet — bulk preview shape: one player_points threshold per player + plain regulation game_total.
+  { id: 50, match_id: 'match-1', bookmaker_id: 'starbet', bookmaker_name: 'StarBet', source_url: 'https://starbet.rs/Bet', market_type: 'player_points', player_name: 'Sasha Vezenkov', threshold: 18.5, over_odds: 1.85, under_odds: 1.95, scraped_at: ago(2) },
+  { id: 51, match_id: 'match-1', bookmaker_id: 'starbet', bookmaker_name: 'StarBet', source_url: 'https://starbet.rs/Bet', market_type: 'game_total', player_name: null, threshold: 158.5, over_odds: 1.90, under_odds: 1.90, scraped_at: ago(2) },
+  { id: 52, match_id: 'match-2', bookmaker_id: 'starbet', bookmaker_name: 'StarBet', source_url: 'https://starbet.rs/Bet', market_type: 'player_points', player_name: 'Nigel Hayes-Davis', threshold: 16.5, over_odds: 1.86, under_odds: 1.94, scraped_at: ago(1) },
   // Asian handicap (with OT) — Olympiacos heavy home favourite, books disagree on margin.
   // mozzart: threshold +5.5 means home favoured by 5.5 → Asian "Home -5.5"
   { id: 39, match_id: 'match-1', bookmaker_id: 'mozzart', bookmaker_name: 'Mozzart', market_type: 'home_handicap_ot', player_name: null, threshold: 5.5, over_odds: 1.92, under_odds: 1.88, scraped_at: ago(3) },
@@ -1642,6 +1649,7 @@ export const mockSystemStatus: SystemStatus = {
     { id: '365', name: '365', last_scrape: ago(1), is_active: true },
     { id: 'pinnbet', name: 'PinnBet', last_scrape: ago(2), is_active: true },
     { id: 'volcanobet', name: 'VolcanoBet', last_scrape: ago(4), is_active: true },
+    { id: 'starbet', name: 'StarBet', last_scrape: ago(3), is_active: true },
   ],
 };
 

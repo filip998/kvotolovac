@@ -1,0 +1,344 @@
+[
+  {
+    "LID": 1751,
+    "NW": "ATP Masters Rome Singles",
+    "SID": 37,
+    "NG": "ATP",
+    "ILK": true,
+    "STA": false,
+    "LN": "ATP Masters Rome Singles",
+    "HD": {
+      "HI": [
+        {
+          "IN": "Kona\u010dan ishod",
+          "BT": 2,
+          "TCID": 0
+        },
+        {
+          "IN": "Pobednik - Prvi Set",
+          "BT": 2,
+          "TCID": 1
+        },
+        {
+          "IN": "Ukupno Gemova",
+          "BT": 3,
+          "TCID": 0
+        }
+      ],
+      "HT": [
+        {
+          "TP": "1",
+          "TID": 1,
+          "SOSP": "tb1751",
+          "SID": 37
+        },
+        {
+          "TP": "2",
+          "TID": 10,
+          "SOSP": "tb1751",
+          "SID": 37
+        },
+        {
+          "TP": "1",
+          "TID": 691,
+          "SOSP": "tb1751",
+          "SID": 37
+        },
+        {
+          "TP": "2",
+          "TID": 692,
+          "SOSP": "tb1751",
+          "SID": 37
+        },
+        {
+          "TP": "<",
+          "TID": 665,
+          "SOSP": "tb1751",
+          "SID": 37
+        },
+        {
+          "TP": "GR",
+          "TID": 665,
+          "SOSP": "tb1751",
+          "SID": 37
+        },
+        {
+          "TP": ">",
+          "TID": 666,
+          "SOSP": "tb1751",
+          "SID": 37
+        }
+      ]
+    },
+    "P": [
+      {
+        "PID": 5104035,
+        "PN": "Ruud C. : Darderi L.",
+        "DP": "14.05.2026",
+        "DI": "2026-05-15T13:30:00.0000000+02:00",
+        "S": 7005,
+        "PK": "",
+        "LN": "ATP Masters Rome Singles",
+        "BT": 26,
+        "IPID": 5104035,
+        "T": [
+          {
+            "Z": "0",
+            "TV": "1",
+            "K": 1.35,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "1",
+            "TID": 1,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "2",
+            "K": 3.15,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "2",
+            "TID": 10,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "S",
+            "TV": "11",
+            "K": 1.43,
+            "G": 0,
+            "IN": "Pobednik - Prvi Set",
+            "TP": "1 Set1",
+            "TID": 691,
+            "isG": false,
+            "IWID": 68,
+            "E": 0
+          },
+          {
+            "Z": "S",
+            "TV": "21",
+            "K": 2.7,
+            "G": 0,
+            "IN": "Pobednik - Prvi Set",
+            "TP": "2 Set1",
+            "TID": 692,
+            "isG": false,
+            "IWID": 68,
+            "E": 0
+          },
+          {
+            "Z": "G",
+            "TV": "-",
+            "K": 1.78,
+            "G": 22.5,
+            "IN": "Ukupno Gemova",
+            "TP": "22.50- Gemova",
+            "TID": 665,
+            "isG": false,
+            "IWID": 64,
+            "E": 0
+          },
+          {
+            "Z": "G",
+            "TV": "-",
+            "K": 1.78,
+            "G": 22.5,
+            "IN": "Ukupno Gemova",
+            "TP": "22.50- Gemova",
+            "TID": 665,
+            "isG": true,
+            "IWID": 64,
+            "E": 0
+          },
+          {
+            "Z": "G",
+            "TV": "+",
+            "K": 2.01,
+            "G": 22.5,
+            "IN": "Ukupno Gemova",
+            "TP": "22.50+ Gemova",
+            "TID": 666,
+            "isG": false,
+            "IWID": 64,
+            "E": 0
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "LID": 741,
+    "NW": "ATP Masters Rome Doubles (3rd SET IN STB)",
+    "SID": 37,
+    "NG": "ATP",
+    "ILK": true,
+    "STA": false,
+    "LN": "ATP Masters Rome Doubles (3rd SET IN STB)",
+    "HD": {
+      "HI": [
+        {
+          "IN": "Kona\u010dan ishod",
+          "BT": 2,
+          "TCID": 0
+        },
+        {
+          "IN": "Pobednik - Prvi Set",
+          "BT": 2,
+          "TCID": 1
+        },
+        {
+          "IN": "Ukupno Gemova",
+          "BT": 3,
+          "TCID": 0
+        }
+      ],
+      "HT": [
+        {
+          "TP": "1",
+          "TID": 1,
+          "SOSP": "tb741",
+          "SID": 37
+        },
+        {
+          "TP": "2",
+          "TID": 10,
+          "SOSP": "tb741",
+          "SID": 37
+        },
+        {
+          "TP": "1",
+          "TID": 691,
+          "SOSP": "tb741",
+          "SID": 37
+        },
+        {
+          "TP": "2",
+          "TID": 692,
+          "SOSP": "tb741",
+          "SID": 37
+        },
+        {
+          "TP": "<",
+          "TID": 665,
+          "SOSP": "tb741",
+          "SID": 37
+        },
+        {
+          "TP": "GR",
+          "TID": 665,
+          "SOSP": "tb741",
+          "SID": 37
+        },
+        {
+          "TP": ">",
+          "TID": 666,
+          "SOSP": "tb741",
+          "SID": 37
+        }
+      ]
+    },
+    "P": [
+      {
+        "PID": 5102760,
+        "PN": "Harrison Chri./Skupski N. : Arevalo M./Pavic M.",
+        "DP": "14.05.2026",
+        "DI": "2026-05-15T11:00:00.0000000+02:00",
+        "S": 7533,
+        "PK": "",
+        "LN": "ATP Masters Rome Doubles (3rd SET IN STB)",
+        "BT": 12,
+        "IPID": 5102760,
+        "T": [
+          {
+            "Z": "0",
+            "TV": "1",
+            "K": 2.15,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "1",
+            "TID": 1,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "2",
+            "K": 1.65,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "2",
+            "TID": 10,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "S",
+            "TV": "11",
+            "K": 2,
+            "G": 0,
+            "IN": "Pobednik - Prvi Set",
+            "TP": "1 Set1",
+            "TID": 691,
+            "isG": false,
+            "IWID": 68,
+            "E": 0
+          },
+          {
+            "Z": "S",
+            "TV": "21",
+            "K": 1.72,
+            "G": 0,
+            "IN": "Pobednik - Prvi Set",
+            "TP": "2 Set1",
+            "TID": 692,
+            "isG": false,
+            "IWID": 68,
+            "E": 0
+          },
+          {
+            "Z": "G",
+            "TV": "-",
+            "K": null,
+            "G": null,
+            "IN": "Ukupno Gemova",
+            "TP": "0.00- Gemova",
+            "TID": 665,
+            "isG": false,
+            "IWID": 64,
+            "E": 0
+          },
+          {
+            "Z": "G",
+            "TV": "-",
+            "K": null,
+            "G": null,
+            "IN": "Ukupno Gemova",
+            "TP": "0.00- Gemova",
+            "TID": 665,
+            "isG": true,
+            "IWID": 64,
+            "E": 0
+          },
+          {
+            "Z": "G",
+            "TV": "+",
+            "K": null,
+            "G": null,
+            "IN": "Ukupno Gemova",
+            "TP": "0.00+ Gemova",
+            "TID": 666,
+            "isG": false,
+            "IWID": 64,
+            "E": 0
+          }
+        ]
+      }
+    ]
+  }
+]

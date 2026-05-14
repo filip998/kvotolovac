@@ -112,6 +112,7 @@ _BOOKMAKER_META = {
     "admiralbet": ("AdmiralBet", "https://admiralbet.rs"),
     "pinnbet": ("PinnBet", "https://www.pinnbet.rs"),
     "volcanobet": ("VolcanoBet", "https://www.volcanobet.rs/sport-v2/prematch/events"),
+    "starbet": ("StarBet", "https://starbet.rs/Bet"),
 }
 
 _PLAYER_MARKETS["soccerbet"] = [
@@ -199,6 +200,24 @@ _PLAYER_MARKETS["volcanobet"] = [
         "over": round(max(1.01, market["over"] + (0.01 if idx % 2 == 0 else -0.03)), 2),
         "under": round(
             max(1.01, market["under"] + (-0.01 if idx % 2 == 0 else 0.03)),
+            2,
+        ),
+    }
+    for idx, market in enumerate(_PLAYER_MARKETS["maxbet"])
+]
+
+# StarBet exposes basketball player_points only through the headline (single
+# threshold per player) preview of its NBA-Players special league.  Mirror
+# that real-data shape: keep the per-player rows but stay at one threshold
+# each, slightly offset vs maxbet so the analyzer can detect cross-book
+# threshold gaps.
+_PLAYER_MARKETS["starbet"] = [
+    {
+        **market,
+        "threshold": market["threshold"] + (0.5 if idx % 3 == 0 else 0.0),
+        "over": round(max(1.01, market["over"] + (0.02 if idx % 2 == 0 else -0.01)), 2),
+        "under": round(
+            max(1.01, market["under"] + (-0.02 if idx % 2 == 0 else 0.01)),
             2,
         ),
     }
@@ -407,6 +426,21 @@ _FOOTBALL_OUTCOME_MARKETS: dict[str, list[dict]] = {
         {"game": 1, "market": "football_result", "outcome": "home", "odds": 1.96, "label": "1"},
         {"game": 1, "market": "football_total_goals", "outcome": "under", "odds": 1.82, "line": 2.5, "label": "0-2"},
         {"game": 1, "market": "football_total_goals", "outcome": "over", "odds": 2.14, "line": 2.5, "label": "3+"},
+    ],
+    "starbet": [
+        # StarBet bulk-preview shape: full 1X2, the 1X / X2 subset of double
+        # chance, and the 2.5 total ladder.  Real preview omits the 12 leg
+        # for some leagues; we model that on game 1 deliberately.
+        {"game": 0, "market": "football_result", "outcome": "home", "odds": 2.44, "label": "1"},
+        {"game": 0, "market": "football_result", "outcome": "draw", "odds": 3.21, "label": "X"},
+        {"game": 0, "market": "football_result", "outcome": "away", "odds": 2.58, "label": "2"},
+        {"game": 0, "market": "football_double_chance", "outcome": "home_or_draw", "odds": 1.40, "label": "1X"},
+        {"game": 0, "market": "football_double_chance", "outcome": "draw_or_away", "odds": 1.45, "label": "X2"},
+        {"game": 0, "market": "football_total_goals", "outcome": "under", "odds": 1.97, "line": 2.5, "label": "0-2"},
+        {"game": 0, "market": "football_total_goals", "outcome": "over", "odds": 1.85, "line": 2.5, "label": "3+"},
+        {"game": 1, "market": "football_result", "outcome": "home", "odds": 1.99, "label": "1"},
+        {"game": 1, "market": "football_total_goals", "outcome": "under", "odds": 1.80, "line": 2.5, "label": "0-2"},
+        {"game": 1, "market": "football_total_goals", "outcome": "over", "odds": 2.13, "line": 2.5, "label": "3+"},
     ],
 }
 

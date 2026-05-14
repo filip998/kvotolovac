@@ -1,0 +1,1646 @@
+[
+  {
+    "LID": 494,
+    "NW": "NBA Play Offs",
+    "SID": 22,
+    "NG": "USA",
+    "ILK": false,
+    "STA": true,
+    "LN": "Basketball NBA Play Offs",
+    "HD": {
+      "HI": [
+        {
+          "IN": "Kona\u010dan ishod",
+          "BT": 3,
+          "TCID": 0
+        },
+        {
+          "IN": "Prvo poluvr.",
+          "BT": 3,
+          "TCID": 1
+        },
+        {
+          "IN": "Hendikep",
+          "BT": 3,
+          "TCID": 2
+        },
+        {
+          "IN": "Ukupno poena",
+          "BT": 3,
+          "TCID": 3
+        },
+        {
+          "IN": "Kona\u010dan i poena",
+          "BT": 4,
+          "TCID": 0
+        }
+      ],
+      "HT": [
+        {
+          "TP": "1",
+          "TID": 1,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": "X",
+          "TID": 2,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": "2",
+          "TID": 10,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": "1p",
+          "TID": 93,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": "Xp",
+          "TID": 94,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": "2p",
+          "TID": 95,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": "1",
+          "TID": 121,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": "GR",
+          "TID": 121,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": "2",
+          "TID": 123,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": "<",
+          "TID": 103,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": "GR",
+          "TID": 103,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": ">",
+          "TID": 105,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": "1&<",
+          "TID": 454,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": "1&>",
+          "TID": 455,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": "2&<",
+          "TID": 456,
+          "SOSP": "tb494",
+          "SID": 22
+        },
+        {
+          "TP": "2&>",
+          "TID": 457,
+          "SOSP": "tb494",
+          "SID": 22
+        }
+      ]
+    },
+    "P": [
+      {
+        "PID": 5104075,
+        "PN": "Cleveland Cavaliers : Detroit Pistons",
+        "DP": "14.05.2026",
+        "DI": "2026-05-16T01:00:00.0000000+02:00",
+        "S": 8484,
+        "PK": "",
+        "LN": "Basketball NBA Play Offs",
+        "BT": 140,
+        "IPID": 5104075,
+        "T": [
+          {
+            "Z": "0",
+            "TV": "1",
+            "K": 1.65,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "1",
+            "TID": 1,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "0",
+            "K": 16.75,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "X",
+            "TID": 2,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "2",
+            "K": 2.45,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "2",
+            "TID": 10,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "1",
+            "K": 1.74,
+            "G": 0,
+            "IN": "Prvo Poluvreme",
+            "TP": "1 I",
+            "TID": 93,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "0",
+            "K": 14,
+            "G": 0,
+            "IN": "Prvo Poluvreme",
+            "TP": "X I",
+            "TID": 94,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "2",
+            "K": 2.3,
+            "G": 0,
+            "IN": "Prvo Poluvreme",
+            "TP": "2 I",
+            "TID": 95,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "1",
+            "K": 1.91,
+            "G": -3.5,
+            "IN": "Hendikep",
+            "TP": "H 1 -3.50",
+            "TID": 121,
+            "isG": false,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "1",
+            "K": 1.91,
+            "G": -3.5,
+            "IN": "Hendikep",
+            "TP": "H 1 -3.50",
+            "TID": 121,
+            "isG": true,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "2",
+            "K": 1.9,
+            "G": -3.5,
+            "IN": "Hendikep",
+            "TP": "H 2 -3.50",
+            "TID": 123,
+            "isG": false,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "-",
+            "K": 1.89,
+            "G": 209.5,
+            "IN": "Ukupno Poena",
+            "TP": "209.50-",
+            "TID": 103,
+            "isG": false,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "-",
+            "K": 1.89,
+            "G": 209.5,
+            "IN": "Ukupno Poena",
+            "TP": "209.50-",
+            "TID": 103,
+            "isG": true,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "+",
+            "K": 1.92,
+            "G": 209.5,
+            "IN": "Ukupno Poena",
+            "TP": "209.50+",
+            "TID": 105,
+            "isG": false,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "1-",
+            "K": 3.1,
+            "G": 209.5,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "1 & 209.50-",
+            "TID": 454,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "1+",
+            "K": 3.15,
+            "G": 209.5,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "1 & 209.50+",
+            "TID": 455,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "2-",
+            "K": 4.6,
+            "G": 209.5,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "2 & 209.50-",
+            "TID": 456,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "2+",
+            "K": 4.7,
+            "G": 209.5,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "2 & 209.50+",
+            "TID": 457,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          }
+        ]
+      },
+      {
+        "PID": 5102877,
+        "PN": "Minnesota T-Wolves : San Antonio Spurs",
+        "DP": "14.05.2026",
+        "DI": "2026-05-16T03:30:00.0000000+02:00",
+        "S": 8001,
+        "PK": "Quaterfinal. Best of 7. \nSan Antonio Spurs leads series 3-2.",
+        "LN": "Basketball NBA Play Offs",
+        "BT": 140,
+        "IPID": 5102877,
+        "T": [
+          {
+            "Z": "0",
+            "TV": "1",
+            "K": 2.6,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "1",
+            "TID": 1,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "0",
+            "K": 17.25,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "X",
+            "TID": 2,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "2",
+            "K": 1.59,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "2",
+            "TID": 10,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "1",
+            "K": 2.4,
+            "G": 0,
+            "IN": "Prvo Poluvreme",
+            "TP": "1 I",
+            "TID": 93,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "0",
+            "K": 14.5,
+            "G": 0,
+            "IN": "Prvo Poluvreme",
+            "TP": "X I",
+            "TID": 94,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "2",
+            "K": 1.68,
+            "G": 0,
+            "IN": "Prvo Poluvreme",
+            "TP": "2 I",
+            "TID": 95,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "1",
+            "K": 1.9,
+            "G": 4.5,
+            "IN": "Hendikep",
+            "TP": "H 1 4.50",
+            "TID": 121,
+            "isG": false,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "1",
+            "K": 1.9,
+            "G": 4.5,
+            "IN": "Hendikep",
+            "TP": "H 1 4.50",
+            "TID": 121,
+            "isG": true,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "2",
+            "K": 1.91,
+            "G": 4.5,
+            "IN": "Hendikep",
+            "TP": "H 2 4.50",
+            "TID": 123,
+            "isG": false,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "-",
+            "K": 1.89,
+            "G": 218.5,
+            "IN": "Ukupno Poena",
+            "TP": "218.50-",
+            "TID": 103,
+            "isG": false,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "-",
+            "K": 1.89,
+            "G": 218.5,
+            "IN": "Ukupno Poena",
+            "TP": "218.50-",
+            "TID": 103,
+            "isG": true,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "+",
+            "K": 1.92,
+            "G": 218.5,
+            "IN": "Ukupno Poena",
+            "TP": "218.50+",
+            "TID": 105,
+            "isG": false,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "1-",
+            "K": 4.9,
+            "G": 218.5,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "1 & 218.50-",
+            "TID": 454,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "1+",
+            "K": 5,
+            "G": 218.5,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "1 & 218.50+",
+            "TID": 455,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "2-",
+            "K": 2.95,
+            "G": 218.5,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "2 & 218.50-",
+            "TID": 456,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "2+",
+            "K": 3,
+            "G": 218.5,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "2 & 218.50+",
+            "TID": 457,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "LID": 607,
+    "NW": "NBA Players (Inc. Over Time)",
+    "SID": 22,
+    "NG": "USA",
+    "ILK": true,
+    "STA": false,
+    "LN": "NBA Players (Inc. Over Time)",
+    "HD": {
+      "HI": [
+        {
+          "IN": "Kona\u010dan ishod",
+          "BT": 3,
+          "TCID": 0
+        },
+        {
+          "IN": "Prvo poluvr.",
+          "BT": 3,
+          "TCID": 1
+        },
+        {
+          "IN": "Hendikep",
+          "BT": 3,
+          "TCID": 2
+        },
+        {
+          "IN": "Ukupno poena",
+          "BT": 3,
+          "TCID": 3
+        },
+        {
+          "IN": "Kona\u010dan i poena",
+          "BT": 4,
+          "TCID": 0
+        }
+      ],
+      "HT": [
+        {
+          "TP": "1",
+          "TID": 1,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": "X",
+          "TID": 2,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": "2",
+          "TID": 10,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": "1p",
+          "TID": 93,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": "Xp",
+          "TID": 94,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": "2p",
+          "TID": 95,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": "1",
+          "TID": 121,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": "GR",
+          "TID": 121,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": "2",
+          "TID": 123,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": "<",
+          "TID": 103,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": "GR",
+          "TID": 103,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": ">",
+          "TID": 105,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": "1&<",
+          "TID": 454,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": "1&>",
+          "TID": 455,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": "2&<",
+          "TID": 456,
+          "SOSP": "tb607",
+          "SID": 22
+        },
+        {
+          "TP": "2&>",
+          "TID": 457,
+          "SOSP": "tb607",
+          "SID": 22
+        }
+      ]
+    },
+    "P": [
+      {
+        "PID": 5104437,
+        "PN": "Cunningham Cade : Detroit Pistons",
+        "DP": "14.05.2026",
+        "DI": "2026-05-16T01:00:00.0000000+02:00",
+        "S": 7522,
+        "PK": "",
+        "LN": "NBA Players (Inc. Over Time)",
+        "BT": 10,
+        "IPID": 5104437,
+        "T": [
+          {
+            "Z": "0",
+            "TV": "1",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan ishod",
+            "TP": "1",
+            "TID": 1,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "0",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan ishod",
+            "TP": "X",
+            "TID": 2,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "2",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan ishod",
+            "TP": "2",
+            "TID": 10,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "1",
+            "K": null,
+            "G": null,
+            "IN": "Prvo Poluvreme",
+            "TP": "1 I",
+            "TID": 93,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "0",
+            "K": null,
+            "G": null,
+            "IN": "Prvo Poluvreme",
+            "TP": "X I",
+            "TID": 94,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "2",
+            "K": null,
+            "G": null,
+            "IN": "Prvo Poluvreme",
+            "TP": "2 I",
+            "TID": 95,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "1",
+            "K": null,
+            "G": null,
+            "IN": "Hendikep",
+            "TP": "H 1 0.00",
+            "TID": 121,
+            "isG": false,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "1",
+            "K": null,
+            "G": null,
+            "IN": "Hendikep",
+            "TP": "H 1 0.00",
+            "TID": 121,
+            "isG": true,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "2",
+            "K": null,
+            "G": null,
+            "IN": "Hendikep",
+            "TP": "H 2 0.00",
+            "TID": 123,
+            "isG": false,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "-",
+            "K": 1.87,
+            "G": 26.5,
+            "IN": "Ukupno Poena",
+            "TP": "26.50-",
+            "TID": 103,
+            "isG": false,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "-",
+            "K": 1.87,
+            "G": 26.5,
+            "IN": "Ukupno Poena",
+            "TP": "26.50-",
+            "TID": 103,
+            "isG": true,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "+",
+            "K": 1.87,
+            "G": 26.5,
+            "IN": "Ukupno Poena",
+            "TP": "26.50+",
+            "TID": 105,
+            "isG": false,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "1-",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "1 & 0.00-",
+            "TID": 454,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "1+",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "1 & 0.00+",
+            "TID": 455,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "2-",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "2 & 0.00-",
+            "TID": 456,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "2+",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "2 & 0.00+",
+            "TID": 457,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          }
+        ]
+      },
+      {
+        "PID": 5104438,
+        "PN": "Duren Jalen : Detroit Pistons",
+        "DP": "14.05.2026",
+        "DI": "2026-05-16T01:00:00.0000000+02:00",
+        "S": 7526,
+        "PK": "",
+        "LN": "NBA Players (Inc. Over Time)",
+        "BT": 6,
+        "IPID": 5104438,
+        "T": [
+          {
+            "Z": "0",
+            "TV": "1",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan ishod",
+            "TP": "1",
+            "TID": 1,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "0",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan ishod",
+            "TP": "X",
+            "TID": 2,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "2",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan ishod",
+            "TP": "2",
+            "TID": 10,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "1",
+            "K": null,
+            "G": null,
+            "IN": "Prvo Poluvreme",
+            "TP": "1 I",
+            "TID": 93,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "0",
+            "K": null,
+            "G": null,
+            "IN": "Prvo Poluvreme",
+            "TP": "X I",
+            "TID": 94,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "2",
+            "K": null,
+            "G": null,
+            "IN": "Prvo Poluvreme",
+            "TP": "2 I",
+            "TID": 95,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "1",
+            "K": null,
+            "G": null,
+            "IN": "Hendikep",
+            "TP": "H 1 0.00",
+            "TID": 121,
+            "isG": false,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "1",
+            "K": null,
+            "G": null,
+            "IN": "Hendikep",
+            "TP": "H 1 0.00",
+            "TID": 121,
+            "isG": true,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "2",
+            "K": null,
+            "G": null,
+            "IN": "Hendikep",
+            "TP": "H 2 0.00",
+            "TID": 123,
+            "isG": false,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "-",
+            "K": 1.87,
+            "G": 11.5,
+            "IN": "Ukupno Poena",
+            "TP": "11.50-",
+            "TID": 103,
+            "isG": false,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "-",
+            "K": 1.87,
+            "G": 11.5,
+            "IN": "Ukupno Poena",
+            "TP": "11.50-",
+            "TID": 103,
+            "isG": true,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "+",
+            "K": 1.87,
+            "G": 11.5,
+            "IN": "Ukupno Poena",
+            "TP": "11.50+",
+            "TID": 105,
+            "isG": false,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "1-",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "1 & 0.00-",
+            "TID": 454,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "1+",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "1 & 0.00+",
+            "TID": 455,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "2-",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "2 & 0.00-",
+            "TID": 456,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "2+",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "2 & 0.00+",
+            "TID": 457,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          }
+        ]
+      },
+      {
+        "PID": 5104439,
+        "PN": "Harris Tobias : Detroit Pistons",
+        "DP": "14.05.2026",
+        "DI": "2026-05-16T01:00:00.0000000+02:00",
+        "S": 7527,
+        "PK": "",
+        "LN": "NBA Players (Inc. Over Time)",
+        "BT": 8,
+        "IPID": 5104439,
+        "T": [
+          {
+            "Z": "0",
+            "TV": "1",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan ishod",
+            "TP": "1",
+            "TID": 1,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "0",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan ishod",
+            "TP": "X",
+            "TID": 2,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "2",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan ishod",
+            "TP": "2",
+            "TID": 10,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "1",
+            "K": null,
+            "G": null,
+            "IN": "Prvo Poluvreme",
+            "TP": "1 I",
+            "TID": 93,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "0",
+            "K": null,
+            "G": null,
+            "IN": "Prvo Poluvreme",
+            "TP": "X I",
+            "TID": 94,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "2",
+            "K": null,
+            "G": null,
+            "IN": "Prvo Poluvreme",
+            "TP": "2 I",
+            "TID": 95,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "1",
+            "K": null,
+            "G": null,
+            "IN": "Hendikep",
+            "TP": "H 1 0.00",
+            "TID": 121,
+            "isG": false,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "1",
+            "K": null,
+            "G": null,
+            "IN": "Hendikep",
+            "TP": "H 1 0.00",
+            "TID": 121,
+            "isG": true,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "2",
+            "K": null,
+            "G": null,
+            "IN": "Hendikep",
+            "TP": "H 2 0.00",
+            "TID": 123,
+            "isG": false,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "-",
+            "K": 1.87,
+            "G": 18.5,
+            "IN": "Ukupno Poena",
+            "TP": "18.50-",
+            "TID": 103,
+            "isG": false,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "-",
+            "K": 1.87,
+            "G": 18.5,
+            "IN": "Ukupno Poena",
+            "TP": "18.50-",
+            "TID": 103,
+            "isG": true,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "+",
+            "K": 1.87,
+            "G": 18.5,
+            "IN": "Ukupno Poena",
+            "TP": "18.50+",
+            "TID": 105,
+            "isG": false,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "1-",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "1 & 0.00-",
+            "TID": 454,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "1+",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "1 & 0.00+",
+            "TID": 455,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "2-",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "2 & 0.00-",
+            "TID": 456,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "2+",
+            "K": null,
+            "G": null,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "2 & 0.00+",
+            "TID": 457,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "LID": 503,
+    "NW": "Spain ACB",
+    "SID": 22,
+    "NG": "Spain",
+    "ILK": false,
+    "STA": true,
+    "LN": "Basketball Spain ACB",
+    "HD": {
+      "HI": [
+        {
+          "IN": "Kona\u010dan ishod",
+          "BT": 3,
+          "TCID": 0
+        },
+        {
+          "IN": "Prvo poluvr.",
+          "BT": 3,
+          "TCID": 1
+        },
+        {
+          "IN": "Hendikep",
+          "BT": 3,
+          "TCID": 2
+        },
+        {
+          "IN": "Ukupno poena",
+          "BT": 3,
+          "TCID": 3
+        },
+        {
+          "IN": "Kona\u010dan i poena",
+          "BT": 4,
+          "TCID": 0
+        }
+      ],
+      "HT": [
+        {
+          "TP": "1",
+          "TID": 1,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": "X",
+          "TID": 2,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": "2",
+          "TID": 10,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": "1p",
+          "TID": 93,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": "Xp",
+          "TID": 94,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": "2p",
+          "TID": 95,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": "1",
+          "TID": 121,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": "GR",
+          "TID": 121,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": "2",
+          "TID": 123,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": "<",
+          "TID": 103,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": "GR",
+          "TID": 103,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": ">",
+          "TID": 105,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": "1&<",
+          "TID": 454,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": "1&>",
+          "TID": 455,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": "2&<",
+          "TID": 456,
+          "SOSP": "tb503",
+          "SID": 22
+        },
+        {
+          "TP": "2&>",
+          "TID": 457,
+          "SOSP": "tb503",
+          "SID": 22
+        }
+      ]
+    },
+    "P": [
+      {
+        "PID": 5102749,
+        "PN": "Gran Canaria : Iberostar Tenerife",
+        "DP": "14.05.2026",
+        "DI": "2026-05-14T21:30:00.0000000+02:00",
+        "S": 8504,
+        "PK": "",
+        "LN": "Basketball Spain ACB",
+        "BT": 134,
+        "IPID": 5102749,
+        "T": [
+          {
+            "Z": "0",
+            "TV": "1",
+            "K": 1.65,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "1",
+            "TID": 1,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "0",
+            "K": 15.75,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "X",
+            "TID": 2,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "0",
+            "TV": "2",
+            "K": 2.5,
+            "G": 0,
+            "IN": "Kona\u010dan ishod",
+            "TP": "2",
+            "TID": 10,
+            "isG": false,
+            "IWID": 1,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "1",
+            "K": 1.74,
+            "G": 0,
+            "IN": "Prvo Poluvreme",
+            "TP": "1 I",
+            "TID": 93,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "0",
+            "K": 13.25,
+            "G": 0,
+            "IN": "Prvo Poluvreme",
+            "TP": "X I",
+            "TID": 94,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "3",
+            "TV": "2",
+            "K": 2.35,
+            "G": 0,
+            "IN": "Prvo Poluvreme",
+            "TP": "2 I",
+            "TID": 95,
+            "isG": false,
+            "IWID": 7,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "1",
+            "K": 1.82,
+            "G": -2.5,
+            "IN": "Hendikep",
+            "TP": "H 1 -2.50",
+            "TID": 121,
+            "isG": false,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "1",
+            "K": 1.82,
+            "G": -2.5,
+            "IN": "Hendikep",
+            "TP": "H 1 -2.50",
+            "TID": 121,
+            "isG": true,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "/",
+            "TV": "2",
+            "K": 2,
+            "G": -2.5,
+            "IN": "Hendikep",
+            "TP": "H 2 -2.50",
+            "TID": 123,
+            "isG": false,
+            "IWID": 42,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "-",
+            "K": 1.89,
+            "G": 169.5,
+            "IN": "Ukupno Poena",
+            "TP": "169.50-",
+            "TID": 103,
+            "isG": false,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "-",
+            "K": 1.89,
+            "G": 169.5,
+            "IN": "Ukupno Poena",
+            "TP": "169.50-",
+            "TID": 103,
+            "isG": true,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": "+",
+            "TV": "+",
+            "K": 1.92,
+            "G": 169.5,
+            "IN": "Ukupno Poena",
+            "TP": "169.50+",
+            "TID": 105,
+            "isG": false,
+            "IWID": 54,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "1-",
+            "K": 3.1,
+            "G": 169.5,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "1 & 169.50-",
+            "TID": 454,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "1+",
+            "K": 3.15,
+            "G": 169.5,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "1 & 169.50+",
+            "TID": 455,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "2-",
+            "K": 4.65,
+            "G": 169.5,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "2 & 169.50-",
+            "TID": 456,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          },
+          {
+            "Z": ".",
+            "TV": "2+",
+            "K": 4.75,
+            "G": 169.5,
+            "IN": "Kona\u010dan Ishod i Ukupno Poena",
+            "TP": "2 & 169.50+",
+            "TID": 457,
+            "isG": false,
+            "IWID": 61,
+            "E": 0
+          }
+        ]
+      }
+    ]
+  }
+]
