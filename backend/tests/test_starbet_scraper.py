@@ -576,10 +576,11 @@ def test_player_points_join_requires_target_league_match() -> None:
     assert "Trail Blazers" not in (row.home_team, row.away_team)
 
 
-def test_player_points_join_emits_ambiguous_signal_when_target_missing() -> None:
-    """If the special targets NBA but only a non-NBA fixture exists at the same time,
-    the join must skip and surface an ``ambiguous_count`` signal so the
-    operational logs distinguish this from a plain "team missing" failure."""
+def test_player_points_join_unresolved_when_only_wrong_league_exists() -> None:
+    """The special targets NBA but only a single non-NBA fixture exists for
+    that team at the same minute. The join falls back to ``unresolved``
+    (the team isn't in any other basketball league at that minute, so the
+    ambiguity guard cannot fire)."""
 
     same_start = "2026-05-16T01:00:00.0000000+02:00"
     payload = [
@@ -623,10 +624,83 @@ def test_player_points_join_emits_ambiguous_signal_when_target_missing() -> None
     )
     # No silent attribution to the wrong league.
     assert extraction.rows == []
-    # And the failure is logged as "unresolved" (different team-start key
-    # collision count == 0) since only one league had this team-start tuple,
-    # but that league wasn't NBA.
+    # And the failure is logged as "unresolved": only one league had this
+    # team-start tuple, so the ambiguity guard cannot fire.
     assert extraction.unresolved_count == 1
+    assert extraction.ambiguous_count == 0
+
+
+def test_player_points_join_emits_ambiguous_signal_when_multiple_wrong_leagues_collide() -> None:
+    """When the same team plays at the same minute in *two distinct*
+    non-target basketball leagues and the target-league fixture is absent,
+    the join must refuse the attribution AND surface ``ambiguous_count`` so
+    operational logs distinguish this collision from a plain
+    "team not playing" miss."""
+
+    same_start = "2026-05-16T01:00:00.0000000+02:00"
+    payload = [
+        # Two NON-NBA leagues both feature "Lakers" at the same minute.
+        {
+            "LID": 200,
+            "LN": "Basketball Exhibition Friendly",
+            "P": [
+                {
+                    "PID": 1,
+                    "PN": "Lakers : Trail Blazers",
+                    "DI": same_start,
+                    "T": [
+                        {"TID": 103, "K": 1.85, "G": 165.5, "isG": False},
+                        {"TID": 105, "K": 1.95, "G": 165.5, "isG": False},
+                    ],
+                }
+            ],
+        },
+        {
+            "LID": 300,
+            "LN": "Basketball Summer League",
+            "P": [
+                {
+                    "PID": 2,
+                    "PN": "Lakers : Mavericks",
+                    "DI": same_start,
+                    "T": [
+                        {"TID": 103, "K": 1.85, "G": 160.5, "isG": False},
+                        {"TID": 105, "K": 1.95, "G": 160.5, "isG": False},
+                    ],
+                }
+            ],
+        },
+        # NBA Players special targets Lakers — no NBA fixture present.
+        {
+            "LID": 607,
+            "LN": "NBA Players (Inc. Over Time)",
+            "P": [
+                {
+                    "PID": 3,
+                    "PN": "LeBron James : Lakers",
+                    "DI": same_start,
+                    "T": [
+                        {"TID": 103, "K": 1.87, "G": 25.5, "isG": False},
+                        {"TID": 105, "K": 1.87, "G": 25.5, "isG": False},
+                    ],
+                }
+            ],
+        },
+    ]
+    fixtures, by_team_start_league, ambiguity_counts = _index_basketball_fixtures(
+        payload, {}
+    )
+    # The 2-key (lakers, start) maps to TWO distinct leagues here, so the
+    # ambiguity guard MUST fire and prevent any silent fallback.
+    assert ambiguity_counts.get(("lakers", "2026-05-15T23:00:00+00:00"), 0) == 2
+
+    extraction = _extract_basketball_player_points(
+        payload, {}, by_team_start_league, ambiguity_counts
+    )
+    assert extraction.rows == []
+    assert extraction.unresolved_count == 0
+    assert extraction.ambiguous_count == 1
+    assert extraction.ambiguous_samples and extraction.ambiguous_samples[0][2] == "nba"
 
 
 def test_select_total_points_pair_groups_alternate_lines_by_value() -> None:
