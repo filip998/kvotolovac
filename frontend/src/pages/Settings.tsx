@@ -56,6 +56,11 @@ const TELEGRAM_COMMAND_OPTIONS = [
     description: 'Show backend and scrape status.',
   },
   {
+    id: 'profile',
+    label: '/profile',
+    description: 'Show this chat\'s notification profile.',
+  },
+  {
     id: 'bookmakers',
     label: '/bookmakers',
     description: 'Show bookmaker coverage and last-seen status.',
