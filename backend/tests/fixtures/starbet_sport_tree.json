@@ -1,0 +1,172 @@
+[
+  {
+    "SID": 0,
+    "SN": "Fudbal",
+    "TF": 1,
+    "Path": "img/sports",
+    "L": [
+      {
+        "LID": 1345,
+        "LN": "FIFA World Cup",
+        "LZ": null,
+        "LP": false,
+        "NG": "FIFA",
+        "TG": 2,
+        "TM": 1,
+        "PC": 24,
+        "NW": "FIFA World Cup"
+      },
+      {
+        "LID": 453,
+        "LN": "Champions League",
+        "LZ": "ch_league.png",
+        "LP": true,
+        "NG": "UEFA",
+        "TG": 3,
+        "TM": 1,
+        "PC": 1,
+        "NW": "Champions League"
+      },
+      {
+        "LID": 454,
+        "LN": "Europa League",
+        "LZ": "europa_lgue.png",
+        "LP": false,
+        "NG": "UEFA",
+        "TG": 3,
+        "TM": 1,
+        "PC": 1,
+        "NW": "Europa League"
+      },
+      {
+        "LID": 1626,
+        "LN": "Champions League  (W)",
+        "LZ": null,
+        "LP": false,
+        "NG": "UEFA",
+        "TG": 3,
+        "TM": 1,
+        "PC": 1,
+        "NW": "Champions League (W)"
+      }
+    ],
+    "LC": 912
+  },
+  {
+    "SID": 22,
+    "SN": "Ko\u0161arka",
+    "TF": 6,
+    "Path": "img/sports",
+    "L": [
+      {
+        "LID": 494,
+        "LN": "Basketball NBA Play Offs",
+        "LZ": "NBA(2).png",
+        "LP": true,
+        "NG": "USA",
+        "TG": 1,
+        "TM": 1,
+        "PC": 2,
+        "NW": "NBA Play Offs"
+      },
+      {
+        "LID": 607,
+        "LN": "NBA Players (Inc. Over Time)",
+        "LZ": "NBA(3).png",
+        "LP": true,
+        "NG": "USA",
+        "TG": 1,
+        "TM": 1,
+        "PC": 24,
+        "NW": "NBA Players (Inc. Over Time)"
+      },
+      {
+        "LID": 503,
+        "LN": "Basketball Spain ACB",
+        "LZ": "spainACB.png",
+        "LP": false,
+        "NG": "Spain",
+        "TG": 1,
+        "TM": 1,
+        "PC": 2,
+        "NW": "Spain ACB"
+      },
+      {
+        "LID": 698,
+        "LN": "Basketball Euroleague (M) Final Four. Athens.",
+        "LZ": "fiba.png",
+        "LP": true,
+        "NG": "Europe",
+        "TG": 1,
+        "TM": 1,
+        "PC": 2,
+        "NW": "Euroleague (M) Final Four. Athens."
+      },
+      {
+        "LID": 888,
+        "LN": "Basketball Spain Primera FEB",
+        "LZ": null,
+        "LP": false,
+        "NG": "Spain",
+        "TG": 1,
+        "TM": 1,
+        "PC": 3,
+        "NW": "Spain Primera FEB"
+      }
+    ],
+    "LC": 51
+  },
+  {
+    "SID": 37,
+    "SN": "Tenis",
+    "TF": 11,
+    "Path": "img/sports",
+    "L": [
+      {
+        "LID": 3919,
+        "LN": "Roland-Garros Mens Winner",
+        "LZ": null,
+        "LP": false,
+        "NG": "Grand Slam",
+        "TG": 4,
+        "TM": 1,
+        "PC": 12,
+        "NW": "Roland-Garros Mens Winner"
+      },
+      {
+        "LID": 3922,
+        "LN": "Roland-Garros Womens Winner",
+        "LZ": null,
+        "LP": false,
+        "NG": "Grand Slam",
+        "TG": 4,
+        "TM": 1,
+        "PC": 12,
+        "NW": "Roland-Garros Womens Winner"
+      },
+      {
+        "LID": 1751,
+        "LN": "ATP Masters Rome Singles",
+        "LZ": null,
+        "LP": false,
+        "NG": "ATP",
+        "TG": 5,
+        "TM": 1,
+        "PC": 1,
+        "NW": "ATP Masters Rome Singles"
+      },
+      {
+        "LID": 741,
+        "LN": "ATP Masters Rome Doubles (3rd SET IN STB)",
+        "LZ": "ATPChall(5).png",
+        "LP": false,
+        "NG": "ATP",
+        "TG": 5,
+        "TM": 1,
+        "PC": 1,
+        "NW": "ATP Masters Rome Doubles (3rd SET IN STB)"
+      }
+    ],
+    "LC": 26
+  }
+]
