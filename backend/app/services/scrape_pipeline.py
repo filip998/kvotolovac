@@ -36,7 +36,7 @@ from ..services.normalizer import (
 )
 from ..services.canonical_analyzer import analyze_canonical_offers_with_benchmark
 from ..services.canonical_offers import canonical_market_type
-from ..services.event_resolver import (
+from ..services.match_unification.resolution import (
     CANONICAL_TEAM_AUTO_MERGE_THRESHOLD,
     SameTimeCanonicalMergeProposal as _SameTimeMergeProposal,
     SameTimeCanonicalSlot as _SameTimeSlot,
@@ -44,11 +44,15 @@ from ..services.event_resolver import (
     _is_unsafe_compound_subset_match,
     _normalize_merge_pairings,
     _same_time_slot_orientation,
-    resolve_and_persist_events,
 )
+from ..services.match_unification import (
+    MatchUnification,
+    MatchUnificationRows,
+    PersistedScrapeSnapshot,
+)
+from ..services.match_unification.team_text import same_team_context as _same_team_context
 from ..services.outcome_normalizer import (
     FootballEventResolutionMap,
-    _same_team_context,
     normalize_outcome_offers_with_context,
 )
 from ..services.notifications import NotificationService
@@ -1497,7 +1501,7 @@ class ScrapePipeline:
         phase_callback: PhaseCallback | None = None,
         configure_notifications: Callable[[ScrapeRuntimeSettings], None] | None = None,
         load_canonical_analysis=_load_current_canonical_analysis,
-        resolve_events=resolve_and_persist_events,
+        match_unification: MatchUnification | None = None,
     ) -> None:
         self.store = store
         self.benchmark = benchmark
@@ -1506,7 +1510,11 @@ class ScrapePipeline:
         self.phase_callback = phase_callback
         self.configure_notifications = configure_notifications
         self.load_canonical_analysis = load_canonical_analysis
-        self.resolve_events = resolve_events
+        self.match_unification = (
+            match_unification
+            if match_unification is not None
+            else MatchUnification.for_odds_store(store)
+        )
 
     def _emit_phase(self, phase: ScrapePipelinePhase) -> None:
         if self.phase_callback is None:
@@ -1722,25 +1730,32 @@ class ScrapePipeline:
                 int((time.perf_counter() - persist_snapshot_started_at) * 1000),
             )
 
-            resolve_events_started_at = time.perf_counter()
-            event_resolver_result = await self.resolve_events(
-                snapshot_id=snapshot_id,
-                raw_odds=all_raw,
-                raw_outcome_offers=all_raw_outcome_offers,
-                normalized_odds=event_resolution_batch.odds,
-                normalized_outcome_offers=event_resolution_batch.outcome_offers,
-                football_event_resolutions=event_resolution_batch.football_event_resolutions,
+            match_unification_started_at = time.perf_counter()
+            match_unification_result = await self.match_unification.unify_after_snapshot(
+                snapshot=PersistedScrapeSnapshot(
+                    id=snapshot_id,
+                    scraped_at=cycle_scraped_at,
+                    seen_match_ids=frozenset(seen_matches),
+                ),
+                rows=MatchUnificationRows(
+                    raw_odds=all_raw,
+                    raw_outcome_offers=all_raw_outcome_offers,
+                    normalized_odds=event_resolution_batch.odds,
+                    normalized_outcome_offers=event_resolution_batch.outcome_offers,
+                ),
             )
             self.benchmark.record_phase_duration(
-                "resolve_events",
-                int((time.perf_counter() - resolve_events_started_at) * 1000),
+                "match_unification",
+                int((time.perf_counter() - match_unification_started_at) * 1000),
             )
-            if event_resolver_result.benchmark is not None:
-                self.benchmark.record_event_resolver(event_resolver_result.benchmark)
+            if match_unification_result.benchmark is not None:
+                self.benchmark.record_match_unification(
+                    match_unification_result.benchmark
+                )
             self.benchmark.record_event_split_diagnostics(
-                event_resolver_result.split_diagnostics
+                match_unification_result.split_diagnostics
             )
-            event_coverage = event_resolver_result.coverage
+            event_coverage = match_unification_result.coverage
 
             self._emit_phase("analyzing")
             canonical_analysis = _CanonicalAnalysisResult()
@@ -1883,6 +1898,20 @@ class ScrapePipeline:
         except Exception:
             logger.exception("Retention cleanup failed after a successful scrape cycle")
 
+        match_unification_state = (
+            match_unification_result.status.state
+            if match_unification_result.status is not None
+            else (
+                match_unification_result.benchmark.state
+                if match_unification_result.benchmark is not None
+                else "pending_unification"
+            )
+        )
+        match_unification_fallback_reason = (
+            match_unification_result.benchmark.fallback_reason
+            if match_unification_result.benchmark is not None
+            else None
+        )
         result = {
             "matches_scraped": len(seen_matches),
             "odds_scraped": len(normalized),
@@ -1891,6 +1920,14 @@ class ScrapePipeline:
             "canonical_offers_analyzed": canonical_shadow.offers_analyzed,
             "canonical_opportunities_found": canonical_shadow.opportunities_found,
             "canonical_shadow_warnings": list(canonical_shadow.warnings),
+            "match_unification": {
+                "state": match_unification_state,
+                "mode": match_unification_result.mode,
+                "warnings": [
+                    warning.detail for warning in match_unification_result.warnings
+                ],
+                "fallback_reason": match_unification_fallback_reason,
+            },
             "notifications_sent": notified,
             "scrape_duration_ms": scrape_duration_ms,
             "cycle_duration_ms": int((time.perf_counter() - cycle_started_at) * 1000),

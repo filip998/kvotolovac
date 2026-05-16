@@ -29,7 +29,7 @@ class FakeBenchmark:
     def record_persistence(self, *_args, **_kwargs):
         pass
 
-    def record_event_resolver(self, *_args, **_kwargs):
+    def record_match_unification(self, *_args, **_kwargs):
         pass
 
     def record_event_split_diagnostics(self, *_args, **_kwargs):
@@ -125,12 +125,16 @@ async def _load_empty_canonical_analysis(_store, **_kwargs):
     return _CanonicalAnalysisResult()
 
 
-async def _resolve_no_events(**_kwargs):
-    return SimpleNamespace(
-        benchmark=None,
-        split_diagnostics=(),
-        coverage=(),
-    )
+class FakeMatchUnification:
+    async def unify_after_snapshot(self, **_kwargs):
+        return SimpleNamespace(
+            mode="resolved_event_graph",
+            status=SimpleNamespace(state="unified"),
+            warnings=(),
+            benchmark=None,
+            split_diagnostics=(),
+            coverage=(),
+        )
 
 
 def _pipeline_input() -> ScrapePipelineInput:
@@ -164,7 +168,7 @@ def _pipeline(
         team_actions=team_actions or FakeTeamActions(),
         phase_callback=phase_callback,
         load_canonical_analysis=_load_empty_canonical_analysis,
-        resolve_events=_resolve_no_events,
+        match_unification=FakeMatchUnification(),
     )
 
 

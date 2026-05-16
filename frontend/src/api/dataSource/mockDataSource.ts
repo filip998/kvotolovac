@@ -765,6 +765,9 @@ export const mockDataSource: DataSource = {
 
   async triggerScrape() {
     await delay(1000);
-    return { message: 'Scrape triggered' };
+    return {
+      message: 'Scrape triggered',
+      match_unification: mockSystemStatus.match_unification,
+    };
   },
 };

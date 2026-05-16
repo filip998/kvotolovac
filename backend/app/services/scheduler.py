@@ -43,7 +43,7 @@ from ..services.normalizer import (
 )
 from ..services.canonical_analyzer import analyze_canonical_offers_with_benchmark
 from ..services.canonical_offers import canonical_market_type
-from ..services.event_resolver import (
+from ..services.match_unification.resolution import (
     CANONICAL_TEAM_AUTO_MERGE_THRESHOLD,
     SameTimeCanonicalMergeProposal as _SameTimeMergeProposal,
     SameTimeCanonicalSlot as _SameTimeSlot,
@@ -51,11 +51,11 @@ from ..services.event_resolver import (
     _is_unsafe_compound_subset_match,
     _normalize_merge_pairings,
     _same_time_slot_orientation,
-    resolve_and_persist_events,
 )
+from ..services.match_unification import MatchUnification
+from ..services.match_unification.team_text import same_team_context as _same_team_context
 from ..services.outcome_normalizer import (
     FootballEventResolutionMap,
-    _same_team_context,
     normalize_outcome_offers_with_context,
 )
 from ..services.notifications import (
@@ -1049,6 +1049,12 @@ class Scheduler:
         self._scan_completed_tasks = 0
         self._scan_failed_tasks = 0
         self._scan_active_tasks = 0
+        self._match_unification_status = {
+            "state": "pending_unification",
+            "mode": "resolved_event_graph",
+            "warnings": [],
+            "fallback_reason": None,
+        }
         self._notification_service = NotificationService(
             gap_threshold=settings.notification_gap_threshold
         )
@@ -1089,6 +1095,14 @@ class Scheduler:
             failed_tasks=self._scan_failed_tasks,
             active_tasks=self._scan_active_tasks,
         )
+
+    def match_unification_status_snapshot(self) -> dict:
+        return {
+            "state": self._match_unification_status.get("state", "pending_unification"),
+            "mode": self._match_unification_status.get("mode", "resolved_event_graph"),
+            "warnings": list(self._match_unification_status.get("warnings", [])),
+            "fallback_reason": self._match_unification_status.get("fallback_reason"),
+        }
 
     def _reset_progress(self) -> None:
         self._scan_phase = "idle"
@@ -2012,9 +2026,9 @@ class Scheduler:
                     self._configure_notification_service_for_runtime_settings
                 ),
                 load_canonical_analysis=load_canonical_analysis,
-                resolve_events=resolve_and_persist_events,
+                match_unification=MatchUnification.for_odds_store(odds_store),
             )
-            return await pipeline.run(
+            result = await pipeline.run(
                 ScrapePipelineInput(
                     raw_odds=tuple(all_raw),
                     raw_outcome_offers=tuple(all_raw_outcome_offers),
@@ -2038,6 +2052,21 @@ class Scheduler:
                     ),
                 )
             )
+            match_unification_status = result.get("match_unification")
+            if isinstance(match_unification_status, dict):
+                self._match_unification_status = {
+                    "state": match_unification_status.get(
+                        "state",
+                        "pending_unification",
+                    ),
+                    "mode": match_unification_status.get(
+                        "mode",
+                        "resolved_event_graph",
+                    ),
+                    "warnings": list(match_unification_status.get("warnings", [])),
+                    "fallback_reason": match_unification_status.get("fallback_reason"),
+                }
+            return result
         finally:
             self._reset_progress()
 

@@ -88,6 +88,7 @@ async def test_status_endpoint(client: AsyncClient):
     assert data["status"] == "ok"
     assert data["scan"]["in_progress"] is False
     assert data["scan"]["phase"] == "idle"
+    assert data["match_unification"]["state"] == "pending_unification"
 
 
 @pytest.mark.asyncio
@@ -98,6 +99,7 @@ async def test_trigger_scrape(client: AsyncClient):
     assert data["matches_scraped"] > 0
     assert data["odds_scraped"] > 0
     assert data["opportunities_found"] > 0
+    assert data["match_unification"]["state"] in {"unified", "match_id_only"}
 
 
 @pytest.mark.asyncio

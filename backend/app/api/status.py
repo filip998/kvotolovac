@@ -30,6 +30,7 @@ async def system_status():
     return await odds_store.get_system_status(
         scheduler_running=scheduler.is_running,
         scan_progress=scheduler.progress_snapshot(),
+        match_unification=scheduler.match_unification_status_snapshot(),
     )
 
 
@@ -43,4 +44,5 @@ async def trigger_scrape():
         matches_scraped=result["matches_scraped"],
         odds_scraped=result["odds_scraped"],
         opportunities_found=result["opportunities_found"],
+        match_unification=result.get("match_unification", {}),
     )

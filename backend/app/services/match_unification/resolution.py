@@ -10,7 +10,7 @@ import time
 
 from rapidfuzz import fuzz
 
-from ..models.schemas import (
+from ...models.schemas import (
     BenchmarkEventCoverageOut,
     BenchmarkSplitClusterOut,
     BenchmarkSplitDiagnosticsOut,
@@ -18,8 +18,8 @@ from ..models.schemas import (
     BenchmarkSplitMemberFragmentOut,
     BenchmarkSplitSportDiagnosticsOut,
     BenchmarkSplitWeakestMemberPairOut,
-    EventResolverBenchmarkOut,
-    EventResolverSourceMatchSlotBenchmarkOut,
+    MatchUnificationResolutionBenchmarkOut,
+    MatchUnificationSourceMatchSlotBenchmarkOut,
     EventReviewCaseIn,
     NormalizedOdds,
     NormalizedOutcomeOffer,
@@ -28,28 +28,30 @@ from ..models.schemas import (
     ResolvedEventIn,
     ResolvedEventMemberIn,
 )
-from ..store import odds_store
-from .league_registry import resolve_league
-from .normalizer import generate_match_id
-from .outcome_normalizer import (
-    _AGGRESSIVE_MERGE_SPORTS,
+from ...store import odds_store
+from ..league_registry import resolve_league
+from ..normalizer import generate_match_id
+from ..outcome_normalizer import (
     _build_football_event_resolutions,
-    _comparison_team_text,
     _event_key_from_raw,
-    _same_team_context,
-    _team_similarity,
-    _team_qualifiers,
     FootballEventResolutionMap,
 )
-from .tennis_name_matcher import (
+from .team_text import (
+    AGGRESSIVE_MERGE_SPORTS as _AGGRESSIVE_MERGE_SPORTS,
+    comparison_team_text as _comparison_team_text,
+    same_team_context as _same_team_context,
+    team_qualifiers as _team_qualifiers,
+    team_similarity as _team_similarity,
+)
+from ..tennis_name_matcher import (
     TENNIS_BROAD_DRIFT_MINUTES,
     tennis_competitor_pair_matches,
 )
-from .text_normalizer import normalize_identity_text
+from ..text_normalizer import normalize_identity_text
 
 logger = logging.getLogger(__name__)
 
-_RESOLVER_VERSION = "event_resolver_v1"
+_RESOLVER_VERSION = "match_unification_v1"
 _HIGH_FUZZY_AVG_SCORE = 85.0
 _HIGH_FUZZY_SIDE_SCORE = 75.0
 _HIGH_FUZZY_AVG_SCORE_NON_SUBSET = 90.0
@@ -713,12 +715,12 @@ class _ResolverTextCache:
 
 
 @dataclass(frozen=True)
-class EventResolverResult:
+class MatchUnificationPersistenceResult:
     candidates: int
     resolved_events: int
     resolved_event_members: int
     review_cases: int
-    benchmark: EventResolverBenchmarkOut | None = None
+    benchmark: MatchUnificationResolutionBenchmarkOut | None = None
     coverage: tuple[BenchmarkEventCoverageOut, ...] = ()
     split_diagnostics: BenchmarkSplitDiagnosticsOut = field(
         default_factory=BenchmarkSplitDiagnosticsOut
@@ -1485,10 +1487,9 @@ def _raw_outcome_sources(
     return sources
 
 
-# Sports for which the resolver activates aggressive aliasing & dot-expansion
-# heuristics. Re-exported alias of ``outcome_normalizer._AGGRESSIVE_MERGE_SPORTS``
-# so the two modules cannot drift; new sports must be enabled in exactly one
-# place.
+# Sports for which the Match Unification resolver activates aggressive aliasing & dot-expansion
+# heuristics. Re-exported alias of the Match Unification team-text rules so the
+# modules cannot drift; new sports must be enabled in exactly one place.
 _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE: frozenset[str] = _AGGRESSIVE_MERGE_SPORTS
 
 # 2-letter dot-prefixes that overlap heavily with non-team words (street,
@@ -1506,7 +1507,7 @@ def _expand_dotted_token(name: str, counterpart: str) -> str:
     """Substitute dot-truncated tokens (``Ch.``, ``Pl.``, ``Ch.More``) by an
     unambiguous expansion drawn from ``counterpart``.
 
-    Only used inside the event resolver — keeps shared :func:`_team_similarity`
+    Only used inside the Match Unification — keeps shared :func:`_team_similarity`
     untouched so football pairing is unaffected. Restrictions:
 
     * Token must end with ``.`` and have at least 2 characters of prefix
@@ -1568,7 +1569,7 @@ def _expand_dotted_token(name: str, counterpart: str) -> str:
 def _resolver_team_similarity(
     left: str, right: str, *, sport: str | None = None
 ) -> float:
-    """Event-resolver-local team similarity that pre-expands dot-truncations.
+    """Match-Unification-local team similarity that pre-expands dot-truncations.
 
     Equivalent to :func:`_team_similarity` for cases without dotted
     abbreviations.
@@ -2831,7 +2832,7 @@ def build_event_resolution_groups(
                         left_rep = left.candidates[0] if left.candidates else None
                         right_rep = right.candidates[0] if right.candidates else None
                         logger.info(
-                            "event_resolver.quorum_override "
+                            "match_unification.quorum_override "
                             "sport=%s start_time=%s "
                             "left_teams=%s vs %s "
                             "right_teams=%s vs %s "
@@ -2953,7 +2954,8 @@ async def persist_event_resolution_groups(
     review_cases: list[EventReviewCaseIn],
     *,
     snapshot_id: str | None = None,
-) -> EventResolverResult:
+    store=odds_store,
+) -> MatchUnificationPersistenceResult:
     events: list[ResolvedEventIn] = []
     members: list[ResolvedEventMemberIn] = []
     for resolution in resolutions:
@@ -3016,189 +3018,16 @@ async def persist_event_resolution_groups(
                 )
             )
 
-    result = await odds_store.persist_event_resolution_batch(
+    result = await store.persist_event_resolution_batch(
         snapshot_id=snapshot_id,
         events=events,
         members=members,
         review_cases=review_cases,
     )
 
-    return EventResolverResult(
+    return MatchUnificationPersistenceResult(
         candidates=len(members),
         resolved_events=result["resolved_events"],
         resolved_event_members=result["resolved_event_members"],
         review_cases=result["review_cases"],
-    )
-
-
-async def resolve_and_persist_events(
-    *,
-    snapshot_id: str | None = None,
-    raw_odds: list[RawOddsData],
-    raw_outcome_offers: list[RawOutcomeOffer],
-    normalized_odds: list[NormalizedOdds],
-    normalized_outcome_offers: list[NormalizedOutcomeOffer],
-    football_event_resolutions: FootballEventResolutionMap | None = None,
-) -> EventResolverResult:
-    extraction_stats = _EventCandidateExtractionStats()
-    extraction_started_at = time.perf_counter()
-    candidates = extract_event_candidates(
-        raw_odds=raw_odds,
-        raw_outcome_offers=raw_outcome_offers,
-        normalized_odds=normalized_odds,
-        normalized_outcome_offers=normalized_outcome_offers,
-        football_event_resolutions=football_event_resolutions,
-        stats=extraction_stats,
-    )
-    extract_event_candidates_ms = _elapsed_ms(extraction_started_at)
-
-    group_stats = _EventGroupBuildStats()
-    grouping_started_at = time.perf_counter()
-    resolutions, review_cases = build_event_resolution_groups(
-        candidates,
-        stats=group_stats,
-    )
-    build_event_resolution_groups_ms = _elapsed_ms(grouping_started_at)
-    coverage = _event_coverage_benchmark(
-        normalized_odds=normalized_odds,
-        normalized_outcome_offers=normalized_outcome_offers,
-        resolutions=resolutions,
-        review_cases=review_cases,
-    )
-    split_diagnostics = _event_split_diagnostics_benchmark(resolutions)
-
-    persistence_started_at = time.perf_counter()
-    result = await persist_event_resolution_groups(
-        resolutions,
-        review_cases,
-        snapshot_id=snapshot_id,
-    )
-    persist_event_resolution_groups_ms = _elapsed_ms(persistence_started_at)
-    source_match_slot_rows = [
-        EventResolverSourceMatchSlotBenchmarkOut(
-            bookmaker_id=bookmaker_id,
-            sport=sport,
-            start_time=start_time,
-            lookup_count=lookup_count,
-            source_count=extraction_stats.source_match_slot_source_counts[
-                (bookmaker_id, sport, start_time)
-            ],
-            average_sources_per_lookup=round(
-                extraction_stats.source_match_slot_source_counts[
-                    (bookmaker_id, sport, start_time)
-                ]
-                / lookup_count,
-                4,
-            )
-            if lookup_count
-            else 0.0,
-        )
-        for (
-            bookmaker_id,
-            sport,
-            start_time,
-        ), lookup_count in extraction_stats.source_match_slot_lookup_counts.items()
-    ]
-    source_match_slot_rows = sorted(
-        source_match_slot_rows,
-        key=lambda row: (
-            row.source_count,
-            row.lookup_count,
-            row.bookmaker_id,
-            row.sport,
-            row.start_time,
-        ),
-        reverse=True,
-    )
-    benchmark = EventResolverBenchmarkOut(
-        extract_event_candidates_ms=extract_event_candidates_ms,
-        extract_raw_odds_sources_ms=extraction_stats.extract_raw_odds_sources_ms,
-        extract_raw_outcome_sources_ms=(
-            extraction_stats.extract_raw_outcome_sources_ms
-        ),
-        extract_normalized_odds_candidates_ms=(
-            extraction_stats.extract_normalized_odds_candidates_ms
-        ),
-        extract_normalized_outcome_candidates_ms=(
-            extraction_stats.extract_normalized_outcome_candidates_ms
-        ),
-        extract_source_match_ms=extraction_stats.source_match_ms,
-        football_raw_resolution_candidates_ms=(
-            extraction_stats.football_raw_resolution_candidates_ms
-        ),
-        reused_football_event_resolution_count=(
-            extraction_stats.reused_football_event_resolution_count
-        ),
-        build_event_resolution_groups_ms=build_event_resolution_groups_ms,
-        persist_event_resolution_groups_ms=persist_event_resolution_groups_ms,
-        raw_odds_rows_scanned=extraction_stats.raw_odds_rows_scanned,
-        raw_odds_sources_emitted=extraction_stats.raw_odds_sources_emitted,
-        raw_outcome_offer_rows_scanned=(
-            extraction_stats.raw_outcome_offer_rows_scanned
-        ),
-        raw_outcome_sources_emitted=extraction_stats.raw_outcome_sources_emitted,
-        normalized_odds_rows_scanned=extraction_stats.normalized_odds_rows_scanned,
-        normalized_odds_candidates_emitted=(
-            extraction_stats.normalized_odds_candidates_emitted
-        ),
-        normalized_outcome_offer_rows_scanned=(
-            extraction_stats.normalized_outcome_offer_rows_scanned
-        ),
-        normalized_outcome_candidates_emitted=(
-            extraction_stats.normalized_outcome_candidates_emitted
-        ),
-        stored_outcome_match_bookmaker_count=(
-            extraction_stats.stored_outcome_match_bookmaker_count
-        ),
-        source_match_lookup_count=extraction_stats.source_match_lookup_count,
-        source_match_source_count=extraction_stats.source_match_source_count,
-        source_match_scored_source_count=(
-            extraction_stats.source_match_scored_source_count
-        ),
-        source_match_index_candidate_count=(
-            extraction_stats.source_match_index_candidate_count
-        ),
-        source_match_exact_url_hit_count=(
-            extraction_stats.source_match_exact_url_hit_count
-        ),
-        source_match_listed_pair_hit_count=(
-            extraction_stats.source_match_listed_pair_hit_count
-        ),
-        source_match_unordered_pair_hit_count=(
-            extraction_stats.source_match_unordered_pair_hit_count
-        ),
-        source_match_fallback_scan_count=(
-            extraction_stats.source_match_fallback_scan_count
-        ),
-        source_match_max_sources_per_lookup=(
-            extraction_stats.source_match_max_sources_per_lookup
-        ),
-        source_match_truncated_slot_count=max(0, len(source_match_slot_rows) - 20),
-        football_raw_candidate_count=extraction_stats.football_raw_candidate_count,
-        candidate_count=len(candidates),
-        exact_group_count=group_stats.exact_group_count,
-        pair_check_count=group_stats.pair_check_count,
-        fuzzy_score_count=group_stats.fuzzy_score_count,
-        accepted_fuzzy_pair_count=group_stats.accepted_fuzzy_pair_count,
-        review_case_count=group_stats.review_case_count,
-        persisted_resolved_event_count=result.resolved_events,
-        persisted_member_count=result.resolved_event_members,
-        persisted_review_case_count=result.review_cases,
-        top_source_match_slots=source_match_slot_rows[:20],
-    )
-    logger.info(
-        "Resolved %d source-event candidates into %d events (%d members, %d review cases)",
-        len(candidates),
-        result.resolved_events,
-        result.resolved_event_members,
-        result.review_cases,
-    )
-    return EventResolverResult(
-        candidates=len(candidates),
-        resolved_events=result.resolved_events,
-        resolved_event_members=result.resolved_event_members,
-        review_cases=result.review_cases,
-        benchmark=benchmark,
-        coverage=coverage,
-        split_diagnostics=split_diagnostics,
     )

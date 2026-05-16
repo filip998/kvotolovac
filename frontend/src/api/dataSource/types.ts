@@ -22,6 +22,7 @@ import type {
   OpportunityFilters,
   OutcomeOffer,
   OutcomeOfferFilters,
+  MatchUnificationCycleStatus,
   ScrapeRuntimeSettingsUpdate,
   ScrapeSettingsResponse,
   SystemStatus,
@@ -89,6 +90,7 @@ export interface DeleteTelegramProfileResult {
 
 export interface TriggerScrapeResult {
   message: string;
+  match_unification?: MatchUnificationCycleStatus;
 }
 
 export interface DataSource {

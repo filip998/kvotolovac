@@ -34,6 +34,18 @@ from .tennis_name_matcher import (
     match_tennis_player_names,
     tennis_competitor_pair_matches,
 )
+from .match_unification.team_text import (
+    LOW_SIGNAL_TEAM_TOKENS as _LOW_SIGNAL_TEAM_TOKENS,
+    TEAM_QUALIFIER_TOKENS as _TEAM_QUALIFIER_TOKENS,
+    WOMEN_MARKER_TOKENS as _WOMEN_MARKER_TOKENS,
+    WOMEN_QUALIFIER_ALIASES as _WOMEN_QUALIFIER_ALIASES,
+    comparison_team_text as _comparison_team_text,
+    same_team_context as _same_team_context,
+    significant_tokens as _significant_tokens,
+    strip_explicit_z_women_markers as _strip_explicit_z_women_markers,
+    team_qualifiers as _team_qualifiers,
+    team_similarity as _team_similarity,
+)
 from .text_normalizer import normalize_identity_text
 
 logger = logging.getLogger(__name__)
@@ -43,34 +55,6 @@ _FOOTBALL_AUTO_MATCH_SIDE_THRESHOLD = 70
 _FOOTBALL_AUTO_MATCH_STRONG_SIDE_THRESHOLD = 95
 _FOOTBALL_AUTO_MATCH_WEAK_SIDE_THRESHOLD = 60
 _FOOTBALL_AUTO_MATCH_MARGIN = 8
-_LOW_SIGNAL_TEAM_TOKENS = {"bc", "bk", "kk", "fc", "fk", "club", "team", "sc", "cf", "cd", "ce"}
-_TEAM_QUALIFIER_TOKENS = {
-    "2",
-    "ii",
-    "b",
-    "res",
-    "reserve",
-    "reserves",
-    "u17",
-    "u18",
-    "u19",
-    "u20",
-    "u21",
-    "u23",
-    "w",
-    "women",
-    "youth",
-}
-# Cross-sport aliases for explicit women markers. Plain ASCII "z" is not in
-# this set because it is a common location abbreviation in football; only
-# explicit marker syntax such as "(Ž)" or "Ž/" is treated as women.
-_WOMEN_QUALIFIER_ALIASES = frozenset({"w", "wom", "women"})
-_WOMEN_MARKER_TOKENS = frozenset({"w", "wom", "women"})
-_AGGRESSIVE_MERGE_SPORTS = frozenset({"basketball"})
-_EXPLICIT_Z_WOMEN_MARKER_RE = re.compile(
-    r"(^|\s)ž(?=$|\s)|\(\s*[žz]\s*\)|^\s*[žz]\s*/",
-    re.IGNORECASE,
-)
 _SAME_ORIENTATION = "same"
 _REVERSED_ORIENTATION = "reversed"
 _OUTCOME_EVENT_RESOLUTION_SPORTS = frozenset({"football", "tennis"})
@@ -294,28 +278,6 @@ class _OutcomeTextCache:
         return cached
 
 
-def _significant_tokens(name: str, *, sport: str | None = None) -> set[str]:
-    return {
-        token
-        for token in _comparison_team_text(name, sport=sport).split()
-        if token not in _LOW_SIGNAL_TEAM_TOKENS
-    }
-
-
-def _team_similarity(left: str, right: str, *, sport: str | None = None) -> float:
-    left_key = _comparison_team_text(left, sport=sport)
-    right_key = _comparison_team_text(right, sport=sport)
-    if not left_key or not right_key:
-        return 0.0
-    if left_key == right_key:
-        return 100.0
-    left_tokens = _significant_tokens(left, sport=sport)
-    right_tokens = _significant_tokens(right, sport=sport)
-    if left_tokens and left_tokens == right_tokens:
-        return 100.0
-    return float(fuzz.token_sort_ratio(left_key, right_key))
-
-
 _TENNIS_SURNAME_PARTICLES = frozenset(
     {"da", "de", "del", "della", "di", "du", "la", "le", "van", "von"}
 )
@@ -388,103 +350,6 @@ def _tennis_name_match_score(
     del text_cache
     match = match_tennis_player_names(left_name, right_name)
     return match.score if match is not None else None
-
-
-def _team_qualifiers(name: str, *, sport: str | None = None) -> set[str]:
-    tokens = normalize_identity_text(name).split()
-    qualifiers: set[str] = set()
-    youth_ages = {"17", "18", "19", "20", "21", "23"}
-    active_qualifier_tokens = _TEAM_QUALIFIER_TOKENS | {"wom"}
-
-    if _EXPLICIT_Z_WOMEN_MARKER_RE.search(name):
-        qualifiers.add("women")
-
-    def suffix_has_qualifier(start_index: int) -> bool:
-        index = start_index
-        while index < len(tokens):
-            token = tokens[index]
-            next_token = tokens[index + 1] if index + 1 < len(tokens) else None
-            if token == "team":
-                index += 1
-                continue
-            if token == "u" and next_token in youth_ages:
-                return True
-            if token in active_qualifier_tokens:
-                return True
-            index += 1
-        return False
-
-    for index, token in enumerate(tokens):
-        next_token = tokens[index + 1] if index + 1 < len(tokens) else None
-        if token == "u" and next_token in youth_ages:
-            qualifiers.add(f"u{next_token}")
-            continue
-        if token in {"b", "2", "ii"}:
-            if index > 0 and (index == len(tokens) - 1 or next_token == "team" or suffix_has_qualifier(index + 1)):
-                qualifiers.add(token)
-            continue
-        if token in _WOMEN_QUALIFIER_ALIASES:
-            is_explicit_prefix = (
-                token in {"women", "wom"}
-                and index == 0
-                and len(tokens) > 1
-            )
-            is_suffix = index > 0 and (
-                index == len(tokens) - 1
-                or next_token in {"team", "women"}
-                or suffix_has_qualifier(index + 1)
-            )
-            if is_explicit_prefix or is_suffix:
-                qualifiers.add("women")
-            continue
-        if token == "z":
-            # Plain ASCII Z is intentionally not a universal women alias.
-            # The explicit-marker regex above handles "(Ž)", "(Z)", "Ž/",
-            # and "Z/" without breaking football abbreviations such as
-            # "FK Borac Z" for Zvornik.
-            continue
-        if token not in active_qualifier_tokens:
-            continue
-        qualifiers.add(token)
-    return qualifiers
-
-
-def _strip_explicit_z_women_markers(name: str) -> str:
-    without_parenthesized = re.sub(
-        r"\(\s*[žz]\s*\)",
-        " ",
-        name,
-        flags=re.IGNORECASE,
-    )
-    without_leading_slash = re.sub(
-        r"^\s*[žz]\s*/",
-        "",
-        without_parenthesized,
-        flags=re.IGNORECASE,
-    )
-    return re.sub(
-        r"(^|\s)ž(?=$|\s)",
-        r"\1",
-        without_leading_slash,
-        flags=re.IGNORECASE,
-    )
-
-
-def _comparison_team_text(team_name: str, *, sport: str | None = None) -> str:
-    qualifiers = _team_qualifiers(team_name, sport=sport)
-    comparison_name = (
-        _strip_explicit_z_women_markers(team_name)
-        if "women" in qualifiers
-        else team_name
-    )
-    tokens = normalize_identity_text(comparison_name).split()
-    if "women" in qualifiers:
-        tokens = [token for token in tokens if token not in _WOMEN_MARKER_TOKENS]
-    return " ".join(tokens)
-
-
-def _same_team_context(left: str, right: str, *, sport: str | None = None) -> bool:
-    return _team_qualifiers(left, sport=sport) == _team_qualifiers(right, sport=sport)
 
 
 def _display_name_for_event(*names: str) -> str:

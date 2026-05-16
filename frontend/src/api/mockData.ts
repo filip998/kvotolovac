@@ -1629,6 +1629,12 @@ export const mockSystemStatus: SystemStatus = {
     failed_tasks: 1,
     active_tasks: 8,
   },
+  match_unification: {
+    state: 'unified',
+    mode: 'resolved_event_graph',
+    warnings: [],
+    fallback_reason: null,
+  },
   bookmaker_status: [
     { id: 'mozzart', name: 'Mozzart', last_scrape: ago(2), is_active: true },
     { id: 'meridian', name: 'Meridian', last_scrape: ago(3), is_active: true },
