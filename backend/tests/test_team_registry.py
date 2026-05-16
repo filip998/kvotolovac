@@ -201,6 +201,38 @@ def test_search_canonical_team_candidates_hard_blocks_explicit_age_mismatch(
     assert u23.team_id in {c.team_id for c in results}
 
 
+def test_search_canonical_team_candidates_demotes_insufficient_alone_prefix(
+    team_registry_file,
+):
+    """Sharing only a generic club-prefix token (Pogon, Stal, etc.) must
+    demote the candidate.
+
+    ``Pogon Mogilno`` and ``Pogon Sz.`` are two unrelated Polish clubs
+    that share only the ``Pogon`` prefix. Without the demotion, the
+    fuzzy matcher would rank ``Pogon Sz.`` as a top suggestion for any
+    other ``Pogon X`` raw — but ``Pogon`` is a club-prefix convention
+    used by dozens of unrelated clubs, so a single ``pogon`` overlap
+    carries essentially no disambiguating signal.
+
+    The candidate must still appear in results (it's a soft demotion,
+    not a hard reject) so the operator can review it if the matcher
+    truly has nothing better. The qualifier-matching real candidate
+    must outrank it.
+    """
+    target = create_canonical_team(display_name="Pogon Mogilno", sport="football")
+    distractor = create_canonical_team(display_name="Pogon Sz.", sport="football")
+
+    results = search_canonical_team_candidates(
+        "Pogon Mogilno FC", sport="football", limit=5
+    )
+    team_ids = [c.team_id for c in results]
+    assert target.team_id in team_ids, "target canonical (real match) must surface"
+    if distractor.team_id in team_ids:
+        assert team_ids.index(target.team_id) < team_ids.index(distractor.team_id), (
+            "the disambiguating-token match must outrank the prefix-only match"
+        )
+
+
 def test_create_canonical_team_reports_unresolved_inactive_conflict(team_registry_file):
     create_canonical_team(display_name="QA Schema Anchor")
     display_name = "QA Orphan Inactive"

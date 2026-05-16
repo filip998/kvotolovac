@@ -1167,6 +1167,71 @@ def _qualifier_gate(
     return (True, penalty)
 
 
+# Tokens that, when they are the *only* significant token shared between a
+# raw name and a candidate, indicate the match is too weak to be useful.
+# These tokens are widely-used club-prefix or generic-suffix conventions
+# (Polish/Czech/Slavic club-prefix culture; English suffix culture) that
+# carry essentially zero team-disambiguating information on their own. A
+# raw ``Pogon Mogilno`` matching a candidate ``Pogon Sz.`` solely via
+# ``pogon`` is meaningless — there are dozens of Polish ``Pogon`` clubs
+# scattered across cities.
+#
+# The penalty is applied as a soft demotion rather than a hard reject so
+# that on the rare query where the prefix really is the operative match
+# (e.g. raw ``Pogon`` alone, single-token query), the candidate still
+# surfaces — just below any candidate that shares a real disambiguating
+# token. Tuning by replay shows that 25 points is enough to clear a typical
+# fuzz.token_set_ratio gap between a poison match and a real one.
+_INSUFFICIENT_ALONE_TOKENS: frozenset[str] = frozenset({
+    # Polish / Slavic club-prefix conventions
+    "stal", "lzs", "lks", "mks", "oks", "gks",
+    "sokol", "pogon", "czarni", "polonia", "unia",
+    "start", "orleta", "hetman", "garbarnia",
+    "spartak", "banik", "sloboda", "mladost", "sparta",
+    "lechia", "gornik", "slovan", "admira",
+    # Generic English club suffixes
+    "united", "utd", "afc",
+    # Generic English descriptors
+    "central", "lions", "eagles", "suburbs", "citizen",
+    # Generic Latin / Spanish / Portuguese descriptors
+    "municipal", "sporting", "nacional",
+})
+
+_INSUFFICIENT_ALONE_PENALTY: float = 25.0
+
+
+def _insufficient_alone_penalty(raw_key: str, candidate_key: str) -> float:
+    """Compute a soft demotion when raw and candidate share *only*
+    generic club-prefix / suffix tokens.
+
+    Returns the penalty to subtract from the candidate's score
+    (``_INSUFFICIENT_ALONE_PENALTY`` when the gate fires, else ``0``).
+
+    The gate fires when:
+
+    * The intersection of raw and candidate's >= 3-character tokens is
+      non-empty (otherwise there is no shared signal at all and the
+      partial_ratio gate already handles the case).
+    * Every token in that intersection is on the
+      :data:`_INSUFFICIENT_ALONE_TOKENS` list. I.e. the only thing the
+      raw and candidate share is a generic club-prefix.
+
+    A token of length < 3 is excluded from the analysis (consistent with
+    the rest of the matcher's "significant token" definition — short
+    tokens like ``fc``, ``sk``, ``b`` are stripped by the index too).
+    """
+    if not raw_key or not candidate_key:
+        return 0.0
+    raw_tokens = {token for token in raw_key.split() if len(token) >= 3}
+    cand_tokens = {token for token in candidate_key.split() if len(token) >= 3}
+    shared = raw_tokens & cand_tokens
+    if not shared:
+        return 0.0
+    if shared - _INSUFFICIENT_ALONE_TOKENS:
+        return 0.0
+    return _INSUFFICIENT_ALONE_PENALTY
+
+
 def search_canonical_team_candidates(
     raw_team_name: str,
     *,
@@ -1247,6 +1312,12 @@ def search_canonical_team_candidates(
             score = token_set_score
         if penalty:
             score = max(0.0, score - penalty)
+        # Soft demotion when raw and candidate share only generic
+        # club-prefix tokens (Pogon, Stal, Polonia, United, AFC, …). See
+        # _insufficient_alone_penalty.
+        prefix_penalty = _insufficient_alone_penalty(raw_key, normalized)
+        if prefix_penalty:
+            score = max(0.0, score - prefix_penalty)
         if score <= 0.0:
             continue
         current = best_by_team.get(team_id)
