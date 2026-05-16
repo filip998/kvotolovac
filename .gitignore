@@ -25,6 +25,12 @@ frontend/dist/
 backend/team_registry_review_*.json.lock
 backend/benchmarks/
 
+# Team matcher replay fixture — regenerated from live DB by snapshot script,
+# 51 MB raw labels are too large to track in git. The smaller decisions
+# fixture (~7 MB) IS tracked because it's the gold-standard regression
+# dataset for the replay harness.
+backend/tests/fixtures/team_matcher_labels.jsonl
+
 # OS
 .DS_Store
 Thumbs.db

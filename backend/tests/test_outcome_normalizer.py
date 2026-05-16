@@ -210,6 +210,26 @@ def test_team_qualifiers_treat_prefix_women_as_explicit_marker():
     assert _same_team_context("Women Sao Jose", "Sao Jose Women", sport="football")
 
 
+def test_team_qualifiers_recognizes_foreign_women_markers():
+    # Suffix-style markers from various languages
+    assert "women" in _team_qualifiers("FC Salzburg Frauen", sport="football")
+    assert "women" in _team_qualifiers("Werder Bremen Damen", sport="football")
+    assert "women" in _team_qualifiers("Santos Feminino", sport="football")
+    assert "women" in _team_qualifiers("Sao Paulo Feminina", sport="football")
+    assert "women" in _team_qualifiers("Juventus Femminile", sport="football")
+    assert "women" in _team_qualifiers("Barcelona Femenino", sport="football")
+    assert "women" in _team_qualifiers("Real Madrid Femenina", sport="football")
+    assert "women" in _team_qualifiers("PSG Feminin", sport="football")
+    assert "women" in _team_qualifiers("Djurgardens IF DFF", sport="football")
+    assert "women" in _team_qualifiers("Ajax Vrouwen", sport="football")
+    # A senior men's team must NOT pick up "women"
+    assert "women" not in _team_qualifiers("FC Salzburg", sport="football")
+    assert "women" not in _team_qualifiers("Djurgardens IF", sport="football")
+    # Cross-context: a senior name vs its women variant must be different
+    assert not _same_team_context("FC Salzburg", "FC Salzburg Frauen", sport="football")
+    assert not _same_team_context("Djurgardens IF", "Djurgardens IF DFF", sport="football")
+
+
 def test_exact_cross_book_football_event_normalizes_without_auto_aliases(team_registry_file):
     raw = [
         _offer("maxbet", "Basket Sibirsk", "CSKA Moscow", outcome_code="over"),

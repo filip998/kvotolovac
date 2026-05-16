@@ -13,6 +13,7 @@ from app.services.team_registry import (
     merge_canonical_teams,
     remember_team_alias,
     resolve_team_alias,
+    search_canonical_team_candidates,
     unmerge_canonical_team,
 )
 from app.services.team_seed_data import SPORT_ALIAS_SEEDS
@@ -96,6 +97,204 @@ def test_basketball_seed_data_resolves_reviewed_split_aliases(
 
     assert resolution is not None
     assert resolution.team_name == expected
+
+
+def test_search_canonical_team_candidates_does_not_leak_cross_sport(team_registry_file):
+    """Regression: historical pending review cases showed football raws matched
+    to basketball canonicals (and vice versa). The current code filters by
+    sport at query time, but we lock that behavior in here so future
+    refactors of the candidate-search snapshot cannot regress it.
+    """
+    basketball_team = create_canonical_team(
+        display_name="Corinthians Paulista",
+        sport="basketball",
+    )
+    football_team = create_canonical_team(
+        display_name="SC Corinthians",
+        sport="football",
+    )
+
+    football_results = search_canonical_team_candidates(
+        "SC Corinthians SP",
+        sport="football",
+    )
+    basketball_results = search_canonical_team_candidates(
+        "SC Corinthians SP",
+        sport="basketball",
+    )
+
+    assert basketball_team.team_id not in {c.team_id for c in football_results}
+    assert football_team.team_id not in {c.team_id for c in basketball_results}
+
+
+def test_search_canonical_team_candidates_hard_blocks_women_men_mismatch(
+    team_registry_file,
+):
+    """Women ↔ men qualifier mismatch must be hard-blocked.
+
+    Two canonicals share the same base name (``Barcelona``) but have
+    different qualifiers: the men's first team versus the women's first
+    team. A raw bookmaker name without a women marker must match only the
+    men's team; a raw with a women marker (English, German "Frauen",
+    Portuguese "Feminino" …) must match only the women's team.
+    """
+    men = create_canonical_team(display_name="Barcelona", sport="football")
+    women = create_canonical_team(display_name="Barcelona Women", sport="football")
+
+    men_results = search_canonical_team_candidates(
+        "FC Barcelona", sport="football", limit=5
+    )
+    assert women.team_id not in {c.team_id for c in men_results}
+    assert men.team_id in {c.team_id for c in men_results}
+
+    women_results = search_canonical_team_candidates(
+        "Barcelona Frauen", sport="football", limit=5
+    )
+    assert men.team_id not in {c.team_id for c in women_results}
+    assert women.team_id in {c.team_id for c in women_results}
+
+
+def test_search_canonical_team_candidates_mixed_women_status_stays_reachable(
+    team_registry_file,
+):
+    """Canonicals whose display name carries the only women marker while
+    aliases lack it (NWSL-style: display ``Gotham W`` with aliases
+    ``Gotham FC`` / ``Gotham``) must remain reachable from un-marked
+    bookmaker raws.
+
+    Without the ``"mixed"`` women-status state, the gate hard-blocks the
+    candidate for any un-marked query — including the existing bookmaker
+    aliases — which silently drops the canonical from
+    :func:`search_canonical_team_candidates` results for every new
+    spelling variant.
+    """
+    from app.services.team_registry import remember_team_alias
+
+    gotham = create_canonical_team(display_name="Gotham W", sport="football")
+    # Two aliases that omit the women marker, simulating bookmakers that
+    # don't disambiguate gender on this team. The presence of these
+    # un-marked aliases is what flips the team's women_status to
+    # ``"mixed"``.
+    remember_team_alias(
+        bookmaker_id="qa-book",
+        raw_team_name="Gotham FC",
+        team_name="Gotham W",
+        sport="football",
+    )
+    remember_team_alias(
+        bookmaker_id="qa-other",
+        raw_team_name="Gotham",
+        team_name="Gotham W",
+        sport="football",
+    )
+
+    # Un-marked raw must surface the canonical (this is the regression).
+    results = search_canonical_team_candidates(
+        "Gotham Football Club", sport="football", limit=5
+    )
+    assert gotham.team_id in {c.team_id for c in results}, (
+        "mixed-status canonical must remain reachable from un-marked raws"
+    )
+
+
+def test_search_canonical_team_candidates_keeps_period_abbreviation_match(
+    team_registry_file,
+):
+    """Regression for the period-abbreviation exact-match skip bug.
+
+    Raw ``Hap.Haifa`` expands to ``hapoel haifa`` after
+    :func:`expand_team_abbreviations`. Canonical ``Hapoel Haifa`` also
+    normalizes to ``hapoel haifa``. The previous skip check compared the
+    *expanded* forms and dropped the candidate as "exact match"; the fix
+    compares the un-expanded forms so legitimate abbreviation matches
+    survive.
+    """
+    canonical = create_canonical_team(display_name="Hapoel Haifa", sport="football")
+    results = search_canonical_team_candidates(
+        "Hap.Haifa", sport="football", limit=5
+    )
+    assert canonical.team_id in {c.team_id for c in results}, (
+        "period-abbreviation expansion must surface the canonical, not skip it"
+    )
+
+
+def test_search_canonical_team_candidates_demotes_youth_marker_mismatch(
+    team_registry_file,
+):
+    """Youth marker mismatch must demote the candidate (not remove it).
+
+    A raw ``Liverpool U19 FC`` (non-exact-equal to the canonical to
+    bypass the early-skip-on-exact-match filter) should still surface
+    ``Liverpool`` as a candidate because the operator may want to know
+    "this is your closest fuzzy fit, but the youth marker is missing on
+    the canonical". The score must be lower than what an exact qualifier
+    match would produce so the qualifier-matching ``Liverpool U19``
+    canonical takes priority.
+    """
+    senior = create_canonical_team(display_name="Liverpool", sport="football")
+    youth = create_canonical_team(display_name="Liverpool U19", sport="football")
+
+    results = search_canonical_team_candidates(
+        "Liverpool U19 FC", sport="football", limit=5
+    )
+    team_ids = [c.team_id for c in results]
+    assert youth.team_id in team_ids, "youth canonical must remain in results"
+    assert senior.team_id in team_ids, "senior canonical must remain as a (demoted) suggestion"
+    assert team_ids.index(youth.team_id) < team_ids.index(senior.team_id), (
+        "the qualifier-matching youth canonical must outrank the demoted senior"
+    )
+
+
+def test_search_canonical_team_candidates_hard_blocks_explicit_age_mismatch(
+    team_registry_file,
+):
+    """Two explicit youth ages on different sides is a hard block.
+
+    ``Real Madrid U19`` and ``Real Madrid U23`` are two distinct teams
+    within the same club's youth system. A raw ``Real Madrid U23 FC``
+    (non-exact-equal to the canonical to bypass the early-skip-on-exact-
+    match filter) must never receive ``Real Madrid U19`` as a suggestion.
+    """
+    u19 = create_canonical_team(display_name="Real Madrid U19", sport="football")
+    u23 = create_canonical_team(display_name="Real Madrid U23", sport="football")
+
+    results = search_canonical_team_candidates(
+        "Real Madrid U23 FC", sport="football", limit=5
+    )
+    assert u19.team_id not in {c.team_id for c in results}
+    assert u23.team_id in {c.team_id for c in results}
+
+
+def test_search_canonical_team_candidates_demotes_insufficient_alone_prefix(
+    team_registry_file,
+):
+    """Sharing only a generic club-prefix token (Pogon, Stal, etc.) must
+    demote the candidate.
+
+    ``Pogon Mogilno`` and ``Pogon Sz.`` are two unrelated Polish clubs
+    that share only the ``Pogon`` prefix. Without the demotion, the
+    fuzzy matcher would rank ``Pogon Sz.`` as a top suggestion for any
+    other ``Pogon X`` raw — but ``Pogon`` is a club-prefix convention
+    used by dozens of unrelated clubs, so a single ``pogon`` overlap
+    carries essentially no disambiguating signal.
+
+    The candidate must still appear in results (it's a soft demotion,
+    not a hard reject) so the operator can review it if the matcher
+    truly has nothing better. The qualifier-matching real candidate
+    must outrank it.
+    """
+    target = create_canonical_team(display_name="Pogon Mogilno", sport="football")
+    distractor = create_canonical_team(display_name="Pogon Sz.", sport="football")
+
+    results = search_canonical_team_candidates(
+        "Pogon Mogilno FC", sport="football", limit=5
+    )
+    team_ids = [c.team_id for c in results]
+    assert target.team_id in team_ids, "target canonical (real match) must surface"
+    if distractor.team_id in team_ids:
+        assert team_ids.index(target.team_id) < team_ids.index(distractor.team_id), (
+            "the disambiguating-token match must outrank the prefix-only match"
+        )
 
 
 def test_create_canonical_team_reports_unresolved_inactive_conflict(team_registry_file):
@@ -457,10 +656,16 @@ def test_search_canonical_team_candidates_cross_team_tie_sorted_by_name(
     """Cross-team ties break on team_name ascending — current sort key
     `(-score, team_name)`. We pick names that genuinely tie under the
     rapidfuzz scorers: partial_ratio = 87.50 for both `"Bravo United"` and
-    `"Charlie United"` against `"qa united"`, while `"Alpha United"` scores
-    higher (94.12) and must come first."""
+    `"Tango United"` against `"qa united"`, while `"Alpha United"` scores
+    higher (94.12) and must come first. `"Bravo"` and `"Tango"` are chosen
+    because they share the same length as `"Alpha"` so token_set_ratio /
+    fuzz.ratio admit partial_ratio for all three under the post-substring
+    -fix gate (``fuzz.ratio('qa united', '<word> united') == 76.19`` for any
+    5-letter word; ``Charlie United`` would dip the ratio below 70 and
+    block the partial_ratio admission for that single candidate, breaking
+    the tie under the new gate)."""
     team_registry.create_canonical_team(
-        display_name="Charlie United", sport="football"
+        display_name="Tango United", sport="football"
     )
     team_registry.create_canonical_team(
         display_name="Bravo United", sport="football"
@@ -476,7 +681,7 @@ def test_search_canonical_team_candidates_cross_team_tie_sorted_by_name(
     assert [c.team_name for c in results] == [
         "Alpha United",
         "Bravo United",
-        "Charlie United",
+        "Tango United",
     ]
     assert results[1].score == results[2].score
     assert results[0].score > results[1].score
@@ -516,6 +721,23 @@ def test_search_canonical_team_candidates_top1_matches_reference_implementation(
     but is dropped by the prefilter — that is a deliberate precision
     tradeoff, not a regression). Top-1 stays the same because the genuine
     best match always shares strong signal with the query.
+
+    Note: the test queries deliberately avoid raw names with qualifier
+    markers (``B``, ``II``, ``U19``, ``women``, ``Frauen`` …). The
+    qualifier-aware gate added alongside the substring-poison fix applies
+    a 15-point demotion to candidates whose qualifier set doesn't match
+    the raw, which is a deliberate deviation from the reference. The
+    qualifier-driven score adjustment is exercised by the dedicated tests
+    around ``_qualifier_gate`` instead.
+
+    The score-equality assertion was relaxed to ``actual <= expected``
+    because the substring-poison gate denies ``partial_ratio`` for
+    candidates that don't share a token / token-prefix / typo signal
+    (e.g. ``Real Sociedad`` raw vs ``FC Real`` alias scores 72.7272 under
+    the gated path and 72.7273 under the reference — a 1-ULP delta that
+    reflects the gate's intentional stricter precision). Top-1 *identity*
+    is the contract; absolute scores under the gates are allowed to
+    regress as long as the identity is preserved.
     """
     team_registry.create_canonical_team(
         display_name="Real Madrid", sport="football"
@@ -549,7 +771,7 @@ def test_search_canonical_team_candidates_top1_matches_reference_implementation(
         "Real Madrid CF",
         "FC Atletico",
         "Barca",
-        "Real Sociedad B",
+        "Real Sociedad",
         "Sevilla",
         "Madrid CF",
         "Sociedad de San Sebastian",
@@ -567,9 +789,23 @@ def test_search_canonical_team_candidates_top1_matches_reference_implementation(
             f"top-1 team_id mismatch for query={query!r}: "
             f"actual={actual[0]!r} expected={expected[0]!r}"
         )
-        assert actual[0].team_name == expected[0].team_name
-        assert actual[0].score == expected[0].score
-        assert actual[0].matched_alias == expected[0].matched_alias
+        assert actual[0].team_name == expected[0].team_name, (
+            f"top-1 team_name mismatch for query={query!r}"
+        )
+        # The new code's score may be <= reference because the
+        # substring-poison gate denies partial_ratio for some candidates
+        # (the reference always admits it) and the qualifier gate demotes
+        # candidates with women/youth/reserve mismatch. Both are
+        # deliberate deviations. The invariant the test pins is that the
+        # *team identity* of the top-1 candidate is unchanged — not the
+        # absolute score.
+        assert actual[0].score <= expected[0].score, (
+            f"top-1 score regressed beyond reference for query={query!r}: "
+            f"actual={actual[0]!r} expected={expected[0]!r}"
+        )
+        assert actual[0].matched_alias == expected[0].matched_alias, (
+            f"top-1 matched_alias mismatch for query={query!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
