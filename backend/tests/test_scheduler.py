@@ -4183,7 +4183,7 @@ async def test_failed_cycle_cleanup_keeps_human_declined_auto_merge_audit_row(
         target_away=target_away,
     )
 
-    async def declining_notification_failure(opportunities):
+    async def declining_notification_failure(opportunities, *, publish_id=None):
         with sqlite3.connect(settings.db_path) as conn:
             case_id = conn.execute(
                 """
