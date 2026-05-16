@@ -13,6 +13,7 @@ from app.services.team_registry import (
     merge_canonical_teams,
     remember_team_alias,
     resolve_team_alias,
+    search_canonical_team_candidates,
     unmerge_canonical_team,
 )
 from app.services.team_seed_data import SPORT_ALIAS_SEEDS
@@ -96,6 +97,34 @@ def test_basketball_seed_data_resolves_reviewed_split_aliases(
 
     assert resolution is not None
     assert resolution.team_name == expected
+
+
+def test_search_canonical_team_candidates_does_not_leak_cross_sport(team_registry_file):
+    """Regression: historical pending review cases showed football raws matched
+    to basketball canonicals (and vice versa). The current code filters by
+    sport at query time, but we lock that behavior in here so future
+    refactors of the candidate-search snapshot cannot regress it.
+    """
+    basketball_team = create_canonical_team(
+        display_name="Corinthians Paulista",
+        sport="basketball",
+    )
+    football_team = create_canonical_team(
+        display_name="SC Corinthians",
+        sport="football",
+    )
+
+    football_results = search_canonical_team_candidates(
+        "SC Corinthians SP",
+        sport="football",
+    )
+    basketball_results = search_canonical_team_candidates(
+        "SC Corinthians SP",
+        sport="basketball",
+    )
+
+    assert basketball_team.team_id not in {c.team_id for c in football_results}
+    assert football_team.team_id not in {c.team_id for c in basketball_results}
 
 
 def test_create_canonical_team_reports_unresolved_inactive_conflict(team_registry_file):
@@ -457,10 +486,16 @@ def test_search_canonical_team_candidates_cross_team_tie_sorted_by_name(
     """Cross-team ties break on team_name ascending — current sort key
     `(-score, team_name)`. We pick names that genuinely tie under the
     rapidfuzz scorers: partial_ratio = 87.50 for both `"Bravo United"` and
-    `"Charlie United"` against `"qa united"`, while `"Alpha United"` scores
-    higher (94.12) and must come first."""
+    `"Tango United"` against `"qa united"`, while `"Alpha United"` scores
+    higher (94.12) and must come first. `"Bravo"` and `"Tango"` are chosen
+    because they share the same length as `"Alpha"` so token_set_ratio /
+    fuzz.ratio admit partial_ratio for all three under the post-substring
+    -fix gate (``fuzz.ratio('qa united', '<word> united') == 76.19`` for any
+    5-letter word; ``Charlie United`` would dip the ratio below 70 and
+    block the partial_ratio admission for that single candidate, breaking
+    the tie under the new gate)."""
     team_registry.create_canonical_team(
-        display_name="Charlie United", sport="football"
+        display_name="Tango United", sport="football"
     )
     team_registry.create_canonical_team(
         display_name="Bravo United", sport="football"
@@ -476,7 +511,7 @@ def test_search_canonical_team_candidates_cross_team_tie_sorted_by_name(
     assert [c.team_name for c in results] == [
         "Alpha United",
         "Bravo United",
-        "Charlie United",
+        "Tango United",
     ]
     assert results[1].score == results[2].score
     assert results[0].score > results[1].score
