@@ -154,6 +154,70 @@ def test_search_canonical_team_candidates_hard_blocks_women_men_mismatch(
     assert women.team_id in {c.team_id for c in women_results}
 
 
+def test_search_canonical_team_candidates_mixed_women_status_stays_reachable(
+    team_registry_file,
+):
+    """Canonicals whose display name carries the only women marker while
+    aliases lack it (NWSL-style: display ``Gotham W`` with aliases
+    ``Gotham FC`` / ``Gotham``) must remain reachable from un-marked
+    bookmaker raws.
+
+    Without the ``"mixed"`` women-status state, the gate hard-blocks the
+    candidate for any un-marked query — including the existing bookmaker
+    aliases — which silently drops the canonical from
+    :func:`search_canonical_team_candidates` results for every new
+    spelling variant.
+    """
+    from app.services.team_registry import remember_team_alias
+
+    gotham = create_canonical_team(display_name="Gotham W", sport="football")
+    # Two aliases that omit the women marker, simulating bookmakers that
+    # don't disambiguate gender on this team. The presence of these
+    # un-marked aliases is what flips the team's women_status to
+    # ``"mixed"``.
+    remember_team_alias(
+        bookmaker_id="qa-book",
+        raw_team_name="Gotham FC",
+        team_name="Gotham W",
+        sport="football",
+    )
+    remember_team_alias(
+        bookmaker_id="qa-other",
+        raw_team_name="Gotham",
+        team_name="Gotham W",
+        sport="football",
+    )
+
+    # Un-marked raw must surface the canonical (this is the regression).
+    results = search_canonical_team_candidates(
+        "Gotham Football Club", sport="football", limit=5
+    )
+    assert gotham.team_id in {c.team_id for c in results}, (
+        "mixed-status canonical must remain reachable from un-marked raws"
+    )
+
+
+def test_search_canonical_team_candidates_keeps_period_abbreviation_match(
+    team_registry_file,
+):
+    """Regression for the period-abbreviation exact-match skip bug.
+
+    Raw ``Hap.Haifa`` expands to ``hapoel haifa`` after
+    :func:`expand_team_abbreviations`. Canonical ``Hapoel Haifa`` also
+    normalizes to ``hapoel haifa``. The previous skip check compared the
+    *expanded* forms and dropped the candidate as "exact match"; the fix
+    compares the un-expanded forms so legitimate abbreviation matches
+    survive.
+    """
+    canonical = create_canonical_team(display_name="Hapoel Haifa", sport="football")
+    results = search_canonical_team_candidates(
+        "Hap.Haifa", sport="football", limit=5
+    )
+    assert canonical.team_id in {c.team_id for c in results}, (
+        "period-abbreviation expansion must surface the canonical, not skip it"
+    )
+
+
 def test_search_canonical_team_candidates_demotes_youth_marker_mismatch(
     team_registry_file,
 ):

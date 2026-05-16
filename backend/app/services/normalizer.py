@@ -1558,10 +1558,14 @@ def _partial_ratio_is_safe(raw_key: str, candidate_key: str) -> bool:
     2. The shorter side is a single token of >= 4 characters AND is a prefix
        of some token of the longer side (``inter`` is a prefix of
        ``internazionale``; ``aris`` is not a prefix of ``paris``).
-    3. ``fuzz.ratio(raw_key, candidate_key) >= 70`` — whole-string typo
-       resemblance high enough that this is likely a misspelling
-       (``liverpol`` vs ``liverpool fc``) rather than coincidental substring
-       overlap.
+    3. ``fuzz.ratio(raw_key, candidate_key) >= 70`` AND the shorter side
+       has at least 6 characters — whole-string typo resemblance high
+       enough that this is likely a misspelling (``liverpol`` vs
+       ``liverpool fc``) rather than coincidental substring overlap. The
+       6-character minimum prevents the gate from re-opening
+       substring-poison on short single tokens (``fuzz.ratio('aris',
+       'paris') == 88.89`` would otherwise admit ``partial_ratio`` and
+       score ``Paris`` at 100 against ``Aris``).
     """
     if not raw_key or not candidate_key:
         return False
@@ -1585,7 +1589,7 @@ def _partial_ratio_is_safe(raw_key: str, candidate_key: str) -> bool:
             for longer_token in longer_tokens
         ):
             return True
-    if fuzz.ratio(raw_key, candidate_key) >= 70:
+    if len(shorter_str) >= 6 and fuzz.ratio(raw_key, candidate_key) >= 70:
         return True
     return False
 
@@ -1622,15 +1626,19 @@ def _rank_team_review_candidates(
     *,
     threshold: float = TEAM_REVIEW_CANDIDATE_THRESHOLD,
 ) -> list[_TeamReviewCandidate]:
-    raw_key = _normalize_team_key(raw_team_name)
+    # Un-expanded normalized form, used only for the exact-match skip.
+    # The expanded form (``_normalize_team_key``) collides on legitimate
+    # abbreviation matches (raw ``Hap.Haifa`` and candidate ``Hapoel Haifa``
+    # both expand to ``hapoel haifa``) which would otherwise be dropped.
+    raw_key_unexpanded = normalize_identity_text(raw_team_name)
     ranked: list[_TeamReviewCandidate] = []
     seen_team_ids: set[int] = set()
 
     for team_id, candidate_team in candidate_teams:
-        candidate_key = _normalize_team_key(candidate_team)
+        candidate_key_unexpanded = normalize_identity_text(candidate_team)
         if (
-            not candidate_key
-            or candidate_key == raw_key
+            not candidate_key_unexpanded
+            or candidate_key_unexpanded == raw_key_unexpanded
             or team_id in seen_team_ids
         ):
             continue
@@ -1651,15 +1659,17 @@ def _rank_slot_team_review_candidates(
     *,
     threshold: float = 0.0,
 ) -> list[_TeamReviewCandidate]:
-    raw_key = _normalize_team_key(raw_team_name)
+    # Un-expanded normalized form for the exact-match skip — see comment
+    # in _rank_team_review_candidates for rationale.
+    raw_key_unexpanded = normalize_identity_text(raw_team_name)
     ranked: list[_TeamReviewCandidate] = []
     seen_team_ids: set[int] = set()
 
     for candidate in candidate_teams:
-        candidate_key = _normalize_team_key(candidate.team_name)
+        candidate_key_unexpanded = normalize_identity_text(candidate.team_name)
         if (
-            not candidate_key
-            or candidate_key == raw_key
+            not candidate_key_unexpanded
+            or candidate_key_unexpanded == raw_key_unexpanded
             or candidate.team_id in seen_team_ids
         ):
             continue

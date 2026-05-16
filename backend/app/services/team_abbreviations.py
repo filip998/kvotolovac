@@ -18,10 +18,18 @@ work via plain ``token_set_ratio`` instead of relying on the brittle
 
 Conservative scope
 ==================
-The expansion map only includes prefixes whose long form is **unambiguous**
-within football. Genuinely ambiguous abbreviations (``M.`` could be Maccabi,
-Moscow, Madrid; ``A.`` could be Athletic, Atletico, Audax) are intentionally
-omitted — the existing matcher already handles them via the remaining tokens.
+The expansion map only includes prefixes whose long form is **typically
+unambiguous** within football. Some entries (``atl``, ``cl``, ``univ``)
+collide with a less-common alternative club name in another region
+(``Atletico`` vs Spanish ``Athletic``; ``Club`` vs Romanian ``Cluj``;
+``Universidad`` vs ``Universitatea``) but the dominant interpretation
+in the bookmaker feeds we ingest is the one mapped here. Genuinely
+ambiguous abbreviations across the same league level (``M.`` could be
+Maccabi, Moscow, Madrid; ``A.`` could be Athletic, Atletico, Audax;
+``Sp.`` is ambiguous between Sporting and Spartak in Eastern European
+feeds; ``Un.`` is ambiguous between Union and Universidad in Latin
+American feeds) are intentionally omitted — the existing matcher
+already handles them via the remaining tokens.
 
 The map is applied **only at the start of a token** (the abbreviation must be
 the prefix). ``Dep.`` matches ``Dep.Saprissa`` but not ``Atl.Dep.Cordoba``.
@@ -45,15 +53,18 @@ from __future__ import annotations
 import re
 
 # Conservative prefix → expansion map. Add new entries only when the
-# expansion is unambiguous within football. Keys must be lowercase.
+# expansion is the dominant interpretation in observed bookmaker feeds.
+# Keys must be lowercase.
+#
+# Removed for ambiguity (left to the existing fuzzy matcher):
+#   - ``mac`` (Maccabi vs Macedonian/Mackay/Macara — single-region win)
+#   - ``sp``  (Sporting vs Spartak — both common in Eastern European feeds)
+#   - ``un``  (Union vs Universidad/Universitatea — both common in LATAM)
 _ABBREVIATION_PREFIX_MAP: dict[str, str] = {
     "hap": "Hapoel",
-    "mac": "Maccabi",
     "dep": "Deportivo",
     "atl": "Atletico",
     "cl": "Club",
-    "sp": "Sporting",
-    "un": "Union",
     "olym": "Olympique",
     "din": "Dinamo",
     "dyn": "Dynamo",

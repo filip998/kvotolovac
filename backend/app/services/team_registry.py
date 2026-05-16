@@ -907,10 +907,12 @@ def _load_team_review_search_snapshot(
     tuple[str, ...],
     tuple[str, ...],
     tuple[str, ...],
+    tuple[str, ...],
     dict[str, tuple[int, ...]],
     dict[str, tuple[int, ...]],
     dict[int, tuple[int, ...]],
     dict[int, frozenset[str]],
+    dict[int, str],
 ]:
     """Atomically build the team-review search choices and inverted indexes
     from a single :func:`_load_team_search_rows` snapshot.
@@ -921,7 +923,7 @@ def _load_team_review_search_snapshot(
     tuple a caller already holds is a coherent snapshot regardless of what
     the cache returns next.
 
-    Returns eight items, in this order:
+    Returns ten items, in this order:
 
     - ``team_ids[i]``             — owning team for row ``i``
     - ``team_names[i]``           — canonical display name of that team
@@ -930,6 +932,14 @@ def _load_team_review_search_snapshot(
       Period-abbreviation expansion runs first so that ``Hap.Haifa`` and
       ``Hapoel Haifa`` produce identical normalized forms and therefore
       identical tokens for the fuzzy scorer.
+    - ``unexpanded_choices[i]``   — ``normalize_identity_text(candidate_values[i])``
+      (without abbreviation expansion). Used exclusively for the
+      *exact-match skip* in :func:`search_canonical_team_candidates`. If we
+      compared the *expanded* form against the raw query's expanded form,
+      legitimate abbreviation matches (raw ``Hap.Haifa`` expands to
+      ``hapoel haifa``; candidate ``Hapoel Haifa`` also expands to
+      ``hapoel haifa``) would be skipped as "already exact" even though
+      the raw isn't actually that alias.
     - ``token_index[token]``      — tuple of flat idxs whose normalized choice
       contains ``token``. Tokens shorter than 3 characters or matching more
       than ``max(10, total_teams * 0.10)`` distinct teams are excluded.
@@ -937,13 +947,22 @@ def _load_team_review_search_snapshot(
       whitespace-stripped normalized choice contains ``trigram``.
     - ``idxs_by_team_id[team_id]``— tuple of all flat idxs belonging to that
       team (for team-set expansion during prefiltering).
-    - ``qualifiers_by_team_id[team_id]`` — frozenset of qualifier markers
-      detected on the canonical display name of the team (see
-      :func:`team_qualifiers.team_qualifiers`). Used by the candidate
-      scoring loop to hard-block women/men mismatches and demote youth /
-      reserve mismatches. Computed once at snapshot time so the gate stays
-      O(candidates) regardless of how often callers invoke
-      :func:`search_canonical_team_candidates`.
+    - ``qualifiers_by_team_id[team_id]`` — frozenset of *consensus*
+      qualifier markers across every row belonging to the team
+      (canonical name + all aliases). A qualifier is included only if it
+      appears in every row's qualifier set. The women / youth / reserve
+      hard-block in :func:`_qualifier_gate` reads from this dict so it
+      only fires when *every* known form of the team carries the marker.
+    - ``women_status_by_team_id[team_id]`` — ``"women"`` if every row of
+      the team carries a women marker, ``"men"`` if no row does,
+      ``"mixed"`` otherwise. The ``"mixed"`` state suppresses the women
+      hard-block: NWSL-style canonicals stored as e.g. ``Gotham W`` with
+      aliases ``Gotham FC`` / ``Gotham`` are ``mixed`` because the aliases
+      lack the marker; without the suppression the canonical would be
+      unreachable from a bookmaker query that omits the marker, dropping
+      a real match. Symmetric mixed cases are likewise tolerated so the
+      gate is only applied when the *team* unambiguously identifies as
+      women-only (or men-only).
 
     Cache invalidation is wired into :func:`clear_team_registry_cache`.
     """
@@ -952,8 +971,11 @@ def _load_team_review_search_snapshot(
     team_names_list: list[str] = []
     candidate_values_list: list[str] = []
     normalized_choices_list: list[str] = []
-    qualifiers_by_team_id_dict: dict[int, frozenset[str]] = {}
+    unexpanded_choices_list: list[str] = []
+    consensus_qualifiers_by_team_id: dict[int, frozenset[str]] = {}
+    women_status_by_team_id_dict: dict[int, str] = {}
     for team_id, team_name, aliases in _load_team_search_rows(settings.db_path, sport):
+        row_qualifier_sets: list[frozenset[str]] = []
         for candidate_value in (team_name, *aliases):
             team_ids_list.append(team_id)
             team_names_list.append(team_name)
@@ -961,15 +983,38 @@ def _load_team_review_search_snapshot(
             normalized_choices_list.append(
                 normalize_identity_text(expand_team_abbreviations(candidate_value))
             )
-        if team_id not in qualifiers_by_team_id_dict:
-            qualifiers_by_team_id_dict[team_id] = frozenset(
-                team_qualifiers(team_name, sport=sport)
+            unexpanded_choices_list.append(normalize_identity_text(candidate_value))
+            row_qualifier_sets.append(
+                frozenset(team_qualifiers(candidate_value, sport=sport))
             )
+        if team_id in consensus_qualifiers_by_team_id:
+            continue
+        if not row_qualifier_sets:
+            consensus_qualifiers_by_team_id[team_id] = frozenset()
+            women_status_by_team_id_dict[team_id] = "men"
+            continue
+        # Consensus across rows: a qualifier is part of the team's
+        # qualifier set only if every row agrees. Inconsistency on the
+        # women marker (any row has it, any row lacks it) downgrades the
+        # whole team to ``"mixed"``.
+        consensus = set(row_qualifier_sets[0])
+        for row_qualifiers in row_qualifier_sets[1:]:
+            consensus &= row_qualifiers
+        consensus_qualifiers_by_team_id[team_id] = frozenset(consensus)
+        any_women = any("women" in q for q in row_qualifier_sets)
+        all_women = all("women" in q for q in row_qualifier_sets)
+        if all_women:
+            women_status_by_team_id_dict[team_id] = "women"
+        elif any_women:
+            women_status_by_team_id_dict[team_id] = "mixed"
+        else:
+            women_status_by_team_id_dict[team_id] = "men"
 
     team_ids = tuple(team_ids_list)
     team_names = tuple(team_names_list)
     candidate_values = tuple(candidate_values_list)
     normalized_choices = tuple(normalized_choices_list)
+    unexpanded_choices = tuple(unexpanded_choices_list)
 
     token_index_lists: dict[str, list[int]] = {}
     trigram_index_lists: dict[str, list[int]] = {}
@@ -1022,10 +1067,12 @@ def _load_team_review_search_snapshot(
         team_names,
         candidate_values,
         normalized_choices,
+        unexpanded_choices,
         token_index,
         trigram_index,
         idxs_by_team_id,
-        qualifiers_by_team_id_dict,
+        consensus_qualifiers_by_team_id,
+        women_status_by_team_id_dict,
     )
 
 
@@ -1041,9 +1088,9 @@ def _load_team_review_search_indexes(
     only need the three index dicts. Reads from the same atomic snapshot as
     :func:`_load_team_review_search_snapshot`.
     """
-    _t, _n, _c, _nc, token_index, trigram_index, idxs_by_team_id, _q = (
-        _load_team_review_search_snapshot(db_path, sport)
-    )
+    (
+        _t, _n, _c, _nc, _unc, token_index, trigram_index, idxs_by_team_id, _q, _ws,
+    ) = _load_team_review_search_snapshot(db_path, sport)
     return token_index, trigram_index, idxs_by_team_id
 
 
@@ -1089,6 +1136,16 @@ def _partial_ratio_admissible(raw_key: str, candidate_key: str) -> bool:
     """Mirrors normalizer._partial_ratio_is_safe — see that function's
     docstring for the rationale. Duplicated here to keep this module
     independent of the heavy ``normalizer`` import surface.
+
+    Rule 3 (``fuzz.ratio >= 70``) is gated by a 6-character minimum on
+    the shorter side. Without that guard, very short single-token names
+    re-open the substring-poison case the whole module is built to
+    prevent: ``fuzz.ratio('aris', 'paris') == 88.89`` would admit
+    ``partial_ratio`` and score ``Paris`` 100 against ``Aris`` — exactly
+    the failure mode the gate exists to block. Six chars is short enough
+    to still admit real typos (``liverpol`` -> ``liverpool fc``,
+    ``marselle`` -> ``marseille``) which the labeled fixture relies on
+    for recall.
     """
     if not raw_key or not candidate_key:
         return False
@@ -1112,7 +1169,7 @@ def _partial_ratio_admissible(raw_key: str, candidate_key: str) -> bool:
             for longer_token in longer_tokens
         ):
             return True
-    if fuzz.ratio(raw_key, candidate_key) >= 70:
+    if len(shorter_str) >= 6 and fuzz.ratio(raw_key, candidate_key) >= 70:
         return True
     return False
 
@@ -1128,6 +1185,7 @@ _QUALIFIER_MISMATCH_PENALTY: float = 15.0
 def _qualifier_gate(
     raw_qualifiers: frozenset[str],
     cand_qualifiers: frozenset[str],
+    cand_women_status: str,
 ) -> tuple[bool, float]:
     """Apply the qualifier-aware gate to a single candidate.
 
@@ -1135,11 +1193,17 @@ def _qualifier_gate(
 
     * ``admit=False`` means the candidate must be dropped from the result
       set. This happens on two hard-block conditions:
-        1. Women ↔ men mismatch (one side has the women marker, the other
-           does not). Cross-bookmaker women markers are reliable enough
-           after the foreign-language expansion that a mismatch here is
-           almost always wrong — the women's and men's teams of the same
-           club are distinct canonicals.
+        1. Women ↔ men mismatch where the candidate team's women status
+           is unambiguous (``cand_women_status == "women"`` or
+           ``"men"``). Cross-bookmaker women markers are reliable enough
+           after the foreign-language expansion that an unambiguous
+           mismatch here is almost always wrong — the women's and men's
+           teams of the same club are distinct canonicals. When the
+           candidate's status is ``"mixed"`` (some aliases carry the
+           marker, others do not — NWSL-style canonicals with bare
+           bookmaker aliases like ``Gotham FC`` next to a display name
+           ``Gotham W``) the hard-block is suppressed so the canonical
+           remains reachable from un-marked queries.
         2. Explicit youth-age mismatch with no overlap (raw is U19 and
            candidate is U23, or similar). Two different age groups within
            the same club's youth system are distinct teams.
@@ -1153,7 +1217,15 @@ def _qualifier_gate(
 
     * ``admit=True, penalty=0`` means no qualifier-driven adjustment.
     """
-    if is_women_team(raw_qualifiers) != is_women_team(cand_qualifiers):
+    raw_is_women = is_women_team(raw_qualifiers)
+    # Women hard-block fires only when the candidate's *team* unambiguously
+    # identifies as one gender (every alias agrees). NWSL-style canonicals
+    # whose display_name carries the only ``W`` marker while bookmaker
+    # aliases omit it land in ``"mixed"`` status, suppressing the block so
+    # the canonical stays reachable from un-marked queries.
+    if cand_women_status == "women" and not raw_is_women:
+        return (False, 0.0)
+    if cand_women_status == "men" and raw_is_women:
         return (False, 0.0)
     raw_ages = youth_ages(raw_qualifiers)
     cand_ages = youth_ages(cand_qualifiers)
@@ -1242,16 +1314,24 @@ def search_canonical_team_candidates(
     raw_key = normalize_identity_text(expand_team_abbreviations(raw_team_name))
     if not raw_key:
         return []
+    # Un-expanded form of the raw query, used only for the exact-match
+    # skip below. Comparing against the *expanded* form would skip
+    # legitimate abbreviation matches (raw ``Hap.Haifa`` expands to
+    # ``hapoel haifa`` which collides with candidate ``Hapoel Haifa`` even
+    # though the bookmaker's form is not actually that alias).
+    raw_key_unexpanded = normalize_identity_text(raw_team_name)
 
     (
         team_ids,
         team_names,
         candidate_values,
         normalized_choices,
+        unexpanded_choices,
         token_index,
         trigram_index,
         idxs_by_team_id,
         qualifiers_by_team_id_dict,
+        women_status_by_team_id,
     ) = _load_team_review_search_snapshot(settings.db_path, sport)
     if not team_ids:
         return []
@@ -1292,11 +1372,22 @@ def search_canonical_team_candidates(
     best_by_team: dict[int, tuple[float, int]] = {}
     for idx in candidate_idxs:
         normalized = normalized_choices[idx]
-        if not normalized or normalized == raw_key:
+        if not normalized:
+            continue
+        # The exact-match skip uses the *un-expanded* normalized form so
+        # legitimate abbreviation matches (raw ``Hap.Haifa`` -> canonical
+        # ``Hapoel Haifa``) are not dropped. The skip's purpose is to
+        # avoid surfacing the exact alias the caller is already trying
+        # to resolve through the candidate-search fallback path; that
+        # situation is detectable on the un-expanded form alone.
+        if unexpanded_choices[idx] == raw_key_unexpanded:
             continue
         team_id = team_ids[idx]
         cand_qualifiers = qualifiers_by_team_id_dict.get(team_id, frozenset())
-        admit, penalty = _qualifier_gate(raw_qualifiers, cand_qualifiers)
+        cand_women_status = women_status_by_team_id.get(team_id, "men")
+        admit, penalty = _qualifier_gate(
+            raw_qualifiers, cand_qualifiers, cand_women_status
+        )
         if not admit:
             continue
         token_set_score = score_a[idx]
