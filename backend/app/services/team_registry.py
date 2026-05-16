@@ -13,6 +13,7 @@ from rapidfuzz import fuzz, process
 
 from ..config import settings
 from .team_seed_data import SPORT_ALIAS_SEEDS
+from .team_abbreviations import expand_team_abbreviations
 from .text_normalizer import normalize_identity_text
 
 DEFAULT_SPORT = "basketball"
@@ -917,7 +918,10 @@ def _load_team_review_search_snapshot(
     - ``team_ids[i]``             — owning team for row ``i``
     - ``team_names[i]``           — canonical display name of that team
     - ``candidate_values[i]``     — original string for this row
-    - ``normalized_choices[i]``   — ``normalize_identity_text(candidate_values[i])``
+    - ``normalized_choices[i]``   — ``normalize_identity_text(expand_team_abbreviations(candidate_values[i]))``
+      Period-abbreviation expansion runs first so that ``Hap.Haifa`` and
+      ``Hapoel Haifa`` produce identical normalized forms and therefore
+      identical tokens for the fuzzy scorer.
     - ``token_index[token]``      — tuple of flat idxs whose normalized choice
       contains ``token``. Tokens shorter than 3 characters or matching more
       than ``max(10, total_teams * 0.10)`` distinct teams are excluded.
@@ -938,7 +942,9 @@ def _load_team_review_search_snapshot(
             team_ids_list.append(team_id)
             team_names_list.append(team_name)
             candidate_values_list.append(candidate_value)
-            normalized_choices_list.append(normalize_identity_text(candidate_value))
+            normalized_choices_list.append(
+                normalize_identity_text(expand_team_abbreviations(candidate_value))
+            )
 
     team_ids = tuple(team_ids_list)
     team_names = tuple(team_names_list)
@@ -1058,6 +1064,38 @@ def _collect_team_search_candidate_idxs(
     return sorted(expanded)
 
 
+def _partial_ratio_admissible(raw_key: str, candidate_key: str) -> bool:
+    """Mirrors normalizer._partial_ratio_is_safe — see that function's
+    docstring for the rationale. Duplicated here to keep this module
+    independent of the heavy ``normalizer`` import surface.
+    """
+    if not raw_key or not candidate_key:
+        return False
+    raw_tokens = raw_key.split()
+    candidate_tokens = candidate_key.split()
+    if not raw_tokens or not candidate_tokens:
+        return False
+    shorter_str, longer_tokens = (
+        (raw_key, candidate_tokens)
+        if len(raw_key) <= len(candidate_key)
+        else (candidate_key, raw_tokens)
+    )
+    shorter_tokens = shorter_str.split()
+    longer_set = set(longer_tokens)
+    if all(token in longer_set for token in shorter_tokens):
+        return True
+    if len(shorter_tokens) == 1:
+        shorter_single = shorter_tokens[0]
+        if len(shorter_single) >= 4 and any(
+            longer_token.startswith(shorter_single) and longer_token != shorter_single
+            for longer_token in longer_tokens
+        ):
+            return True
+    if fuzz.ratio(raw_key, candidate_key) >= 70:
+        return True
+    return False
+
+
 def search_canonical_team_candidates(
     raw_team_name: str,
     *,
@@ -1065,7 +1103,7 @@ def search_canonical_team_candidates(
     limit: int = 3,
 ) -> list[CanonicalTeamCandidate]:
     _ensure_bootstrapped()
-    raw_key = normalize_identity_text(raw_team_name)
+    raw_key = normalize_identity_text(expand_team_abbreviations(raw_team_name))
     if not raw_key:
         return []
 
@@ -1117,9 +1155,17 @@ def search_canonical_team_candidates(
         normalized = normalized_choices[idx]
         if not normalized or normalized == raw_key:
             continue
-        score = score_a[idx]
-        if score_b[idx] > score:
-            score = score_b[idx]
+        token_set_score = score_a[idx]
+        partial_score = score_b[idx]
+        # Admit partial_ratio only when the relationship is a whole-token
+        # subset, prefix-of-token abbreviation, or high-similarity typo
+        # (see _partial_ratio_admissible for full rationale). Without this
+        # gate, ``Aris`` scores 100 against ``Paris Saint-Germain`` because
+        # ``aris`` is a substring of ``paris``.
+        if _partial_ratio_admissible(raw_key, normalized):
+            score = max(token_set_score, partial_score)
+        else:
+            score = token_set_score
         if score <= 0.0:
             continue
         team_id = team_ids[idx]

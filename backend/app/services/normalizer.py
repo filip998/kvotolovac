@@ -25,6 +25,7 @@ from .team_registry import (
     resolve_team_alias,
     search_canonical_team_candidates,
 )
+from .team_abbreviations import expand_team_abbreviations
 from .text_normalizer import (
     compact_identity_text,
     normalize_identity_text,
@@ -131,7 +132,16 @@ _MARKET_TYPE_MAPPING: dict[str, str] = {
 
 
 def _normalize_team_key(raw_name: str) -> str:
-    return normalize_identity_text(raw_name)
+    """Identity-text key used for de-duping decisions and for fuzzy scoring.
+
+    Period-abbreviation expansion (``Hap.Haifa`` → ``Hapoel Haifa``) is
+    applied before identity normalization so that abbreviated forms share
+    tokens with their long-form canonical name. This makes
+    ``fuzz.token_set_ratio`` succeed on abbreviation matches without relying
+    on ``fuzz.partial_ratio``'s permissive substring behavior.
+    """
+    expanded = expand_team_abbreviations(raw_name)
+    return normalize_identity_text(expanded)
 
 
 @dataclass(frozen=True)
@@ -1502,17 +1512,108 @@ def _build_event_slot_resolutions(
     return resolutions
 
 
+# Tokens that do not count as a "shared significant token" for the
+# normalizer's substring-poison floor. Length >= 3 is also required.
+_INSIGNIFICANT_TOKEN_FLOOR_STOPWORDS: frozenset[str] = frozenset({
+    "fc", "cf", "sc", "ac", "afc", "cfc", "sk", "sv", "sg", "tsg", "tsv",
+    "fk", "cd", "cs", "ce", "ca", "cp", "cr", "club", "futbol", "futebol",
+    "football", "ksk", "kk", "mks", "gks", "ks", "fb", "ud",
+    "the", "el", "la", "los", "las", "de", "da", "do", "del", "della", "di",
+    "y", "i", "of", "on",
+    "rj", "sp", "mg", "ba", "pr", "mt", "ms", "go", "pe", "pa", "ma",
+    "es", "pi", "rn", "al", "tj", "sj", "se",
+    "vs", "ve", "jr", "sr", "ii", "iii",
+})
+
+
+def _significant_tokens(text: str) -> set[str]:
+    """Tokens of length >= 3 that carry team-identity meaning.
+
+    Currently unused after the partial_ratio gate was tightened to handle
+    the substring-poison cases via :func:`_partial_ratio_is_safe`; kept here
+    as a public helper for future score-shaping experiments that need a
+    cheap "is there any shared identity-token" predicate.
+    """
+    return {
+        token
+        for token in text.split()
+        if len(token) >= 3 and token not in _INSIGNIFICANT_TOKEN_FLOOR_STOPWORDS
+    }
+
+
+def _partial_ratio_is_safe(raw_key: str, candidate_key: str) -> bool:
+    """Gate ``fuzz.partial_ratio`` to legitimate abbreviation/typo cases.
+
+    ``partial_ratio`` returns 100 whenever the shorter string is a contiguous
+    substring of the longer string. That permissive behavior is the single
+    largest source of suggestion poison observed during manual labeling —
+    ``Paris Saint-Germain → Aris`` scores 100 because ``aris`` is a substring
+    of ``paris``. Dropping it outright would cost recall for real
+    abbreviations (``inter → Internazionale``, ``Liverpol → Liverpool FC``).
+
+    Admits ``partial_ratio`` when at least one of:
+
+    1. Every shorter-side token appears as a whole token of the longer side
+       (token-subset like ``Real Madrid → Real Madrid Castilla``).
+    2. The shorter side is a single token of >= 4 characters AND is a prefix
+       of some token of the longer side (``inter`` is a prefix of
+       ``internazionale``; ``aris`` is not a prefix of ``paris``).
+    3. ``fuzz.ratio(raw_key, candidate_key) >= 70`` — whole-string typo
+       resemblance high enough that this is likely a misspelling
+       (``liverpol`` vs ``liverpool fc``) rather than coincidental substring
+       overlap.
+    """
+    if not raw_key or not candidate_key:
+        return False
+    raw_tokens = raw_key.split()
+    candidate_tokens = candidate_key.split()
+    if not raw_tokens or not candidate_tokens:
+        return False
+    shorter_str, longer_tokens = (
+        (raw_key, candidate_tokens)
+        if len(raw_key) <= len(candidate_key)
+        else (candidate_key, raw_tokens)
+    )
+    shorter_tokens = shorter_str.split()
+    longer_set = set(longer_tokens)
+    if all(token in longer_set for token in shorter_tokens):
+        return True
+    if len(shorter_tokens) == 1:
+        shorter_single = shorter_tokens[0]
+        if len(shorter_single) >= 4 and any(
+            longer_token.startswith(shorter_single) and longer_token != shorter_single
+            for longer_token in longer_tokens
+        ):
+            return True
+    if fuzz.ratio(raw_key, candidate_key) >= 70:
+        return True
+    return False
+
+
 def _team_candidate_score(raw_team_name: str, candidate_team_name: str) -> float:
+    """Score a candidate canonical team against a raw bookmaker label.
+
+    Returns a fuzzy score in ``[0, 100]``. Uses ``token_set_ratio`` as the
+    baseline; admits ``partial_ratio`` (which can boost ranking for legitimate
+    abbreviations and typos) only when :func:`_partial_ratio_is_safe`
+    confirms the relationship is a whole-token subset, prefix-of-token
+    abbreviation, or high-similarity typo.
+
+    Blocks the substring-poison class observed during manual labeling
+    (``Aris`` matching inside ``Paris``, ``Bra`` inside ``Brandys``, ``ASA``
+    inside ``Nagasaki`` etc.) while preserving abbreviation and typo recall.
+    Period-abbreviation expansion in :func:`_normalize_team_key` (e.g.
+    ``Atl.Mineiro → Atletico Mineiro``) runs first so that the abbreviated
+    forms reach the scorer already token-aligned with the canonical.
+    """
     raw_key = _normalize_team_key(raw_team_name)
     candidate_key = _normalize_team_key(candidate_team_name)
     if not raw_key or not candidate_key:
         return 0.0
-    return float(
-        max(
-            fuzz.token_set_ratio(raw_key, candidate_key),
-            fuzz.partial_ratio(raw_key, candidate_key),
-        )
-    )
+    token_set_score = float(fuzz.token_set_ratio(raw_key, candidate_key))
+    if _partial_ratio_is_safe(raw_key, candidate_key):
+        return max(token_set_score, float(fuzz.partial_ratio(raw_key, candidate_key)))
+    return token_set_score
 
 
 def _rank_team_review_candidates(
