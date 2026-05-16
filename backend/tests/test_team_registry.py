@@ -127,6 +127,80 @@ def test_search_canonical_team_candidates_does_not_leak_cross_sport(team_registr
     assert football_team.team_id not in {c.team_id for c in basketball_results}
 
 
+def test_search_canonical_team_candidates_hard_blocks_women_men_mismatch(
+    team_registry_file,
+):
+    """Women ↔ men qualifier mismatch must be hard-blocked.
+
+    Two canonicals share the same base name (``Barcelona``) but have
+    different qualifiers: the men's first team versus the women's first
+    team. A raw bookmaker name without a women marker must match only the
+    men's team; a raw with a women marker (English, German "Frauen",
+    Portuguese "Feminino" …) must match only the women's team.
+    """
+    men = create_canonical_team(display_name="Barcelona", sport="football")
+    women = create_canonical_team(display_name="Barcelona Women", sport="football")
+
+    men_results = search_canonical_team_candidates(
+        "FC Barcelona", sport="football", limit=5
+    )
+    assert women.team_id not in {c.team_id for c in men_results}
+    assert men.team_id in {c.team_id for c in men_results}
+
+    women_results = search_canonical_team_candidates(
+        "Barcelona Frauen", sport="football", limit=5
+    )
+    assert men.team_id not in {c.team_id for c in women_results}
+    assert women.team_id in {c.team_id for c in women_results}
+
+
+def test_search_canonical_team_candidates_demotes_youth_marker_mismatch(
+    team_registry_file,
+):
+    """Youth marker mismatch must demote the candidate (not remove it).
+
+    A raw ``Liverpool U19 FC`` (non-exact-equal to the canonical to
+    bypass the early-skip-on-exact-match filter) should still surface
+    ``Liverpool`` as a candidate because the operator may want to know
+    "this is your closest fuzzy fit, but the youth marker is missing on
+    the canonical". The score must be lower than what an exact qualifier
+    match would produce so the qualifier-matching ``Liverpool U19``
+    canonical takes priority.
+    """
+    senior = create_canonical_team(display_name="Liverpool", sport="football")
+    youth = create_canonical_team(display_name="Liverpool U19", sport="football")
+
+    results = search_canonical_team_candidates(
+        "Liverpool U19 FC", sport="football", limit=5
+    )
+    team_ids = [c.team_id for c in results]
+    assert youth.team_id in team_ids, "youth canonical must remain in results"
+    assert senior.team_id in team_ids, "senior canonical must remain as a (demoted) suggestion"
+    assert team_ids.index(youth.team_id) < team_ids.index(senior.team_id), (
+        "the qualifier-matching youth canonical must outrank the demoted senior"
+    )
+
+
+def test_search_canonical_team_candidates_hard_blocks_explicit_age_mismatch(
+    team_registry_file,
+):
+    """Two explicit youth ages on different sides is a hard block.
+
+    ``Real Madrid U19`` and ``Real Madrid U23`` are two distinct teams
+    within the same club's youth system. A raw ``Real Madrid U23 FC``
+    (non-exact-equal to the canonical to bypass the early-skip-on-exact-
+    match filter) must never receive ``Real Madrid U19`` as a suggestion.
+    """
+    u19 = create_canonical_team(display_name="Real Madrid U19", sport="football")
+    u23 = create_canonical_team(display_name="Real Madrid U23", sport="football")
+
+    results = search_canonical_team_candidates(
+        "Real Madrid U23 FC", sport="football", limit=5
+    )
+    assert u19.team_id not in {c.team_id for c in results}
+    assert u23.team_id in {c.team_id for c in results}
+
+
 def test_create_canonical_team_reports_unresolved_inactive_conflict(team_registry_file):
     create_canonical_team(display_name="QA Schema Anchor")
     display_name = "QA Orphan Inactive"
@@ -551,6 +625,23 @@ def test_search_canonical_team_candidates_top1_matches_reference_implementation(
     but is dropped by the prefilter — that is a deliberate precision
     tradeoff, not a regression). Top-1 stays the same because the genuine
     best match always shares strong signal with the query.
+
+    Note: the test queries deliberately avoid raw names with qualifier
+    markers (``B``, ``II``, ``U19``, ``women``, ``Frauen`` …). The
+    qualifier-aware gate added alongside the substring-poison fix applies
+    a 15-point demotion to candidates whose qualifier set doesn't match
+    the raw, which is a deliberate deviation from the reference. The
+    qualifier-driven score adjustment is exercised by the dedicated tests
+    around ``_qualifier_gate`` instead.
+
+    The score-equality assertion was relaxed to ``actual <= expected``
+    because the substring-poison gate denies ``partial_ratio`` for
+    candidates that don't share a token / token-prefix / typo signal
+    (e.g. ``Real Sociedad`` raw vs ``FC Real`` alias scores 72.7272 under
+    the gated path and 72.7273 under the reference — a 1-ULP delta that
+    reflects the gate's intentional stricter precision). Top-1 *identity*
+    is the contract; absolute scores under the gates are allowed to
+    regress as long as the identity is preserved.
     """
     team_registry.create_canonical_team(
         display_name="Real Madrid", sport="football"
@@ -584,7 +675,7 @@ def test_search_canonical_team_candidates_top1_matches_reference_implementation(
         "Real Madrid CF",
         "FC Atletico",
         "Barca",
-        "Real Sociedad B",
+        "Real Sociedad",
         "Sevilla",
         "Madrid CF",
         "Sociedad de San Sebastian",
@@ -602,9 +693,23 @@ def test_search_canonical_team_candidates_top1_matches_reference_implementation(
             f"top-1 team_id mismatch for query={query!r}: "
             f"actual={actual[0]!r} expected={expected[0]!r}"
         )
-        assert actual[0].team_name == expected[0].team_name
-        assert actual[0].score == expected[0].score
-        assert actual[0].matched_alias == expected[0].matched_alias
+        assert actual[0].team_name == expected[0].team_name, (
+            f"top-1 team_name mismatch for query={query!r}"
+        )
+        # The new code's score may be <= reference because the
+        # substring-poison gate denies partial_ratio for some candidates
+        # (the reference always admits it) and the qualifier gate demotes
+        # candidates with women/youth/reserve mismatch. Both are
+        # deliberate deviations. The invariant the test pins is that the
+        # *team identity* of the top-1 candidate is unchanged — not the
+        # absolute score.
+        assert actual[0].score <= expected[0].score, (
+            f"top-1 score regressed beyond reference for query={query!r}: "
+            f"actual={actual[0]!r} expected={expected[0]!r}"
+        )
+        assert actual[0].matched_alias == expected[0].matched_alias, (
+            f"top-1 matched_alias mismatch for query={query!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

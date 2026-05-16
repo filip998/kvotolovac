@@ -14,6 +14,13 @@ from rapidfuzz import fuzz, process
 from ..config import settings
 from .team_seed_data import SPORT_ALIAS_SEEDS
 from .team_abbreviations import expand_team_abbreviations
+from .team_qualifiers import (
+    has_reserve_marker,
+    has_youth_marker,
+    is_women_team,
+    team_qualifiers,
+    youth_ages,
+)
 from .text_normalizer import normalize_identity_text
 
 DEFAULT_SPORT = "basketball"
@@ -903,6 +910,7 @@ def _load_team_review_search_snapshot(
     dict[str, tuple[int, ...]],
     dict[str, tuple[int, ...]],
     dict[int, tuple[int, ...]],
+    dict[int, frozenset[str]],
 ]:
     """Atomically build the team-review search choices and inverted indexes
     from a single :func:`_load_team_search_rows` snapshot.
@@ -913,7 +921,7 @@ def _load_team_review_search_snapshot(
     tuple a caller already holds is a coherent snapshot regardless of what
     the cache returns next.
 
-    Returns seven items, in this order:
+    Returns eight items, in this order:
 
     - ``team_ids[i]``             — owning team for row ``i``
     - ``team_names[i]``           — canonical display name of that team
@@ -929,6 +937,13 @@ def _load_team_review_search_snapshot(
       whitespace-stripped normalized choice contains ``trigram``.
     - ``idxs_by_team_id[team_id]``— tuple of all flat idxs belonging to that
       team (for team-set expansion during prefiltering).
+    - ``qualifiers_by_team_id[team_id]`` — frozenset of qualifier markers
+      detected on the canonical display name of the team (see
+      :func:`team_qualifiers.team_qualifiers`). Used by the candidate
+      scoring loop to hard-block women/men mismatches and demote youth /
+      reserve mismatches. Computed once at snapshot time so the gate stays
+      O(candidates) regardless of how often callers invoke
+      :func:`search_canonical_team_candidates`.
 
     Cache invalidation is wired into :func:`clear_team_registry_cache`.
     """
@@ -937,6 +952,7 @@ def _load_team_review_search_snapshot(
     team_names_list: list[str] = []
     candidate_values_list: list[str] = []
     normalized_choices_list: list[str] = []
+    qualifiers_by_team_id_dict: dict[int, frozenset[str]] = {}
     for team_id, team_name, aliases in _load_team_search_rows(settings.db_path, sport):
         for candidate_value in (team_name, *aliases):
             team_ids_list.append(team_id)
@@ -944,6 +960,10 @@ def _load_team_review_search_snapshot(
             candidate_values_list.append(candidate_value)
             normalized_choices_list.append(
                 normalize_identity_text(expand_team_abbreviations(candidate_value))
+            )
+        if team_id not in qualifiers_by_team_id_dict:
+            qualifiers_by_team_id_dict[team_id] = frozenset(
+                team_qualifiers(team_name, sport=sport)
             )
 
     team_ids = tuple(team_ids_list)
@@ -1005,6 +1025,7 @@ def _load_team_review_search_snapshot(
         token_index,
         trigram_index,
         idxs_by_team_id,
+        qualifiers_by_team_id_dict,
     )
 
 
@@ -1020,7 +1041,7 @@ def _load_team_review_search_indexes(
     only need the three index dicts. Reads from the same atomic snapshot as
     :func:`_load_team_review_search_snapshot`.
     """
-    _t, _n, _c, _nc, token_index, trigram_index, idxs_by_team_id = (
+    _t, _n, _c, _nc, token_index, trigram_index, idxs_by_team_id, _q = (
         _load_team_review_search_snapshot(db_path, sport)
     )
     return token_index, trigram_index, idxs_by_team_id
@@ -1096,6 +1117,56 @@ def _partial_ratio_admissible(raw_key: str, candidate_key: str) -> bool:
     return False
 
 
+# Score penalty applied to a candidate that has a youth/reserve qualifier
+# mismatch with the raw name. Picked so that ties between a qualifier-match
+# and a qualifier-mismatch always break in favor of the match, but a strong
+# fuzzy match (>= 80) can still surface a mismatched candidate near the top
+# of the result list as a *suggestion* the operator can review.
+_QUALIFIER_MISMATCH_PENALTY: float = 15.0
+
+
+def _qualifier_gate(
+    raw_qualifiers: frozenset[str],
+    cand_qualifiers: frozenset[str],
+) -> tuple[bool, float]:
+    """Apply the qualifier-aware gate to a single candidate.
+
+    Returns ``(admit, penalty)``:
+
+    * ``admit=False`` means the candidate must be dropped from the result
+      set. This happens on two hard-block conditions:
+        1. Women ↔ men mismatch (one side has the women marker, the other
+           does not). Cross-bookmaker women markers are reliable enough
+           after the foreign-language expansion that a mismatch here is
+           almost always wrong — the women's and men's teams of the same
+           club are distinct canonicals.
+        2. Explicit youth-age mismatch with no overlap (raw is U19 and
+           candidate is U23, or similar). Two different age groups within
+           the same club's youth system are distinct teams.
+
+    * ``admit=True, penalty>0`` means the candidate is kept but its score
+      is reduced by ``penalty``. This applies on weaker mismatches
+      (youth/reserve marker present on one side but not the other; raw
+      has explicit age, candidate does not). The intent is to demote
+      rather than remove so that when there is no perfect match the
+      operator still sees the closest fuzzy fit.
+
+    * ``admit=True, penalty=0`` means no qualifier-driven adjustment.
+    """
+    if is_women_team(raw_qualifiers) != is_women_team(cand_qualifiers):
+        return (False, 0.0)
+    raw_ages = youth_ages(raw_qualifiers)
+    cand_ages = youth_ages(cand_qualifiers)
+    if raw_ages and cand_ages and not (raw_ages & cand_ages):
+        return (False, 0.0)
+    penalty = 0.0
+    if has_youth_marker(raw_qualifiers) != has_youth_marker(cand_qualifiers):
+        penalty += _QUALIFIER_MISMATCH_PENALTY
+    if has_reserve_marker(raw_qualifiers) != has_reserve_marker(cand_qualifiers):
+        penalty += _QUALIFIER_MISMATCH_PENALTY
+    return (True, penalty)
+
+
 def search_canonical_team_candidates(
     raw_team_name: str,
     *,
@@ -1115,9 +1186,12 @@ def search_canonical_team_candidates(
         token_index,
         trigram_index,
         idxs_by_team_id,
+        qualifiers_by_team_id_dict,
     ) = _load_team_review_search_snapshot(settings.db_path, sport)
     if not team_ids:
         return []
+
+    raw_qualifiers = frozenset(team_qualifiers(raw_team_name, sport=sport))
 
     candidate_idxs = _collect_team_search_candidate_idxs(
         raw_key,
@@ -1155,6 +1229,11 @@ def search_canonical_team_candidates(
         normalized = normalized_choices[idx]
         if not normalized or normalized == raw_key:
             continue
+        team_id = team_ids[idx]
+        cand_qualifiers = qualifiers_by_team_id_dict.get(team_id, frozenset())
+        admit, penalty = _qualifier_gate(raw_qualifiers, cand_qualifiers)
+        if not admit:
+            continue
         token_set_score = score_a[idx]
         partial_score = score_b[idx]
         # Admit partial_ratio only when the relationship is a whole-token
@@ -1166,9 +1245,10 @@ def search_canonical_team_candidates(
             score = max(token_set_score, partial_score)
         else:
             score = token_set_score
+        if penalty:
+            score = max(0.0, score - penalty)
         if score <= 0.0:
             continue
-        team_id = team_ids[idx]
         current = best_by_team.get(team_id)
         if current is None or score > current[0]:
             best_by_team[team_id] = (score, idx)
