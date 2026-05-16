@@ -44,6 +44,28 @@ _FOOTBALL_AUTO_MATCH_STRONG_SIDE_THRESHOLD = 95
 _FOOTBALL_AUTO_MATCH_WEAK_SIDE_THRESHOLD = 60
 _FOOTBALL_AUTO_MATCH_MARGIN = 8
 _LOW_SIGNAL_TEAM_TOKENS = {"bc", "bk", "kk", "fc", "fk", "club", "team", "sc", "cf", "cd", "ce"}
+# Foreign-language women markers seen in real-world team names. Tokens are
+# matched after `normalize_identity_text` (NFKD strip + lower + alnum-only),
+# so include the post-normalization form (e.g. "feminin" covers French
+# "Féminin" because diacritics are stripped). Conservative additions only —
+# tokens that could plausibly appear as part of a regular team name (e.g.
+# bare "fem") are intentionally omitted.
+_FOREIGN_WOMEN_TOKENS = frozenset({
+    "frauen",      # German
+    "damen",       # German (formal)
+    "feminino",    # Portuguese (m.)
+    "feminina",    # Portuguese (f.)
+    "femminile",   # Italian
+    "femenino",    # Spanish (m.)
+    "femenina",    # Spanish (f.)
+    "feminin",     # French/Romanian (post-diacritic strip)
+    "feminines",   # French plural
+    "kvinnor",     # Swedish
+    "naiset",      # Finnish
+    "vrouwen",     # Dutch
+    "kvinder",     # Danish
+    "dff",         # Swedish "Damfotboll Förening" club designation
+})
 _TEAM_QUALIFIER_TOKENS = {
     "2",
     "ii",
@@ -60,12 +82,12 @@ _TEAM_QUALIFIER_TOKENS = {
     "w",
     "women",
     "youth",
-}
+} | _FOREIGN_WOMEN_TOKENS
 # Cross-sport aliases for explicit women markers. Plain ASCII "z" is not in
 # this set because it is a common location abbreviation in football; only
 # explicit marker syntax such as "(Ž)" or "Ž/" is treated as women.
-_WOMEN_QUALIFIER_ALIASES = frozenset({"w", "wom", "women"})
-_WOMEN_MARKER_TOKENS = frozenset({"w", "wom", "women"})
+_WOMEN_QUALIFIER_ALIASES = frozenset({"w", "wom", "women"}) | _FOREIGN_WOMEN_TOKENS
+_WOMEN_MARKER_TOKENS = frozenset({"w", "wom", "women"}) | _FOREIGN_WOMEN_TOKENS
 _AGGRESSIVE_MERGE_SPORTS = frozenset({"basketball"})
 _EXPLICIT_Z_WOMEN_MARKER_RE = re.compile(
     r"(^|\s)ž(?=$|\s)|\(\s*[žz]\s*\)|^\s*[žz]\s*/",
@@ -425,7 +447,7 @@ def _team_qualifiers(name: str, *, sport: str | None = None) -> set[str]:
             continue
         if token in _WOMEN_QUALIFIER_ALIASES:
             is_explicit_prefix = (
-                token in {"women", "wom"}
+                token in ({"women", "wom"} | _FOREIGN_WOMEN_TOKENS)
                 and index == 0
                 and len(tokens) > 1
             )
@@ -980,7 +1002,11 @@ def _women_marker_forms(
         if token not in _WOMEN_QUALIFIER_ALIASES:
             continue
         next_token = tokens[index + 1] if index + 1 < len(tokens) else None
-        is_explicit_prefix = token in {"women", "wom"} and index == 0 and len(tokens) > 1
+        is_explicit_prefix = (
+            token in ({"women", "wom"} | _FOREIGN_WOMEN_TOKENS)
+            and index == 0
+            and len(tokens) > 1
+        )
         is_suffix = index > 0 and (
             index == len(tokens) - 1
             or next_token in {"team", "women"}
