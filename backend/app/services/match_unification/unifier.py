@@ -8,7 +8,7 @@ from ...models.schemas import (
     MatchUnificationBenchmarkOut,
     MatchUnificationSourceMatchSlotBenchmarkOut,
 )
-from . import resolution
+from . import candidate_extraction, resolution
 from .store import MatchUnificationStore, OddsStoreMatchUnificationAdapter
 from .types import (
     MatchUnificationInputError,
@@ -75,12 +75,14 @@ class MatchUnification:
         snapshot: PersistedScrapeSnapshot,
         rows: MatchUnificationRows,
     ) -> MatchUnificationResult:
-        extraction_stats = resolution._EventCandidateExtractionStats()
+        extraction_stats = candidate_extraction._EventCandidateExtractionStats()
         extraction_started_at = time.perf_counter()
-        football_event_resolutions = resolution._build_football_event_resolutions(
-            list(rows.raw_outcome_offers)
+        football_event_resolutions = (
+            candidate_extraction._build_football_event_resolutions(
+                list(rows.raw_outcome_offers)
+            )
         )
-        candidates = resolution.extract_event_candidates(
+        candidates = candidate_extraction.extract_event_candidates(
             raw_odds=list(rows.raw_odds),
             raw_outcome_offers=list(rows.raw_outcome_offers),
             normalized_odds=list(rows.normalized_odds),
@@ -88,7 +90,9 @@ class MatchUnification:
             football_event_resolutions=football_event_resolutions,
             stats=extraction_stats,
         )
-        extract_event_candidates_ms = resolution._elapsed_ms(extraction_started_at)
+        extract_event_candidates_ms = candidate_extraction._elapsed_ms(
+            extraction_started_at
+        )
 
         group_stats = resolution._EventGroupBuildStats()
         grouping_started_at = time.perf_counter()
