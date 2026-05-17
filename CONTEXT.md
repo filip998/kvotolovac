@@ -24,3 +24,10 @@ market.
 
 The previous standalone event-player resolver naming is retired; player identity
 belongs to Match Unification because it depends on the resolved event graph.
+
+### Event Candidate Extraction
+
+The Match Unification work that turns raw bookmaker events, normalized odds, and
+normalized outcome offers into event candidates before grouping. It owns source
+matching, raw source metadata, candidate precedence, football raw event candidate
+enrichment, and extraction benchmark counters.
