@@ -52,9 +52,9 @@ from ..services.canonical_offers import (
     canonical_offer_from_normalized_outcome_offer,
     canonical_offers_from_normalized_odds,
 )
-from ..services.event_player_resolver import (
-    build_event_scoped_player_identities,
-    build_event_scoped_player_odds,
+from ..services.match_unification.player_identity import (
+    ActiveEventMembership,
+    resolve_event_players,
 )
 from ..services.league_registry import league_country, league_display_name
 
@@ -1943,12 +1943,13 @@ def _build_event_scoped_odds(
     row_id_by_normalized_id = {
         id(normalized): row["id"] for row, normalized in identity_normalized_rows
     }
-    scoped_odds = build_event_scoped_player_odds(
+    player_resolution = resolve_event_players(
         [normalized for _, normalized in identity_normalized_rows],
-        members,
+        ActiveEventMembership.from_members(members),
     )
     scoped_by_row_id = {
-        row_id_by_normalized_id[id(scoped.odds)]: scoped for scoped in scoped_odds
+        row_id_by_normalized_id[id(scoped.odds)]: scoped
+        for scoped in player_resolution.scoped_odds
     }
 
     odds_out: list[EventOddsOut] = []
@@ -1986,7 +1987,7 @@ def _build_event_scoped_odds(
             display_name=identity.display_name,
             source_variants=list(identity.source_variants),
         )
-        for identity in build_event_scoped_player_identities(scoped_odds)
+        for identity in player_resolution.identities
     ]
     return odds_out, players
 
@@ -3383,9 +3384,13 @@ async def get_current_canonical_offers_for_matches(
         [*odds_rows, *outcome_offer_rows],
         resolved_event_members,
     )
+    player_resolution = resolve_event_players(
+        odds_rows,
+        ActiveEventMembership.from_members(resolved_event_members),
+    )
     event_scoped_player_odds = {
         id(item.odds): item
-        for item in build_event_scoped_player_odds(odds_rows, resolved_event_members)
+        for item in player_resolution.scoped_odds
     }
     canonical_offers: list[CanonicalOffer] = []
     for odds in odds_rows:
