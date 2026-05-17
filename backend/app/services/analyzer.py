@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from itertools import combinations
 
 from ..models.schemas import NormalizedOdds, ResolvedEventMemberOut
-from .event_player_resolver import (
-    build_event_scoped_player_odds,
+from .match_unification.player_identity import (
+    ActiveEventMembership,
     is_basketball_player_prop,
+    resolve_event_players,
 )
 from .middle_ev import MiddleMarketQuote, estimate_middle
 
@@ -141,20 +142,6 @@ def _legacy_groups(odds_list: list[NormalizedOdds]) -> list[_OddsGroup]:
     ]
 
 
-def _active_member_event_lookup(
-    event_members: list[ResolvedEventMemberOut],
-) -> dict[tuple[str, str], str]:
-    lookup: dict[tuple[str, str], str] = {}
-    for member in sorted(
-        event_members,
-        key=lambda item: (item.resolved_event_id, item.id, item.match_id, item.bookmaker_id),
-    ):
-        if member.status != "active":
-            continue
-        lookup.setdefault((member.match_id, member.bookmaker_id), member.resolved_event_id)
-    return lookup
-
-
 def _analysis_groups(
     odds_list: list[NormalizedOdds],
     *,
@@ -164,8 +151,9 @@ def _analysis_groups(
     if not event_members:
         return _legacy_groups(odds_list)
 
-    event_by_member = _active_member_event_lookup(event_members)
-    event_scoped_odds = build_event_scoped_player_odds(odds_list, event_members)
+    membership = ActiveEventMembership.from_members(event_members)
+    player_resolution = resolve_event_players(odds_list, membership)
+    event_scoped_odds = player_resolution.scoped_odds
     scoped_odds_ids = {id(item.odds) for item in event_scoped_odds}
 
     event_groups: dict[tuple[str, str, str], list] = {}
@@ -199,20 +187,27 @@ def _analysis_groups(
     for odds in odds_list:
         if id(odds) in scoped_odds_ids:
             continue
-        resolved_event_id = event_by_member.get((odds.match_id, odds.bookmaker_id))
-        if resolved_event_id is None:
+        member = membership.member_for(
+            match_id=odds.match_id,
+            bookmaker_id=odds.bookmaker_id,
+        )
+        if member is None:
             continue
         if is_basketball_player_prop(odds):
             continue
         key = (
-            resolved_event_id,
+            member.resolved_event_id,
             _comparison_market_type(odds.market_type),
             odds.player_name,
         )
         event_non_player_groups.setdefault(key, []).append(odds)
         event_grouped_odds_ids.add(id(odds))
 
-    for (resolved_event_id, market_type, player_name), group_odds in event_non_player_groups.items():
+    for (
+        resolved_event_id,
+        market_type,
+        player_name,
+    ), group_odds in event_non_player_groups.items():
         groups.append(
             _OddsGroup(
                 match_id=_representative_match_id(
