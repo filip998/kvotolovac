@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.config import settings
+from app.database import get_db
 from app.models.schemas import (
     EventReviewCaseIn,
     NormalizedOdds,
@@ -16,12 +17,16 @@ from app.models.schemas import (
     TeamReviewCandidate,
     TeamReviewDiagnostic,
 )
-from app.services import event_resolver as event_resolver_module
-from app.services.event_resolver import (
+from app.services.match_unification import (
+    MatchUnification,
+    MatchUnificationRows,
+    PersistedScrapeSnapshot,
+)
+from app.services.match_unification import resolution as resolution_module
+from app.services.match_unification.resolution import (
     EventCandidate,
     EventResolutionGroup,
     _CandidateGroup,
-    _EventCandidateExtractionStats,
     _EventGroupBuildStats,
     _FUZZY_ORIENTATION_MARGIN,
     _PairResolution,
@@ -32,17 +37,16 @@ from app.services.event_resolver import (
     _event_review_case,
     _event_split_diagnostics_benchmark,
     _orientation_scores,
-    _raw_odds_sources,
     SameTimeCanonicalSlot,
     _same_time_slot_orientation,
     build_event_resolution_groups,
-    extract_event_candidates,
-    resolve_and_persist_events,
+)
+from app.services.match_unification.team_text import (
+    same_team_context as _same_team_context,
+    team_qualifiers as _team_qualifiers,
 )
 from app.services.normalizer import generate_match_id
 from app.services.outcome_normalizer import (
-    _same_team_context,
-    _team_qualifiers,
     normalize_outcome_offers_with_context,
 )
 from app.services.team_registry import create_canonical_team
@@ -50,6 +54,36 @@ from app.store import odds_store
 
 
 START_TIME = "2030-01-01T20:00:00+00:00"
+
+
+async def run_match_unification(
+    *,
+    snapshot_id: str | None = "snapshot-test",
+    raw_odds: list[RawOddsData],
+    raw_outcome_offers: list[RawOutcomeOffer],
+    normalized_odds: list[NormalizedOdds],
+    normalized_outcome_offers: list[NormalizedOutcomeOffer],
+) -> object:
+    snapshot_key = snapshot_id or "snapshot-test"
+    db = await get_db()
+    await db.execute(
+        """INSERT OR REPLACE INTO scrape_snapshots (id, scraped_at, completed_at, status)
+           VALUES (?, ?, ?, 'published')""",
+        (snapshot_key, START_TIME, START_TIME),
+    )
+    await db.commit()
+    return await MatchUnification.for_odds_store(odds_store).unify_after_snapshot(
+        snapshot=PersistedScrapeSnapshot(
+            id=snapshot_key,
+            scraped_at=START_TIME,
+        ),
+        rows=MatchUnificationRows(
+            raw_odds=raw_odds,
+            raw_outcome_offers=raw_outcome_offers,
+            normalized_odds=normalized_odds,
+            normalized_outcome_offers=normalized_outcome_offers,
+        ),
+    )
 
 
 def _canonical_slot(
@@ -392,366 +426,6 @@ def _normalized_outcome_offer(
         odds=1.9,
         start_time=START_TIME,
     )
-
-
-def test_extract_event_candidates_dedupes_normalized_rows_before_source_matching():
-    stats = _EventCandidateExtractionStats()
-    candidates = extract_event_candidates(
-        raw_odds=[_raw_odds()],
-        raw_outcome_offers=[],
-        normalized_odds=[
-            _normalized_odds(
-                "book-a",
-                match_id="match-a",
-                league_id="league",
-                home_team_id=1,
-                away_team_id=2,
-                home_team="Team Alpha",
-                away_team="Team Beta",
-                threshold=10.5,
-            ),
-            _normalized_odds(
-                "book-a",
-                match_id="match-a",
-                league_id="league",
-                home_team_id=1,
-                away_team_id=2,
-                home_team="Team Alpha",
-                away_team="Team Beta",
-                threshold=11.5,
-            ),
-        ],
-        normalized_outcome_offers=[],
-        stats=stats,
-    )
-
-    assert len(candidates) == 1
-    assert candidates[0].source_kind == "raw_odds"
-    assert stats.normalized_odds_rows_scanned == 2
-    assert stats.normalized_odds_candidates_emitted == 1
-    assert stats.source_match_lookup_count == 1
-    assert stats.source_match_source_count == 1
-
-
-def test_source_match_exact_url_fast_path_avoids_full_slot_scan():
-    stats = _EventCandidateExtractionStats()
-    candidates = extract_event_candidates(
-        raw_odds=[
-            _raw_odds(source_url="https://example.test/match"),
-            _raw_odds(
-                home_team="Team Gamma",
-                away_team="Team Delta",
-                source_url="https://example.test/other",
-            ),
-        ],
-        raw_outcome_offers=[],
-        normalized_odds=[
-            _normalized_odds(
-                "book-a",
-                match_id="match-a",
-                league_id="league",
-                home_team_id=1,
-                away_team_id=2,
-                home_team="Team Alpha",
-                away_team="Team Beta",
-                threshold=10.5,
-                source_url="https://example.test/match",
-            ),
-        ],
-        normalized_outcome_offers=[],
-        stats=stats,
-    )
-
-    assert len(candidates) == 1
-    assert candidates[0].source_url == "https://example.test/match"
-    assert candidates[0].source_kind == "raw_odds"
-    assert stats.source_match_source_count == 2
-    assert stats.source_match_scored_source_count == 1
-    assert stats.source_match_index_candidate_count == 1
-    assert stats.source_match_exact_url_hit_count == 1
-    assert stats.source_match_fallback_scan_count == 0
-
-
-def test_source_match_listed_pair_fast_path_when_first_slot_source_is_exact_match():
-    stats = _EventCandidateExtractionStats()
-    candidates = extract_event_candidates(
-        raw_odds=[
-            _raw_odds(source_url="https://example.test/match"),
-            _raw_odds(
-                home_team="Team Gamma",
-                away_team="Team Delta",
-                source_url="https://example.test/other",
-            ),
-        ],
-        raw_outcome_offers=[],
-        normalized_odds=[
-            _normalized_odds(
-                "book-a",
-                match_id="match-a",
-                league_id="league",
-                home_team_id=1,
-                away_team_id=2,
-                home_team="Team Alpha",
-                away_team="Team Beta",
-                threshold=10.5,
-            ),
-        ],
-        normalized_outcome_offers=[],
-        stats=stats,
-    )
-
-    assert len(candidates) == 1
-    assert candidates[0].source_url == "https://example.test/match"
-    assert stats.source_match_scored_source_count == 1
-    assert stats.source_match_listed_pair_hit_count == 1
-    assert stats.source_match_fallback_scan_count == 0
-
-
-def test_source_match_unordered_pair_fast_path_preserves_reversed_source_metadata():
-    stats = _EventCandidateExtractionStats()
-    candidates = extract_event_candidates(
-        raw_odds=[
-            _raw_odds(
-                home_team="Team Beta",
-                away_team="Team Alpha",
-                source_url="https://example.test/reversed",
-            ),
-            _raw_odds(
-                home_team="Team Gamma",
-                away_team="Team Delta",
-                source_url="https://example.test/other",
-            ),
-        ],
-        raw_outcome_offers=[],
-        normalized_odds=[
-            _normalized_odds(
-                "book-a",
-                match_id="match-a",
-                league_id="league",
-                home_team_id=1,
-                away_team_id=2,
-                home_team="Team Alpha",
-                away_team="Team Beta",
-                threshold=10.5,
-            ),
-        ],
-        normalized_outcome_offers=[],
-        stats=stats,
-    )
-
-    assert len(candidates) == 1
-    assert candidates[0].source_home_team == "Team Beta"
-    assert candidates[0].source_away_team == "Team Alpha"
-    assert candidates[0].source_url == "https://example.test/reversed"
-    assert stats.source_match_scored_source_count == 1
-    assert stats.source_match_unordered_pair_hit_count == 1
-    assert stats.source_match_fallback_scan_count == 0
-
-
-def test_source_match_index_hit_falls_back_when_full_slot_can_score_higher():
-    stats = _EventCandidateExtractionStats()
-    candidates = extract_event_candidates(
-        raw_odds=[
-            _raw_odds(
-                home_team="Team Alpha",
-                away_team="Team Beta",
-                source_url="https://example.test/listed-only",
-                league_id="other-league",
-            ),
-            _raw_odds(
-                home_team="Team Alphaa",
-                away_team="Team Beta",
-                source_url="https://example.test/fuzzy-with-league",
-                league_id="league",
-            ),
-        ],
-        raw_outcome_offers=[],
-        normalized_odds=[
-            _normalized_odds(
-                "book-a",
-                match_id="match-a",
-                league_id="league",
-                home_team_id=1,
-                away_team_id=2,
-                home_team="Team Alpha",
-                away_team="Team Beta",
-                threshold=10.5,
-            ),
-        ],
-        normalized_outcome_offers=[],
-        stats=stats,
-    )
-
-    assert len(candidates) == 1
-    assert candidates[0].source_url == "https://example.test/fuzzy-with-league"
-    assert stats.source_match_listed_pair_hit_count == 0
-    assert stats.source_match_fallback_scan_count == 1
-    assert stats.source_match_source_count == 2
-    assert stats.source_match_scored_source_count == 2
-
-
-def test_source_match_duplicate_pair_falls_back_to_preserve_first_slot_tie():
-    stats = _EventCandidateExtractionStats()
-    candidates = extract_event_candidates(
-        raw_odds=[
-            _raw_odds(
-                source_url="https://example.test/first",
-                threshold=10.5,
-            ),
-            _raw_odds(
-                source_url="https://example.test/second",
-                threshold=11.5,
-            ),
-        ],
-        raw_outcome_offers=[],
-        normalized_odds=[
-            _normalized_odds(
-                "book-a",
-                match_id="match-a",
-                league_id="league",
-                home_team_id=1,
-                away_team_id=2,
-                home_team="Team Alpha",
-                away_team="Team Beta",
-                threshold=10.5,
-                source_url="https://example.test/second",
-            ),
-        ],
-        normalized_outcome_offers=[],
-        stats=stats,
-    )
-
-    assert len(candidates) == 1
-    assert candidates[0].source_url == "https://example.test/second"
-    assert stats.source_match_exact_url_hit_count == 1
-    assert stats.source_match_fallback_scan_count == 0
-
-
-def test_source_match_no_index_hit_uses_fallback_scan():
-    stats = _EventCandidateExtractionStats()
-    candidates = extract_event_candidates(
-        raw_odds=[
-            _raw_odds(
-                home_team="Team Alpha",
-                away_team="Team Beta",
-                source_url=None,
-            ),
-            _raw_odds(
-                home_team="Team Gamma",
-                away_team="Team Delta",
-                source_url=None,
-            ),
-        ],
-        raw_outcome_offers=[],
-        normalized_odds=[
-            _normalized_odds(
-                "book-a",
-                match_id="match-a",
-                league_id="league",
-                home_team_id=1,
-                away_team_id=2,
-                home_team="Unlisted Home",
-                away_team="Unlisted Away",
-                threshold=10.5,
-                source_url="https://example.test/missing",
-            ),
-        ],
-        normalized_outcome_offers=[],
-        stats=stats,
-    )
-
-    assert len(candidates) == 1
-    assert candidates[0].source_kind == "normalized_odds"
-    assert candidates[0].source_url == "https://example.test/missing"
-    assert stats.source_match_fallback_scan_count == 1
-    assert stats.source_match_source_count == 2
-    assert stats.source_match_scored_source_count == 2
-
-
-def test_extract_event_candidates_duplicate_representative_prefers_source_url():
-    candidates = extract_event_candidates(
-        raw_odds=[],
-        raw_outcome_offers=[],
-        normalized_odds=[
-            _normalized_odds(
-                "book-a",
-                match_id="match-a",
-                league_id="league",
-                home_team_id=1,
-                away_team_id=2,
-                home_team="Team Alpha",
-                away_team="Team Beta",
-                threshold=10.5,
-            ),
-            _normalized_odds(
-                "book-a",
-                match_id="match-a",
-                league_id="league",
-                home_team_id=3,
-                away_team_id=4,
-                home_team="Team Gamma",
-                away_team="Team Delta",
-                threshold=11.5,
-            ).model_copy(update={"source_url": "https://example.test/with-url"}),
-        ],
-        normalized_outcome_offers=[],
-    )
-
-    assert len(candidates) == 1
-    assert candidates[0].home_team == "Team Gamma"
-    assert candidates[0].away_team == "Team Delta"
-    assert candidates[0].source_url == "https://example.test/with-url"
-
-
-def test_extract_event_candidates_preserves_normalized_loop_merge_precedence():
-    candidates = extract_event_candidates(
-        raw_odds=[],
-        raw_outcome_offers=[],
-        normalized_odds=[
-            _normalized_odds(
-                "book-a",
-                match_id="match-a",
-                league_id="league",
-                home_team_id=1,
-                away_team_id=2,
-                home_team="Team Alpha",
-                away_team="Team Beta",
-                threshold=10.5,
-            ).model_copy(update={"source_url": "https://example.test/odds"}),
-        ],
-        normalized_outcome_offers=[
-            _normalized_outcome_offer(source_url="https://example.test/outcome"),
-        ],
-    )
-
-    assert len(candidates) == 1
-    assert candidates[0].source_kind == "normalized_odds"
-    assert candidates[0].source_url == "https://example.test/odds"
-
-
-def test_raw_source_extraction_resolves_league_once_per_unique_source(monkeypatch):
-    calls = []
-
-    def fake_resolve_league(league_id: str, *, bookmaker_id: str):
-        calls.append((league_id, bookmaker_id))
-        return type(
-            "LeagueResolution",
-            (),
-            {"league_id": league_id, "display_name": f"{bookmaker_id}:{league_id}"},
-        )()
-
-    monkeypatch.setattr(event_resolver_module, "resolve_league", fake_resolve_league)
-
-    sources = _raw_odds_sources(
-        [
-            _raw_odds(threshold=10.5),
-            _raw_odds(threshold=11.5),
-            _raw_odds(source_url="https://example.test/other", threshold=12.5),
-        ],
-    )
-
-    assert len(sources) == 2
-    assert calls == [("league", "book-a"), ("league", "book-a")]
 
 
 def test_event_coverage_benchmark_counts_matched_unmatched_ungrouped_and_review():
@@ -1431,7 +1105,7 @@ def test_event_split_diagnostics_limits_pair_checks_to_time_window(monkeypatch):
         )
         for index in range(48)
     )
-    original_candidate_for_pair = event_resolver_module._split_candidate_for_pair
+    original_candidate_for_pair = resolution_module._split_candidate_for_pair
     pair_checks = 0
 
     def counting_candidate_for_pair(
@@ -1443,7 +1117,7 @@ def test_event_split_diagnostics_limits_pair_checks_to_time_window(monkeypatch):
         return original_candidate_for_pair(left, right)
 
     monkeypatch.setattr(
-        event_resolver_module,
+        resolution_module,
         "_split_candidate_for_pair",
         counting_candidate_for_pair,
     )
@@ -1542,7 +1216,7 @@ def test_event_split_diagnostics_checks_bounded_high_frequency_token_fallback():
         for index in range(51)
     ]
 
-    direct_candidate = event_resolver_module._split_candidate_for_pair(
+    direct_candidate = resolution_module._split_candidate_for_pair(
         groups[0],
         groups[1],
     )
@@ -1678,7 +1352,7 @@ def _event_candidate(
     )
 
 
-def test_event_resolver_merges_same_slot_when_one_canonical_side_matches_football():
+def test_match_unification_merges_same_slot_when_one_canonical_side_matches_football():
     candidates = [
         _event_candidate(
             bookmaker_id,
@@ -1720,7 +1394,7 @@ def test_event_resolver_merges_same_slot_when_one_canonical_side_matches_footbal
     assert any("canonical side anchored" in item for item in event.evidence)
 
 
-def test_event_resolver_suppresses_low_signal_ambiguous_football_orientation():
+def test_match_unification_suppresses_low_signal_ambiguous_football_orientation():
     low_signal_scores = _orientation_scores(
         "Team Alpha",
         "Club Beta",
@@ -1769,7 +1443,7 @@ def test_event_resolver_suppresses_low_signal_ambiguous_football_orientation():
     }
 
 
-def test_event_resolver_keeps_high_signal_ambiguous_football_orientation_review():
+def test_match_unification_keeps_high_signal_ambiguous_football_orientation_review():
     candidates = [
         _event_candidate(
             "maxbet",
@@ -1798,7 +1472,7 @@ def test_event_resolver_keeps_high_signal_ambiguous_football_orientation_review(
     assert review_cases[0].confidence >= 0.65
 
 
-def test_event_resolver_still_auto_merges_unambiguous_high_confidence_football_pair():
+def test_match_unification_still_auto_merges_unambiguous_high_confidence_football_pair():
     candidates = [
         _event_candidate(
             "maxbet",
@@ -1831,7 +1505,7 @@ def test_event_resolver_still_auto_merges_unambiguous_high_confidence_football_p
     }
 
 
-def test_event_resolver_merges_same_slot_when_one_canonical_side_matches_basketball():
+def test_match_unification_merges_same_slot_when_one_canonical_side_matches_basketball():
     candidates = [
         _event_candidate(
             "balkanbet",
@@ -1872,7 +1546,7 @@ def test_event_resolver_merges_same_slot_when_one_canonical_side_matches_basketb
     assert any("canonical side anchored" in item for item in event.evidence)
 
 
-def test_event_resolver_quorum_resolves_one_canonical_side_same_bookmaker_conflict():
+def test_match_unification_quorum_resolves_one_canonical_side_same_bookmaker_conflict():
     candidates = [
         _event_candidate(
             bookmaker_id,
@@ -1914,7 +1588,7 @@ def test_event_resolver_quorum_resolves_one_canonical_side_same_bookmaker_confli
     assert any("Quorum-resolved same-bookmaker conflict" in item for item in event.evidence)
 
 
-def test_event_resolver_keeps_same_teams_with_different_start_times_separate():
+def test_match_unification_keeps_same_teams_with_different_start_times_separate():
     later_start = "2030-01-01T20:20:00+00:00"
     candidates = [
         _event_candidate(
@@ -1951,7 +1625,7 @@ def test_event_resolver_keeps_same_teams_with_different_start_times_separate():
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_persists_exact_basketball_group(team_registry_file):
+async def test_match_unification_persists_exact_basketball_group(team_registry_file):
     home = create_canonical_team(display_name="Partizan", sport="basketball")
     away = create_canonical_team(display_name="Crvena Zvezda", sport="basketball")
     match_id = generate_match_id(home.team_id, away.team_id, START_TIME, "basketball")
@@ -1999,7 +1673,7 @@ async def test_event_resolver_persists_exact_basketball_group(team_registry_file
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -2017,7 +1691,7 @@ async def test_event_resolver_persists_exact_basketball_group(team_registry_file
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_persists_football_outcome_candidates(team_registry_file):
+async def test_match_unification_persists_football_outcome_candidates(team_registry_file):
     home = create_canonical_team(display_name="Arsenal", sport="football")
     away = create_canonical_team(display_name="Chelsea", sport="football")
     match_id = generate_match_id(home.team_id, away.team_id, START_TIME, "football")
@@ -2077,7 +1751,7 @@ async def test_event_resolver_persists_football_outcome_candidates(team_registry
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=[],
         raw_outcome_offers=raw,
         normalized_odds=[],
@@ -2100,7 +1774,7 @@ async def test_event_resolver_persists_football_outcome_candidates(team_registry
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_clears_stale_pending_football_ambiguous_cases(
+async def test_match_unification_clears_stale_pending_football_ambiguous_cases(
     team_registry_file,
 ):
     home = create_canonical_team(display_name="Arsenal", sport="football")
@@ -2162,7 +1836,7 @@ async def test_event_resolver_clears_stale_pending_football_ambiguous_cases(
     )
     await odds_store.mark_event_review_case_accepted(accepted_case_id)
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=[],
         raw_outcome_offers=[],
         normalized_odds=[],
@@ -2183,8 +1857,7 @@ async def test_event_resolver_clears_stale_pending_football_ambiguous_cases(
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_reuses_precomputed_football_outcome_resolutions(
-    monkeypatch,
+async def test_match_unification_builds_internal_football_outcome_resolutions(
     team_registry_file,
 ):
     await _seed_bookmakers("maxbet", "balkanbet", "unusedbet")
@@ -2243,21 +1916,11 @@ async def test_event_resolver_reuses_precomputed_football_outcome_resolutions(
     for row in persisted_normalized:
         await _store_match(row)
 
-    def fail_rebuild(*args, **kwargs):
-        raise AssertionError("football resolutions should be reused")
-
-    monkeypatch.setattr(
-        event_resolver_module,
-        "_build_football_event_resolutions",
-        fail_rebuild,
-    )
-
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=[],
         raw_outcome_offers=raw,
         normalized_odds=[],
         normalized_outcome_offers=persisted_normalized,
-        football_event_resolutions=outcome_result.football_event_resolutions,
     )
 
     assert result.resolved_events == 1
@@ -2276,7 +1939,7 @@ async def test_event_resolver_reuses_precomputed_football_outcome_resolutions(
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_fuzzy_groups_football_without_team_merge(
+async def test_match_unification_fuzzy_groups_football_without_team_merge(
     team_registry_file,
 ):
     arsenal = create_canonical_team(display_name="Arsenal", sport="football")
@@ -2334,7 +1997,7 @@ async def test_event_resolver_fuzzy_groups_football_without_team_merge(
     for row in normalized:
         await _store_match(row)
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=[],
         raw_outcome_offers=[],
         normalized_odds=[],
@@ -2371,7 +2034,7 @@ async def test_event_resolver_fuzzy_groups_football_without_team_merge(
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_fuzzy_groups_distinct_match_ids_without_team_merge(
+async def test_match_unification_fuzzy_groups_distinct_match_ids_without_team_merge(
     team_registry_file,
 ):
     partizan = create_canonical_team(display_name="Partizan", sport="basketball")
@@ -2433,7 +2096,7 @@ async def test_event_resolver_fuzzy_groups_distinct_match_ids_without_team_merge
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -2467,7 +2130,7 @@ async def test_event_resolver_fuzzy_groups_distinct_match_ids_without_team_merge
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_auto_merges_compound_subset_event_at_lowered_thresholds(
+async def test_match_unification_auto_merges_compound_subset_event_at_lowered_thresholds(
     team_registry_file,
 ):
     hermine = create_canonical_team(display_name="Hermine Nantes", sport="basketball")
@@ -2533,7 +2196,7 @@ async def test_event_resolver_auto_merges_compound_subset_event_at_lowered_thres
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -2568,7 +2231,7 @@ async def test_event_resolver_auto_merges_compound_subset_event_at_lowered_thres
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_does_not_auto_merge_distinct_same_token_teams(
+async def test_match_unification_does_not_auto_merge_distinct_same_token_teams(
     team_registry_file,
 ):
     south_korea = create_canonical_team(display_name="South Korea", sport="basketball")
@@ -2630,7 +2293,7 @@ async def test_event_resolver_does_not_auto_merge_distinct_same_token_teams(
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -2652,7 +2315,7 @@ async def test_event_resolver_does_not_auto_merge_distinct_same_token_teams(
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_does_not_auto_merge_distinct_non_subset_teams(
+async def test_match_unification_does_not_auto_merge_distinct_non_subset_teams(
     team_registry_file,
 ):
     austria = create_canonical_team(display_name="Austria", sport="basketball")
@@ -2715,7 +2378,7 @@ async def test_event_resolver_does_not_auto_merge_distinct_non_subset_teams(
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -2731,7 +2394,7 @@ async def test_event_resolver_does_not_auto_merge_distinct_non_subset_teams(
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_anchored_low_conf_merges_with_three_bookmakers_and_league_anchor(
+async def test_match_unification_anchored_low_conf_merges_with_three_bookmakers_and_league_anchor(
     team_registry_file,
 ):
     """Heuristic 1: anchored low-confidence merge.
@@ -2810,7 +2473,7 @@ async def test_event_resolver_anchored_low_conf_merges_with_three_bookmakers_and
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -2831,7 +2494,7 @@ async def test_event_resolver_anchored_low_conf_merges_with_three_bookmakers_and
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_anchored_low_conf_does_not_merge_with_two_bookmakers(
+async def test_match_unification_anchored_low_conf_does_not_merge_with_two_bookmakers(
     team_registry_file,
 ):
     """Negative regression: same Pisek-style pair with only 2 bookmakers
@@ -2841,7 +2504,7 @@ async def test_event_resolver_anchored_low_conf_does_not_merge_with_two_bookmake
     from the South/North Korea regression case (2 bookmakers, weak side
     81.8). Without the bookmaker-count gate the anchored branch would also
     fire on the Korea case, regressing
-    :func:`test_event_resolver_does_not_auto_merge_distinct_same_token_teams`.
+    :func:`test_match_unification_does_not_auto_merge_distinct_same_token_teams`.
     """
 
     srsni = create_canonical_team(display_name="Srsni Pisek", sport="basketball")
@@ -2897,7 +2560,7 @@ async def test_event_resolver_anchored_low_conf_does_not_merge_with_two_bookmake
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -2910,7 +2573,7 @@ async def test_event_resolver_anchored_low_conf_does_not_merge_with_two_bookmake
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_quorum_resolves_same_bookmaker_conflict(
+async def test_match_unification_quorum_resolves_same_bookmaker_conflict(
     team_registry_file,
 ):
     """Heuristic 2: quorum override for same-bookmaker conflicts.
@@ -3009,7 +2672,7 @@ async def test_event_resolver_quorum_resolves_same_bookmaker_conflict(
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -3038,7 +2701,7 @@ async def test_event_resolver_quorum_resolves_same_bookmaker_conflict(
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_quorum_does_not_fire_on_symmetric_same_bookmaker_conflict(
+async def test_match_unification_quorum_does_not_fire_on_symmetric_same_bookmaker_conflict(
     team_registry_file,
 ):
     """Negative: quorum override needs a clear size advantage.
@@ -3118,7 +2781,7 @@ async def test_event_resolver_quorum_does_not_fire_on_symmetric_same_bookmaker_c
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -3131,7 +2794,7 @@ async def test_event_resolver_quorum_does_not_fire_on_symmetric_same_bookmaker_c
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_dot_expansion_merges_compound_abbreviation(
+async def test_match_unification_dot_expansion_merges_compound_abbreviation(
     team_registry_file,
 ):
     """Heuristic 3: dotted-token expansion (``Ch.More`` → ``Cherno More``).
@@ -3211,7 +2874,7 @@ async def test_event_resolver_dot_expansion_merges_compound_abbreviation(
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -3232,7 +2895,7 @@ async def test_event_resolver_dot_expansion_merges_compound_abbreviation(
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_women_marker_merges_w_and_wom_variants(
+async def test_match_unification_women_marker_merges_w_and_wom_variants(
     team_registry_file,
 ):
     """Heuristic 3: the ``wom`` qualifier alias ensures ``Sao Jose W`` and
@@ -3299,7 +2962,7 @@ async def test_event_resolver_women_marker_merges_w_and_wom_variants(
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -3319,7 +2982,7 @@ async def test_event_resolver_women_marker_merges_w_and_wom_variants(
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_women_marker_recognises_terminal_z(
+async def test_match_unification_women_marker_recognises_terminal_z(
     team_registry_file,
 ):
     """An explicit standalone ``Ž`` marker (``Sao Jose (Ž)`` after diacritic
@@ -3396,7 +3059,7 @@ async def test_event_resolver_women_marker_recognises_terminal_z(
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -3411,7 +3074,7 @@ async def test_event_resolver_women_marker_recognises_terminal_z(
     assert event.method == "auto_fuzzy_high"
 
 
-def test_event_resolver_merges_reported_sao_jose_women_fragments():
+def test_match_unification_merges_reported_sao_jose_women_fragments():
     candidates = [
         EventCandidate(
             match_id="sao-jose-wom",
@@ -3502,12 +3165,12 @@ def test_event_resolver_merges_reported_sao_jose_women_fragments():
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_women_marker_does_not_merge_women_into_men(
+async def test_match_unification_women_marker_does_not_merge_women_into_men(
     team_registry_file,
 ):
     """Negative: a women-tagged team must not merge with the same-stem men's
     team. ``Sao Jose W`` carries the women qualifier; bare ``Sao Jose``
-    does not. :func:`_same_team_context` rejects the pair so the resolver
+    does not. :func:`_same_team_context` rejects the pair so the Match Unification resolver
     never reaches the fuzzy stage.
     """
 
@@ -3566,7 +3229,7 @@ async def test_event_resolver_women_marker_does_not_merge_women_into_men(
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -3579,7 +3242,7 @@ async def test_event_resolver_women_marker_does_not_merge_women_into_men(
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_anchored_low_conf_respects_weak_side_floor(
+async def test_match_unification_anchored_low_conf_respects_weak_side_floor(
     team_registry_file,
 ):
     """Negative: the anchored branch refuses to merge when the weak side
@@ -3654,7 +3317,7 @@ async def test_event_resolver_anchored_low_conf_respects_weak_side_floor(
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -3668,7 +3331,7 @@ async def test_event_resolver_anchored_low_conf_respects_weak_side_floor(
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_transitive_anchored_merges_no_spurious_review_case(
+async def test_match_unification_transitive_anchored_merges_no_spurious_review_case(
     team_registry_file,
 ):
     """Regression: when three groups merge transitively (A↔B and A↔C both
@@ -3759,7 +3422,7 @@ async def test_event_resolver_transitive_anchored_merges_no_spurious_review_case
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=raw,
         raw_outcome_offers=[],
         normalized_odds=normalized,
@@ -3789,7 +3452,7 @@ async def test_event_resolver_transitive_anchored_merges_no_spurious_review_case
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_anchored_low_conf_does_not_apply_to_football(
+async def test_match_unification_anchored_low_conf_does_not_apply_to_football(
     team_registry_file,
 ):
     """Negative regression: anchored low-confidence merging is restricted to
@@ -3884,7 +3547,7 @@ async def test_event_resolver_anchored_low_conf_does_not_apply_to_football(
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=[],
         raw_outcome_offers=raw,
         normalized_odds=[],
@@ -3897,7 +3560,7 @@ async def test_event_resolver_anchored_low_conf_does_not_apply_to_football(
 
 
 @pytest.mark.asyncio
-async def test_event_resolver_dot_expansion_does_not_apply_to_football(
+async def test_match_unification_dot_expansion_does_not_apply_to_football(
     team_registry_file,
 ):
     """Negative regression for round-2 review: the ``_expand_dotted_token``
@@ -3981,7 +3644,7 @@ async def test_event_resolver_dot_expansion_does_not_apply_to_football(
         for row in normalized
     ]
 
-    result = await resolve_and_persist_events(
+    result = await run_match_unification(
         raw_odds=[],
         raw_outcome_offers=raw,
         normalized_odds=[],
@@ -3990,7 +3653,7 @@ async def test_event_resolver_dot_expansion_does_not_apply_to_football(
 
     assert result.resolved_events == 2, (
         "St.Petersburg and Stockholm Petersburg are distinct football teams "
-        "that share only a geographic-suffix token; the resolver must not "
+        "that share only a geographic-suffix token; the Match Unification Match Unification must not "
         "merge them via dot expansion."
     )
     events = await odds_store.list_resolved_events(sport="football")
@@ -4005,14 +3668,14 @@ def test_expand_dotted_token_ambiguous_geographic_prefix_blocked():
     distinct counterpart tokens. The genuine ``Ch.`` → ``Cherno``
     expansion is unaffected.
 
-    This is a unit test on the helper rather than an end-to-end resolver
-    test because the resolver's anchored low-confidence path can still
+    This is a unit test on the helper rather than an end-to-end Match
+    Unification test because its anchored low-confidence path can still
     merge events through other corroborators (shared significant token +
     same league). The blocklist's job is narrow: stop the dot-expansion
     branch from inflating the fuzzy score for known-ambiguous prefixes.
     """
 
-    from app.services.event_resolver import _expand_dotted_token  # noqa: PLC0415
+    from app.services.match_unification.resolution import _expand_dotted_token  # noqa: PLC0415
 
     # Each ambiguous prefix is preserved verbatim despite the counterpart
     # offering a unique expansion candidate AND a shared anchor token

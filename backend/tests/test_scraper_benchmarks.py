@@ -17,7 +17,7 @@ from app.models.schemas import (
     BenchmarkSplitDiagnosticsOut,
     BenchmarkSplitEventFragmentOut,
     BenchmarkSplitSportDiagnosticsOut,
-    EventResolverBenchmarkOut,
+    MatchUnificationBenchmarkOut,
     OpportunityDetailModeYieldOut,
     OpportunityAnalysisBenchmarkOut,
     OpportunityAnalysisRuleBenchmarkOut,
@@ -94,16 +94,16 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert "normalize_threshold_odds" in body["phase_durations_ms"]
     assert "normalize_outcome_offers" in body["phase_durations_ms"]
     assert "persist_snapshot" in body["phase_durations_ms"]
-    assert "resolve_events" in body["phase_durations_ms"]
+    assert "match_unification" in body["phase_durations_ms"]
     assert body["outcome_normalization"]["runs"] >= 1
     assert body["outcome_normalization"]["raw_outcome_offer_count"] >= 0
-    assert body["event_resolver"]["candidate_count"] >= 0
-    assert body["event_resolver"]["normalized_odds_rows_scanned"] >= 0
-    assert body["event_resolver"]["normalized_outcome_offer_rows_scanned"] >= 0
-    assert body["event_resolver"]["source_match_lookup_count"] >= 0
-    assert body["event_resolver"]["source_match_scored_source_count"] >= 0
-    assert body["event_resolver"]["source_match_index_candidate_count"] >= 0
-    assert body["event_resolver"]["source_match_fallback_scan_count"] >= 0
+    assert body["match_unification"]["candidate_count"] >= 0
+    assert body["match_unification"]["normalized_odds_rows_scanned"] >= 0
+    assert body["match_unification"]["normalized_outcome_offer_rows_scanned"] >= 0
+    assert body["match_unification"]["source_match_lookup_count"] >= 0
+    assert body["match_unification"]["source_match_scored_source_count"] >= 0
+    assert body["match_unification"]["source_match_index_candidate_count"] >= 0
+    assert body["match_unification"]["source_match_fallback_scan_count"] >= 0
     assert body["opportunity_analysis"]["loaded_offer_count"] >= 0
     assert body["opportunity_analysis"]["opportunity_count"] >= 0
     assert isinstance(body["opportunity_analysis"]["rules"], list)
@@ -119,7 +119,7 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
         body["outcome_normalization"]["top_football_event_buckets"],
         list,
     )
-    assert isinstance(body["event_resolver"]["top_source_match_slots"], list)
+    assert isinstance(body["match_unification"]["top_source_match_slots"], list)
     assert body["auto_resolution_rerun"]["rerun_performed"] in {True, False}
     assert isinstance(body["auto_resolution_rerun"]["reasons"], list)
     assert body["auto_resolution_rerun"]["before"]["normalized_threshold_odds"] >= 0
@@ -164,7 +164,7 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
     assert parsed["metadata"]["enabled_bookmakers"]
     assert parsed["phase_durations_ms"]
     assert "outcome_normalization" in parsed
-    assert "event_resolver" in parsed
+    assert "match_unification" in parsed
     assert "auto_resolution_rerun" in parsed
     assert "opportunity_analysis" in parsed
     assert "event_coverage" in parsed
@@ -504,8 +504,8 @@ def test_opportunity_analysis_benchmark_defaults_and_serialization():
     assert payload["detail_mode_yield"] == []
 
 
-def test_event_resolver_extraction_benchmark_defaults_and_serialization():
-    metrics = EventResolverBenchmarkOut()
+def test_match_unification_benchmark_defaults_and_serialization():
+    metrics = MatchUnificationBenchmarkOut()
 
     payload = metrics.model_dump()
 
@@ -529,6 +529,8 @@ def test_event_resolver_extraction_benchmark_defaults_and_serialization():
     assert payload["source_match_truncated_slot_count"] == 0
     assert payload["top_source_match_slots"] == []
     assert payload["football_raw_candidate_count"] == 0
+    assert payload["state"] == "pending_unification"
+    assert payload["mode"] == "resolved_event_graph"
 
 
 def test_persistence_benchmark_defaults_and_serialization():

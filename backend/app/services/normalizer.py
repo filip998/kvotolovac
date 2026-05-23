@@ -318,7 +318,7 @@ def _resolver_player_parts(
        ``Gilgeous Alexander`` compare equal.
 
     `_player_name_parts` itself is left untouched, so all other callers
-    (event_player_resolver, outcome_normalizer, anything outside the
+    (match_unification.player_identity, outcome_normalizer, anything outside the
     contextual resolver) keep their existing behaviour. The original
     surface forms are still used for storage and display.
     """

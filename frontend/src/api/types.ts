@@ -378,6 +378,13 @@ export interface ScanProgress {
   active_tasks: number;
 }
 
+export interface MatchUnificationCycleStatus {
+  state: string;
+  mode: 'resolved_event_graph' | 'match_id_only' | string;
+  warnings: string[];
+  fallback_reason: string | null;
+}
+
 export interface SystemStatus {
   status: string;
   last_scrape_at: string | null;
@@ -387,6 +394,7 @@ export interface SystemStatus {
   active_bookmakers: number;
   scheduler_running: boolean;
   scan: ScanProgress;
+  match_unification: MatchUnificationCycleStatus;
   // Mock-only fields (optional)
   last_scrape?: string | null;
   bookmaker_status?: BookmakerStatus[];

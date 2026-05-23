@@ -163,6 +163,34 @@ def test_basketball_non_player_markets_use_resolved_event_identity():
     assert discrepancies[0].player_name is None
 
 
+def test_basketball_non_player_markets_ignore_inactive_event_members():
+    odds = [
+        _basketball_odds(
+            match_id="match-mozzart",
+            bookmaker_id="mozzart",
+            player_name="",
+            threshold=156.5,
+        ).model_copy(update={"market_type": "game_total", "player_name": None}),
+        _basketball_odds(
+            match_id="match-meridian",
+            bookmaker_id="meridian",
+            player_name="",
+            threshold=159.5,
+        ).model_copy(update={"market_type": "game_total", "player_name": None}),
+    ]
+    members = [
+        _member(1, match_id="match-mozzart", bookmaker_id="mozzart"),
+        _member(
+            2,
+            match_id="match-meridian",
+            bookmaker_id="meridian",
+            status="inactive",
+        ),
+    ]
+
+    assert analyze(odds, event_members=members) == []
+
+
 def test_basketball_separate_or_unresolved_events_do_not_cross_compare():
     odds = [
         _basketball_odds(

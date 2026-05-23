@@ -513,6 +513,13 @@ class ScanProgressOut(BaseModel):
     active_tasks: int = 0
 
 
+class MatchUnificationCycleStatusOut(BaseModel):
+    state: str = "pending_unification"
+    mode: str = "resolved_event_graph"
+    warnings: list[str] = Field(default_factory=list)
+    fallback_reason: Optional[str] = None
+
+
 class SystemStatus(BaseModel):
     status: str = "ok"
     last_scrape_at: Optional[str] = None
@@ -522,6 +529,9 @@ class SystemStatus(BaseModel):
     active_bookmakers: int = 0
     scheduler_running: bool = False
     scan: ScanProgressOut = Field(default_factory=ScanProgressOut)
+    match_unification: MatchUnificationCycleStatusOut = Field(
+        default_factory=MatchUnificationCycleStatusOut
+    )
 
 
 # ── Runtime scrape settings ────────────────────────────────
@@ -620,6 +630,9 @@ class ScrapeResponse(BaseModel):
     matches_scraped: int = 0
     odds_scraped: int = 0
     opportunities_found: int = 0
+    match_unification: MatchUnificationCycleStatusOut = Field(
+        default_factory=MatchUnificationCycleStatusOut
+    )
 
 
 # ── Scraper benchmarks ─────────────────────────────────────
@@ -940,7 +953,7 @@ class OutcomeNormalizationBenchmarkOut(BaseModel):
     )
 
 
-class EventResolverSourceMatchSlotBenchmarkOut(BaseModel):
+class MatchUnificationSourceMatchSlotBenchmarkOut(BaseModel):
     """Top raw-source slots scanned while matching normalized event candidates."""
 
     bookmaker_id: str
@@ -951,8 +964,8 @@ class EventResolverSourceMatchSlotBenchmarkOut(BaseModel):
     average_sources_per_lookup: float = 0.0
 
 
-class EventResolverBenchmarkOut(BaseModel):
-    """Subphase metrics for resolved-event extraction/grouping/persistence."""
+class MatchUnificationResolutionBenchmarkOut(BaseModel):
+    """Subphase metrics for Match Unification extraction/grouping/persistence."""
 
     extract_event_candidates_ms: int = 0
     extract_raw_odds_sources_ms: int = 0
@@ -993,9 +1006,18 @@ class EventResolverBenchmarkOut(BaseModel):
     persisted_resolved_event_count: int = 0
     persisted_member_count: int = 0
     persisted_review_case_count: int = 0
-    top_source_match_slots: list[EventResolverSourceMatchSlotBenchmarkOut] = Field(
+    top_source_match_slots: list[MatchUnificationSourceMatchSlotBenchmarkOut] = Field(
         default_factory=list
     )
+
+
+class MatchUnificationBenchmarkOut(MatchUnificationResolutionBenchmarkOut):
+    """Subphase metrics for Match Unification."""
+
+    state: str = "pending_unification"
+    mode: str = "resolved_event_graph"
+    warnings: list[str] = Field(default_factory=list)
+    fallback_reason: Optional[str] = None
 
 
 class AutoResolutionRerunBatchCountsOut(BaseModel):
@@ -1128,8 +1150,8 @@ class CycleBenchmarkOut(BaseModel):
     outcome_normalization: OutcomeNormalizationBenchmarkOut = Field(
         default_factory=OutcomeNormalizationBenchmarkOut
     )
-    event_resolver: EventResolverBenchmarkOut = Field(
-        default_factory=EventResolverBenchmarkOut
+    match_unification: MatchUnificationBenchmarkOut = Field(
+        default_factory=MatchUnificationBenchmarkOut
     )
     auto_resolution_rerun: AutoResolutionRerunBenchmarkOut = Field(
         default_factory=AutoResolutionRerunBenchmarkOut

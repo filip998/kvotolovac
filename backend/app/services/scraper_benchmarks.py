@@ -30,8 +30,8 @@ from ..models.schemas import (
     BenchmarkRuntimeMetadataOut,
     BenchmarkSplitDiagnosticsOut,
     CycleBenchmarkOut,
-    EventResolverBenchmarkOut,
     HttpTimingBenchmarkOut,
+    MatchUnificationBenchmarkOut,
     OpportunityAnalysisBenchmarkOut,
     OutcomeNormalizationBenchmarkOut,
     PersistenceBenchmarkOut,
@@ -418,7 +418,7 @@ class CycleBenchmarkRecorder:
         ] = defaultdict(_HttpTimingAcc)
         self._phase_durations_ms: dict[str, int] = {}
         self._outcome_normalization = OutcomeNormalizationBenchmarkOut()
-        self._event_resolver = EventResolverBenchmarkOut()
+        self._match_unification = MatchUnificationBenchmarkOut()
         self._auto_resolution_rerun = AutoResolutionRerunBenchmarkOut()
         self._persistence = PersistenceBenchmarkOut()
         self._opportunity_analysis = OpportunityAnalysisBenchmarkOut()
@@ -487,9 +487,9 @@ class CycleBenchmarkRecorder:
                 metrics,
             )
 
-    def record_event_resolver(self, metrics: EventResolverBenchmarkOut) -> None:
+    def record_match_unification(self, metrics: MatchUnificationBenchmarkOut) -> None:
         with self._lock:
-            self._event_resolver = metrics
+            self._match_unification = metrics
 
     def record_auto_resolution_rerun(
         self, metrics: AutoResolutionRerunBenchmarkOut
@@ -731,7 +731,7 @@ class CycleBenchmarkRecorder:
                 metadata=self._metadata,
                 phase_durations_ms=dict(sorted(self._phase_durations_ms.items())),
                 outcome_normalization=self._outcome_normalization,
-                event_resolver=self._event_resolver,
+                match_unification=self._match_unification,
                 auto_resolution_rerun=self._auto_resolution_rerun,
                 persistence=self._persistence,
                 opportunity_analysis=self._opportunity_analysis,

@@ -34,16 +34,21 @@ from .tennis_name_matcher import (
     match_tennis_player_names,
     tennis_competitor_pair_matches,
 )
-from .text_normalizer import normalize_identity_text
-from .team_qualifiers import (
+from .match_unification.team_text import (
     EXPLICIT_Z_WOMEN_MARKER_RE as _EXPLICIT_Z_WOMEN_MARKER_RE,
     FOREIGN_WOMEN_TOKENS as _FOREIGN_WOMEN_TOKENS,
+    LOW_SIGNAL_TEAM_TOKENS as _LOW_SIGNAL_TEAM_TOKENS,
     TEAM_QUALIFIER_TOKENS as _TEAM_QUALIFIER_TOKENS,
     WOMEN_MARKER_TOKENS as _WOMEN_MARKER_TOKENS,
     WOMEN_QUALIFIER_ALIASES as _WOMEN_QUALIFIER_ALIASES,
+    comparison_team_text as _comparison_team_text,
+    same_team_context as _same_team_context,
+    significant_tokens as _significant_tokens,
     strip_explicit_z_women_markers as _strip_explicit_z_women_markers,
     team_qualifiers as _team_qualifiers,
+    team_similarity as _team_similarity,
 )
+from .text_normalizer import normalize_identity_text
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +57,6 @@ _FOOTBALL_AUTO_MATCH_SIDE_THRESHOLD = 70
 _FOOTBALL_AUTO_MATCH_STRONG_SIDE_THRESHOLD = 95
 _FOOTBALL_AUTO_MATCH_WEAK_SIDE_THRESHOLD = 60
 _FOOTBALL_AUTO_MATCH_MARGIN = 8
-_LOW_SIGNAL_TEAM_TOKENS = {"bc", "bk", "kk", "fc", "fk", "club", "team", "sc", "cf", "cd", "ce"}
-_AGGRESSIVE_MERGE_SPORTS = frozenset({"basketball"})
 _SAME_ORIENTATION = "same"
 _REVERSED_ORIENTATION = "reversed"
 _OUTCOME_EVENT_RESOLUTION_SPORTS = frozenset({"football", "tennis"})
@@ -277,28 +280,6 @@ class _OutcomeTextCache:
         return cached
 
 
-def _significant_tokens(name: str, *, sport: str | None = None) -> set[str]:
-    return {
-        token
-        for token in _comparison_team_text(name, sport=sport).split()
-        if token not in _LOW_SIGNAL_TEAM_TOKENS
-    }
-
-
-def _team_similarity(left: str, right: str, *, sport: str | None = None) -> float:
-    left_key = _comparison_team_text(left, sport=sport)
-    right_key = _comparison_team_text(right, sport=sport)
-    if not left_key or not right_key:
-        return 0.0
-    if left_key == right_key:
-        return 100.0
-    left_tokens = _significant_tokens(left, sport=sport)
-    right_tokens = _significant_tokens(right, sport=sport)
-    if left_tokens and left_tokens == right_tokens:
-        return 100.0
-    return float(fuzz.token_sort_ratio(left_key, right_key))
-
-
 _TENNIS_SURNAME_PARTICLES = frozenset(
     {"da", "de", "del", "della", "di", "du", "la", "le", "van", "von"}
 )
@@ -371,23 +352,6 @@ def _tennis_name_match_score(
     del text_cache
     match = match_tennis_player_names(left_name, right_name)
     return match.score if match is not None else None
-
-
-def _comparison_team_text(team_name: str, *, sport: str | None = None) -> str:
-    qualifiers = _team_qualifiers(team_name, sport=sport)
-    comparison_name = (
-        _strip_explicit_z_women_markers(team_name)
-        if "women" in qualifiers
-        else team_name
-    )
-    tokens = normalize_identity_text(comparison_name).split()
-    if "women" in qualifiers:
-        tokens = [token for token in tokens if token not in _WOMEN_MARKER_TOKENS]
-    return " ".join(tokens)
-
-
-def _same_team_context(left: str, right: str, *, sport: str | None = None) -> bool:
-    return _team_qualifiers(left, sport=sport) == _team_qualifiers(right, sport=sport)
 
 
 def _display_name_for_event(*names: str) -> str:
