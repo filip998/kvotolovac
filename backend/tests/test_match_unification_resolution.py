@@ -23,14 +23,21 @@ from app.services.match_unification import (
     PersistedScrapeSnapshot,
 )
 from app.services.match_unification import resolution as resolution_module
+from app.services.match_unification.decision_model import (
+    EventDiagnosticDecisionCategory,
+    EventMergeDecisionCategory,
+    _FUZZY_ORIENTATION_MARGIN,
+    _REVIEW_FUZZY_AVG_SCORE,
+    classify_event_candidate_pair,
+    score_event_candidate_pair,
+    with_group_context,
+)
 from app.services.match_unification.resolution import (
     EventCandidate,
     EventResolutionGroup,
     _CandidateGroup,
     _EventGroupBuildStats,
-    _FUZZY_ORIENTATION_MARGIN,
     _PairResolution,
-    _REVIEW_FUZZY_AVG_SCORE,
     _comparison_team_text,
     _contextual_merge_source_ids,
     _event_coverage_benchmark,
@@ -1369,6 +1376,336 @@ def _event_candidate(
         source_league_id=source_league_id,
         source_league_name=source_league_name,
     )
+
+
+def test_pair_scoring_classifies_high_confidence_fuzzy_without_pipeline():
+    left = _event_candidate(
+        "maxbet",
+        match_id="team-alpha-beta",
+        sport="football",
+        home_team_id=1201,
+        away_team_id=1202,
+        home_team="Team Alpha",
+        away_team="Team Beta",
+    )
+    right = _event_candidate(
+        "superbet",
+        match_id="team-alpha-fc-beta-fc",
+        sport="football",
+        home_team_id=1203,
+        away_team_id=1204,
+        home_team="Team Alpha FC",
+        away_team="Team Beta FC",
+    )
+
+    evidence = score_event_candidate_pair(left, right)
+    decision = classify_event_candidate_pair(left, right)
+    group_decision = with_group_context(
+        decision,
+        can_union=True,
+        quorum_passes=False,
+        combined_bookmaker_count=2,
+    )
+
+    assert evidence is not None
+    assert evidence.orientation == "as_listed"
+    assert evidence.score == 100.0
+    assert decision is not None
+    assert decision.category == EventMergeDecisionCategory.HIGH_CONFIDENCE_FUZZY_MERGE
+    assert decision.requires_group_context
+    assert decision.pair is not None
+    assert decision.pair.reason_code == "high_confidence_fuzzy_event_match"
+    assert group_decision.causes_union
+    assert not group_decision.emits_review_case
+
+
+def test_pair_scoring_rejects_non_tennis_candidates_with_different_start_times():
+    left = _event_candidate(
+        "maxbet",
+        match_id="team-alpha-beta-early",
+        sport="football",
+        home_team_id=1201,
+        away_team_id=1202,
+        home_team="Team Alpha",
+        away_team="Team Beta",
+        start_time=START_TIME,
+    )
+    right = _event_candidate(
+        "superbet",
+        match_id="team-alpha-beta-late",
+        sport="football",
+        home_team_id=1203,
+        away_team_id=1204,
+        home_team="Team Alpha FC",
+        away_team="Team Beta FC",
+        start_time="2030-01-01T21:00:00+00:00",
+    )
+
+    assert score_event_candidate_pair(left, right) is None
+    assert classify_event_candidate_pair(left, right) is None
+
+
+def test_pair_scoring_qualifier_mismatch_blocks_auto_merge_through_identity_policy():
+    left = _event_candidate(
+        "book-a",
+        match_id="partizan-zvezda",
+        sport="basketball",
+        home_team_id=1,
+        away_team_id=2,
+        home_team="Partizan",
+        away_team="Crvena Zvezda",
+    )
+    right = _event_candidate(
+        "book-b",
+        match_id="partizan-women-zvezda",
+        sport="basketball",
+        home_team_id=3,
+        away_team_id=2,
+        home_team="Partizan Women",
+        away_team="Crvena Zvezda",
+    )
+
+    evidence = score_event_candidate_pair(left, right)
+    decision = classify_event_candidate_pair(left, right)
+
+    assert evidence is not None
+    assert not evidence.has_compatible_orientation
+    assert "qualifier_mismatch" in evidence.identity_reasons
+    assert decision is not None
+    assert decision.category == EventMergeDecisionCategory.QUALIFIER_CONFLICT
+    assert decision.ignored
+    assert not decision.causes_union
+    assert not decision.emits_review_case
+
+
+def test_pair_classification_surfaces_low_confidence_review_without_pipeline():
+    left = _event_candidate(
+        "superbet",
+        match_id="south-korea-japan",
+        sport="basketball",
+        home_team_id=1,
+        away_team_id=3,
+        home_team="South Korea",
+        away_team="Japan",
+    )
+    right = _event_candidate(
+        "meridian",
+        match_id="north-korea-japan",
+        sport="basketball",
+        home_team_id=2,
+        away_team_id=3,
+        home_team="North Korea",
+        away_team="Japan",
+    )
+
+    decision = classify_event_candidate_pair(left, right, combined_bookmaker_count=2)
+
+    assert decision is not None
+    assert decision.category == EventMergeDecisionCategory.LOW_CONFIDENCE_REVIEW
+    assert decision.emits_review_case
+    assert not decision.causes_union
+    assert decision.pair is not None
+    assert decision.pair.reason_code == "possible_event_equivalence_low_confidence"
+
+
+def test_pair_classification_surfaces_anchored_merge_without_pipeline():
+    left = _event_candidate(
+        "mozzart",
+        match_id="srsni-pisek-pardubice",
+        sport="basketball",
+        home_team_id=1,
+        away_team_id=3,
+        home_team="Srsni Pisek",
+        away_team="Pardubice",
+        source_league_id="ceska_liga",
+    )
+    right = _event_candidate(
+        "meridian",
+        match_id="sokol-pisek-pardubice",
+        sport="basketball",
+        home_team_id=2,
+        away_team_id=3,
+        home_team="Sokol Pisek",
+        away_team="Pardubice",
+        source_league_id="ceska_liga",
+    )
+
+    decision = classify_event_candidate_pair(left, right, combined_bookmaker_count=3)
+    group_decision = with_group_context(
+        decision,
+        can_union=True,
+        quorum_passes=False,
+        combined_bookmaker_count=3,
+    )
+
+    assert decision is not None
+    assert decision.category == EventMergeDecisionCategory.ANCHORED_MERGE
+    assert decision.requires_group_context
+    assert decision.evidence is not None
+    assert decision.evidence.anchored_detail is not None
+    assert decision.pair is not None
+    assert decision.pair.reason_code == "high_confidence_fuzzy_event_match"
+    assert group_decision.causes_union
+
+
+def test_group_context_classifies_same_bookmaker_conflict_and_quorum_override():
+    left = _event_candidate(
+        "book-a",
+        match_id="heidelberg-mbc",
+        sport="basketball",
+        home_team_id=1,
+        away_team_id=2,
+        home_team="Heidelberg",
+        away_team="Mitteldeutscher",
+    )
+    right = _event_candidate(
+        "book-a",
+        match_id="heidelberg-academics-mbc",
+        sport="basketball",
+        home_team_id=3,
+        away_team_id=4,
+        home_team="Heidelberg Academics",
+        away_team="Mitteldeutscher BC",
+    )
+    pair_decision = classify_event_candidate_pair(
+        left,
+        right,
+        combined_bookmaker_count=7,
+    )
+
+    conflict = with_group_context(
+        pair_decision,
+        can_union=False,
+        quorum_passes=False,
+        combined_bookmaker_count=7,
+    )
+    quorum = with_group_context(
+        pair_decision,
+        can_union=False,
+        quorum_passes=True,
+        combined_bookmaker_count=7,
+    )
+
+    assert pair_decision is not None
+    assert conflict.category == EventMergeDecisionCategory.SAME_BOOKMAKER_CONFLICT
+    assert conflict.emits_review_case
+    assert not conflict.causes_union
+    assert conflict.pair is not None
+    assert conflict.pair.reason_code == "conflicting_same_bookmaker_event_candidate"
+    assert quorum.category == EventMergeDecisionCategory.QUORUM_OVERRIDE
+    assert quorum.causes_union
+    assert quorum.quorum_override
+    assert quorum.pair is not None
+    assert quorum.pair.reason_code == "high_confidence_fuzzy_event_match"
+    assert any("Quorum-resolved same-bookmaker conflict" in item for item in quorum.pair.evidence)
+
+
+def test_split_diagnostic_decision_is_diagnostic_only_without_group_mutation():
+    left = EventResolutionGroup(
+        event_id="evt-aue-duisburg",
+        sport="football",
+        start_time=START_TIME,
+        primary_match_id="match-aue-duisburg",
+        display_home_team="Aue",
+        display_away_team="Duisburg",
+        display_league_name="League",
+        method="exact",
+        confidence=1.0,
+        members=(
+            _event_candidate(
+                "book-a",
+                match_id="match-aue-duisburg",
+                sport="football",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Aue",
+                away_team="Duisburg",
+            ),
+        ),
+        evidence=(),
+    )
+    right = EventResolutionGroup(
+        event_id="evt-erzgebirge-aue-msv-duisburg",
+        sport="football",
+        start_time=START_TIME,
+        primary_match_id="match-erzgebirge-aue-msv-duisburg",
+        display_home_team="Erzgebirge Aue",
+        display_away_team="MSV Duisburg",
+        display_league_name="League",
+        method="exact",
+        confidence=1.0,
+        members=(
+            _event_candidate(
+                "book-b",
+                match_id="match-erzgebirge-aue-msv-duisburg",
+                sport="football",
+                home_team_id=3,
+                away_team_id=4,
+                home_team="Erzgebirge Aue",
+                away_team="MSV Duisburg",
+            ),
+        ),
+        evidence=(),
+    )
+    before_members = (left.members, right.members)
+
+    decision = resolution_module._split_diagnostic_decision_for_pair(left, right)
+    candidate = resolution_module._split_candidate_for_pair(left, right)
+
+    assert decision is not None
+    assert decision.category == EventDiagnosticDecisionCategory.SPLIT_DIAGNOSTIC
+    assert decision.diagnostic_only
+    assert not decision.causes_union
+    assert not decision.emits_review_case
+    assert candidate is not None
+    assert (left.members, right.members) == before_members
+
+
+def test_overmerge_diagnostic_decision_is_diagnostic_only_without_group_mutation():
+    group = EventResolutionGroup(
+        event_id="evt-overmerged",
+        sport="basketball",
+        start_time=START_TIME,
+        primary_match_id="match-overmerged",
+        display_home_team="Team Alpha",
+        display_away_team="Team Beta",
+        display_league_name="League",
+        method="auto_fuzzy_high",
+        confidence=0.8,
+        members=(
+            _event_candidate(
+                "book-a",
+                match_id="match-a",
+                sport="basketball",
+                home_team_id=1,
+                away_team_id=2,
+                home_team="Team Alpha",
+                away_team="Team Beta",
+            ),
+            _event_candidate(
+                "book-b",
+                match_id="match-b",
+                sport="basketball",
+                home_team_id=3,
+                away_team_id=4,
+                home_team="Completely Different",
+                away_team="Another Opponent",
+            ),
+        ),
+        evidence=(),
+    )
+    before_members = group.members
+
+    decision = resolution_module._overmerge_diagnostic_decision_for_resolution(group)
+    candidate = resolution_module._overmerge_candidate_for_resolution(group)
+
+    assert decision is not None
+    assert decision.category == EventDiagnosticDecisionCategory.OVERMERGE_DIAGNOSTIC
+    assert decision.diagnostic_only
+    assert not decision.causes_union
+    assert not decision.emits_review_case
+    assert candidate is not None
+    assert group.members == before_members
 
 
 def test_match_unification_merges_same_slot_when_one_canonical_side_matches_football():
