@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.models.schemas import NormalizedOdds
+from app.models.schemas import NormalizedOdds, ResolvedEventMemberOut
 from app.services.analyzer import (
     Discrepancy,
     _middle_profit_margin,
@@ -17,11 +17,13 @@ def _make_odds(
     over: float = 1.85, under: float = 1.95,
     match_id: str = "m1",
     market_type: str = "player_points",
+    sport: str = "basketball",
 ) -> NormalizedOdds:
     return NormalizedOdds(
         match_id=match_id,
         bookmaker_id=bookmaker,
         league_id="euroleague",
+        sport=sport,
         home_team="Partizan",
         away_team="Crvena Zvezda",
         market_type=market_type,
@@ -256,6 +258,225 @@ def test_game_total_ot_does_not_cross_with_regular_time_game_total():
     ]
 
     assert find_threshold_gaps(odds) == []
+
+
+@pytest.mark.parametrize(
+    ("sport", "market_type", "player_name"),
+    [
+        ("basketball", "player_points", None),
+        ("basketball", "player_points", " "),
+        ("tennis", "player_games_won", " "),
+    ],
+)
+def test_event_non_player_grouping_excludes_supported_player_markets(
+    sport: str,
+    market_type: str,
+    player_name: str | None,
+):
+    match_id = f"{sport}-shared-match"
+    odds = [
+        _make_odds(
+            "mozzart",
+            player_name,
+            10.5,
+            over=2.20,
+            under=1.80,
+            match_id=match_id,
+            market_type=market_type,
+            sport=sport,
+        ),
+        _make_odds(
+            "meridian",
+            player_name,
+            10.5,
+            over=1.80,
+            under=2.20,
+            match_id=match_id,
+            market_type=market_type,
+            sport=sport,
+        ),
+    ]
+    members = [
+        ResolvedEventMemberOut(
+            id=1,
+            resolved_event_id=f"evt-{sport}",
+            match_id=match_id,
+            bookmaker_id="mozzart",
+            status="active",
+        ),
+        ResolvedEventMemberOut(
+            id=2,
+            resolved_event_id=f"evt-{sport}",
+            match_id=match_id,
+            bookmaker_id="meridian",
+            status="active",
+        ),
+    ]
+
+    assert find_threshold_gaps(odds, event_members=members) == []
+
+
+@pytest.mark.parametrize(
+    ("sport", "market_type"),
+    [
+        ("tennis", "player_points"),
+        ("football", "player_goals"),
+    ],
+)
+def test_event_non_player_grouping_excludes_unsupported_player_markets(
+    sport: str,
+    market_type: str,
+):
+    match_id = f"{sport}-shared-match"
+    odds = [
+        _make_odds(
+            "mozzart",
+            "Player Name",
+            10.5,
+            over=2.20,
+            under=1.80,
+            match_id=match_id,
+            market_type=market_type,
+            sport=sport,
+        ),
+        _make_odds(
+            "meridian",
+            "Player Name",
+            10.5,
+            over=1.80,
+            under=2.20,
+            match_id=match_id,
+            market_type=market_type,
+            sport=sport,
+        ),
+    ]
+    members = [
+        ResolvedEventMemberOut(
+            id=1,
+            resolved_event_id=f"evt-{sport}",
+            match_id=match_id,
+            bookmaker_id="mozzart",
+            status="active",
+        ),
+        ResolvedEventMemberOut(
+            id=2,
+            resolved_event_id=f"evt-{sport}",
+            match_id=match_id,
+            bookmaker_id="meridian",
+            status="active",
+        ),
+    ]
+
+    assert find_threshold_gaps(odds, event_members=members) == []
+
+
+def test_event_analyzer_excludes_player_markets_missing_event_membership():
+    odds = [
+        _make_odds(
+            "mozzart",
+            "Nikola Jokic",
+            10.5,
+            over=2.20,
+            under=1.80,
+            match_id="shared-match",
+            market_type="player_points",
+        ),
+        _make_odds(
+            "meridian",
+            "Nikola Jokic",
+            10.5,
+            over=1.80,
+            under=2.20,
+            match_id="shared-match",
+            market_type="player_points",
+        ),
+    ]
+    members = [
+        ResolvedEventMemberOut(
+            id=1,
+            resolved_event_id="evt-other",
+            match_id="other-match",
+            bookmaker_id="mozzart",
+            status="active",
+        )
+    ]
+
+    assert find_threshold_gaps(odds, event_members=members) == []
+
+
+def test_event_analyzer_excludes_player_markets_with_empty_event_membership():
+    odds = [
+        _make_odds(
+            "mozzart",
+            "Nikola Jokic",
+            10.5,
+            over=2.20,
+            under=1.80,
+            match_id="shared-match",
+            market_type="player_points",
+        ),
+        _make_odds(
+            "meridian",
+            "Nikola Jokic",
+            10.5,
+            over=1.80,
+            under=2.20,
+            match_id="shared-match",
+            market_type="player_points",
+        ),
+    ]
+
+    assert find_threshold_gaps(odds, event_members=[]) == []
+
+
+def test_supported_tennis_player_market_flows_through_event_scoped_analyzer():
+    odds = [
+        _make_odds(
+            "mozzart",
+            "R. Federer",
+            10.5,
+            over=2.20,
+            under=1.80,
+            match_id="tennis-book-a",
+            market_type="player_games_won",
+            sport="tennis",
+        ),
+        _make_odds(
+            "meridian",
+            "Roger Federer",
+            10.5,
+            over=1.80,
+            under=2.20,
+            match_id="tennis-book-b",
+            market_type="player_games_won",
+            sport="tennis",
+        ),
+    ]
+    members = [
+        ResolvedEventMemberOut(
+            id=1,
+            resolved_event_id="evt-tennis",
+            match_id="tennis-book-a",
+            bookmaker_id="mozzart",
+            status="active",
+        ),
+        ResolvedEventMemberOut(
+            id=2,
+            resolved_event_id="evt-tennis",
+            match_id="tennis-book-b",
+            bookmaker_id="meridian",
+            status="active",
+        ),
+    ]
+
+    discrepancies = find_threshold_gaps(odds, event_members=members)
+
+    assert len(discrepancies) == 1
+    assert discrepancies[0].resolved_event_id == "evt-tennis"
+    assert discrepancies[0].market_type == "player_games_won"
+    assert discrepancies[0].player_name == "Roger Federer"
+    assert discrepancies[0].profit_margin is not None
+    assert discrepancies[0].profit_margin > 0
 
 
 def test_fitted_ev_can_reject_raw_gap_game_total_middle():
