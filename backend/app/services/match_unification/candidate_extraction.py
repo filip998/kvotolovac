@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 import time
 
@@ -18,37 +17,19 @@ from ..outcome_normalizer import (
     FootballEventResolutionMap,
 )
 from ..text_normalizer import normalize_identity_text
-from .event_matching import EventCandidate, _orientation_scores
-
-
-_SOURCE_MATCH_MIN_SCORE = 60.0
+from .event_matching import EventCandidate
+from .source_matching import (
+    RawEventSource,
+    SourceMatchBenchmarkRecorder,
+    SourceMatcher,
+    SourceMatchQuery,
+    SourceMatchResult,
+    SourceMatchScopedSummary,
+)
 
 
 def _elapsed_ms(started_at: float) -> int:
     return int((time.perf_counter() - started_at) * 1000)
-
-
-@dataclass(frozen=True)
-class _RawEventSource:
-    bookmaker_id: str
-    sport: str
-    start_time: str
-    home_team: str
-    away_team: str
-    league_id: str
-    league_name: str
-    source_url: str | None
-    source_kind: str
-
-
-@dataclass(frozen=True)
-class _SourceSlotIndex:
-    all_sources: tuple[_RawEventSource, ...]
-    by_source_url: dict[str, tuple[_RawEventSource, ...]]
-    by_listed_pair: dict[tuple[str, str], tuple[_RawEventSource, ...]]
-    by_unordered_pair: dict[frozenset[str], tuple[_RawEventSource, ...]]
-    source_urls: frozenset[str]
-    league_ids: frozenset[str]
 
 
 @dataclass
@@ -74,21 +55,84 @@ class _EventCandidateExtractionStats:
     source_match_listed_pair_hit_count: int = 0
     source_match_unordered_pair_hit_count: int = 0
     source_match_fallback_scan_count: int = 0
+    source_match_fallback_scan_hit_count: int = 0
+    source_match_fallback_scan_miss_count: int = 0
+    source_match_rejected_fast_path_count: int = 0
     source_match_max_sources_per_lookup: int = 0
-    source_match_slot_lookup_counts: Counter[tuple[str, str, str]] = field(
-        default_factory=Counter
+    source_match_strategy_counts: dict[str, int] = field(default_factory=dict)
+    source_match_reason_counts: dict[str, int] = field(default_factory=dict)
+    source_match_attempt_reason_counts: dict[str, int] = field(default_factory=dict)
+    source_match_score_buckets: dict[str, int] = field(default_factory=dict)
+    source_match_attempt_score_buckets: dict[str, int] = field(default_factory=dict)
+    source_match_bookmakers: list[SourceMatchScopedSummary] = field(
+        default_factory=list
     )
-    source_match_slot_source_counts: Counter[tuple[str, str, str]] = field(
-        default_factory=Counter
+    source_match_sports: list[SourceMatchScopedSummary] = field(default_factory=list)
+    source_match_slot_lookup_counts: dict[tuple[str, str, str], int] = field(
+        default_factory=dict
+    )
+    source_match_slot_source_counts: dict[tuple[str, str, str], int] = field(
+        default_factory=dict
     )
     football_raw_candidate_count: int = 0
     football_raw_resolution_candidates_ms: int = 0
     reused_football_event_resolution_count: int = 0
     _source_match_seconds: float = 0.0
+    _source_match_recorder: SourceMatchBenchmarkRecorder = field(
+        default_factory=SourceMatchBenchmarkRecorder
+    )
 
     @property
     def source_match_ms(self) -> int:
         return int(self._source_match_seconds * 1000)
+
+    def record_source_match(
+        self,
+        result: SourceMatchResult,
+        elapsed_seconds: float,
+    ) -> None:
+        self._source_match_seconds += elapsed_seconds
+        self.source_match_lookup_count += 1
+        self.source_match_source_count += result.source_count_in_slot
+        self.source_match_scored_source_count += result.scored_source_count
+        self.source_match_index_candidate_count += result.index_candidate_count
+        self.source_match_rejected_fast_path_count += result.rejected_fast_path_count
+        self.source_match_max_sources_per_lookup = max(
+            self.source_match_max_sources_per_lookup,
+            result.source_count_in_slot,
+        )
+        self.source_match_slot_lookup_counts[result.slot_key] = (
+            self.source_match_slot_lookup_counts.get(result.slot_key, 0) + 1
+        )
+        self.source_match_slot_source_counts[result.slot_key] = (
+            self.source_match_slot_source_counts.get(result.slot_key, 0)
+            + result.source_count_in_slot
+        )
+        if result.strategy == "exact_url":
+            self.source_match_exact_url_hit_count += 1
+        elif result.strategy == "listed_pair":
+            self.source_match_listed_pair_hit_count += 1
+        elif result.strategy == "unordered_pair":
+            self.source_match_unordered_pair_hit_count += 1
+        if result.fallback_scan_attempted:
+            self.source_match_fallback_scan_count += 1
+            if result.strategy == "fallback_scan" and result.matched:
+                self.source_match_fallback_scan_hit_count += 1
+            else:
+                self.source_match_fallback_scan_miss_count += 1
+        self._source_match_recorder.record(result)
+
+    def finalize_source_match_summary(self) -> None:
+        started_at = time.perf_counter()
+        summary = self._source_match_recorder.summary()
+        self.source_match_strategy_counts = summary.strategy_counts
+        self.source_match_reason_counts = summary.reason_counts
+        self.source_match_attempt_reason_counts = summary.attempt_reason_counts
+        self.source_match_score_buckets = summary.score_buckets
+        self.source_match_attempt_score_buckets = summary.attempt_score_buckets
+        self.source_match_bookmakers = list(summary.bookmakers)
+        self.source_match_sports = list(summary.sports)
+        self._source_match_seconds += time.perf_counter() - started_at
 
 
 def _league_source(raw_league_id: str, bookmaker_id: str) -> tuple[str, str]:
@@ -123,7 +167,7 @@ def _raw_odds_sources(
     raw_odds: list[RawOddsData],
     *,
     league_cache: dict[tuple[str, str], tuple[str, str]] | None = None,
-) -> list[_RawEventSource]:
+) -> list[RawEventSource]:
     source_rows: dict[tuple[str, str, str, str, str, str | None], RawOddsData] = {}
     identity_cache: dict[str, str] = {}
     for raw in raw_odds:
@@ -139,7 +183,7 @@ def _raw_odds_sources(
         )
         source_rows.setdefault(key, raw)
 
-    sources: list[_RawEventSource] = []
+    sources: list[RawEventSource] = []
     for raw in source_rows.values():
         league_id, league_name = _league_source_cached(
             raw.league_id,
@@ -147,7 +191,7 @@ def _raw_odds_sources(
             league_cache,
         )
         sources.append(
-            _RawEventSource(
+            RawEventSource(
                 bookmaker_id=raw.bookmaker_id,
                 sport=raw.sport,
                 start_time=raw.start_time,
@@ -166,7 +210,7 @@ def _raw_outcome_sources(
     raw_offers: list[RawOutcomeOffer],
     *,
     league_cache: dict[tuple[str, str], tuple[str, str]] | None = None,
-) -> list[_RawEventSource]:
+) -> list[RawEventSource]:
     source_rows: dict[tuple[str, str, str, str, str, str | None], RawOutcomeOffer] = {}
     identity_cache: dict[str, str] = {}
     for raw in raw_offers:
@@ -182,7 +226,7 @@ def _raw_outcome_sources(
         )
         source_rows.setdefault(key, raw)
 
-    sources: list[_RawEventSource] = []
+    sources: list[RawEventSource] = []
     for raw in source_rows.values():
         league_id, league_name = _league_source_cached(
             raw.league_id,
@@ -190,7 +234,7 @@ def _raw_outcome_sources(
             league_cache,
         )
         sources.append(
-            _RawEventSource(
+            RawEventSource(
                 bookmaker_id=raw.bookmaker_id,
                 sport=raw.sport,
                 start_time=raw.start_time,
@@ -205,209 +249,35 @@ def _raw_outcome_sources(
     return sources
 
 
-def _source_match_score(source: _RawEventSource, candidate: EventCandidate) -> float:
-    scores = _orientation_scores(
-        source.home_team,
-        source.away_team,
-        candidate.home_team,
-        candidate.away_team,
-        sport=source.sport,
-    )
-    if not scores:
-        return 0.0
-    score = scores[0].avg_score
-    if source.source_url and source.source_url == candidate.source_url:
-        score += 10.0
-    if source.league_id == candidate.source_league_id:
-        score += 3.0
-    return score
-
-
-def _source_match_max_score(
-    candidate: EventCandidate,
-    slot_index: _SourceSlotIndex,
-) -> float:
-    score = 100.0
-    if candidate.source_url and candidate.source_url in slot_index.source_urls:
-        score += 10.0
-    if (
-        candidate.source_league_id
-        and candidate.source_league_id in slot_index.league_ids
-    ):
-        score += 3.0
-    return score
-
-
-def _source_listed_pair_key(
-    home_team: str | None,
-    away_team: str | None,
-) -> tuple[str, str]:
-    return (
-        normalize_identity_text(home_team),
-        normalize_identity_text(away_team),
-    )
-
-def _source_unordered_pair_key(
-    home_team: str | None,
-    away_team: str | None,
-) -> frozenset[str]:
-    return frozenset(_source_listed_pair_key(home_team, away_team))
-
-
-def _freeze_multimap(
-    rows: dict,
-) -> dict:
-    return {key: tuple(value) for key, value in rows.items()}
-
-
-def _build_source_slot_indexes(
-    sources: list[_RawEventSource],
-) -> dict[tuple[str, str, str], _SourceSlotIndex]:
-    by_slot: dict[tuple[str, str, str], list[_RawEventSource]] = defaultdict(list)
-    for source in sources:
-        by_slot[(source.bookmaker_id, source.sport, source.start_time)].append(source)
-
-    indexes: dict[tuple[str, str, str], _SourceSlotIndex] = {}
-    for slot_key, slot_sources in by_slot.items():
-        by_source_url: dict[str, list[_RawEventSource]] = defaultdict(list)
-        by_listed_pair: dict[tuple[str, str], list[_RawEventSource]] = defaultdict(list)
-        by_unordered_pair: dict[frozenset[str], list[_RawEventSource]] = defaultdict(list)
-        source_urls: set[str] = set()
-        league_ids: set[str] = set()
-        for source in slot_sources:
-            if source.source_url:
-                by_source_url[source.source_url].append(source)
-                source_urls.add(source.source_url)
-            league_ids.add(source.league_id)
-            listed_key = _source_listed_pair_key(source.home_team, source.away_team)
-            by_listed_pair[listed_key].append(source)
-            by_unordered_pair[frozenset(listed_key)].append(source)
-        indexes[slot_key] = _SourceSlotIndex(
-            all_sources=tuple(slot_sources),
-            by_source_url=_freeze_multimap(by_source_url),
-            by_listed_pair=_freeze_multimap(by_listed_pair),
-            by_unordered_pair=_freeze_multimap(by_unordered_pair),
-            source_urls=frozenset(source_urls),
-            league_ids=frozenset(league_ids),
-        )
-    return indexes
-
-
 def _best_source(
-    sources_by_slot: dict[tuple[str, str, str], _SourceSlotIndex],
+    matcher: SourceMatcher,
     candidate: EventCandidate,
     *,
     stats: _EventCandidateExtractionStats | None = None,
-) -> _RawEventSource | None:
+) -> RawEventSource | None:
     started_at = time.perf_counter()
-    slot_key = (candidate.bookmaker_id, candidate.sport, candidate.start_time)
-    slot_index = sources_by_slot.get(slot_key)
-    sources = slot_index.all_sources if slot_index is not None else ()
+    result = matcher.match(
+        SourceMatchQuery(
+            bookmaker_id=candidate.bookmaker_id,
+            sport=candidate.sport,
+            start_time=candidate.start_time,
+            home_team=candidate.home_team,
+            away_team=candidate.away_team,
+            source_url=candidate.source_url,
+            league_id=candidate.source_league_id,
+        )
+    )
     if stats is not None:
-        stats.source_match_lookup_count += 1
-        stats.source_match_source_count += len(sources)
-        stats.source_match_max_sources_per_lookup = max(
-            stats.source_match_max_sources_per_lookup,
-            len(sources),
+        stats.record_source_match(
+            result,
+            time.perf_counter() - started_at,
         )
-        stats.source_match_slot_lookup_counts[slot_key] += 1
-        stats.source_match_slot_source_counts[slot_key] += len(sources)
-    try:
-        if slot_index is None:
-            return None
-        score_cache: dict[int, float] = {}
-
-        def score_source(source: _RawEventSource) -> float:
-            cache_key = id(source)
-            if cache_key not in score_cache:
-                score_cache[cache_key] = _source_match_score(source, candidate)
-                if stats is not None:
-                    stats.source_match_scored_source_count += 1
-            return score_cache[cache_key]
-
-        def best_from_subset(
-            subset: tuple[_RawEventSource, ...],
-        ) -> tuple[_RawEventSource | None, float]:
-            best_source: _RawEventSource | None = None
-            best_subset_score = 0.0
-            for source in subset:
-                score = score_source(source)
-                if best_source is None or score > best_subset_score:
-                    best_source = source
-                    best_subset_score = score
-            return best_source, best_subset_score
-
-        def maybe_fast_return(
-            subset: tuple[_RawEventSource, ...],
-            counter_name: str,
-        ) -> _RawEventSource | None:
-            if not subset:
-                return None
-            if stats is not None:
-                stats.source_match_index_candidate_count += len(subset)
-            best_subset_source, best_subset_score = best_from_subset(subset)
-            if best_subset_source is None:
-                return None
-            if best_subset_score < _SOURCE_MATCH_MIN_SCORE:
-                return None
-            if best_subset_score < _source_match_max_score(candidate, slot_index):
-                return None
-            if not (
-                candidate.source_url
-                and best_subset_source.source_url == candidate.source_url
-            ) and (not sources or sources[0] is not best_subset_source):
-                return None
-            if stats is not None:
-                setattr(stats, counter_name, getattr(stats, counter_name) + 1)
-            return best_subset_source
-
-        if candidate.source_url:
-            source = maybe_fast_return(
-                slot_index.by_source_url.get(candidate.source_url, ()),
-                "source_match_exact_url_hit_count",
-            )
-            if source is not None:
-                return source
-
-        listed_key = _source_listed_pair_key(candidate.home_team, candidate.away_team)
-        source = maybe_fast_return(
-            slot_index.by_listed_pair.get(listed_key, ()),
-            "source_match_listed_pair_hit_count",
-        )
-        if source is not None:
-            return source
-
-        unordered_key = _source_unordered_pair_key(
-            candidate.home_team,
-            candidate.away_team,
-        )
-        source = maybe_fast_return(
-            slot_index.by_unordered_pair.get(unordered_key, ()),
-            "source_match_unordered_pair_hit_count",
-        )
-        if source is not None:
-            return source
-
-        if stats is not None:
-            stats.source_match_fallback_scan_count += 1
-        best: _RawEventSource | None = None
-        best_score = 0.0
-        for source in sources:
-            score = score_source(source)
-            if best is None or score > best_score:
-                best = source
-                best_score = score
-        if best is None or best_score < _SOURCE_MATCH_MIN_SCORE:
-            return None
-        return best
-    finally:
-        if stats is not None:
-            stats._source_match_seconds += time.perf_counter() - started_at
+    return result.source
 
 
 def _normalized_odds_candidate(
     row: NormalizedOdds,
-    source: _RawEventSource | None,
+    source: RawEventSource | None,
     *,
     league_cache: dict[tuple[str, str], tuple[str, str]] | None = None,
 ) -> EventCandidate | None:
@@ -443,7 +313,7 @@ def _normalized_odds_candidate(
 
 def _normalized_outcome_candidate(
     row: NormalizedOutcomeOffer,
-    source: _RawEventSource | None,
+    source: RawEventSource | None,
     *,
     league_cache: dict[tuple[str, str], tuple[str, str]] | None = None,
 ) -> EventCandidate | None:
@@ -610,7 +480,7 @@ def extract_event_candidates(
         stats.extract_raw_odds_sources_ms = _elapsed_ms(raw_odds_sources_started_at)
         stats.raw_odds_rows_scanned = len(raw_odds)
         stats.raw_odds_sources_emitted = len(odds_sources)
-    odds_sources_by_slot = _build_source_slot_indexes(odds_sources)
+    odds_source_matcher = SourceMatcher(odds_sources)
 
     raw_outcome_sources_started_at = time.perf_counter()
     outcome_sources = _raw_outcome_sources(
@@ -623,7 +493,7 @@ def extract_event_candidates(
         )
         stats.raw_outcome_offer_rows_scanned = len(raw_outcome_offers)
         stats.raw_outcome_sources_emitted = len(outcome_sources)
-    outcome_sources_by_slot = _build_source_slot_indexes(outcome_sources)
+    outcome_source_matcher = SourceMatcher(outcome_sources)
 
     normalized_odds_started_at = time.perf_counter()
     unique_normalized_odds = _unique_normalized_odds_rows(normalized_odds)
@@ -643,7 +513,7 @@ def extract_event_candidates(
             source_league_id=row.league_id,
             source_url=row.source_url,
         )
-        source = _best_source(odds_sources_by_slot, provisional, stats=stats)
+        source = _best_source(odds_source_matcher, provisional, stats=stats)
         _merge_candidate(
             candidates,
             _normalized_odds_candidate(row, source, league_cache=league_cache),
@@ -673,7 +543,7 @@ def extract_event_candidates(
             source_league_id=row.league_id,
             source_url=row.source_url,
         )
-        source = _best_source(outcome_sources_by_slot, provisional, stats=stats)
+        source = _best_source(outcome_source_matcher, provisional, stats=stats)
         _merge_candidate(
             candidates,
             _normalized_outcome_candidate(row, source, league_cache=league_cache),
@@ -703,6 +573,9 @@ def extract_event_candidates(
         stats.football_raw_candidate_count = len(football_candidates)
     for candidate in football_candidates:
         _merge_candidate(candidates, candidate)
+
+    if stats is not None:
+        stats.finalize_source_match_summary()
 
     return sorted(
         candidates.values(),

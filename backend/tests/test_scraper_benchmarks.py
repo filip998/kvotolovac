@@ -120,6 +120,11 @@ async def test_benchmarks_published_after_cycle(client: AsyncClient, tmp_path):
         list,
     )
     assert isinstance(body["match_unification"]["top_source_match_slots"], list)
+    assert isinstance(body["match_unification"]["source_match_bookmakers"], list)
+    assert isinstance(body["match_unification"]["source_match_sports"], list)
+    if body["match_unification"]["source_match_lookup_count"] > 0:
+        assert body["match_unification"]["source_match_bookmakers"]
+        assert body["match_unification"]["source_match_sports"]
     assert body["auto_resolution_rerun"]["rerun_performed"] in {True, False}
     assert isinstance(body["auto_resolution_rerun"]["reasons"], list)
     assert body["auto_resolution_rerun"]["before"]["normalized_threshold_odds"] >= 0
@@ -525,9 +530,19 @@ def test_match_unification_benchmark_defaults_and_serialization():
     assert payload["source_match_listed_pair_hit_count"] == 0
     assert payload["source_match_unordered_pair_hit_count"] == 0
     assert payload["source_match_fallback_scan_count"] == 0
+    assert payload["source_match_fallback_scan_hit_count"] == 0
+    assert payload["source_match_fallback_scan_miss_count"] == 0
+    assert payload["source_match_rejected_fast_path_count"] == 0
     assert payload["source_match_max_sources_per_lookup"] == 0
     assert payload["source_match_truncated_slot_count"] == 0
+    assert payload["source_match_strategy_counts"] == {}
+    assert payload["source_match_reason_counts"] == {}
+    assert payload["source_match_attempt_reason_counts"] == {}
+    assert payload["source_match_score_buckets"] == {}
+    assert payload["source_match_attempt_score_buckets"] == {}
     assert payload["top_source_match_slots"] == []
+    assert payload["source_match_bookmakers"] == []
+    assert payload["source_match_sports"] == []
     assert payload["football_raw_candidate_count"] == 0
     assert payload["state"] == "pending_unification"
     assert payload["mode"] == "resolved_event_graph"
