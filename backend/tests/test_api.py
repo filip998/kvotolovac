@@ -1053,6 +1053,177 @@ async def test_event_odds_aggregate_members_and_resolve_player_names(client: Asy
 
 
 @pytest.mark.asyncio
+async def test_tennis_event_odds_and_detail_expose_event_scoped_player_identity(
+    client: AsyncClient,
+):
+    home = create_canonical_team(display_name="Roger Federer", sport="tennis")
+    away = create_canonical_team(display_name="Novak Djokovic", sport="tennis")
+    current_snapshot = "2030-02-01T12:00:00"
+    start_time = "2030-02-01T20:00:00+00:00"
+
+    for bookmaker_id, bookmaker_name in (
+        ("mozzart", "Mozzart"),
+        ("meridian", "Meridian"),
+        ("maxbet", "MaxBet"),
+        ("balkanbet", "BalkanBet"),
+    ):
+        await odds_store.upsert_bookmaker(bookmaker_id, bookmaker_name)
+    await odds_store.upsert_league("atp", "ATP", "tennis")
+    for match_id in (
+        "tennis-full",
+        "tennis-initial",
+        "tennis-comma",
+        "tennis-djokovic",
+    ):
+        await odds_store.upsert_match(
+            id=match_id,
+            league_id="atp",
+            sport="tennis",
+            home_team_id=home.team_id,
+            away_team_id=away.team_id,
+            home_team=home.team_name,
+            away_team=away.team_name,
+            start_time=start_time,
+        )
+
+    async def insert_tennis_odds(
+        match_id: str,
+        bookmaker_id: str,
+        player_name: str | None,
+        *,
+        market_type: str = "player_games_won",
+        threshold: float = 10.5,
+    ) -> None:
+        await odds_store.upsert_odds(
+            NormalizedOdds(
+                match_id=match_id,
+                bookmaker_id=bookmaker_id,
+                league_id="atp",
+                sport="tennis",
+                home_team_id=home.team_id,
+                away_team_id=away.team_id,
+                home_team=home.team_name,
+                away_team=away.team_name,
+                source_url=f"https://example.test/{bookmaker_id}/{match_id}",
+                market_type=market_type,
+                player_name=player_name,
+                threshold=threshold,
+                over_odds=1.9,
+                under_odds=1.9,
+                start_time=start_time,
+            ),
+            scraped_at=current_snapshot,
+        )
+
+    await insert_tennis_odds("tennis-full", "mozzart", "Roger Federer")
+    await insert_tennis_odds("tennis-initial", "meridian", "R. Federer")
+    await insert_tennis_odds("tennis-comma", "maxbet", "Federer, Roger")
+    await insert_tennis_odds("tennis-djokovic", "balkanbet", "Novak Djokovic")
+    await insert_tennis_odds(
+        "tennis-full",
+        "mozzart",
+        None,
+        market_type="match_total_games",
+        threshold=38.5,
+    )
+
+    await odds_store.upsert_resolved_event(
+        ResolvedEventIn(
+            id="evt-federer-djokovic",
+            sport="tennis",
+            start_time=start_time,
+            primary_match_id="tennis-full",
+            method="auto_fuzzy_high",
+            display_home_team="Roger Federer",
+            display_away_team="Novak Djokovic",
+            display_league_name="ATP",
+        )
+    )
+    for match_id, bookmaker_id in (
+        ("tennis-full", "mozzart"),
+        ("tennis-initial", "meridian"),
+        ("tennis-comma", "maxbet"),
+        ("tennis-djokovic", "balkanbet"),
+    ):
+        await odds_store.link_resolved_event_member(
+            ResolvedEventMemberIn(
+                snapshot_id=current_snapshot,
+                resolved_event_id="evt-federer-djokovic",
+                match_id=match_id,
+                bookmaker_id=bookmaker_id,
+                status="active",
+            )
+        )
+    await odds_store.set_current_snapshot(current_snapshot)
+
+    odds_resp = await client.get("/api/v1/events/evt-federer-djokovic/odds")
+    assert odds_resp.status_code == 200
+    rows = odds_resp.json()
+    assert len(rows) == 5
+    player_rows = [row for row in rows if row["market_type"] == "player_games_won"]
+    roger_rows = [
+        row for row in player_rows if row["event_player_display_name"] == "Roger Federer"
+    ]
+    djokovic_rows = [
+        row for row in player_rows if row["event_player_display_name"] == "Novak Djokovic"
+    ]
+
+    assert len(player_rows) == 4
+    assert len(roger_rows) == 3
+    assert len(djokovic_rows) == 1
+    assert len({row["event_scoped_player_key"] for row in roger_rows}) == 1
+    assert (
+        roger_rows[0]["event_scoped_player_key"]
+        != djokovic_rows[0]["event_scoped_player_key"]
+    )
+    assert {
+        roger_rows[0]["event_scoped_player_key"],
+        djokovic_rows[0]["event_scoped_player_key"],
+    } == {row["event_scoped_player_key"] for row in player_rows}
+
+    non_player_rows = [row for row in rows if row["market_type"] == "match_total_games"]
+    assert len(non_player_rows) == 1
+    assert non_player_rows[0]["event_scoped_player_key"] is None
+    assert non_player_rows[0]["event_player_display_name"] is None
+
+    filtered_odds_resp = await client.get(
+        "/api/v1/events/evt-federer-djokovic/odds",
+        params={"bookmaker_ids": "meridian"},
+    )
+    assert filtered_odds_resp.status_code == 200
+    filtered_rows = filtered_odds_resp.json()
+    filtered_player_rows = [
+        row["event_player_display_name"]
+        for row in filtered_rows
+        if row["market_type"] == "player_games_won"
+    ]
+    assert filtered_player_rows == ["Roger Federer"]
+    assert filtered_rows[0]["event_scoped_player_key"] == roger_rows[0][
+        "event_scoped_player_key"
+    ]
+
+    detail_resp = await client.get("/api/v1/events/evt-federer-djokovic")
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["players"] == [
+        {
+            "key": djokovic_rows[0]["event_scoped_player_key"],
+            "display_name": "Novak Djokovic",
+            "source_variants": ["Novak Djokovic"],
+        },
+        {
+            "key": roger_rows[0]["event_scoped_player_key"],
+            "display_name": "Roger Federer",
+            "source_variants": [
+                "Roger Federer",
+                "Federer, Roger",
+                "R. Federer",
+            ],
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_match_market_offers_fall_back_to_exact_match(client: AsyncClient):
     home = create_canonical_team(display_name="Napredak", sport="football")
     away = create_canonical_team(display_name="Radnicki", sport="football")
