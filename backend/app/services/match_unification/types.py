@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from ...models.schemas import (
     BenchmarkEventCoverageOut,
@@ -16,6 +16,9 @@ from ...models.schemas import (
     RawOddsData,
     RawOutcomeOffer,
 )
+
+if TYPE_CHECKING:
+    from ..outcome_normalizer import FootballEventResolutionMap
 
 MatchUnificationMode = Literal["resolved_event_graph", "match_id_only"]
 MatchUnificationState = Literal[
@@ -52,6 +55,7 @@ class MatchUnificationRows:
     raw_outcome_offers: Sequence[RawOutcomeOffer]
     normalized_odds: Sequence[NormalizedOdds]
     normalized_outcome_offers: Sequence[NormalizedOutcomeOffer]
+    football_event_resolutions: FootballEventResolutionMap | None = None
 
 
 @dataclass(frozen=True)

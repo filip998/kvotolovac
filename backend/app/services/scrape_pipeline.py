@@ -27,6 +27,7 @@ from ..services.market_allowlist import (
     MARKET_TYPE_ALIASES,
     MarketAllowlist,
 )
+from ..services.event_pairing import EventPairingCycle
 from ..services.rate_limit_policy import DetailMode
 from ..services.normalizer import (
     ANCHORED_AUTO_APPLY_THRESHOLD,
@@ -810,6 +811,7 @@ def _normalize_pipeline_batch(
     raw_outcome_offers: list[RawOutcomeOffer],
     *,
     benchmark,
+    event_pairing: EventPairingCycle | None = None,
     log_unresolved_shared_platform: bool = True,
 ) -> _NormalizedPipelineBatch:
     threshold_started_at = time.perf_counter()
@@ -822,7 +824,10 @@ def _normalize_pipeline_batch(
         int((time.perf_counter() - threshold_started_at) * 1000),
     )
     outcome_started_at = time.perf_counter()
-    outcome_result = normalize_outcome_offers_with_context(raw_outcome_offers)
+    outcome_result = normalize_outcome_offers_with_context(
+        raw_outcome_offers,
+        event_pairing=event_pairing,
+    )
     normalized_outcome_offers = outcome_result.normalized
     unresolved_outcome_offers = outcome_result.unresolved
     outcome_team_review_cases = outcome_result.team_review_cases
@@ -1559,11 +1564,13 @@ class ScrapePipeline:
         applied_auto_aliases: list[tuple[str, str, str]] = []
         applied_auto_merges: list[tuple[int, int]] = []
         auto_approved_team_review_case_ids: list[int] = []
+        event_pairing = EventPairingCycle()
 
         full_normalized_batch = _normalize_pipeline_batch(
             all_raw,
             all_raw_outcome_offers,
             benchmark=self.benchmark,
+            event_pairing=event_pairing,
             log_unresolved_shared_platform=False,
         )
         normalized_batch = _filter_normalized_pipeline_batch_by_market_allowlist(
@@ -1643,6 +1650,7 @@ class ScrapePipeline:
                     all_raw,
                     all_raw_outcome_offers,
                     benchmark=self.benchmark,
+                    event_pairing=event_pairing,
                 )
                 normalized_batch = _filter_normalized_pipeline_batch_by_market_allowlist(
                     full_normalized_batch,
@@ -1748,6 +1756,9 @@ class ScrapePipeline:
                     raw_outcome_offers=all_raw_outcome_offers,
                     normalized_odds=event_resolution_batch.odds,
                     normalized_outcome_offers=event_resolution_batch.outcome_offers,
+                    football_event_resolutions=(
+                        event_resolution_batch.football_event_resolutions
+                    ),
                 ),
             )
             self.benchmark.record_phase_duration(

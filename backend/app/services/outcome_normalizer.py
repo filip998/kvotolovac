@@ -29,6 +29,7 @@ from .normalizer import (
 from .team_registry import create_canonical_team, create_canonical_teams_batch
 from .tennis_name_matcher import (
     TENNIS_BROAD_DRIFT_MINUTES,
+    TennisCompetitorPairMatch,
     match_tennis_player_names,
     tennis_competitor_pair_matches,
 )
@@ -44,6 +45,7 @@ from .team_identity import (
     team_qualifiers as _team_qualifiers,
     team_similarity as _team_similarity,
 )
+from .event_pairing import EventPairingCycle
 from .text_normalizer import normalize_identity_text
 
 logger = logging.getLogger(__name__)
@@ -176,6 +178,13 @@ class _OutcomeTextCache:
         self._comparison_text: dict[tuple[str, str | None], str] = {}
         self._significant_tokens: dict[tuple[str, str | None], set[str]] = {}
         self._women_marker_forms: dict[str, frozenset[str]] = {}
+        self._team_similarity: dict[tuple[str, str, str | None], float] = {}
+        self._tennis_competitor_pair_matches: dict[
+            tuple[str, str, str, str], tuple[TennisCompetitorPairMatch, ...]
+        ] = {}
+
+    def bind_stats(self, stats: _FootballEventResolutionStats | None) -> None:
+        self._stats = stats
 
     def qualifiers(self, name: str, *, sport: str | None = None) -> set[str]:
         key = (name, sport)
@@ -219,6 +228,14 @@ class _OutcomeTextCache:
         *,
         sport: str | None = None,
     ) -> float:
+        key = (left, right, sport)
+        reverse_key = (right, left, sport)
+        cached = self._team_similarity.get(key)
+        if cached is None:
+            cached = self._team_similarity.get(reverse_key)
+        if cached is not None:
+            return cached
+
         score_result = _event_similarity_score_from_parts(
             self.comparison_text(left, sport=sport),
             self.comparison_text(right, sport=sport),
@@ -227,7 +244,29 @@ class _OutcomeTextCache:
         )
         if self._stats is not None and score_result.used_fuzzy_score:
             self._stats.football_event_fuzzy_score_count += 1
-        return score_result.score
+        score = score_result.score
+        self._team_similarity[key] = score
+        return score
+
+    def tennis_competitor_pair_matches(
+        self,
+        left_home: str,
+        left_away: str,
+        right_home: str,
+        right_away: str,
+    ) -> tuple[TennisCompetitorPairMatch, ...]:
+        key = (left_home, left_away, right_home, right_away)
+        cached = self._tennis_competitor_pair_matches.get(key)
+        if cached is not None:
+            return cached
+        matches = tennis_competitor_pair_matches(
+            left_home,
+            left_away,
+            right_home,
+            right_away,
+        )
+        self._tennis_competitor_pair_matches[key] = matches
+        return matches
 
     def comparison_texts_are_compatible(
         self,
@@ -427,7 +466,7 @@ def _pair_candidates(
     text_cache = text_cache or _OutcomeTextCache(stats)
     candidates: list[_OutcomeEventPair] = []
     if left.sport == "tennis":
-        for tennis_match in tennis_competitor_pair_matches(
+        for tennis_match in text_cache.tennis_competitor_pair_matches(
             left.home_team,
             left.away_team,
             right.home_team,
@@ -880,35 +919,27 @@ def _rank_event_pairs(
     *,
     resolutions: dict[tuple[str, str, str, str, str], _OutcomeEventResolution] | None = None,
     stats: _FootballEventResolutionStats | None = None,
+    event_pairing: EventPairingCycle | None = None,
 ) -> list[_OutcomeEventPair]:
-    events_by_slot: dict[tuple[str, str], list[_OutcomeEvent]] = defaultdict(list)
-    events_by_pair_bucket: dict[tuple[str, str], list[_OutcomeEvent]] = defaultdict(list)
-    for event in events:
-        events_by_slot[(event.sport, event.start_time)].append(event)
-        pair_bucket = (
-            (event.sport, "__tennis_time_drift__")
-            if event.sport == "tennis"
-            else (event.sport, event.start_time)
-        )
-        events_by_pair_bucket[pair_bucket].append(event)
+    pairing = event_pairing or EventPairingCycle()
     if stats is not None:
         bucket_rows: list[OutcomeFootballEventBucketBenchmarkOut] = []
-        for (sport, start_time), slot_events in events_by_slot.items():
-            bookmaker_counts = Counter(event.bookmaker_id for event in slot_events)
-            total_pairs = len(slot_events) * (len(slot_events) - 1) // 2
-            same_bookmaker_pairs = sum(
-                count * (count - 1) // 2 for count in bookmaker_counts.values()
-            )
+        for summary in pairing.slot_summaries(
+            events,
+            sport=lambda event: event.sport,
+            start_time=lambda event: event.start_time,
+            bookmaker_id=lambda event: event.bookmaker_id,
+        ):
             bucket_rows.append(
                 OutcomeFootballEventBucketBenchmarkOut(
-                    sport=sport,
-                    start_time=start_time,
-                    event_count=len(slot_events),
-                    bookmaker_count=len(bookmaker_counts),
-                    candidate_pair_count=total_pairs - same_bookmaker_pairs,
+                    sport=summary.sport,
+                    start_time=summary.start_time,
+                    event_count=summary.event_count,
+                    bookmaker_count=summary.bookmaker_count,
+                    candidate_pair_count=summary.candidate_pair_count,
                 )
             )
-        stats.football_event_time_slot_count = len(events_by_slot)
+        stats.football_event_time_slot_count = len(bucket_rows)
         stats.football_event_max_events_per_slot = max(
             (row.event_count for row in bucket_rows),
             default=0,
@@ -924,8 +955,13 @@ def _rank_event_pairs(
         )[:20]
 
     accepted: list[_OutcomeEventPair] = []
-    for events in events_by_pair_bucket.values():
-        text_cache = _OutcomeTextCache(stats)
+    for events in pairing.pair_buckets(
+        events,
+        sport=lambda event: event.sport,
+        start_time=lambda event: event.start_time,
+    ):
+        text_cache = pairing.cache("outcome_text", _OutcomeTextCache)
+        text_cache.bind_stats(stats)
         resolution_by_event = (
             {event: resolutions.get(_event_key(event)) for event in events}
             if resolutions is not None
@@ -1036,6 +1072,7 @@ def _build_football_event_resolutions(
     raw_list: list[RawOutcomeOffer],
     *,
     stats: _FootballEventResolutionStats | None = None,
+    event_pairing: EventPairingCycle | None = None,
 ) -> FootballEventResolutionMap:
     events = _unique_events(raw_list)
     if stats is not None:
@@ -1051,7 +1088,12 @@ def _build_football_event_resolutions(
         stats.football_event_slot_lookup_ms += _elapsed_ms(lookup_started_at)
 
     ranking_started_at = time.perf_counter()
-    ranked_pairs = _rank_event_pairs(events, resolutions=resolutions, stats=stats)
+    ranked_pairs = _rank_event_pairs(
+        events,
+        resolutions=resolutions,
+        stats=stats,
+        event_pairing=event_pairing,
+    )
     if stats is not None:
         stats.football_event_pair_ranking_ms += _elapsed_ms(ranking_started_at)
 
@@ -1392,6 +1434,8 @@ def _normalized_offer_from_resolution(
 
 def normalize_outcome_offers_with_context(
     raw_list: list[RawOutcomeOffer],
+    *,
+    event_pairing: EventPairingCycle | None = None,
 ) -> OutcomeNormalizationResult:
     normalization_started_at = time.perf_counter()
     autocreate_started_at = time.perf_counter()
@@ -1403,6 +1447,7 @@ def normalize_outcome_offers_with_context(
     event_resolutions = _build_football_event_resolutions(
         raw_list,
         stats=football_resolution_stats,
+        event_pairing=event_pairing,
     )
     event_slots_by_time = _build_event_slots_by_time(event_resolutions)
     football_event_resolution_ms = _elapsed_ms(event_resolution_started_at)

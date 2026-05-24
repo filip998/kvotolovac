@@ -20,6 +20,7 @@ from app.services.outcome_normalizer import (
     normalize_outcome_offers_with_benchmark,
     normalize_outcome_offers_with_diagnostics,
 )
+from app.services.event_pairing import EventPairingCycle
 from app.services.team_registry import create_canonical_team, remember_team_alias
 
 
@@ -286,6 +287,33 @@ def test_football_event_resolution_benchmark_counts_pair_and_fuzzy_work(team_reg
 
     assert stats.football_event_pair_candidate_count == 1
     assert stats.football_event_fuzzy_score_count >= 1
+
+
+def test_football_event_resolution_reuses_cycle_similarity_cache(team_registry_file):
+    raw = [
+        _offer("maxbet", "Basket Sibirsk", "CSKA Moscow", outcome_code="over"),
+        _offer("balkanbet", "Blec Sybirsk", "CSKA Moscow", outcome_code="under"),
+    ]
+    event_pairing = EventPairingCycle()
+    first_stats = _FootballEventResolutionStats()
+    second_stats = _FootballEventResolutionStats()
+
+    first = _build_football_event_resolutions(
+        raw,
+        stats=first_stats,
+        event_pairing=event_pairing,
+    )
+    second = _build_football_event_resolutions(
+        raw,
+        stats=second_stats,
+        event_pairing=event_pairing,
+    )
+
+    assert second == first
+    assert first_stats.football_event_pair_candidate_count == 1
+    assert second_stats.football_event_pair_candidate_count == 1
+    assert first_stats.football_event_fuzzy_score_count >= 1
+    assert second_stats.football_event_fuzzy_score_count == 0
 
 
 def test_football_event_resolution_skips_supported_disjoint_canonical_slots(
