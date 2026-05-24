@@ -213,7 +213,7 @@ async def test_default_team_registry_actions_returns_applied_merge_result(
     monkeypatch.setattr(
         scrape_pipeline,
         "merge_canonical_teams",
-        lambda *, source_team_id, target_team_id: merged_pairings.append(
+        lambda *, source_team_id, target_team_id, **_kwargs: merged_pairings.append(
             (source_team_id, target_team_id)
         ),
     )

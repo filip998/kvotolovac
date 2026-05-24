@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import sqlite3
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -143,6 +146,20 @@ async def test_merge_matches_happy_path(client: AsyncClient, team_registry_file)
     # Source display name disappears (merged into target); target remains.
     assert "Partizan Belgrade" in display_names
     assert "KK Partizan" not in display_names
+    with sqlite3.connect(settings.db_path) as conn:
+        history_rows = conn.execute(
+            """
+            SELECT merge_source, merge_reason, identity_decision
+            FROM team_merge_history
+            ORDER BY source_team_id
+            """
+        ).fetchall()
+    assert {row[0] for row in history_rows} == {"manual_match_merge"}
+    assert {row[1] for row in history_rows} == {"manual_match_merge_pairing"}
+    assert any(
+        "unsafe_subset_override" in json.loads(row[2])["override_reasons"]
+        for row in history_rows
+    )
 
 
 @pytest.mark.asyncio

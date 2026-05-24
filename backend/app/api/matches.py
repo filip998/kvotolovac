@@ -16,6 +16,7 @@ from ..models.schemas import (
 )
 from ..services.scheduler import scheduler
 from ..services.team_registry import (
+    MERGE_SOURCE_MANUAL_MATCH_MERGE,
     merge_canonical_teams,
     validate_canonical_team_merge_identity,
 )
@@ -247,7 +248,7 @@ async def merge_matches(payload: MatchMergeIn) -> MatchMergeOut:
             validate_canonical_team_merge_identity(
                 source_team_id=source_team_id,
                 target_team_id=target_team_id,
-                allow_unsafe_subset=True,
+                allow_unsafe_subset_override=True,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -273,7 +274,9 @@ async def merge_matches(payload: MatchMergeIn) -> MatchMergeOut:
                 merge_canonical_teams,
                 source_team_id=source_team_id,
                 target_team_id=target_team_id,
-                allow_unsafe_subset=True,
+                allow_unsafe_subset_override=True,
+                merge_source=MERGE_SOURCE_MANUAL_MATCH_MERGE,
+                merge_reason="manual_match_merge_pairing",
             )
             merged_pairings.append(
                 MatchMergeTeamPairing(

@@ -110,6 +110,10 @@ REASON_WOMEN_MISMATCH = "women_mismatch"
 REASON_YOUTH_AGE_MISMATCH = "youth_age_mismatch"
 REASON_YOUTH_MARKER_MISMATCH = "youth_marker_mismatch"
 REASON_RESERVE_MARKER_MISMATCH = "reserve_marker_mismatch"
+REASON_UNSAFE_SUBSET_OVERRIDE = "unsafe_subset_override"
+
+CANONICAL_TEAM_AUTO_MERGE_THRESHOLD = 88.0
+POLICY_CANONICAL_MERGE_SAFETY = "canonical_merge_safety"
 
 
 @dataclass(frozen=True)
@@ -162,6 +166,24 @@ class QualifierGateDecision:
     explicit_age_mismatch: bool = False
     women_mismatch: bool = False
     reasons: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class CanonicalTeamMergeSafetyDecision:
+    analysis: TeamIdentityComparison
+    merge_mode: str
+    allow_unsafe_subset_override: bool
+    blocking_reasons: frozenset[str]
+    override_reasons: frozenset[str] = frozenset()
+    policy: str = POLICY_CANONICAL_MERGE_SAFETY
+
+    @property
+    def allowed(self) -> bool:
+        return not self.blocking_reasons
+
+    @property
+    def reasons(self) -> frozenset[str]:
+        return self.analysis.reasons
 
 
 def team_qualifiers(name: str, *, sport: str | None = None) -> set[str]:
@@ -563,6 +585,67 @@ def canonical_team_auto_merge_analysis(
         dotted_expanded=False,
         unsafe_subset=unsafe_subset,
         reasons=frozenset(reasons),
+    )
+
+
+def canonical_team_merge_safety_decision_from_analysis(
+    analysis: TeamIdentityComparison,
+    *,
+    merge_mode: str = "manual",
+    allow_unsafe_subset_override: bool = False,
+) -> CanonicalTeamMergeSafetyDecision:
+    if merge_mode not in {"manual", "automatic"}:
+        raise ValueError("merge_mode must be either 'manual' or 'automatic'")
+
+    blocking_reasons: set[str] = set()
+    override_reasons: set[str] = set()
+
+    if REASON_QUALIFIER_MISMATCH in analysis.reasons:
+        blocking_reasons.add(REASON_QUALIFIER_MISMATCH)
+
+    if REASON_UNSAFE_SUBSET in analysis.reasons:
+        if allow_unsafe_subset_override:
+            override_reasons.add(REASON_UNSAFE_SUBSET_OVERRIDE)
+        else:
+            blocking_reasons.add(REASON_UNSAFE_SUBSET)
+
+    if (
+        merge_mode == "automatic"
+        and not analysis.auto_merge_safe
+        and not blocking_reasons
+    ):
+        blocking_reasons.add(REASON_REVIEW_ONLY)
+        if REASON_LOW_FUZZY_SCORE in analysis.reasons:
+            blocking_reasons.add(REASON_LOW_FUZZY_SCORE)
+
+    return CanonicalTeamMergeSafetyDecision(
+        analysis=analysis,
+        merge_mode=merge_mode,
+        allow_unsafe_subset_override=allow_unsafe_subset_override,
+        blocking_reasons=frozenset(blocking_reasons),
+        override_reasons=frozenset(override_reasons),
+    )
+
+
+def canonical_team_merge_safety_decision(
+    source_team_name: str,
+    target_team_name: str,
+    *,
+    sport: str | None = None,
+    merge_mode: str = "manual",
+    allow_unsafe_subset_override: bool = False,
+    auto_merge_threshold: float = CANONICAL_TEAM_AUTO_MERGE_THRESHOLD,
+) -> CanonicalTeamMergeSafetyDecision:
+    analysis = canonical_team_auto_merge_analysis(
+        source_team_name,
+        target_team_name,
+        sport=sport,
+        threshold=auto_merge_threshold,
+    )
+    return canonical_team_merge_safety_decision_from_analysis(
+        analysis,
+        merge_mode=merge_mode,
+        allow_unsafe_subset_override=allow_unsafe_subset_override,
     )
 
 

@@ -15,10 +15,9 @@ from ..config import settings
 from .team_seed_data import SPORT_ALIAS_SEEDS
 from .team_abbreviations import expand_team_abbreviations
 from .team_identity import (
-    REASON_QUALIFIER_MISMATCH,
-    REASON_UNSAFE_SUBSET,
+    CanonicalTeamMergeSafetyDecision,
     canonical_candidate_qualifier_gate,
-    canonical_team_auto_merge_analysis,
+    canonical_team_merge_safety_decision,
     team_qualifiers,
 )
 from .text_normalizer import normalize_identity_text
@@ -65,6 +64,10 @@ CREATE TABLE IF NOT EXISTS team_merge_history (
     target_team_id INTEGER NOT NULL REFERENCES canonical_teams(id),
     alias_snapshot TEXT,
     review_case_snapshot TEXT,
+    merge_source TEXT NOT NULL DEFAULT 'manual',
+    merge_reason TEXT,
+    identity_policy TEXT,
+    identity_decision TEXT,
     unmerged_at TIMESTAMP,
     merged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -1180,9 +1183,98 @@ def _partial_ratio_admissible(raw_key: str, candidate_key: str) -> bool:
 # fuzzy match (>= 80) can still surface a mismatched candidate near the top
 # of the result list as a *suggestion* the operator can review.
 _QUALIFIER_MISMATCH_PENALTY: float = 15.0
-_MANUAL_MERGE_BLOCK_REASONS = frozenset(
-    {REASON_QUALIFIER_MISMATCH, REASON_UNSAFE_SUBSET}
+MERGE_MODE_MANUAL = "manual"
+MERGE_MODE_AUTOMATIC = "automatic"
+MERGE_SOURCE_MANUAL = "manual"
+MERGE_SOURCE_MANUAL_API = "manual_api"
+MERGE_SOURCE_MANUAL_MATCH_MERGE = "manual_match_merge"
+MERGE_SOURCE_TEAM_REVIEW_APPROVAL = "team_review_approval"
+MERGE_SOURCE_AUTO_RESOLVER = "auto_resolver"
+_MERGE_SOURCES = frozenset(
+    {
+        MERGE_SOURCE_MANUAL,
+        MERGE_SOURCE_MANUAL_API,
+        MERGE_SOURCE_MANUAL_MATCH_MERGE,
+        MERGE_SOURCE_TEAM_REVIEW_APPROVAL,
+        MERGE_SOURCE_AUTO_RESOLVER,
+    }
 )
+
+
+def _unsafe_subset_override_enabled(
+    *,
+    allow_unsafe_subset: bool,
+    allow_unsafe_subset_override: bool | None,
+) -> bool:
+    return (
+        allow_unsafe_subset
+        if allow_unsafe_subset_override is None
+        else allow_unsafe_subset_override
+    )
+
+
+def _merge_identity_error(
+    decision: CanonicalTeamMergeSafetyDecision,
+    *,
+    source_team_name: str,
+    target_team_name: str,
+) -> str:
+    joined_reasons = ", ".join(sorted(decision.blocking_reasons))
+    return (
+        "Canonical team merge rejected by identity policy "
+        f"({joined_reasons}): "
+        f"{source_team_name} -> {target_team_name}"
+    )
+
+
+def _canonical_merge_safety_decision_for_rows(
+    source_row: sqlite3.Row,
+    target_row: sqlite3.Row,
+    *,
+    merge_mode: str = MERGE_MODE_MANUAL,
+    allow_unsafe_subset: bool = False,
+    allow_unsafe_subset_override: bool | None = None,
+) -> CanonicalTeamMergeSafetyDecision:
+    return canonical_team_merge_safety_decision(
+        str(source_row["display_name"]),
+        str(target_row["display_name"]),
+        sport=str(source_row["sport"]),
+        merge_mode=merge_mode,
+        allow_unsafe_subset_override=_unsafe_subset_override_enabled(
+            allow_unsafe_subset=allow_unsafe_subset,
+            allow_unsafe_subset_override=allow_unsafe_subset_override,
+        ),
+    )
+
+
+def _validate_canonical_merge_rows(
+    conn: sqlite3.Connection,
+    *,
+    source_team_id: int,
+    target_team_id: int,
+) -> tuple[sqlite3.Row, sqlite3.Row]:
+    if source_team_id == target_team_id:
+        raise ValueError("Cannot merge a canonical team into itself")
+
+    source_row = _query_any_team_by_id(conn, source_team_id)
+    target_row = _query_any_team_by_id(conn, target_team_id)
+    if source_row is None or target_row is None:
+        raise ValueError("Both canonical teams must exist before merging")
+    if not bool(source_row["is_active"]):
+        raise ValueError(
+            "Source canonical team is inactive; unmerge it before merging again"
+        )
+    if not bool(target_row["is_active"]):
+        raise ValueError(
+            "Target canonical team is inactive; use its active merged target instead"
+        )
+    if source_row["merged_into_team_id"] is not None:
+        raise ValueError("Source canonical team already points to another team")
+    if target_row["merged_into_team_id"] is not None:
+        raise ValueError("Target canonical team already points to another team")
+    if str(source_row["sport"]) != str(target_row["sport"]):
+        raise ValueError("Only canonical teams from the same sport can be merged")
+    return source_row, target_row
 
 
 def _validate_manual_canonical_merge_identity(
@@ -1190,13 +1282,24 @@ def _validate_manual_canonical_merge_identity(
     target_row: sqlite3.Row,
     *,
     allow_unsafe_subset: bool = False,
+    allow_unsafe_subset_override: bool | None = None,
+    merge_mode: str = MERGE_MODE_MANUAL,
 ) -> None:
-    validate_team_name_identity(
-        str(source_row["display_name"]),
-        str(target_row["display_name"]),
-        sport=str(source_row["sport"]),
+    decision = _canonical_merge_safety_decision_for_rows(
+        source_row,
+        target_row,
+        merge_mode=merge_mode,
         allow_unsafe_subset=allow_unsafe_subset,
+        allow_unsafe_subset_override=allow_unsafe_subset_override,
     )
+    if not decision.allowed:
+        raise ValueError(
+            _merge_identity_error(
+                decision,
+                source_team_name=str(source_row["display_name"]),
+                target_team_name=str(target_row["display_name"]),
+            )
+        )
 
 
 def validate_team_name_identity(
@@ -1205,25 +1308,26 @@ def validate_team_name_identity(
     *,
     sport: str,
     allow_unsafe_subset: bool = False,
+    allow_unsafe_subset_override: bool | None = None,
+    merge_mode: str = MERGE_MODE_MANUAL,
 ) -> None:
-    analysis = canonical_team_auto_merge_analysis(
+    decision = canonical_team_merge_safety_decision(
         source_team_name,
         target_team_name,
         sport=sport,
-        threshold=0.0,
+        merge_mode=merge_mode,
+        allow_unsafe_subset_override=_unsafe_subset_override_enabled(
+            allow_unsafe_subset=allow_unsafe_subset,
+            allow_unsafe_subset_override=allow_unsafe_subset_override,
+        ),
     )
-    block_reasons = (
-        _MANUAL_MERGE_BLOCK_REASONS
-        if not allow_unsafe_subset
-        else frozenset({REASON_QUALIFIER_MISMATCH})
-    )
-    blocking_reasons = sorted(analysis.reasons & block_reasons)
-    if blocking_reasons:
-        joined_reasons = ", ".join(blocking_reasons)
+    if not decision.allowed:
         raise ValueError(
-            "Cannot use incompatible team identity "
-            f"({joined_reasons}): "
-            f"{source_team_name} -> {target_team_name}"
+            _merge_identity_error(
+                decision,
+                source_team_name=source_team_name,
+                target_team_name=target_team_name,
+            )
         )
 
 
@@ -1232,19 +1336,22 @@ def validate_canonical_team_merge_identity(
     source_team_id: int,
     target_team_id: int,
     allow_unsafe_subset: bool = False,
+    allow_unsafe_subset_override: bool | None = None,
+    merge_mode: str = MERGE_MODE_MANUAL,
 ) -> None:
     _ensure_bootstrapped()
     with _connect() as conn:
-        source_row = _query_team_by_id(conn, source_team_id)
-        target_row = _query_team_by_id(conn, target_team_id)
-        if source_row is None or target_row is None:
-            raise ValueError("Both canonical teams must exist before merging")
-        if str(source_row["sport"]) != str(target_row["sport"]):
-            raise ValueError("Only canonical teams from the same sport can be merged")
+        source_row, target_row = _validate_canonical_merge_rows(
+            conn,
+            source_team_id=source_team_id,
+            target_team_id=target_team_id,
+        )
         _validate_manual_canonical_merge_identity(
             source_row,
             target_row,
             allow_unsafe_subset=allow_unsafe_subset,
+            allow_unsafe_subset_override=allow_unsafe_subset_override,
+            merge_mode=merge_mode,
         )
 
 
@@ -1615,16 +1722,104 @@ def _team_review_case_snapshot(
     ]
 
 
+_ALIAS_SNAPSHOT_ERROR = "Stored merge rollback metadata is invalid"
+_REVIEW_CASE_SNAPSHOT_ERROR = "Stored merge review-case rollback metadata is invalid"
+
+
+def _validate_alias_snapshot(snapshot: Any) -> list[dict[str, Any]]:
+    if not isinstance(snapshot, list):
+        raise ValueError(_ALIAS_SNAPSHOT_ERROR)
+
+    validated: list[dict[str, Any]] = []
+    for item in snapshot:
+        if not isinstance(item, dict):
+            raise ValueError(_ALIAS_SNAPSHOT_ERROR)
+        alias = item.get("alias")
+        normalized_alias = item.get("normalized_alias")
+        bookmaker_id = item.get("bookmaker_id", _GLOBAL_BOOKMAKER_ID)
+        source = item.get("source", "manual_review")
+        legacy_competition_id = item.get("legacy_competition_id")
+        was_conflict = item.get("was_conflict", False)
+        if (
+            not isinstance(alias, str)
+            or not alias.strip()
+            or not isinstance(normalized_alias, str)
+            or not normalized_alias
+            or not isinstance(bookmaker_id, str)
+            or not isinstance(source, str)
+            or not isinstance(was_conflict, bool)
+            or (
+                legacy_competition_id is not None
+                and not isinstance(legacy_competition_id, str)
+            )
+        ):
+            raise ValueError(_ALIAS_SNAPSHOT_ERROR)
+        validated.append(
+            {
+                "alias": alias,
+                "normalized_alias": normalized_alias,
+                "bookmaker_id": bookmaker_id,
+                "source": source or "manual_review",
+                "legacy_competition_id": legacy_competition_id,
+                "was_conflict": was_conflict,
+            }
+        )
+    return validated
+
+
+def _validate_review_case_snapshot(snapshot: Any) -> list[dict[str, Any]]:
+    if not isinstance(snapshot, list):
+        raise ValueError(_REVIEW_CASE_SNAPSHOT_ERROR)
+
+    validated: list[dict[str, Any]] = []
+    for item in snapshot:
+        if not isinstance(item, dict):
+            raise ValueError(_REVIEW_CASE_SNAPSHOT_ERROR)
+        case_id = item.get("id")
+        suggested_team_id = item.get("suggested_team_id")
+        suggested_team_name = item.get("suggested_team_name")
+        candidate_teams = item.get("candidate_teams")
+        canonical_home_team = item.get("canonical_home_team")
+        canonical_away_team = item.get("canonical_away_team")
+        if not isinstance(case_id, int):
+            raise ValueError(_REVIEW_CASE_SNAPSHOT_ERROR)
+        if suggested_team_id is not None and not isinstance(suggested_team_id, int):
+            raise ValueError(_REVIEW_CASE_SNAPSHOT_ERROR)
+        for value in (
+            suggested_team_name,
+            canonical_home_team,
+            canonical_away_team,
+        ):
+            if value is not None and not isinstance(value, str):
+                raise ValueError(_REVIEW_CASE_SNAPSHOT_ERROR)
+        if candidate_teams is not None:
+            if not isinstance(candidate_teams, str):
+                raise ValueError(_REVIEW_CASE_SNAPSHOT_ERROR)
+            try:
+                parsed_candidates = json.loads(candidate_teams)
+            except json.JSONDecodeError as exc:
+                raise ValueError(_REVIEW_CASE_SNAPSHOT_ERROR) from exc
+            if not isinstance(parsed_candidates, list):
+                raise ValueError(_REVIEW_CASE_SNAPSHOT_ERROR)
+        validated.append(
+            {
+                "id": case_id,
+                "suggested_team_id": suggested_team_id,
+                "suggested_team_name": suggested_team_name,
+                "candidate_teams": candidate_teams,
+                "canonical_home_team": canonical_home_team,
+                "canonical_away_team": canonical_away_team,
+            }
+        )
+    return validated
+
+
 def _restore_pending_team_review_cases(
     conn: sqlite3.Connection,
-    review_case_snapshot: list[Any],
+    review_case_snapshot: list[dict[str, Any]],
 ) -> None:
     for item in review_case_snapshot:
-        if not isinstance(item, dict):
-            raise ValueError("Stored merge review-case rollback metadata is invalid")
         case_id = item.get("id")
-        if not isinstance(case_id, int):
-            raise ValueError("Stored merge review-case rollback metadata is invalid")
 
         current_row = conn.execute(
             """
@@ -1891,39 +2086,92 @@ def _team_alias_snapshot(
     ]
 
 
+def _normalize_merge_source(merge_source: str | None) -> str:
+    normalized = (merge_source or MERGE_SOURCE_MANUAL).strip()
+    if normalized not in _MERGE_SOURCES:
+        allowed = ", ".join(sorted(_MERGE_SOURCES))
+        raise ValueError(f"merge_source must be one of: {allowed}")
+    return normalized
+
+
+def _merge_identity_decision_payload(
+    decision: CanonicalTeamMergeSafetyDecision,
+) -> dict[str, Any]:
+    analysis = decision.analysis
+    return {
+        "schema_version": 1,
+        "policy": decision.policy,
+        "merge_mode": decision.merge_mode,
+        "allowed": decision.allowed,
+        "score": analysis.score,
+        "reasons": sorted(analysis.reasons),
+        "blocking_reasons": sorted(decision.blocking_reasons),
+        "override_reasons": sorted(decision.override_reasons),
+        "allow_unsafe_subset_override": decision.allow_unsafe_subset_override,
+        "left_qualifiers": sorted(analysis.left_qualifiers),
+        "right_qualifiers": sorted(analysis.right_qualifiers),
+        "left_comparison_text": analysis.left_comparison_text,
+        "right_comparison_text": analysis.right_comparison_text,
+        "left_significant_tokens": sorted(analysis.left_significant_tokens),
+        "right_significant_tokens": sorted(analysis.right_significant_tokens),
+        "unsafe_subset": analysis.unsafe_subset,
+    }
+
+
 def merge_canonical_teams(
     *,
     source_team_id: int,
     target_team_id: int,
     allow_unsafe_subset: bool = False,
+    allow_unsafe_subset_override: bool | None = None,
+    merge_mode: str = MERGE_MODE_MANUAL,
+    merge_source: str = MERGE_SOURCE_MANUAL,
+    merge_reason: str | None = None,
 ) -> CanonicalTeamSummary:
-    if source_team_id == target_team_id:
-        raise ValueError("Cannot merge a canonical team into itself")
-
+    normalized_merge_source = _normalize_merge_source(merge_source)
+    normalized_merge_reason = merge_reason.strip() if merge_reason else None
     _ensure_bootstrapped()
     with _connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        source_row = _query_team_by_id(conn, source_team_id)
-        target_row = _query_team_by_id(conn, target_team_id)
-        if source_row is None or target_row is None:
-            raise ValueError("Both canonical teams must exist before merging")
-        if str(source_row["sport"]) != str(target_row["sport"]):
-            raise ValueError("Only canonical teams from the same sport can be merged")
-        _validate_manual_canonical_merge_identity(
-            source_row,
-            target_row,
-            allow_unsafe_subset=allow_unsafe_subset,
-        )
-
-        alias_snapshot = _team_alias_snapshot(
+        source_row, target_row = _validate_canonical_merge_rows(
             conn,
             source_team_id=source_team_id,
             target_team_id=target_team_id,
         )
-        review_case_snapshot = _team_review_case_snapshot(
-            conn,
-            source_team_id=source_team_id,
-            source_team_name=str(source_row["display_name"]),
+        decision = _canonical_merge_safety_decision_for_rows(
+            source_row,
+            target_row,
+            merge_mode=merge_mode,
+            allow_unsafe_subset=allow_unsafe_subset,
+            allow_unsafe_subset_override=allow_unsafe_subset_override,
+        )
+        if not decision.allowed:
+            raise ValueError(
+                _merge_identity_error(
+                    decision,
+                    source_team_name=str(source_row["display_name"]),
+                    target_team_name=str(target_row["display_name"]),
+                )
+            )
+        if decision.override_reasons and not normalized_merge_reason:
+            raise ValueError(
+                "Unsafe-subset merge override requires an auditable merge_reason"
+            )
+        identity_decision = _merge_identity_decision_payload(decision)
+
+        alias_snapshot = _validate_alias_snapshot(
+            _team_alias_snapshot(
+                conn,
+                source_team_id=source_team_id,
+                target_team_id=target_team_id,
+            )
+        )
+        review_case_snapshot = _validate_review_case_snapshot(
+            _team_review_case_snapshot(
+                conn,
+                source_team_id=source_team_id,
+                source_team_name=str(source_row["display_name"]),
+            )
         )
         conflict_rows = conn.execute(
             """
@@ -1984,15 +2232,23 @@ def merge_canonical_teams(
                 source_team_id,
                 target_team_id,
                 alias_snapshot,
-                review_case_snapshot
+                review_case_snapshot,
+                merge_source,
+                merge_reason,
+                identity_policy,
+                identity_decision
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_team_id,
                 target_team_id,
                 json.dumps(alias_snapshot),
                 json.dumps(review_case_snapshot),
+                normalized_merge_source,
+                normalized_merge_reason,
+                decision.policy,
+                json.dumps(identity_decision, sort_keys=True),
             ),
         )
         _reassign_pending_team_review_cases(
@@ -2055,23 +2311,23 @@ def unmerge_canonical_team(
             raise ValueError("Canonical team is not currently merged into the recorded target")
 
         try:
-            alias_snapshot = json.loads(str(history_row["alias_snapshot"]))
+            alias_snapshot = _validate_alias_snapshot(
+                json.loads(str(history_row["alias_snapshot"]))
+            )
         except json.JSONDecodeError as exc:
-            raise ValueError("Stored merge rollback metadata is invalid") from exc
-        if not isinstance(alias_snapshot, list):
-            raise ValueError("Stored merge rollback metadata is invalid")
+            raise ValueError(_ALIAS_SNAPSHOT_ERROR) from exc
         try:
-            review_case_snapshot = json.loads(str(history_row["review_case_snapshot"]))
+            review_case_snapshot = _validate_review_case_snapshot(
+                json.loads(str(history_row["review_case_snapshot"]))
+            )
         except json.JSONDecodeError as exc:
-            raise ValueError("Stored merge review-case rollback metadata is invalid") from exc
-        if not isinstance(review_case_snapshot, list):
-            raise ValueError("Stored merge review-case rollback metadata is invalid")
+            raise ValueError(_REVIEW_CASE_SNAPSHOT_ERROR) from exc
 
         for item in alias_snapshot:
-            if not isinstance(item, dict) or item.get("was_conflict"):
+            if item["was_conflict"]:
                 continue
-            normalized_alias = str(item.get("normalized_alias") or "")
-            bookmaker_id = str(item.get("bookmaker_id") or _GLOBAL_BOOKMAKER_ID)
+            normalized_alias = item["normalized_alias"]
+            bookmaker_id = item["bookmaker_id"]
             existing_alias = conn.execute(
                 """
                 SELECT canonical_team_id
@@ -2090,9 +2346,9 @@ def unmerge_canonical_team(
 
         source_display_key = str(source_row["normalized_display_name"])
         snapshot_keys = {
-            (str(item.get("normalized_alias") or ""), str(item.get("bookmaker_id") or _GLOBAL_BOOKMAKER_ID))
+            (item["normalized_alias"], item["bookmaker_id"])
             for item in alias_snapshot
-            if isinstance(item, dict) and not item.get("was_conflict")
+            if not item["was_conflict"]
         }
         if (source_display_key, _GLOBAL_BOOKMAKER_ID) not in snapshot_keys:
             conn.execute(
@@ -2113,15 +2369,15 @@ def unmerge_canonical_team(
             )
 
         for item in alias_snapshot:
-            if not isinstance(item, dict) or item.get("was_conflict"):
+            if item["was_conflict"]:
                 continue
             _upsert_alias(
                 conn,
                 sport=str(source_row["sport"]),
-                alias=str(item.get("alias") or ""),
+                alias=item["alias"],
                 canonical_team_id=source_team_id,
-                bookmaker_id=str(item.get("bookmaker_id") or _GLOBAL_BOOKMAKER_ID),
-                source=str(item.get("source") or "manual_review"),
+                bookmaker_id=item["bookmaker_id"],
+                source=item["source"],
                 legacy_competition_id=item.get("legacy_competition_id"),
             )
 

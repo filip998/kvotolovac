@@ -59,6 +59,8 @@ from ..services.outcome_normalizer import (
 from ..services.notifications import NotificationService
 from ..services.team_registry import (
     CircularAliasError,
+    MERGE_MODE_AUTOMATIC,
+    MERGE_SOURCE_AUTO_RESOLVER,
     forget_team_alias,
     get_canonical_team,
     list_canonical_teams,
@@ -1443,6 +1445,9 @@ class DefaultTeamRegistryActions:
                     merge_canonical_teams,
                     source_team_id=source_team.id,
                     target_team_id=target_team.id,
+                    merge_mode=MERGE_MODE_AUTOMATIC,
+                    merge_source=MERGE_SOURCE_AUTO_RESOLVER,
+                    merge_reason="auto_resolver_same_time",
                 )
                 pairing = (source_team.id, target_team.id)
                 applied_pairings.append(pairing)

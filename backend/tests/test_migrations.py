@@ -32,6 +32,10 @@ async def test_upgrade_database_creates_current_schema(tmp_path):
         opportunity_fks = conn.execute(
             "PRAGMA foreign_key_list(opportunities)"
         ).fetchall()
+        merge_history_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(team_merge_history)").fetchall()
+        }
 
     assert {
         "alembic_version",
@@ -51,6 +55,12 @@ async def test_upgrade_database_creates_current_schema(tmp_path):
     assert ("resolved_event_id", "resolved_events") in {
         (row[3], row[2]) for row in opportunity_fks
     }
+    assert {
+        "merge_source",
+        "merge_reason",
+        "identity_policy",
+        "identity_decision",
+    }.issubset(merge_history_columns)
 
     await init_db(str(db_path))
     db = await get_db()
@@ -93,10 +103,16 @@ def test_migrate_database_to_head_upgrades_stale_database(tmp_path):
                 "PRAGMA index_list(telegram_notification_profiles)"
             ).fetchall()
         }
+        merge_history_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(team_merge_history)").fetchall()
+        }
     assert "min_middle_ev_percent" in profile_columns
     assert "command_permission_preset" in profile_columns
     assert "allowed_commands" in profile_columns
     assert "ux_telegram_profiles_command_chat" in index_names
+    assert "merge_source" in merge_history_columns
+    assert "identity_decision" in merge_history_columns
 
 
 def test_telegram_command_migration_does_not_grant_admin_by_label(tmp_path):
