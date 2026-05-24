@@ -5,6 +5,7 @@ from typing import Protocol
 
 from ...models.schemas import EventReviewCaseIn, ResolvedEventIn, ResolvedEventMemberIn
 from ...store import odds_store
+from .types import MatchUnificationPersistenceMetrics
 
 
 class MatchUnificationStore(Protocol):
@@ -15,7 +16,7 @@ class MatchUnificationStore(Protocol):
         events: list[ResolvedEventIn],
         members: list[ResolvedEventMemberIn],
         review_cases: list[EventReviewCaseIn],
-    ) -> dict[str, int]:
+    ) -> MatchUnificationPersistenceMetrics:
         ...
 
 
@@ -32,13 +33,14 @@ class OddsStoreMatchUnificationAdapter:
         events: list[ResolvedEventIn],
         members: list[ResolvedEventMemberIn],
         review_cases: list[EventReviewCaseIn],
-    ) -> dict[str, int]:
-        return await self._store.persist_event_resolution_batch(
+    ) -> MatchUnificationPersistenceMetrics:
+        result = await self._store.persist_event_resolution_batch(
             snapshot_id=snapshot_id,
             events=events,
             members=members,
             review_cases=review_cases,
         )
+        return MatchUnificationPersistenceMetrics.from_legacy_dict(result)
 
 
 class InMemoryMatchUnificationStore:
@@ -55,7 +57,7 @@ class InMemoryMatchUnificationStore:
         events: list[ResolvedEventIn],
         members: list[ResolvedEventMemberIn],
         review_cases: list[EventReviewCaseIn],
-    ) -> dict[str, int]:
+    ) -> MatchUnificationPersistenceMetrics:
         if self.fail:
             raise RuntimeError("in-memory match unification persistence failure")
         self.batches.append(
@@ -66,8 +68,8 @@ class InMemoryMatchUnificationStore:
                 "review_cases": deepcopy(review_cases),
             }
         )
-        return {
-            "resolved_events": len(events),
-            "resolved_event_members": len(members),
-            "review_cases": len(review_cases),
-        }
+        return MatchUnificationPersistenceMetrics(
+            resolved_events=len(events),
+            resolved_event_members=len(members),
+            review_cases=len(review_cases),
+        )

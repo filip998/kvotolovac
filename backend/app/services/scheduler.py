@@ -22,6 +22,7 @@ from ..models.schemas import (
     ScrapeRuntimeSettings,
     ScrapeRuntimeSettingsUpdate,
     ScrapeSettingsResponse,
+    MatchUnificationCycleStatusOut,
     TeamReviewDiagnostic,
     UnresolvedOddsDiagnostic,
 )
@@ -52,7 +53,12 @@ from ..services.match_unification.resolution import (
     _normalize_merge_pairings,
     _same_time_slot_orientation,
 )
-from ..services.match_unification import MatchUnification
+from ..services.match_unification import (
+    MATCH_UNIFICATION_RESULT_KEY,
+    MatchUnification,
+    MatchUnificationStatus,
+    match_unification_status_from_cycle_value,
+)
 from ..services.match_unification.team_text import same_team_context as _same_team_context
 from ..services.outcome_normalizer import (
     FootballEventResolutionMap,
@@ -1051,12 +1057,7 @@ class Scheduler:
         self._scan_completed_tasks = 0
         self._scan_failed_tasks = 0
         self._scan_active_tasks = 0
-        self._match_unification_status = {
-            "state": "pending_unification",
-            "mode": "resolved_event_graph",
-            "warnings": [],
-            "fallback_reason": None,
-        }
+        self._match_unification_status = MatchUnificationStatus.pending()
         self._notification_service = NotificationService(
             gap_threshold=settings.notification_gap_threshold
         )
@@ -1098,13 +1099,14 @@ class Scheduler:
             active_tasks=self._scan_active_tasks,
         )
 
-    def match_unification_status_snapshot(self) -> dict:
-        return {
-            "state": self._match_unification_status.get("state", "pending_unification"),
-            "mode": self._match_unification_status.get("mode", "resolved_event_graph"),
-            "warnings": list(self._match_unification_status.get("warnings", [])),
-            "fallback_reason": self._match_unification_status.get("fallback_reason"),
-        }
+    def match_unification_status_snapshot(self) -> MatchUnificationCycleStatusOut:
+        return self._match_unification_status.to_cycle_status_out()
+
+    def _record_match_unification_status(
+        self,
+        status: MatchUnificationStatus,
+    ) -> None:
+        self._match_unification_status = match_unification_status_from_cycle_value(status)
 
     def _reset_progress(self) -> None:
         self._scan_phase = "idle"
@@ -2056,20 +2058,7 @@ class Scheduler:
                     ),
                 )
             )
-            match_unification_status = result.get("match_unification")
-            if isinstance(match_unification_status, dict):
-                self._match_unification_status = {
-                    "state": match_unification_status.get(
-                        "state",
-                        "pending_unification",
-                    ),
-                    "mode": match_unification_status.get(
-                        "mode",
-                        "resolved_event_graph",
-                    ),
-                    "warnings": list(match_unification_status.get("warnings", [])),
-                    "fallback_reason": match_unification_status.get("fallback_reason"),
-                }
+            self._record_match_unification_status(result[MATCH_UNIFICATION_RESULT_KEY])
             return result
         finally:
             self._reset_progress()

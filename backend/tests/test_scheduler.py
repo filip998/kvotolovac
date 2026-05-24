@@ -43,6 +43,7 @@ from app.services.scheduler import (
     _runtime_detail_modes,
     _team_review_case_references_merged_team,
 )
+from app.services.match_unification import MatchUnificationStatus, MatchUnificationWarning
 from app.services.normalizer import normalize_team_name
 from app.services.notifications import (
     InAppNotificationProvider,
@@ -2080,6 +2081,60 @@ async def test_scheduler_progress_snapshot_updates_while_cycle_runs():
 
     await cycle_task
     assert scheduler_under_test.progress_snapshot().in_progress is False
+
+
+def test_scheduler_match_unification_status_snapshot_is_typed_and_compatible():
+    scheduler_under_test = Scheduler(interval_minutes=1)
+
+    assert isinstance(scheduler_under_test._match_unification_status, MatchUnificationStatus)
+    assert scheduler_under_test.match_unification_status_snapshot().model_dump() == {
+        "state": "pending_unification",
+        "mode": "resolved_event_graph",
+        "warnings": [],
+        "fallback_reason": None,
+    }
+
+
+def test_scheduler_records_typed_match_unification_status_and_clears_fallback():
+    scheduler_under_test = Scheduler(interval_minutes=1)
+    warning = MatchUnificationWarning(
+        code="match_unification_failed",
+        detail="RuntimeError: store failed",
+    )
+
+    scheduler_under_test._record_match_unification_status(
+        MatchUnificationStatus.match_id_only(
+            snapshot_id="snapshot-1",
+            warning=warning,
+            fallback_reason=warning.detail,
+        )
+    )
+
+    assert scheduler_under_test.match_unification_status_snapshot().model_dump() == {
+        "state": "match_id_only",
+        "mode": "match_id_only",
+        "warnings": ["RuntimeError: store failed"],
+        "fallback_reason": "RuntimeError: store failed",
+    }
+
+    scheduler_under_test._record_match_unification_status(
+        MatchUnificationStatus.unified(snapshot_id="snapshot-2")
+    )
+
+    assert isinstance(scheduler_under_test._match_unification_status, MatchUnificationStatus)
+    assert scheduler_under_test.match_unification_status_snapshot().model_dump() == {
+        "state": "unified",
+        "mode": "resolved_event_graph",
+        "warnings": [],
+        "fallback_reason": None,
+    }
+
+
+def test_scheduler_rejects_missing_match_unification_status_after_cycle():
+    scheduler_under_test = Scheduler(interval_minutes=1)
+
+    with pytest.raises(TypeError, match="MatchUnificationStatus"):
+        scheduler_under_test._record_match_unification_status(None)  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ import logging
 import time
 
 from ...models.schemas import (
-    MatchUnificationBenchmarkOut,
+    MatchUnificationResolutionBenchmarkOut,
     MatchUnificationSourceMatchSlotBenchmarkOut,
 )
 from . import candidate_extraction, resolution
@@ -155,9 +155,7 @@ class MatchUnification:
             ),
             reverse=True,
         )
-        benchmark = MatchUnificationBenchmarkOut(
-            state="unified",
-            mode="resolved_event_graph",
+        benchmark = MatchUnificationResolutionBenchmarkOut(
             extract_event_candidates_ms=extract_event_candidates_ms,
             extract_raw_odds_sources_ms=extraction_stats.extract_raw_odds_sources_ms,
             extract_raw_outcome_sources_ms=(
@@ -233,11 +231,7 @@ class MatchUnification:
             persisted_review_case_count=persisted.review_cases,
             top_source_match_slots=source_match_slot_rows[:20],
         )
-        status = MatchUnificationStatus(
-            snapshot_id=snapshot.id,
-            state="unified",
-            mode="resolved_event_graph",
-        )
+        status = MatchUnificationStatus.unified(snapshot_id=snapshot.id)
         logger.info(
             "Unified %d source-event candidates into %d events (%d members, %d review cases)",
             len(candidates),
@@ -246,8 +240,7 @@ class MatchUnification:
             persisted.review_cases,
         )
         return MatchUnificationResult(
-            snapshot_id=snapshot.id,
-            mode="resolved_event_graph",
+            status=status,
             candidates=len(candidates),
             resolved_events=persisted.resolved_events,
             resolved_event_members=persisted.resolved_event_members,
@@ -255,7 +248,6 @@ class MatchUnification:
             benchmark=benchmark,
             coverage=coverage,
             split_diagnostics=split_diagnostics,
-            status=status,
         )
 
     def _fallback(
@@ -270,23 +262,13 @@ class MatchUnification:
             code="match_unification_failed",
             detail=reason,
         )
-        benchmark = MatchUnificationBenchmarkOut(
-            state="match_id_only",
-            mode="match_id_only",
-            warnings=[warning.code],
-            fallback_reason=reason,
-        )
-        status = MatchUnificationStatus(
+        benchmark = MatchUnificationResolutionBenchmarkOut()
+        status = MatchUnificationStatus.match_id_only(
             snapshot_id=snapshot.id,
-            state="match_id_only",
-            mode="match_id_only",
-            warnings=(warning,),
+            warning=warning,
             fallback_reason=reason,
         )
         return MatchUnificationResult(
-            snapshot_id=snapshot.id,
-            mode="match_id_only",
-            benchmark=benchmark,
-            warnings=(warning,),
             status=status,
+            benchmark=benchmark,
         )

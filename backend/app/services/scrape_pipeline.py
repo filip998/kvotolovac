@@ -46,6 +46,7 @@ from ..services.match_unification.resolution import (
     _same_time_slot_orientation,
 )
 from ..services.match_unification import (
+    MATCH_UNIFICATION_RESULT_KEY,
     MatchUnification,
     MatchUnificationRows,
     PersistedScrapeSnapshot,
@@ -1748,10 +1749,9 @@ class ScrapePipeline:
                 "match_unification",
                 int((time.perf_counter() - match_unification_started_at) * 1000),
             )
-            if match_unification_result.benchmark is not None:
-                self.benchmark.record_match_unification(
-                    match_unification_result.benchmark
-                )
+            self.benchmark.record_match_unification(
+                match_unification_result.to_benchmark_out()
+            )
             self.benchmark.record_event_split_diagnostics(
                 match_unification_result.split_diagnostics
             )
@@ -1898,20 +1898,6 @@ class ScrapePipeline:
         except Exception:
             logger.exception("Retention cleanup failed after a successful scrape cycle")
 
-        match_unification_state = (
-            match_unification_result.status.state
-            if match_unification_result.status is not None
-            else (
-                match_unification_result.benchmark.state
-                if match_unification_result.benchmark is not None
-                else "pending_unification"
-            )
-        )
-        match_unification_fallback_reason = (
-            match_unification_result.benchmark.fallback_reason
-            if match_unification_result.benchmark is not None
-            else None
-        )
         result = {
             "matches_scraped": len(seen_matches),
             "odds_scraped": len(normalized),
@@ -1920,14 +1906,7 @@ class ScrapePipeline:
             "canonical_offers_analyzed": canonical_shadow.offers_analyzed,
             "canonical_opportunities_found": canonical_shadow.opportunities_found,
             "canonical_shadow_warnings": list(canonical_shadow.warnings),
-            "match_unification": {
-                "state": match_unification_state,
-                "mode": match_unification_result.mode,
-                "warnings": [
-                    warning.detail for warning in match_unification_result.warnings
-                ],
-                "fallback_reason": match_unification_fallback_reason,
-            },
+            MATCH_UNIFICATION_RESULT_KEY: match_unification_result.status,
             "notifications_sent": notified,
             "scrape_duration_ms": scrape_duration_ms,
             "cycle_duration_ms": int((time.perf_counter() - cycle_started_at) * 1000),

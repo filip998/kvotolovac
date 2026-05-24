@@ -5324,7 +5324,7 @@ async def cleanup_retained_data(current_snapshot_at: str) -> dict[str, int]:
 async def get_system_status(
     scheduler_running: bool = False,
     scan_progress: ScanProgressOut | None = None,
-    match_unification: MatchUnificationCycleStatusOut | dict | None = None,
+    match_unification: MatchUnificationCycleStatusOut | None = None,
 ) -> SystemStatus:
     db = await get_db()
     current_snapshot_id, current_snapshot_at = await _get_current_snapshot(db)

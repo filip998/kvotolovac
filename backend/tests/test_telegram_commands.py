@@ -7,6 +7,7 @@ import pytest
 from app.models.schemas import (
     BookmakerOut,
     BookmakerCoverageOut,
+    MatchUnificationCycleStatusOut,
     OpportunityLeg,
     OpportunityOut,
     ScanProgressOut,
@@ -168,9 +169,18 @@ class RecordingDispatcher:
 
 
 class StubScheduler:
-    def __init__(self, *, in_progress: bool = False, is_running: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        in_progress: bool = False,
+        is_running: bool = True,
+        match_unification: MatchUnificationCycleStatusOut | None = None,
+    ) -> None:
         self._in_progress = in_progress
         self._is_running = is_running
+        self._match_unification = (
+            match_unification or MatchUnificationCycleStatusOut()
+        )
         self.run_count = 0
         self.finished = asyncio.Event()
 
@@ -191,6 +201,9 @@ class StubScheduler:
             failed_tasks=1,
             active_tasks=1,
         )
+
+    def match_unification_status_snapshot(self) -> MatchUnificationCycleStatusOut:
+        return self._match_unification
 
     async def run_cycle(self) -> dict:
         self.run_count += 1
@@ -445,6 +458,7 @@ async def test_status_command_returns_idle_system_status(
         *,
         scheduler_running: bool = False,
         scan_progress: ScanProgressOut | None = None,
+        match_unification: MatchUnificationCycleStatusOut | None = None,
     ) -> SystemStatus:
         return SystemStatus(
             status="ok <safe>",
@@ -455,6 +469,7 @@ async def test_status_command_returns_idle_system_status(
             active_bookmakers=13,
             scheduler_running=scheduler_running,
             scan=scan_progress or ScanProgressOut(),
+            match_unification=match_unification or MatchUnificationCycleStatusOut(),
         )
 
     monkeypatch.setattr(odds_store, "get_system_status", fake_get_system_status)
@@ -474,6 +489,7 @@ async def test_status_command_returns_idle_system_status(
     assert "Last scrape: 2026-05-13T17:15:32&lt;&amp;" in message
     assert "Totals: 824 matches · 26186 odds · 89 opportunities · 13 bookmakers" in message
     assert "Cycle: idle" in message
+    assert "Match Unification: pending_unification (resolved_event_graph)" in message
 
 
 @pytest.mark.asyncio
@@ -486,6 +502,7 @@ async def test_status_command_returns_in_progress_system_status(
         *,
         scheduler_running: bool = False,
         scan_progress: ScanProgressOut | None = None,
+        match_unification: MatchUnificationCycleStatusOut | None = None,
     ) -> SystemStatus:
         return SystemStatus(
             status="ok",
@@ -495,6 +512,7 @@ async def test_status_command_returns_in_progress_system_status(
             active_bookmakers=2,
             scheduler_running=scheduler_running,
             scan=scan_progress or ScanProgressOut(),
+            match_unification=match_unification or MatchUnificationCycleStatusOut(),
         )
 
     monkeypatch.setattr(odds_store, "get_system_status", fake_get_system_status)
@@ -509,6 +527,47 @@ async def test_status_command_returns_in_progress_system_status(
     message = bot.messages[0][1]
     assert "Scheduler: running" in message
     assert "Cycle: scraping — 2/5 completed, 1 active, 1 failed" in message
+
+
+@pytest.mark.asyncio
+async def test_status_command_shows_match_unification_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await create_command_profile()
+
+    async def fake_get_system_status(
+        *,
+        scheduler_running: bool = False,
+        scan_progress: ScanProgressOut | None = None,
+        match_unification: MatchUnificationCycleStatusOut | None = None,
+    ) -> SystemStatus:
+        return SystemStatus(
+            status="ok",
+            scheduler_running=scheduler_running,
+            scan=scan_progress or ScanProgressOut(),
+            match_unification=match_unification or MatchUnificationCycleStatusOut(),
+        )
+
+    monkeypatch.setattr(odds_store, "get_system_status", fake_get_system_status)
+    bot = StubBotClient()
+    dispatcher = TelegramCommandDispatcher(
+        bot_client=bot,  # type: ignore[arg-type]
+        scheduler=StubScheduler(
+            match_unification=MatchUnificationCycleStatusOut(
+                state="match_id_only",
+                mode="match_id_only",
+                warnings=["RuntimeError: store failed"],
+                fallback_reason="RuntimeError: store failed",
+            )
+        ),
+    )
+
+    await dispatcher.dispatch_update(telegram_update("/status"))
+
+    message = bot.messages[0][1]
+    assert "Match Unification: match_id_only (match_id_only)" in message
+    assert "Match Unification fallback: RuntimeError: store failed" in message
+    assert "Match Unification warning: RuntimeError: store failed" in message
 
 
 @pytest.mark.asyncio

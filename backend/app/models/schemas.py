@@ -1012,7 +1012,7 @@ class MatchUnificationResolutionBenchmarkOut(BaseModel):
 
 
 class MatchUnificationBenchmarkOut(MatchUnificationResolutionBenchmarkOut):
-    """Subphase metrics for Match Unification."""
+    """Subphase metrics plus retained status fields for benchmark JSON compatibility."""
 
     state: str = "pending_unification"
     mode: str = "resolved_event_graph"
