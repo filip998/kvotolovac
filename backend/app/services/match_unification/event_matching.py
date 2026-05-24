@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 
 from ..tennis_name_matcher import tennis_competitor_pair_matches
-from ..text_normalizer import normalize_identity_text
-from .team_text import (
+from ..team_identity import (
     AGGRESSIVE_MERGE_SPORTS as _AGGRESSIVE_MERGE_SPORTS,
+    event_team_similarity as _event_team_similarity,
+    expand_dotted_team_token as _expand_dotted_token,
     same_team_context as _same_team_context,
-    team_similarity as _team_similarity,
 )
+from ..text_normalizer import normalize_identity_text
 
 
 @dataclass(frozen=True)
@@ -72,80 +72,6 @@ class _OrientationScore:
 # modules cannot drift; new sports must be enabled in exactly one place.
 _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE: frozenset[str] = _AGGRESSIVE_MERGE_SPORTS
 
-# 2-letter dot-prefixes that overlap heavily with non-team words (street,
-# fort, mount, port, point, doctor, mister, avenue, saint) and would
-# otherwise produce false-positive expansions even within basketball
-# (e.g. ``St.Petersburg`` ↔ ``Stockholm Petersburg``). Keeping these out of
-# the dot-expansion logic preserves the genuine ``Ch.More`` ↔ ``Cherno More``
-# case while blocking the geographic collision class.
-_AMBIGUOUS_DOT_PREFIXES: frozenset[str] = frozenset(
-    {"st", "ft", "mt", "pt", "dr", "mr", "av"}
-)
-
-
-def _expand_dotted_token(name: str, counterpart: str) -> str:
-    """Substitute dot-truncated tokens (``Ch.``, ``Pl.``, ``Ch.More``) by an
-    unambiguous expansion drawn from ``counterpart``.
-
-    Only used inside the Match Unification — keeps shared :func:`_team_similarity`
-    untouched so football pairing is unaffected. Restrictions:
-
-    * Token must end with ``.`` and have at least 2 characters of prefix
-      (1-letter prefixes are too ambiguous, e.g. ``B.`` could be Bayern,
-      Brest, Belgrade, …).
-    * The prefix must not be in ``_AMBIGUOUS_DOT_PREFIXES`` — these short
-      geographic / honorific prefixes (``St``, ``Mt``, ``Ft``, …) collide
-      with real team-name tokens (``Stockholm``, ``Manchester``, ``Fort``,
-      …) and the structural anchor check below cannot disambiguate them.
-    * The counterpart must contain exactly one token starting with that
-      prefix; ambiguous expansions are dropped.
-    * The source name must contain at least one OTHER non-dotted token that
-      already appears in the counterpart — this anchors the expansion in
-      genuine name overlap and blocks coincidences like
-      ``St. Petersburg`` ↔ ``Stockholm Giants`` where ``St`` would
-      otherwise expand to ``Stockholm`` purely on prefix uniqueness.
-
-    Compound tokens with internal dots (``Ch.More`` → ``Ch. More``) are
-    pre-split before expansion so a missing space after the period does not
-    mask the abbreviation.
-    """
-
-    spaced = re.sub(r"\.(?=\S)", ". ", name)
-    counterpart_spaced = re.sub(r"\.(?=\S)", ". ", counterpart)
-    counterpart_tokens = counterpart_spaced.split()
-    counterpart_token_set = {token.lower().rstrip(".") for token in counterpart_tokens}
-    source_tokens = spaced.split()
-    has_anchor = any(
-        not token.endswith(".") and token.lower() in counterpart_token_set
-        for token in source_tokens
-    )
-    if not has_anchor:
-        return name
-    output: list[str] = []
-    for token in source_tokens:
-        if not token.endswith(".") or len(token) < 3:
-            output.append(token)
-            continue
-        prefix = token[:-1].lower()
-        if len(prefix) < 2:
-            output.append(token)
-            continue
-        if prefix in _AMBIGUOUS_DOT_PREFIXES:
-            output.append(token)
-            continue
-        candidates = [
-            candidate
-            for candidate in counterpart_tokens
-            if len(candidate) > len(prefix)
-            and candidate.lower().startswith(prefix)
-        ]
-        if len(candidates) == 1:
-            output.append(candidates[0])
-        else:
-            output.append(token)
-    return " ".join(output)
-
-
 def _resolver_team_similarity(
     left: str, right: str, *, sport: str | None = None
 ) -> float:
@@ -162,12 +88,7 @@ def _resolver_team_similarity(
     incorrectly merge two distinct cities).
     """
 
-    expanded_left = left
-    expanded_right = right
-    if sport in _TARGETED_SPORTS_FOR_AGGRESSIVE_MERGE:
-        expanded_left = _expand_dotted_token(left, right)
-        expanded_right = _expand_dotted_token(right, left)
-    return _team_similarity(expanded_left, expanded_right, sport=sport)
+    return _event_team_similarity(left, right, sport=sport, expand_dotted=True)
 
 
 def _orientation_scores(

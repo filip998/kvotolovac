@@ -2349,6 +2349,65 @@ async def test_team_review_approval_rejects_circular_alias(
 
 
 @pytest.mark.asyncio
+async def test_team_review_approval_rejects_qualifier_mismatch(
+    client: AsyncClient,
+    team_registry_file,
+):
+    batch_scraped_at = "2026-04-16T21:48:00+00:00"
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball", "Europe")
+    target = create_canonical_team(display_name="Partizan", sport="basketball")
+    case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic.model_validate(
+            {
+                "bookmaker_id": "meridian",
+                "raw_league_id": "Euroleague",
+                "normalized_raw_league_id": "euroleague",
+                "sport": "basketball",
+                "scope_league_id": "euroleague",
+                "raw_team_name": "Partizan Women",
+                "normalized_raw_team_name": "partizan women",
+                "suggested_team_id": target.team_id,
+                "suggested_team_name": target.team_name,
+                "start_time": batch_scraped_at,
+                "reason_code": "candidate_team_match_same_start_time",
+                "confidence": "high",
+                "similarity_score": 100,
+                "evidence": ["Exact start time: 2026-04-16T21:48:00+00:00"],
+                "status": "pending",
+            }
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    approve_resp = await client.post(
+        f"/api/v1/team-review/cases/{case_id}/approve",
+        json={"team_id": target.team_id},
+    )
+
+    assert approve_resp.status_code == 400
+    assert "qualifier_mismatch" in approve_resp.json()["detail"]
+    case = await odds_store.get_team_review_case(case_id)
+    assert case is not None
+    assert case.status == "pending"
+
+    create_resp = await client.post(
+        f"/api/v1/team-review/cases/{case_id}/approve",
+        json={"create_team_name": "Partizan Men Created"},
+    )
+    db = await get_db()
+    created_rows = await db.execute_fetchall(
+        "SELECT id FROM canonical_teams WHERE display_name = ?",
+        ("Partizan Men Created",),
+    )
+
+    assert create_resp.status_code == 400
+    assert "qualifier_mismatch" in create_resp.json()["detail"]
+    assert created_rows == []
+
+
+@pytest.mark.asyncio
 async def test_team_review_approval_merges_existing_canonical_duplicate(
     client: AsyncClient,
     team_registry_file,

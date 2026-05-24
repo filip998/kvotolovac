@@ -15,7 +15,10 @@ from ..models.schemas import (
     OutcomeOfferOut,
 )
 from ..services.scheduler import scheduler
-from ..services.team_registry import merge_canonical_teams
+from ..services.team_registry import (
+    merge_canonical_teams,
+    validate_canonical_team_merge_identity,
+)
 from ..store import odds_store
 
 router = APIRouter(prefix="/matches", tags=["matches"])
@@ -126,26 +129,100 @@ async def merge_matches(payload: MatchMergeIn) -> MatchMergeOut:
             )
         source_matches.append(match)
 
-    # Validate team pairings: every distinct (source_team_id -> target_team_id) requested
-    # must reference real teams. The frontend computes pairings from match home/away
-    # team IDs; we honor whatever it sends but reject self-pairings of different teams
-    # going to the same target inconsistently.
-    pairing_map: dict[int, int] = {}
-    for pairing in payload.team_pairings:
-        if pairing.source_team_id <= 0 or pairing.target_team_id <= 0:
-            continue
-        if pairing.source_team_id == pairing.target_team_id:
-            continue
-        existing = pairing_map.get(pairing.source_team_id)
-        if existing is not None and existing != pairing.target_team_id:
+    # Validate team pairings: every distinct source->target team relationship must
+    # reference real teams and pass identity guardrails before match rows mutate.
+    # Submitted pairings are the only ones persisted after a successful match merge,
+    # but derived home/away pairings are also prevalidated so clients cannot bypass
+    # qualifier checks by omitting pairings.
+    requested_pairing_map: dict[int, int] = {}
+    validation_pairing_map: dict[int, int] = {}
+    explicit_pairing_source_team_ids: set[int] = set()
+    target_team_ids = {
+        team_id
+        for team_id in (target_match.home_team_id, target_match.away_team_id)
+        if team_id and team_id > 0
+    }
+    source_team_ids = {
+        team_id
+        for source_match in source_matches
+        for team_id in (source_match.home_team_id, source_match.away_team_id)
+        if team_id and team_id > 0
+    }
+
+    def add_pairing(
+        pairing_map: dict[int, int],
+        *,
+        source_team_id: int | None,
+        target_team_id: int | None,
+    ) -> None:
+        if not source_team_id or not target_team_id:
+            return
+        if source_team_id <= 0 or target_team_id <= 0:
+            return
+        if source_team_id == target_team_id:
+            return
+        existing = pairing_map.get(source_team_id)
+        if existing is not None and existing != target_team_id:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Conflicting pairings for source team {pairing.source_team_id}: "
-                    f"both {existing} and {pairing.target_team_id}"
+                    f"Conflicting pairings for source team {source_team_id}: "
+                    f"both {existing} and {target_team_id}"
                 ),
             )
-        pairing_map[pairing.source_team_id] = pairing.target_team_id
+        pairing_map[source_team_id] = target_team_id
+
+    def add_derived_pairing(
+        *,
+        source_team_id: int | None,
+        target_team_id: int | None,
+    ) -> None:
+        if source_team_id in explicit_pairing_source_team_ids:
+            return
+        add_pairing(
+            validation_pairing_map,
+            source_team_id=source_team_id,
+            target_team_id=target_team_id,
+        )
+
+    for pairing in payload.team_pairings:
+        if pairing.source_team_id > 0 and pairing.target_team_id > 0:
+            if pairing.source_team_id not in source_team_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Source canonical team {pairing.source_team_id} "
+                        "is not part of the source matches"
+                    ),
+                )
+            if pairing.target_team_id not in target_team_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Target canonical team {pairing.target_team_id} "
+                        "is not part of the target match"
+                    ),
+                )
+            explicit_pairing_source_team_ids.add(pairing.source_team_id)
+        add_pairing(
+            requested_pairing_map,
+            source_team_id=pairing.source_team_id,
+            target_team_id=pairing.target_team_id,
+        )
+        add_pairing(
+            validation_pairing_map,
+            source_team_id=pairing.source_team_id,
+            target_team_id=pairing.target_team_id,
+        )
+    for source_match in source_matches:
+        add_derived_pairing(
+            source_team_id=source_match.home_team_id,
+            target_team_id=target_match.home_team_id,
+        )
+        add_derived_pairing(
+            source_team_id=source_match.away_team_id,
+            target_team_id=target_match.away_team_id,
+        )
 
     # Pre-validate every team pairing before mutating anything: missing teams
     # raise 404, invalid pairings raise 400. We intentionally do NOT call
@@ -155,7 +232,7 @@ async def merge_matches(payload: MatchMergeIn) -> MatchMergeOut:
     from ..services.team_registry import (
         get_canonical_team,
     )  # local import to avoid cycle at module load
-    for source_team_id, target_team_id in pairing_map.items():
+    for source_team_id, target_team_id in validation_pairing_map.items():
         if get_canonical_team(source_team_id) is None:
             raise HTTPException(
                 status_code=404,
@@ -166,6 +243,14 @@ async def merge_matches(payload: MatchMergeIn) -> MatchMergeOut:
                 status_code=404,
                 detail=f"Target canonical team {target_team_id} not found",
             )
+        try:
+            validate_canonical_team_merge_identity(
+                source_team_id=source_team_id,
+                target_team_id=target_team_id,
+                allow_unsafe_subset=True,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         counts = await odds_store.merge_matches(
@@ -182,12 +267,13 @@ async def merge_matches(payload: MatchMergeIn) -> MatchMergeOut:
     # need to be merged manually via the canonical-teams endpoint.
     merged_pairings: list[MatchMergeTeamPairing] = []
     failed_pairings: list[tuple[int, int, str]] = []
-    for source_team_id, target_team_id in pairing_map.items():
+    for source_team_id, target_team_id in requested_pairing_map.items():
         try:
             await asyncio.to_thread(
                 merge_canonical_teams,
                 source_team_id=source_team_id,
                 target_team_id=target_team_id,
+                allow_unsafe_subset=True,
             )
             merged_pairings.append(
                 MatchMergeTeamPairing(

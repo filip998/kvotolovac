@@ -7,8 +7,6 @@ import logging
 import re
 import time
 
-from rapidfuzz import fuzz
-
 from ..models.schemas import (
     NormalizedOutcomeOffer,
     OutcomeNormalizationBenchmarkOut,
@@ -34,17 +32,15 @@ from .tennis_name_matcher import (
     match_tennis_player_names,
     tennis_competitor_pair_matches,
 )
-from .match_unification.team_text import (
-    EXPLICIT_Z_WOMEN_MARKER_RE as _EXPLICIT_Z_WOMEN_MARKER_RE,
+from .team_identity import (
     FOREIGN_WOMEN_TOKENS as _FOREIGN_WOMEN_TOKENS,
-    LOW_SIGNAL_TEAM_TOKENS as _LOW_SIGNAL_TEAM_TOKENS,
     TEAM_QUALIFIER_TOKENS as _TEAM_QUALIFIER_TOKENS,
-    WOMEN_MARKER_TOKENS as _WOMEN_MARKER_TOKENS,
     WOMEN_QUALIFIER_ALIASES as _WOMEN_QUALIFIER_ALIASES,
+    comparison_texts_are_compatible_from_parts as _comparison_texts_are_compatible_from_parts,
     comparison_team_text as _comparison_team_text,
+    event_similarity_score_from_parts as _event_similarity_score_from_parts,
     same_team_context as _same_team_context,
     significant_tokens as _significant_tokens,
-    strip_explicit_z_women_markers as _strip_explicit_z_women_markers,
     team_qualifiers as _team_qualifiers,
     team_similarity as _team_similarity,
 )
@@ -193,18 +189,7 @@ class _OutcomeTextCache:
         key = (name, sport)
         cached = self._comparison_text.get(key)
         if cached is None:
-            qualifiers = self.qualifiers(name, sport=sport)
-            comparison_name = (
-                _strip_explicit_z_women_markers(name)
-                if "women" in qualifiers
-                else name
-            )
-            tokens = normalize_identity_text(comparison_name).split()
-            if "women" in qualifiers:
-                tokens = [
-                    token for token in tokens if token not in _WOMEN_MARKER_TOKENS
-                ]
-            cached = " ".join(tokens)
+            cached = _comparison_team_text(name, sport=sport)
             self._comparison_text[key] = cached
         return cached
 
@@ -212,11 +197,7 @@ class _OutcomeTextCache:
         key = (name, sport)
         cached = self._significant_tokens.get(key)
         if cached is None:
-            cached = {
-                token
-                for token in self.comparison_text(name, sport=sport).split()
-                if token not in _LOW_SIGNAL_TEAM_TOKENS
-            }
+            cached = _significant_tokens(name, sport=sport)
             self._significant_tokens[key] = cached
         return cached
 
@@ -238,19 +219,15 @@ class _OutcomeTextCache:
         *,
         sport: str | None = None,
     ) -> float:
-        left_key = self.comparison_text(left, sport=sport)
-        right_key = self.comparison_text(right, sport=sport)
-        if not left_key or not right_key:
-            return 0.0
-        if left_key == right_key:
-            return 100.0
-        left_tokens = self.significant_tokens(left, sport=sport)
-        right_tokens = self.significant_tokens(right, sport=sport)
-        if left_tokens and left_tokens == right_tokens:
-            return 100.0
-        if self._stats is not None:
+        score_result = _event_similarity_score_from_parts(
+            self.comparison_text(left, sport=sport),
+            self.comparison_text(right, sport=sport),
+            self.significant_tokens(left, sport=sport),
+            self.significant_tokens(right, sport=sport),
+        )
+        if self._stats is not None and score_result.used_fuzzy_score:
             self._stats.football_event_fuzzy_score_count += 1
-        return float(fuzz.token_sort_ratio(left_key, right_key))
+        return score_result.score
 
     def comparison_texts_are_compatible(
         self,
@@ -260,17 +237,13 @@ class _OutcomeTextCache:
         sport: str | None = None,
         team_ids: tuple[int, int] | None = None,
     ) -> bool:
-        if team_ids is not None and team_ids[0] == team_ids[1]:
-            return True
-        left_text = self.comparison_text(left_name, sport=sport)
-        right_text = self.comparison_text(right_name, sport=sport)
-        if left_text == right_text:
-            return True
-        left_tokens = self.significant_tokens(left_name, sport=sport)
-        right_tokens = self.significant_tokens(right_name, sport=sport)
-        if not left_tokens or not right_tokens:
-            return False
-        return left_tokens <= right_tokens or right_tokens <= left_tokens
+        return _comparison_texts_are_compatible_from_parts(
+            self.comparison_text(left_name, sport=sport),
+            self.comparison_text(right_name, sport=sport),
+            self.significant_tokens(left_name, sport=sport),
+            self.significant_tokens(right_name, sport=sport),
+            team_ids=team_ids,
+        )
 
     def women_marker_forms(self, name: str) -> frozenset[str]:
         cached = self._women_marker_forms.get(name)
@@ -772,17 +745,13 @@ def _comparison_team_texts_are_compatible(
             sport=sport,
             team_ids=team_ids,
         )
-    if team_ids is not None and team_ids[0] == team_ids[1]:
-        return True
-    left_text = _comparison_team_text(left_name, sport=sport)
-    right_text = _comparison_team_text(right_name, sport=sport)
-    if left_text == right_text:
-        return True
-    left_tokens = _significant_tokens(left_name, sport=sport)
-    right_tokens = _significant_tokens(right_name, sport=sport)
-    if not left_tokens or not right_tokens:
-        return False
-    return left_tokens <= right_tokens or right_tokens <= left_tokens
+    return _comparison_texts_are_compatible_from_parts(
+        _comparison_team_text(left_name, sport=sport),
+        _comparison_team_text(right_name, sport=sport),
+        _significant_tokens(left_name, sport=sport),
+        _significant_tokens(right_name, sport=sport),
+        team_ids=team_ids,
+    )
 
 
 def _pair_has_compatible_women_context(

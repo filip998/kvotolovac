@@ -21,6 +21,7 @@ from ..services.team_registry import (
     merge_canonical_teams,
     remember_team_alias,
     resolve_team_alias,
+    validate_team_name_identity,
 )
 from ..services.text_normalizer import normalize_identity_text
 from ..store import odds_store
@@ -90,6 +91,7 @@ async def _merge_existing_canonical_duplicate_for_review(
         merge_canonical_teams,
         source_team_id=source_team.id,
         target_team_id=target_team_id,
+        allow_unsafe_subset=True,
     )
     resolution = await _remember_team_alias(case, target_team_name=target_team_name)
     return resolution, source_team
@@ -136,6 +138,16 @@ async def approve_team_review_case(
         )
 
     if create_team_name:
+        try:
+            await asyncio.to_thread(
+                validate_team_name_identity,
+                case.raw_team_name,
+                create_team_name,
+                sport=case.sport,
+                allow_unsafe_subset=True,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         target_resolution = await asyncio.to_thread(
             create_canonical_team,
             display_name=create_team_name,
@@ -169,6 +181,16 @@ async def approve_team_review_case(
 
     merged_source_team: CanonicalTeamSummary | None = None
     try:
+        await asyncio.to_thread(
+            validate_team_name_identity,
+            case.raw_team_name,
+            target_team_name,
+            sport=case.sport,
+            allow_unsafe_subset=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
         resolution = await _remember_team_alias(case, target_team_name=target_team_name)
     except CircularAliasError as exc:
         try:
@@ -181,6 +203,8 @@ async def approve_team_review_case(
                 if target_team_id > 0
                 else None
             )
+        except ValueError as retry_exc:
+            raise HTTPException(status_code=400, detail=str(retry_exc)) from retry_exc
         except CircularAliasError as retry_exc:
             raise HTTPException(status_code=409, detail=str(retry_exc)) from retry_exc
         if merged_result is None:
