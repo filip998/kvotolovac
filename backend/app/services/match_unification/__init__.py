@@ -1,7 +1,10 @@
 __all__ = [
     "InMemoryMatchUnificationStore",
+    "MATCH_UNIFICATION_RESULT_KEY",
     "MatchUnification",
     "MatchUnificationInputError",
+    "MatchUnificationPersistenceMetrics",
+    "MatchUnificationPersistenceMetricsError",
     "MatchUnificationResult",
     "MatchUnificationRows",
     "MatchUnificationStatus",
@@ -9,6 +12,8 @@ __all__ = [
     "MatchUnificationWarning",
     "OddsStoreMatchUnificationAdapter",
     "PersistedScrapeSnapshot",
+    "match_unification_cycle_status_out",
+    "match_unification_status_from_cycle_value",
 ]
 
 
@@ -29,12 +34,17 @@ def __getattr__(name: str):
         }[name]
     if name in {
         "MatchUnificationInputError",
+        "MATCH_UNIFICATION_RESULT_KEY",
+        "MatchUnificationPersistenceMetrics",
+        "MatchUnificationPersistenceMetricsError",
         "MatchUnificationResult",
         "MatchUnificationRows",
         "MatchUnificationStatus",
         "MatchUnificationStoreStateError",
         "MatchUnificationWarning",
         "PersistedScrapeSnapshot",
+        "match_unification_cycle_status_out",
+        "match_unification_status_from_cycle_value",
     }:
         from . import types
 

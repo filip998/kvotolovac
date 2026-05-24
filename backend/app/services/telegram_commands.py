@@ -12,6 +12,7 @@ from ..config import settings
 from ..models.schemas import (
     BookmakerOut,
     BookmakerCoverageOut,
+    MatchUnificationCycleStatusOut,
     ScanProgressOut,
     SystemStatus,
     TelegramNotificationProfileOut,
@@ -65,6 +66,9 @@ class TelegramCommandScheduler(Protocol):
         ...
 
     def progress_snapshot(self) -> ScanProgressOut:
+        ...
+
+    def match_unification_status_snapshot(self) -> MatchUnificationCycleStatusOut:
         ...
 
     async def run_cycle(self) -> dict:
@@ -191,6 +195,7 @@ class StatusCommand:
         status = await odds_store.get_system_status(
             scheduler_running=context.scheduler.is_running,
             scan_progress=context.scheduler.progress_snapshot(),
+            match_unification=context.scheduler.match_unification_status_snapshot(),
         )
         await context.reply(_format_system_status(status))
 
@@ -718,6 +723,19 @@ def _format_system_status(status: SystemStatus) -> str:
         lines.append(f"Cycle: {html.escape(scan.phase)} — {progress}")
     else:
         lines.append("Cycle: idle")
+    match_unification = status.match_unification
+    lines.append(
+        "Match Unification: "
+        f"{html.escape(match_unification.state)} "
+        f"({html.escape(match_unification.mode)})"
+    )
+    if match_unification.fallback_reason:
+        lines.append(
+            "Match Unification fallback: "
+            f"{html.escape(match_unification.fallback_reason)}"
+        )
+    for warning in match_unification.warnings:
+        lines.append(f"Match Unification warning: {html.escape(warning)}")
     return "\n".join(lines)
 
 

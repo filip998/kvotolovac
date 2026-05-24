@@ -2139,7 +2139,7 @@ async def persist_event_resolution_groups(
 
     return MatchUnificationPersistenceResult(
         candidates=len(members),
-        resolved_events=result["resolved_events"],
-        resolved_event_members=result["resolved_event_members"],
-        review_cases=result["review_cases"],
+        resolved_events=result.resolved_events,
+        resolved_event_members=result.resolved_event_members,
+        review_cases=result.review_cases,
     )

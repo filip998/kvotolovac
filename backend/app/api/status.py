@@ -9,6 +9,10 @@ from ..models.schemas import (
     SystemStatus,
 )
 from ..scrapers.registry import registry
+from ..services.match_unification import (
+    MATCH_UNIFICATION_RESULT_KEY,
+    match_unification_cycle_status_out,
+)
 from ..services.scheduler import scheduler
 from ..store import odds_store
 
@@ -44,5 +48,7 @@ async def trigger_scrape():
         matches_scraped=result["matches_scraped"],
         odds_scraped=result["odds_scraped"],
         opportunities_found=result["opportunities_found"],
-        match_unification=result.get("match_unification", {}),
+        match_unification=match_unification_cycle_status_out(
+            result[MATCH_UNIFICATION_RESULT_KEY]
+        ),
     )
