@@ -7,7 +7,7 @@ from itertools import combinations
 from ..models.schemas import NormalizedOdds, ResolvedEventMemberOut
 from .match_unification.player_identity import (
     ActiveEventMembership,
-    is_basketball_player_prop,
+    is_player_market_candidate,
     resolve_event_players,
 )
 from .middle_ev import MiddleMarketQuote, estimate_middle
@@ -148,7 +148,7 @@ def _analysis_groups(
     event_members: list[ResolvedEventMemberOut] | None,
     event_primary_match_ids: Mapping[str, str] | None,
 ) -> list[_OddsGroup]:
-    if not event_members:
+    if event_members is None:
         return _legacy_groups(odds_list)
 
     membership = ActiveEventMembership.from_members(event_members)
@@ -187,13 +187,14 @@ def _analysis_groups(
     for odds in odds_list:
         if id(odds) in scoped_odds_ids:
             continue
+        if is_player_market_candidate(odds):
+            event_grouped_odds_ids.add(id(odds))
+            continue
         member = membership.member_for(
             match_id=odds.match_id,
             bookmaker_id=odds.bookmaker_id,
         )
         if member is None:
-            continue
-        if is_basketball_player_prop(odds):
             continue
         key = (
             member.resolved_event_id,
