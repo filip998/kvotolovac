@@ -1744,6 +1744,12 @@ class ScrapePipeline:
                 int((time.perf_counter() - persist_snapshot_started_at) * 1000),
             )
 
+            football_event_resolutions_for_match_unification = (
+                event_resolution_batch.football_event_resolutions
+            )
+            if rerun_decision.skipped and (applied_auto_aliases or applied_auto_merges):
+                football_event_resolutions_for_match_unification = None
+
             match_unification_started_at = time.perf_counter()
             match_unification_result = await self.match_unification.unify_after_snapshot(
                 snapshot=PersistedScrapeSnapshot(
@@ -1756,9 +1762,7 @@ class ScrapePipeline:
                     raw_outcome_offers=all_raw_outcome_offers,
                     normalized_odds=event_resolution_batch.odds,
                     normalized_outcome_offers=event_resolution_batch.outcome_offers,
-                    football_event_resolutions=(
-                        event_resolution_batch.football_event_resolutions
-                    ),
+                    football_event_resolutions=football_event_resolutions_for_match_unification,
                 ),
             )
             self.benchmark.record_phase_duration(
