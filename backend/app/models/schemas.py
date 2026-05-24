@@ -964,6 +964,32 @@ class MatchUnificationSourceMatchSlotBenchmarkOut(BaseModel):
     average_sources_per_lookup: float = 0.0
 
 
+class MatchUnificationSourceMatchScopeBenchmarkBase(BaseModel):
+    """Source-match decision summary for one bookmaker or sport."""
+
+    lookup_count: int = 0
+    matched_count: int = 0
+    no_slot_count: int = 0
+    no_match_count: int = 0
+    fallback_scan_attempt_count: int = 0
+    fallback_scan_hit_count: int = 0
+    rejected_fast_path_count: int = 0
+    scored_source_count: int = 0
+    average_score: float = 0.0
+
+
+class MatchUnificationSourceMatchBookmakerBenchmarkOut(
+    MatchUnificationSourceMatchScopeBenchmarkBase
+):
+    bookmaker_id: str
+
+
+class MatchUnificationSourceMatchSportBenchmarkOut(
+    MatchUnificationSourceMatchScopeBenchmarkBase
+):
+    sport: str
+
+
 class MatchUnificationResolutionBenchmarkOut(BaseModel):
     """Subphase metrics for Match Unification extraction/grouping/persistence."""
 
@@ -994,8 +1020,16 @@ class MatchUnificationResolutionBenchmarkOut(BaseModel):
     source_match_listed_pair_hit_count: int = 0
     source_match_unordered_pair_hit_count: int = 0
     source_match_fallback_scan_count: int = 0
+    source_match_fallback_scan_hit_count: int = 0
+    source_match_fallback_scan_miss_count: int = 0
+    source_match_rejected_fast_path_count: int = 0
     source_match_max_sources_per_lookup: int = 0
     source_match_truncated_slot_count: int = 0
+    source_match_strategy_counts: dict[str, int] = Field(default_factory=dict)
+    source_match_reason_counts: dict[str, int] = Field(default_factory=dict)
+    source_match_attempt_reason_counts: dict[str, int] = Field(default_factory=dict)
+    source_match_score_buckets: dict[str, int] = Field(default_factory=dict)
+    source_match_attempt_score_buckets: dict[str, int] = Field(default_factory=dict)
     football_raw_candidate_count: int = 0
     candidate_count: int = 0
     exact_group_count: int = 0
@@ -1007,6 +1041,12 @@ class MatchUnificationResolutionBenchmarkOut(BaseModel):
     persisted_member_count: int = 0
     persisted_review_case_count: int = 0
     top_source_match_slots: list[MatchUnificationSourceMatchSlotBenchmarkOut] = Field(
+        default_factory=list
+    )
+    source_match_bookmakers: list[
+        MatchUnificationSourceMatchBookmakerBenchmarkOut
+    ] = Field(default_factory=list)
+    source_match_sports: list[MatchUnificationSourceMatchSportBenchmarkOut] = Field(
         default_factory=list
     )
 

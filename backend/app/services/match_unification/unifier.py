@@ -6,7 +6,9 @@ import time
 
 from ...models.schemas import (
     MatchUnificationBenchmarkOut,
+    MatchUnificationSourceMatchBookmakerBenchmarkOut,
     MatchUnificationSourceMatchSlotBenchmarkOut,
+    MatchUnificationSourceMatchSportBenchmarkOut,
 )
 from . import candidate_extraction, resolution
 from .store import MatchUnificationStore, OddsStoreMatchUnificationAdapter
@@ -155,6 +157,36 @@ class MatchUnification:
             ),
             reverse=True,
         )
+        source_match_bookmaker_rows = [
+            MatchUnificationSourceMatchBookmakerBenchmarkOut(
+                bookmaker_id=row.key,
+                lookup_count=row.lookup_count,
+                matched_count=row.matched_count,
+                no_slot_count=row.no_slot_count,
+                no_match_count=row.no_match_count,
+                fallback_scan_attempt_count=row.fallback_scan_attempt_count,
+                fallback_scan_hit_count=row.fallback_scan_hit_count,
+                rejected_fast_path_count=row.rejected_fast_path_count,
+                scored_source_count=row.scored_source_count,
+                average_score=row.average_score,
+            )
+            for row in extraction_stats.source_match_bookmakers
+        ]
+        source_match_sport_rows = [
+            MatchUnificationSourceMatchSportBenchmarkOut(
+                sport=row.key,
+                lookup_count=row.lookup_count,
+                matched_count=row.matched_count,
+                no_slot_count=row.no_slot_count,
+                no_match_count=row.no_match_count,
+                fallback_scan_attempt_count=row.fallback_scan_attempt_count,
+                fallback_scan_hit_count=row.fallback_scan_hit_count,
+                rejected_fast_path_count=row.rejected_fast_path_count,
+                scored_source_count=row.scored_source_count,
+                average_score=row.average_score,
+            )
+            for row in extraction_stats.source_match_sports
+        ]
         benchmark = MatchUnificationBenchmarkOut(
             state="unified",
             mode="resolved_event_graph",
@@ -217,10 +249,30 @@ class MatchUnification:
             source_match_fallback_scan_count=(
                 extraction_stats.source_match_fallback_scan_count
             ),
+            source_match_fallback_scan_hit_count=(
+                extraction_stats.source_match_fallback_scan_hit_count
+            ),
+            source_match_fallback_scan_miss_count=(
+                extraction_stats.source_match_fallback_scan_miss_count
+            ),
+            source_match_rejected_fast_path_count=(
+                extraction_stats.source_match_rejected_fast_path_count
+            ),
             source_match_max_sources_per_lookup=(
                 extraction_stats.source_match_max_sources_per_lookup
             ),
             source_match_truncated_slot_count=max(0, len(source_match_slot_rows) - 20),
+            source_match_strategy_counts=(
+                extraction_stats.source_match_strategy_counts
+            ),
+            source_match_reason_counts=extraction_stats.source_match_reason_counts,
+            source_match_attempt_reason_counts=(
+                extraction_stats.source_match_attempt_reason_counts
+            ),
+            source_match_score_buckets=extraction_stats.source_match_score_buckets,
+            source_match_attempt_score_buckets=(
+                extraction_stats.source_match_attempt_score_buckets
+            ),
             football_raw_candidate_count=extraction_stats.football_raw_candidate_count,
             candidate_count=len(candidates),
             exact_group_count=group_stats.exact_group_count,
@@ -232,6 +284,8 @@ class MatchUnification:
             persisted_member_count=persisted.resolved_event_members,
             persisted_review_case_count=persisted.review_cases,
             top_source_match_slots=source_match_slot_rows[:20],
+            source_match_bookmakers=source_match_bookmaker_rows,
+            source_match_sports=source_match_sport_rows,
         )
         status = MatchUnificationStatus(
             snapshot_id=snapshot.id,
