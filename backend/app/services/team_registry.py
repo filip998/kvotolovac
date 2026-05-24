@@ -14,12 +14,12 @@ from rapidfuzz import fuzz, process
 from ..config import settings
 from .team_seed_data import SPORT_ALIAS_SEEDS
 from .team_abbreviations import expand_team_abbreviations
-from .team_qualifiers import (
-    has_reserve_marker,
-    has_youth_marker,
-    is_women_team,
+from .team_identity import (
+    REASON_QUALIFIER_MISMATCH,
+    REASON_UNSAFE_SUBSET,
+    canonical_candidate_qualifier_gate,
+    canonical_team_auto_merge_analysis,
     team_qualifiers,
-    youth_ages,
 )
 from .text_normalizer import normalize_identity_text
 
@@ -1180,6 +1180,72 @@ def _partial_ratio_admissible(raw_key: str, candidate_key: str) -> bool:
 # fuzzy match (>= 80) can still surface a mismatched candidate near the top
 # of the result list as a *suggestion* the operator can review.
 _QUALIFIER_MISMATCH_PENALTY: float = 15.0
+_MANUAL_MERGE_BLOCK_REASONS = frozenset(
+    {REASON_QUALIFIER_MISMATCH, REASON_UNSAFE_SUBSET}
+)
+
+
+def _validate_manual_canonical_merge_identity(
+    source_row: sqlite3.Row,
+    target_row: sqlite3.Row,
+    *,
+    allow_unsafe_subset: bool = False,
+) -> None:
+    validate_team_name_identity(
+        str(source_row["display_name"]),
+        str(target_row["display_name"]),
+        sport=str(source_row["sport"]),
+        allow_unsafe_subset=allow_unsafe_subset,
+    )
+
+
+def validate_team_name_identity(
+    source_team_name: str,
+    target_team_name: str,
+    *,
+    sport: str,
+    allow_unsafe_subset: bool = False,
+) -> None:
+    analysis = canonical_team_auto_merge_analysis(
+        source_team_name,
+        target_team_name,
+        sport=sport,
+        threshold=0.0,
+    )
+    block_reasons = (
+        _MANUAL_MERGE_BLOCK_REASONS
+        if not allow_unsafe_subset
+        else frozenset({REASON_QUALIFIER_MISMATCH})
+    )
+    blocking_reasons = sorted(analysis.reasons & block_reasons)
+    if blocking_reasons:
+        joined_reasons = ", ".join(blocking_reasons)
+        raise ValueError(
+            "Cannot use incompatible team identity "
+            f"({joined_reasons}): "
+            f"{source_team_name} -> {target_team_name}"
+        )
+
+
+def validate_canonical_team_merge_identity(
+    *,
+    source_team_id: int,
+    target_team_id: int,
+    allow_unsafe_subset: bool = False,
+) -> None:
+    _ensure_bootstrapped()
+    with _connect() as conn:
+        source_row = _query_team_by_id(conn, source_team_id)
+        target_row = _query_team_by_id(conn, target_team_id)
+        if source_row is None or target_row is None:
+            raise ValueError("Both canonical teams must exist before merging")
+        if str(source_row["sport"]) != str(target_row["sport"]):
+            raise ValueError("Only canonical teams from the same sport can be merged")
+        _validate_manual_canonical_merge_identity(
+            source_row,
+            target_row,
+            allow_unsafe_subset=allow_unsafe_subset,
+        )
 
 
 def _qualifier_gate(
@@ -1217,24 +1283,17 @@ def _qualifier_gate(
 
     * ``admit=True, penalty=0`` means no qualifier-driven adjustment.
     """
-    raw_is_women = is_women_team(raw_qualifiers)
-    # Women hard-block fires only when the candidate's *team* unambiguously
-    # identifies as one gender (every alias agrees). NWSL-style canonicals
-    # whose display_name carries the only ``W`` marker while bookmaker
-    # aliases omit it land in ``"mixed"`` status, suppressing the block so
-    # the canonical stays reachable from un-marked queries.
-    if cand_women_status == "women" and not raw_is_women:
-        return (False, 0.0)
-    if cand_women_status == "men" and raw_is_women:
-        return (False, 0.0)
-    raw_ages = youth_ages(raw_qualifiers)
-    cand_ages = youth_ages(cand_qualifiers)
-    if raw_ages and cand_ages and not (raw_ages & cand_ages):
+    decision = canonical_candidate_qualifier_gate(
+        raw_qualifiers,
+        cand_qualifiers,
+        cand_women_status,
+    )
+    if not decision.admit:
         return (False, 0.0)
     penalty = 0.0
-    if has_youth_marker(raw_qualifiers) != has_youth_marker(cand_qualifiers):
+    if decision.youth_marker_mismatch:
         penalty += _QUALIFIER_MISMATCH_PENALTY
-    if has_reserve_marker(raw_qualifiers) != has_reserve_marker(cand_qualifiers):
+    if decision.reserve_marker_mismatch:
         penalty += _QUALIFIER_MISMATCH_PENALTY
     return (True, penalty)
 
@@ -1836,6 +1895,7 @@ def merge_canonical_teams(
     *,
     source_team_id: int,
     target_team_id: int,
+    allow_unsafe_subset: bool = False,
 ) -> CanonicalTeamSummary:
     if source_team_id == target_team_id:
         raise ValueError("Cannot merge a canonical team into itself")
@@ -1849,6 +1909,11 @@ def merge_canonical_teams(
             raise ValueError("Both canonical teams must exist before merging")
         if str(source_row["sport"]) != str(target_row["sport"]):
             raise ValueError("Only canonical teams from the same sport can be merged")
+        _validate_manual_canonical_merge_identity(
+            source_row,
+            target_row,
+            allow_unsafe_subset=allow_unsafe_subset,
+        )
 
         alias_snapshot = _team_alias_snapshot(
             conn,

@@ -38,10 +38,14 @@ from .event_matching import (
     _expand_dotted_token,
     _orientation_scores,
 )
-from .team_text import (
+from ..team_identity import (
+    canonical_team_auto_merge_analysis as _canonical_team_auto_merge_analysis,
+    canonical_team_similarity_score as _canonical_team_similarity_score,
     comparison_team_text as _comparison_team_text,
-    same_team_context as _same_team_context,
+    event_similarity_score_from_parts as _event_similarity_score_from_parts,
+    match_unification_significant_tokens as _identity_significant_tokens,
     team_qualifiers as _team_qualifiers,
+    unsafe_compound_subset_match as _unsafe_compound_subset_match,
 )
 from ..tennis_name_matcher import (
     TENNIS_BROAD_DRIFT_MINUTES,
@@ -83,17 +87,6 @@ _QUORUM_CANONICAL_SIDE_ANCHOR_AVG_SCORE = 70.0
 _QUORUM_CANONICAL_SIDE_ANCHOR_WEAK_SIDE_SCORE = 45.0
 _QUORUM_MIN_LARGER_BOOKMAKERS = 5
 _QUORUM_MIN_BOOKMAKER_DIFFERENCE = 3
-_LOW_SIGNAL_TEAM_TOKENS = {
-    "bc",
-    "bk",
-    "kk",
-    "fc",
-    "fk",
-    "club",
-    "team",
-}
-
-
 def _elapsed_ms(started_at: float) -> int:
     return int((time.perf_counter() - started_at) * 1000)
 
@@ -128,11 +121,7 @@ class SameTimeCanonicalMergeProposal:
 
 
 def _significant_team_tokens(team_name: str, *, sport: str | None = None) -> set[str]:
-    return {
-        token
-        for token in _comparison_team_text(team_name, sport=sport).split()
-        if token not in _LOW_SIGNAL_TEAM_TOKENS
-    }
+    return _identity_significant_tokens(team_name, sport=sport)
 
 
 def _symmetric_canonical_team_score(
@@ -141,33 +130,7 @@ def _symmetric_canonical_team_score(
     *,
     sport: str | None = None,
 ) -> float:
-    left_key = _comparison_team_text(left_name, sport=sport)
-    right_key = _comparison_team_text(right_name, sport=sport)
-    if not left_key or not right_key:
-        return 0.0
-    if left_key == right_key:
-        return 100.0
-
-    left_tokens = _significant_team_tokens(left_name, sport=sport)
-    right_tokens = _significant_team_tokens(right_name, sport=sport)
-    if not left_tokens or not right_tokens:
-        return 0.0
-    if left_tokens == right_tokens:
-        return 100.0
-    if left_tokens < right_tokens or right_tokens < left_tokens:
-        return float(
-            min(
-                fuzz.ratio(left_key, right_key),
-                fuzz.token_sort_ratio(left_key, right_key),
-            )
-        )
-
-    return float(
-        min(
-            fuzz.ratio(left_key, right_key),
-            fuzz.token_sort_ratio(left_key, right_key),
-        )
-    )
+    return _canonical_team_similarity_score(left_name, right_name, sport=sport)
 
 
 def _is_unsafe_compound_subset_match(
@@ -176,13 +139,7 @@ def _is_unsafe_compound_subset_match(
     *,
     sport: str | None = None,
 ) -> bool:
-    left_tokens = _significant_team_tokens(left_name, sport=sport)
-    right_tokens = _significant_team_tokens(right_name, sport=sport)
-    return bool(
-        left_tokens
-        and right_tokens
-        and (left_tokens < right_tokens or right_tokens < left_tokens)
-    )
+    return _unsafe_compound_subset_match(left_name, right_name, sport=sport)
 
 
 def _canonical_team_auto_merge_score(
@@ -191,22 +148,15 @@ def _canonical_team_auto_merge_score(
     *,
     sport: str | None = None,
 ) -> float | None:
-    if not _same_team_context(source_team_name, target_team_name, sport=sport):
-        return None
-    if _is_unsafe_compound_subset_match(
+    analysis = _canonical_team_auto_merge_analysis(
         source_team_name,
         target_team_name,
         sport=sport,
-    ):
-        return None
-    score = _symmetric_canonical_team_score(
-        source_team_name,
-        target_team_name,
-        sport=sport,
+        threshold=CANONICAL_TEAM_AUTO_MERGE_THRESHOLD,
     )
-    if score < CANONICAL_TEAM_AUTO_MERGE_THRESHOLD:
+    if not analysis.auto_merge_safe:
         return None
-    return score
+    return analysis.score
 
 
 def _same_time_slot_orientation(
@@ -503,11 +453,7 @@ class _ResolverTextCache:
         key = (name, sport)
         cached = self._significant_tokens.get(key)
         if cached is None:
-            cached = {
-                token
-                for token in self.comparison_text(name, sport=sport).split()
-                if token not in _LOW_SIGNAL_TEAM_TOKENS
-            }
+            cached = _significant_team_tokens(name, sport=sport)
             self._significant_tokens[key] = cached
         return cached
 
@@ -543,21 +489,15 @@ class _ResolverTextCache:
         if cached is not None:
             return cached
 
-        left_key = self.comparison_text(expanded_left, sport=sport)
-        right_key = self.comparison_text(expanded_right, sport=sport)
-        if not left_key or not right_key:
-            score = 0.0
-        elif left_key == right_key:
-            score = 100.0
-        else:
-            left_tokens = self.significant_tokens(expanded_left, sport=sport)
-            right_tokens = self.significant_tokens(expanded_right, sport=sport)
-            if left_tokens and left_tokens == right_tokens:
-                score = 100.0
-            else:
-                if self._stats is not None:
-                    self._stats.fuzzy_score_count += 1
-                score = float(fuzz.token_sort_ratio(left_key, right_key))
+        score_result = _event_similarity_score_from_parts(
+            self.comparison_text(expanded_left, sport=sport),
+            self.comparison_text(expanded_right, sport=sport),
+            self.significant_tokens(expanded_left, sport=sport),
+            self.significant_tokens(expanded_right, sport=sport),
+        )
+        if self._stats is not None and score_result.used_fuzzy_score:
+            self._stats.fuzzy_score_count += 1
+        score = score_result.score
         self._team_similarity[key] = score
         return score
 

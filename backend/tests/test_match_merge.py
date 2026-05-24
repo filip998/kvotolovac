@@ -146,6 +146,168 @@ async def test_merge_matches_happy_path(client: AsyncClient, team_registry_file)
 
 
 @pytest.mark.asyncio
+async def test_merge_matches_allows_explicit_reversed_pairings(
+    client: AsyncClient,
+    team_registry_file,
+):
+    teams = await _seed_two_matches()
+
+    resp = await client.post(
+        "/api/v1/matches/merge",
+        json={
+            "target_match_id": "target-match",
+            "source_match_ids": ["source-match"],
+            "team_pairings": [
+                {
+                    "source_team_id": teams["home_source_id"],
+                    "target_team_id": teams["away_target_id"],
+                },
+                {
+                    "source_team_id": teams["away_source_id"],
+                    "target_team_id": teams["home_target_id"],
+                },
+            ],
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_merge_matches_explicit_self_pairings_suppress_derived_fallback(
+    client: AsyncClient,
+    team_registry_file,
+):
+    await odds_store.upsert_league("laliga", "La Liga", "football")
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.set_current_snapshot(SCRAPED_AT)
+
+    barcelona_b = create_canonical_team(display_name="Barcelona B", sport="football")
+    real_madrid = create_canonical_team(display_name="Real Madrid", sport="football")
+    await odds_store.upsert_match(
+        id="target-match",
+        league_id="laliga",
+        home_team="Barcelona B",
+        away_team="Real Madrid",
+        home_team_id=barcelona_b.team_id,
+        away_team_id=real_madrid.team_id,
+        start_time=START_TIME,
+    )
+    await odds_store.upsert_match(
+        id="source-match",
+        league_id="laliga",
+        home_team="Real Madrid",
+        away_team="Barcelona B",
+        home_team_id=real_madrid.team_id,
+        away_team_id=barcelona_b.team_id,
+        start_time=START_TIME,
+    )
+
+    resp = await client.post(
+        "/api/v1/matches/merge",
+        json={
+            "target_match_id": "target-match",
+            "source_match_ids": ["source-match"],
+            "team_pairings": [
+                {
+                    "source_team_id": real_madrid.team_id,
+                    "target_team_id": real_madrid.team_id,
+                },
+                {
+                    "source_team_id": barcelona_b.team_id,
+                    "target_team_id": barcelona_b.team_id,
+                },
+            ],
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_merge_matches_rejects_pairing_source_outside_source_matches(
+    client: AsyncClient,
+    team_registry_file,
+):
+    teams = await _seed_two_matches()
+    unrelated = create_canonical_team(display_name="Unrelated Team")
+
+    resp = await client.post(
+        "/api/v1/matches/merge",
+        json={
+            "target_match_id": "target-match",
+            "source_match_ids": ["source-match"],
+            "team_pairings": [
+                {
+                    "source_team_id": unrelated.team_id,
+                    "target_team_id": teams["home_target_id"],
+                },
+            ],
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "not part of the source matches" in resp.json()["detail"]
+    assert await odds_store.get_match("source-match") is not None
+
+
+@pytest.mark.asyncio
+async def test_merge_matches_rejects_conflicting_derived_pairings(
+    client: AsyncClient,
+    team_registry_file,
+):
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.set_current_snapshot(SCRAPED_AT)
+
+    target_home = create_canonical_team(display_name="Target Home")
+    target_away = create_canonical_team(display_name="Target Away")
+    shared_source = create_canonical_team(display_name="Shared Source")
+    source_a_away = create_canonical_team(display_name="Source A Away")
+    source_b_home = create_canonical_team(display_name="Source B Home")
+    await odds_store.upsert_match(
+        id="target-match",
+        league_id="euroleague",
+        home_team="Target Home",
+        away_team="Target Away",
+        home_team_id=target_home.team_id,
+        away_team_id=target_away.team_id,
+        start_time=START_TIME,
+    )
+    await odds_store.upsert_match(
+        id="source-a",
+        league_id="euroleague",
+        home_team="Shared Source",
+        away_team="Source A Away",
+        home_team_id=shared_source.team_id,
+        away_team_id=source_a_away.team_id,
+        start_time=START_TIME,
+    )
+    await odds_store.upsert_match(
+        id="source-b",
+        league_id="euroleague",
+        home_team="Source B Home",
+        away_team="Shared Source",
+        home_team_id=source_b_home.team_id,
+        away_team_id=shared_source.team_id,
+        start_time=START_TIME,
+    )
+
+    resp = await client.post(
+        "/api/v1/matches/merge",
+        json={
+            "target_match_id": "target-match",
+            "source_match_ids": ["source-a", "source-b"],
+            "team_pairings": [],
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "Conflicting pairings" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_merge_matches_rejects_different_start_time(client: AsyncClient, team_registry_file):
     teams = await _seed_two_matches(same_start=False)
 
@@ -162,6 +324,100 @@ async def test_merge_matches_rejects_different_start_time(client: AsyncClient, t
     # Both matches still exist
     assert await odds_store.get_match("source-match") is not None
     assert await odds_store.get_match("target-match") is not None
+
+
+@pytest.mark.asyncio
+async def test_merge_matches_rejects_qualifier_mismatch_before_mutation(
+    client: AsyncClient,
+    team_registry_file,
+):
+    await odds_store.upsert_league("euroleague", "Euroleague", "basketball")
+    await odds_store.upsert_bookmaker("mozzart", "Mozzart")
+    await odds_store.upsert_bookmaker("meridian", "Meridian")
+    await odds_store.set_current_snapshot(SCRAPED_AT)
+
+    target_home = create_canonical_team(display_name="Partizan")
+    source_home = create_canonical_team(display_name="Partizan Women")
+    away = create_canonical_team(display_name="Rival")
+    await odds_store.upsert_match(
+        id="target-match",
+        league_id="euroleague",
+        home_team="Partizan",
+        away_team="Rival",
+        home_team_id=target_home.team_id,
+        away_team_id=away.team_id,
+        start_time=START_TIME,
+    )
+    await odds_store.upsert_match(
+        id="source-match",
+        league_id="euroleague",
+        home_team="Partizan Women",
+        away_team="Rival",
+        home_team_id=source_home.team_id,
+        away_team_id=away.team_id,
+        start_time=START_TIME,
+    )
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="target-match",
+            bookmaker_id="mozzart",
+            league_id="euroleague",
+            home_team="Partizan",
+            away_team="Rival",
+            market_type="game_total",
+            threshold=160.5,
+            over_odds=1.85,
+            under_odds=1.95,
+        ),
+        scraped_at=SCRAPED_AT,
+    )
+    await odds_store.upsert_odds(
+        NormalizedOdds(
+            match_id="source-match",
+            bookmaker_id="meridian",
+            league_id="euroleague",
+            home_team="Partizan Women",
+            away_team="Rival",
+            market_type="game_total",
+            threshold=161.5,
+            over_odds=1.90,
+            under_odds=1.92,
+        ),
+        scraped_at=SCRAPED_AT,
+    )
+
+    resp = await client.post(
+        "/api/v1/matches/merge",
+        json={
+            "target_match_id": "target-match",
+            "source_match_ids": ["source-match"],
+            "team_pairings": [],
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "qualifier_mismatch" in resp.json()["detail"]
+    assert await odds_store.get_match("source-match") is not None
+    assert await odds_store.get_match("target-match") is not None
+    assert len(await odds_store.get_odds_for_match("source-match")) == 1
+
+    self_pair_resp = await client.post(
+        "/api/v1/matches/merge",
+        json={
+            "target_match_id": "target-match",
+            "source_match_ids": ["source-match"],
+            "team_pairings": [
+                {
+                    "source_team_id": source_home.team_id,
+                    "target_team_id": source_home.team_id,
+                },
+            ],
+        },
+    )
+
+    assert self_pair_resp.status_code == 400
+    assert "not part of the target match" in self_pair_resp.json()["detail"]
+    assert await odds_store.get_match("source-match") is not None
 
 
 @pytest.mark.asyncio

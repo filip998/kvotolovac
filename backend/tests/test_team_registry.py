@@ -38,6 +38,55 @@ def test_create_canonical_team_reuses_inactive_merged_display_name(team_registry
     assert alias_resolution.team_name == target.team_name
 
 
+def test_merge_canonical_teams_rejects_qualifier_mismatch(team_registry_file):
+    men = create_canonical_team(display_name="Barcelona", sport="football")
+    women = create_canonical_team(display_name="Barcelona Women", sport="football")
+
+    with pytest.raises(ValueError, match="qualifier_mismatch"):
+        merge_canonical_teams(
+            source_team_id=women.team_id,
+            target_team_id=men.team_id,
+        )
+
+
+def test_merge_canonical_teams_rejects_unsafe_subset(team_registry_file):
+    base = create_canonical_team(display_name="Arsenal", sport="football")
+    compound = create_canonical_team(display_name="Arsenal Tula", sport="football")
+
+    with pytest.raises(ValueError, match="unsafe_subset"):
+        merge_canonical_teams(
+            source_team_id=compound.team_id,
+            target_team_id=base.team_id,
+        )
+
+
+def test_merge_canonical_teams_allows_review_opt_in_for_unsafe_subset(team_registry_file):
+    base = create_canonical_team(display_name="Deportivo Amambay", sport="basketball")
+    subset = create_canonical_team(display_name="Amambay", sport="basketball")
+
+    merged = merge_canonical_teams(
+        source_team_id=subset.team_id,
+        target_team_id=base.team_id,
+        allow_unsafe_subset=True,
+    )
+
+    assert merged.id == base.team_id
+
+
+def test_merge_canonical_teams_review_opt_in_still_rejects_qualifier_mismatch(
+    team_registry_file,
+):
+    men = create_canonical_team(display_name="Partizan", sport="basketball")
+    women = create_canonical_team(display_name="Partizan Women", sport="basketball")
+
+    with pytest.raises(ValueError, match="qualifier_mismatch"):
+        merge_canonical_teams(
+            source_team_id=women.team_id,
+            target_team_id=men.team_id,
+            allow_unsafe_subset=True,
+        )
+
+
 def test_bootstrap_seed_reuses_inactive_merged_display_name(
     team_registry_file,
     monkeypatch,
