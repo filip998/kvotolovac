@@ -14,6 +14,7 @@ from ..models.schemas import (
 )
 from ..services.scheduler import scheduler
 from ..services.team_registry import (
+    MERGE_SOURCE_MANUAL_API,
     list_canonical_teams,
     list_canonical_teams_page,
     merge_canonical_teams,
@@ -83,11 +84,18 @@ async def merge_team(
     team_id: int,
     payload: CanonicalTeamMergeIn,
 ) -> CanonicalTeamMergeOut:
+    if scheduler.is_cycle_in_progress:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot merge canonical teams while a scrape cycle is in progress; try again shortly",
+        )
     try:
         merged = await asyncio.to_thread(
             merge_canonical_teams,
             source_team_id=team_id,
             target_team_id=payload.target_team_id,
+            merge_source=MERGE_SOURCE_MANUAL_API,
+            merge_reason="manual_api_merge",
         )
     except ValueError as exc:
         detail = str(exc)

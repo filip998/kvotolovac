@@ -125,6 +125,25 @@ def test_team_auto_merge_guardrails_require_qualifier_compatibility():
     assert _same_time_slot_orientation(source_slot, target_slot) is None
 
 
+def test_team_auto_merge_guardrails_reject_unsafe_subset_identity():
+    source_slot = _canonical_slot(
+        home_team_id=1,
+        away_team_id=2,
+        home_team="Arsenal",
+        away_team="Rival",
+        support_bookmakers=frozenset({"book-c"}),
+    )
+    target_slot = _canonical_slot(
+        home_team_id=3,
+        away_team_id=4,
+        home_team="Arsenal Tula",
+        away_team="Rival",
+        support_bookmakers=frozenset({"book-a", "book-b"}),
+    )
+
+    assert _same_time_slot_orientation(source_slot, target_slot) is None
+
+
 def test_event_review_case_metadata_records_exact_source_variant_pairs():
     left_candidate = EventCandidate(
         match_id="match-z",

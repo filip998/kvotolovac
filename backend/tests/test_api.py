@@ -1996,6 +1996,52 @@ async def test_merge_canonical_teams_rejects_missing_target(
 
 
 @pytest.mark.asyncio
+async def test_merge_canonical_teams_rejects_unsafe_identity_with_detail(
+    client: AsyncClient,
+    team_registry_file,
+):
+    source = create_canonical_team(display_name="Arsenal Tula", sport="football")
+    target = create_canonical_team(display_name="Arsenal", sport="football")
+
+    resp = await client.post(
+        f"/api/v1/canonical-teams/{source.team_id}/merge",
+        json={"target_team_id": target.team_id},
+    )
+
+    assert resp.status_code == 400
+    assert "identity policy" in resp.json()["detail"]
+    assert "unsafe_subset" in resp.json()["detail"]
+    assert "Arsenal Tula -> Arsenal" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_merge_canonical_teams_rejects_during_scrape_cycle(
+    client: AsyncClient,
+    team_registry_file,
+):
+    source = create_canonical_team(display_name="QA Busy Merge Source")
+    target = create_canonical_team(display_name="QA Busy Merge Target")
+    scheduler._cycle_task = asyncio.create_task(asyncio.sleep(0.1))
+    try:
+        resp = await client.post(
+            f"/api/v1/canonical-teams/{source.team_id}/merge",
+            json={"target_team_id": target.team_id},
+        )
+    finally:
+        scheduler._cycle_task.cancel()
+        try:
+            await scheduler._cycle_task
+        except asyncio.CancelledError:
+            pass
+        scheduler._cycle_task = None
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == (
+        "Cannot merge canonical teams while a scrape cycle is in progress; try again shortly"
+    )
+
+
+@pytest.mark.asyncio
 async def test_unmerge_canonical_teams_restores_aliases(
     client: AsyncClient,
     team_registry_file,
@@ -2469,6 +2515,82 @@ async def test_team_review_approval_merges_existing_canonical_duplicate(
     assert normalize_team_name("Amambay", None, "volcanobet") == target.team_name
     assert duplicate_rows[0]["is_active"] == 0
     assert duplicate_rows[0]["merged_into_team_id"] == target.team_id
+
+
+@pytest.mark.asyncio
+async def test_team_review_duplicate_merge_rejects_during_scrape_cycle(
+    client: AsyncClient,
+    team_registry_file,
+):
+    batch_scraped_at = "2026-04-16T21:55:00+00:00"
+    await odds_store.upsert_bookmaker("volcanobet", "VolcanoBet")
+    await odds_store.upsert_league("paraguay_lnb", "Paraguay LNB", "basketball", "Paraguay")
+    target = create_canonical_team(display_name="Deportivo Amambay", sport="basketball")
+    duplicate = create_canonical_team(display_name="Amambay", sport="basketball")
+    case_id = await odds_store.insert_team_review_case(
+        TeamReviewDiagnostic.model_validate(
+            {
+                "bookmaker_id": "volcanobet",
+                "raw_league_id": "Paraguay LNB",
+                "normalized_raw_league_id": "paraguay lnb",
+                "sport": "basketball",
+                "scope_league_id": "paraguay_lnb",
+                "raw_team_name": "Amambay",
+                "normalized_raw_team_name": "Amambay",
+                "suggested_team_id": target.team_id,
+                "suggested_team_name": target.team_name,
+                "start_time": batch_scraped_at,
+                "reason_code": "candidate_team_match_same_start_time",
+                "confidence": "high",
+                "similarity_score": 100,
+                "candidate_teams": [
+                    {
+                        "team_id": target.team_id,
+                        "team_name": target.team_name,
+                        "score": 100,
+                    },
+                    {
+                        "team_id": duplicate.team_id,
+                        "team_name": duplicate.team_name,
+                        "score": 100,
+                    },
+                ],
+                "evidence": ["Stronger competing canonical event: support x3"],
+                "status": "pending",
+            }
+        ),
+        scraped_at=batch_scraped_at,
+    )
+    await odds_store.set_current_snapshot(batch_scraped_at)
+
+    scheduler._cycle_task = asyncio.create_task(asyncio.sleep(0.1))
+    try:
+        approve_resp = await client.post(
+            f"/api/v1/team-review/cases/{case_id}/approve",
+            json={"team_id": target.team_id},
+        )
+    finally:
+        scheduler._cycle_task.cancel()
+        try:
+            await scheduler._cycle_task
+        except asyncio.CancelledError:
+            pass
+        scheduler._cycle_task = None
+    case = await odds_store.get_team_review_case(case_id)
+    db = await get_db()
+    duplicate_rows = await db.execute_fetchall(
+        "SELECT is_active, merged_into_team_id FROM canonical_teams WHERE id = ?",
+        (duplicate.team_id,),
+    )
+
+    assert approve_resp.status_code == 409
+    assert approve_resp.json()["detail"] == (
+        "Cannot merge canonical teams while a scrape cycle is in progress; try again shortly"
+    )
+    assert case is not None
+    assert case.status == "pending"
+    assert duplicate_rows[0]["is_active"] == 1
+    assert duplicate_rows[0]["merged_into_team_id"] is None
 
 
 @pytest.mark.asyncio

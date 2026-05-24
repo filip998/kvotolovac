@@ -12,9 +12,11 @@ from ..models.schemas import (
     TeamReviewApprovalOut,
     TeamReviewOut,
 )
+from ..services.scheduler import scheduler
 from ..services.team_registry import (
     CanonicalTeamSummary,
     CircularAliasError,
+    MERGE_SOURCE_TEAM_REVIEW_APPROVAL,
     TeamAliasResolution,
     create_canonical_team,
     get_canonical_team,
@@ -87,11 +89,18 @@ async def _merge_existing_canonical_duplicate_for_review(
         return None
 
     assert source_team is not None
+    if scheduler.is_cycle_in_progress:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot merge canonical teams while a scrape cycle is in progress; try again shortly",
+        )
     await asyncio.to_thread(
         merge_canonical_teams,
         source_team_id=source_team.id,
         target_team_id=target_team_id,
-        allow_unsafe_subset=True,
+        allow_unsafe_subset_override=True,
+        merge_source=MERGE_SOURCE_TEAM_REVIEW_APPROVAL,
+        merge_reason="team_review_duplicate_canonical",
     )
     resolution = await _remember_team_alias(case, target_team_name=target_team_name)
     return resolution, source_team
@@ -144,7 +153,7 @@ async def approve_team_review_case(
                 case.raw_team_name,
                 create_team_name,
                 sport=case.sport,
-                allow_unsafe_subset=True,
+                allow_unsafe_subset_override=True,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -186,7 +195,7 @@ async def approve_team_review_case(
             case.raw_team_name,
             target_team_name,
             sport=case.sport,
-            allow_unsafe_subset=True,
+            allow_unsafe_subset_override=True,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

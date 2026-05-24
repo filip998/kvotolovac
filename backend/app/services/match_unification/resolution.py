@@ -39,6 +39,7 @@ from .event_matching import (
     _orientation_scores,
 )
 from ..team_identity import (
+    CANONICAL_TEAM_AUTO_MERGE_THRESHOLD as _CANONICAL_TEAM_AUTO_MERGE_THRESHOLD,
     canonical_team_auto_merge_analysis as _canonical_team_auto_merge_analysis,
     canonical_team_similarity_score as _canonical_team_similarity_score,
     comparison_team_text as _comparison_team_text,
@@ -63,7 +64,7 @@ _HIGH_FUZZY_AVG_SCORE_NON_SUBSET = 90.0
 _HIGH_FUZZY_SIDE_SCORE_NON_SUBSET = 82.0
 _REVIEW_FUZZY_AVG_SCORE = 65.0
 _FUZZY_ORIENTATION_MARGIN = 8.0
-CANONICAL_TEAM_AUTO_MERGE_THRESHOLD = 88.0
+CANONICAL_TEAM_AUTO_MERGE_THRESHOLD = _CANONICAL_TEAM_AUTO_MERGE_THRESHOLD
 # Anchored low-confidence merge: applies only when the two groups are at the
 # exact same (sport, start_time) slot AND a non-fuzzy corroborator is present
 # (token subset on the weak side, or shared significant token + same league).

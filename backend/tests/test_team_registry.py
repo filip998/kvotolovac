@@ -8,6 +8,7 @@ import pytest
 from app.config import settings
 from app.services import team_registry
 from app.services.team_registry import (
+    MERGE_SOURCE_MANUAL_MATCH_MERGE,
     clear_team_registry_cache,
     create_canonical_team,
     merge_canonical_teams,
@@ -67,7 +68,9 @@ def test_merge_canonical_teams_allows_review_opt_in_for_unsafe_subset(team_regis
     merged = merge_canonical_teams(
         source_team_id=subset.team_id,
         target_team_id=base.team_id,
-        allow_unsafe_subset=True,
+        allow_unsafe_subset_override=True,
+        merge_source=MERGE_SOURCE_MANUAL_MATCH_MERGE,
+        merge_reason="reviewed_unsafe_subset_override",
     )
 
     assert merged.id == base.team_id
@@ -83,7 +86,99 @@ def test_merge_canonical_teams_review_opt_in_still_rejects_qualifier_mismatch(
         merge_canonical_teams(
             source_team_id=women.team_id,
             target_team_id=men.team_id,
-            allow_unsafe_subset=True,
+            allow_unsafe_subset_override=True,
+            merge_source=MERGE_SOURCE_MANUAL_MATCH_MERGE,
+            merge_reason="reviewed_unsafe_subset_override",
+        )
+
+
+def test_merge_canonical_teams_rejects_cross_sport(team_registry_file):
+    basketball = create_canonical_team(display_name="QA Cross Sport", sport="basketball")
+    football = create_canonical_team(display_name="QA Cross Sport", sport="football")
+
+    with pytest.raises(ValueError, match="same sport"):
+        merge_canonical_teams(
+            source_team_id=football.team_id,
+            target_team_id=basketball.team_id,
+        )
+
+
+def test_merge_canonical_teams_rejects_inactive_source_and_target(team_registry_file):
+    source = create_canonical_team(display_name="QA Inactive Source")
+    target = create_canonical_team(display_name="QA Inactive Target")
+    fresh = create_canonical_team(display_name="QA Inactive Fresh")
+
+    merge_canonical_teams(source_team_id=source.team_id, target_team_id=target.team_id)
+
+    with pytest.raises(ValueError, match="Source canonical team is inactive"):
+        merge_canonical_teams(
+            source_team_id=source.team_id,
+            target_team_id=fresh.team_id,
+        )
+    with pytest.raises(ValueError, match="Target canonical team is inactive"):
+        merge_canonical_teams(
+            source_team_id=fresh.team_id,
+            target_team_id=source.team_id,
+        )
+
+
+def test_merge_canonical_teams_records_auditable_override(team_registry_file):
+    base = create_canonical_team(display_name="Deportivo Amambay", sport="basketball")
+    subset = create_canonical_team(display_name="Amambay", sport="basketball")
+
+    merge_canonical_teams(
+        source_team_id=subset.team_id,
+        target_team_id=base.team_id,
+        allow_unsafe_subset_override=True,
+        merge_source=MERGE_SOURCE_MANUAL_MATCH_MERGE,
+        merge_reason="reviewed_unsafe_subset_override",
+    )
+
+    with sqlite3.connect(settings.db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT merge_source, merge_reason, identity_policy, identity_decision
+            FROM team_merge_history
+            WHERE source_team_id = ? AND target_team_id = ?
+            """,
+            (subset.team_id, base.team_id),
+        ).fetchone()
+
+    assert row is not None
+    payload = json.loads(row[3])
+    assert row[0] == MERGE_SOURCE_MANUAL_MATCH_MERGE
+    assert row[1] == "reviewed_unsafe_subset_override"
+    assert row[2] == "canonical_merge_safety"
+    assert payload["allowed"] is True
+    assert payload["unsafe_subset"] is True
+    assert payload["override_reasons"] == ["unsafe_subset_override"]
+    assert "unsafe_subset" in payload["reasons"]
+
+
+def test_merge_canonical_teams_requires_reason_for_unsafe_subset_override(
+    team_registry_file,
+):
+    base = create_canonical_team(display_name="Arsenal", sport="football")
+    compound = create_canonical_team(display_name="Arsenal Tula", sport="football")
+
+    with pytest.raises(ValueError, match="requires an auditable merge_reason"):
+        merge_canonical_teams(
+            source_team_id=compound.team_id,
+            target_team_id=base.team_id,
+            allow_unsafe_subset_override=True,
+            merge_source=MERGE_SOURCE_MANUAL_MATCH_MERGE,
+        )
+
+
+def test_automatic_merge_rejects_review_only_identity_decision(team_registry_file):
+    source = create_canonical_team(display_name="QA Auto Merge Source")
+    target = create_canonical_team(display_name="Different Auto Target")
+
+    with pytest.raises(ValueError, match="review_only"):
+        merge_canonical_teams(
+            source_team_id=source.team_id,
+            target_team_id=target.team_id,
+            merge_mode="automatic",
         )
 
 
@@ -464,6 +559,118 @@ def test_unmerge_canonical_team_restores_pending_review_cases(team_registry_file
         candidate_teams,
         source.team_name,
     )
+
+
+def test_unmerge_canonical_team_restores_multiple_pending_review_cases(
+    team_registry_file,
+):
+    source = create_canonical_team(display_name="QA Multi Review Source")
+    target = create_canonical_team(display_name="QA Multi Review Target")
+    candidate_teams = json.dumps(
+        [{"team_id": source.team_id, "team_name": source.team_name, "score": 95}]
+    )
+    with sqlite3.connect(settings.db_path) as conn:
+        for raw_team_name, canonical_column in (
+            ("QA Multi Review Raw One", "canonical_home_team"),
+            ("QA Multi Review Raw Two", "canonical_away_team"),
+        ):
+            conn.execute(
+                f"""
+                INSERT INTO team_review_cases (
+                    bookmaker_id,
+                    raw_league_id,
+                    normalized_raw_league_id,
+                    sport,
+                    raw_team_name,
+                    normalized_raw_team_name,
+                    suggested_team_id,
+                    suggested_team_name,
+                    reason_code,
+                    candidate_teams,
+                    canonical_home_team,
+                    canonical_away_team,
+                    status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                """,
+                (
+                    "meridian",
+                    "QA League",
+                    "qa league",
+                    "basketball",
+                    raw_team_name,
+                    normalize_identity_text(raw_team_name),
+                    source.team_id,
+                    source.team_name,
+                    "candidate_team_match_same_start_time",
+                    candidate_teams,
+                    source.team_name if canonical_column == "canonical_home_team" else "Rival",
+                    source.team_name if canonical_column == "canonical_away_team" else "Rival",
+                ),
+            )
+        conn.commit()
+
+    merge_canonical_teams(source_team_id=source.team_id, target_team_id=target.team_id)
+    unmerge_canonical_team(source_team_id=source.team_id)
+
+    with sqlite3.connect(settings.db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT suggested_team_id, suggested_team_name, canonical_home_team, canonical_away_team
+            FROM team_review_cases
+            ORDER BY raw_team_name
+            """
+        ).fetchall()
+
+    assert rows == [
+        (source.team_id, source.team_name, source.team_name, "Rival"),
+        (source.team_id, source.team_name, "Rival", source.team_name),
+    ]
+
+
+def test_unmerge_canonical_team_rejects_malformed_alias_snapshot(team_registry_file):
+    source = create_canonical_team(display_name="QA Bad Alias Snapshot Source")
+    target = create_canonical_team(display_name="QA Bad Alias Snapshot Target")
+    merge_canonical_teams(source_team_id=source.team_id, target_team_id=target.team_id)
+    with sqlite3.connect(settings.db_path) as conn:
+        conn.execute(
+            "UPDATE team_merge_history SET alias_snapshot = ? WHERE source_team_id = ?",
+            ('[{"alias": "Missing Normalized"}]', source.team_id),
+        )
+        conn.commit()
+
+    with pytest.raises(ValueError, match="Stored merge rollback metadata is invalid"):
+        unmerge_canonical_team(source_team_id=source.team_id)
+
+    with sqlite3.connect(settings.db_path) as conn:
+        row = conn.execute(
+            "SELECT is_active, merged_into_team_id FROM canonical_teams WHERE id = ?",
+            (source.team_id,),
+        ).fetchone()
+    assert row == (0, target.team_id)
+
+
+def test_unmerge_canonical_team_rejects_malformed_review_case_snapshot(
+    team_registry_file,
+):
+    source = create_canonical_team(display_name="QA Bad Review Snapshot Source")
+    target = create_canonical_team(display_name="QA Bad Review Snapshot Target")
+    merge_canonical_teams(source_team_id=source.team_id, target_team_id=target.team_id)
+    with sqlite3.connect(settings.db_path) as conn:
+        conn.execute(
+            """
+            UPDATE team_merge_history
+            SET review_case_snapshot = ?
+            WHERE source_team_id = ?
+            """,
+            ('[{"id": 1, "candidate_teams": "not json"}]', source.team_id),
+        )
+        conn.commit()
+
+    with pytest.raises(
+        ValueError,
+        match="Stored merge review-case rollback metadata is invalid",
+    ):
+        unmerge_canonical_team(source_team_id=source.team_id)
 
 
 def test_unmerge_canonical_team_rejects_legacy_history_without_snapshot(team_registry_file):
