@@ -79,11 +79,13 @@ class MatchUnification:
     ) -> MatchUnificationResult:
         extraction_stats = candidate_extraction._EventCandidateExtractionStats()
         extraction_started_at = time.perf_counter()
-        football_event_resolutions = (
-            candidate_extraction._build_football_event_resolutions(
-                list(rows.raw_outcome_offers)
+        football_event_resolutions = rows.football_event_resolutions
+        if football_event_resolutions is None:
+            football_event_resolutions = (
+                candidate_extraction._build_football_event_resolutions(
+                    list(rows.raw_outcome_offers)
+                )
             )
-        )
         candidates = candidate_extraction.extract_event_candidates(
             raw_odds=list(rows.raw_odds),
             raw_outcome_offers=list(rows.raw_outcome_offers),

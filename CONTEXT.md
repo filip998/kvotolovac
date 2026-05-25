@@ -31,3 +31,11 @@ The Match Unification work that turns raw bookmaker events, normalized odds, and
 normalized outcome offers into event candidates before grouping. It owns source
 matching, raw source metadata, candidate precedence, football raw event candidate
 enrichment, and extraction benchmark counters.
+
+### Event Pairing
+
+The Match Unification work that compares bookmaker-specific event candidates
+within a temporal bucket to decide whether they describe the same real-world
+event. It owns sport-specific pairing rules, team text similarity, orientation
+scoring, pair ranking, large-bucket fan-out diagnostics, and reusable similarity
+state that prevents repeated fuzzy scoring inside one scrape cycle.

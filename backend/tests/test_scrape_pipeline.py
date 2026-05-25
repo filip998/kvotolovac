@@ -139,8 +139,10 @@ async def _load_empty_canonical_analysis(_store, **_kwargs):
 class FakeMatchUnification:
     def __init__(self, result: MatchUnificationResult | None = None) -> None:
         self.result = result
+        self.calls: list[dict] = []
 
-    async def unify_after_snapshot(self, **_kwargs):
+    async def unify_after_snapshot(self, **kwargs):
+        self.calls.append(kwargs)
         return self.result or MatchUnificationResult(
             status=MatchUnificationStatus.unified(snapshot_id="snapshot-1"),
         )
@@ -324,3 +326,18 @@ async def test_pipeline_keeps_auto_approved_audit_rows_after_failed_rollback():
         ).run(_pipeline_input())
 
     assert store.deleted_case_ids == []
+
+
+@pytest.mark.asyncio
+async def test_pipeline_discards_cached_event_resolutions_after_skipped_registry_change():
+    store = FakeStore()
+    match_unification = FakeMatchUnification()
+
+    await _pipeline(
+        store=store,
+        team_actions=FakeTeamActions(applied_aliases=[("demo", "Raw", "football")]),
+        match_unification=match_unification,
+    ).run(_pipeline_input())
+
+    rows = match_unification.calls[-1]["rows"]
+    assert rows.football_event_resolutions is None
